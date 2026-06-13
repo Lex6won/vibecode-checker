@@ -76,12 +76,50 @@ $ gvskb scan ./my-project
 
 ### 설치 (Installation)
 
+먼저 패키지를 설치합니다. **CLI든 AI 코딩 도구(MCP)든 이 설치가 공통으로 필요합니다** (MCP 서버도 `python -m gvskb.server` 로 실행되기 때문).
+
 ```bash
 pip install vibecode-checker        # PyPI 배포본
 # 또는 소스에서:
-git clone https://github.com/<your-org>/vibecode-checker.git
+git clone https://github.com/Lex6won/vibecode-checker.git
 cd vibecode-checker && pip install .
 ```
+
+설치를 확인합니다:
+
+```bash
+gvskb doctor      # 룰 수·인코딩·MCP 상태 점검
+```
+
+#### AI 코딩 도구에 MCP 연결 (선택)
+
+Claude Desktop·Cursor·VS Code 등에서 **자연어로** 쓰려면, MCP 설정 파일에 아래를 추가합니다(위 `pip install` 이후):
+
+```json
+{
+  "mcpServers": {
+    "vibecode-checker": {
+      "command": "python",
+      "args": ["-m", "gvskb.server"],
+      "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" }
+    }
+  }
+}
+```
+
+설정 파일 위치(도구별):
+
+| 도구 | 설정 파일 |
+|---|---|
+| **Claude Desktop** | Windows `%APPDATA%\Claude\claude_desktop_config.json` · macOS `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| **Cursor** | 설정 → MCP, 또는 프로젝트 루트 `.cursor/mcp.json` |
+| **VS Code** (MCP 지원 확장) | 워크스페이스 `.vscode/mcp.json` 또는 사용자 `settings.json` 의 MCP 항목 |
+| **Claude Code (CLI)** | 프로젝트 루트 `.mcp.json` (이 저장소의 [`.mcp.json`](.mcp.json) 참고) |
+
+저장 후 도구를 재시작하면 연결됩니다. 확인: AI에게 *"server_status로 룰이 몇 개 로드됐는지 확인해줘"*.
+(`python` 이 PATH에 없으면 전체 경로로 바꾸세요. Windows 한글 깨짐은 [한 번만 설정](docs/windows_utf8.md).)
+
+> ⚠️ **신뢰하는 환경에서만 연결하세요** — MCP는 지정한 경로의 로컬 파일을 읽습니다([SECURITY.md](SECURITY.md)).
 
 ### 사용 (Usage)
 
