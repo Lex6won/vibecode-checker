@@ -7,7 +7,7 @@
 ## 방법 1. 명령어로 바로 (가장 간단)
 
 ```bash
-pip install vibecode-checker
+pip install git+https://github.com/Lex6won/vibecode-checker.git
 
 # 내 프로젝트 폴더를 점검 → 화면에 한국어 보고서
 gvskb scan ./my-project

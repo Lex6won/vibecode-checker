@@ -76,13 +76,17 @@ $ gvskb scan ./my-project
 
 ### 설치 (Installation)
 
-먼저 패키지를 설치합니다. **CLI든 AI 코딩 도구(MCP)든 이 설치가 공통으로 필요합니다** (MCP 서버도 `python -m gvskb.server` 로 실행되기 때문).
+먼저 패키지를 설치합니다. **CLI든 AI 코딩 도구(MCP)든 이 설치 하나면 둘 다 됩니다** — `gvskb` 명령과 MCP 서버(`python -m gvskb.server`)가 함께 설치됩니다.
+
+> ℹ️ 현재 **PyPI에는 배포하지 않습니다**(공공기관·망분리 환경의 공급망 보안 고려). **GitHub 소스에서 설치**합니다.
 
 ```bash
-pip install vibecode-checker        # PyPI 배포본
-# 또는 소스에서:
+# 가장 간단 — 한 줄 설치 (Python 3.11+)
+pip install git+https://github.com/Lex6won/vibecode-checker.git
+
+# 또는 소스를 받아 설치 (수정·기여하려면 -e 권장)
 git clone https://github.com/Lex6won/vibecode-checker.git
-cd vibecode-checker && pip install .
+cd vibecode-checker && pip install -e .
 ```
 
 설치를 확인합니다:
@@ -90,6 +94,8 @@ cd vibecode-checker && pip install .
 ```bash
 gvskb doctor      # 룰 수·인코딩·MCP 상태 점검
 ```
+
+> 망분리(인터넷 없는) PC라면, 외부망에서 위 소스를 받아(또는 `pip download`로 의존성까지) 옮긴 뒤 오프라인 설치하세요.
 
 #### AI 코딩 도구에 MCP 연결 (선택)
 
@@ -303,7 +309,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: pip install vibecode-checker
+      - run: pip install git+https://github.com/Lex6won/vibecode-checker.git
       - run: gvskb scan . --format markdown -o report.md --fail-on block
       - if: always()
         uses: actions/upload-artifact@v4
