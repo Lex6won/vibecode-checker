@@ -103,7 +103,7 @@ gvskb doctor      # 룰 수·인코딩·MCP 상태 점검
 
 #### AI 코딩 도구에 MCP 연결 (선택)
 
-Claude Desktop·Cursor·VS Code 등에서 **자연어로** 쓰려면, MCP 설정 파일에 아래를 추가합니다(위 `pip install` 이후):
+AI 코딩 도구에서 **자연어로** 쓰려면 MCP 설정에 서버를 등록합니다(위 `pip install` 이후). 아래는 **Claude Desktop·Cursor·Claude Code 공통 형식**입니다(최상위 키 `mcpServers`). VS Code는 형식이 달라 표 아래에 따로 안내합니다.
 
 ```json
 {
@@ -122,9 +122,24 @@ Claude Desktop·Cursor·VS Code 등에서 **자연어로** 쓰려면, MCP 설정
 | 도구 | 설정 파일 |
 |---|---|
 | **Claude Desktop** | Windows `%APPDATA%\Claude\claude_desktop_config.json` · macOS `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| **Cursor** | 설정 → MCP, 또는 프로젝트 루트 `.cursor/mcp.json` |
-| **VS Code** (MCP 지원 확장) | 워크스페이스 `.vscode/mcp.json` 또는 사용자 `settings.json` 의 MCP 항목 |
-| **Claude Code (CLI)** | 프로젝트 루트 `.mcp.json` (이 저장소의 [`.mcp.json`](.mcp.json) 참고) |
+| **Cursor** | 프로젝트 `.cursor/mcp.json` 또는 전역 `~/.cursor/mcp.json` (설정 → MCP) — 키 `mcpServers` |
+| **VS Code** (Copilot Agent) | 워크스페이스 `.vscode/mcp.json` — ⚠️ 키가 `servers`(≠`mcpServers`)이고 `"type": "stdio"` 필요. 표 아래 스니펫 참고 |
+| **Claude Code (CLI)** | 프로젝트 루트 `.mcp.json` (키 `mcpServers`, 이 저장소의 [`.mcp.json`](.mcp.json) 참고) · 또는 `claude mcp add` 명령 |
+
+**VS Code 전용** — `.vscode/mcp.json` 은 키가 `servers` 이고 `type` 이 필요합니다(위 `mcpServers` 형식과 다름):
+
+```json
+{
+  "servers": {
+    "vibecode-checker": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "gvskb.server"],
+      "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" }
+    }
+  }
+}
+```
 
 저장 후 도구를 재시작하면 연결됩니다. 확인: AI에게 *"server_status로 룰이 몇 개 로드됐는지 확인해줘"*.
 (`python` 이 PATH에 없으면 전체 경로로 바꾸세요. Windows 한글 깨짐은 [한 번만 설정](docs/windows_utf8.md).)
