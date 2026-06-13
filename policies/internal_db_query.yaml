@@ -1,0 +1,20 @@
+profile_id: internal-db-query
+name: 내부 DB 조회 시스템
+description: |-
+  민원 DB·통계 DB·결재 DB 조회 시스템용 정책. SQL 인젝션·평문 자격증명·약한
+  비밀번호 처리·솔트 없는 해시·내부망 노출 등을 가장 위험하게 다룹니다.
+applies_to: [data-pipeline, web-app, batch-job]
+data_policy:
+  allow_external_llm_for_source_code: false
+  pii_to_external_api: block
+decision_overrides:
+  GOV-SQL-INJECTION-001: block
+  KISA-PY-INPUT-01: block         # raw SQL concat
+  KISA-JS-INPUT-01: block         # template literal SQL
+  KISA-PY-SEC-14: block           # 솔트 없는 해시
+  KISA-JS-SEC-09: block           # 평문 비교 / Math.random 토큰
+  KISA-PY-INPUT-05: block         # OS command injection
+category_overrides:
+  secret-scanning: block          # DB 접속정보 노출 절대 금지
+  public-sector-internal: block   # 내부망 정보 노출 차단
+severity_min: medium              # low는 조용히, medium 이상은 보고

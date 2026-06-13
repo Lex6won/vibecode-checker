@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vibecode-checker": {
+      "command": "python",
+      "args": ["-m", "gvskb.server"],
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

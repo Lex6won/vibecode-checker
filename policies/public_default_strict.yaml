@@ -1,0 +1,33 @@
+profile_id: public-default-strict
+name: 공공기관 기본 엄격 모드
+description: "개인정보, 내부망 정보, secret, known exploited vulnerability, LLM/agent 고위험 동작을 기본 차단한다."
+data_policy:
+  allow_external_llm_for_source_code: false
+  allow_external_llm_for_public_text: true
+  pii_to_external_api: block
+  prompt_logging: redact
+network_policy:
+  default_mode: online-restricted
+  allowed_security_api_domains:
+    - api.osv.dev
+    - services.nvd.nist.gov
+    - www.cisa.gov
+package_policy:
+  allow_new_package_without_review: false
+  block_malicious_advisory: true
+  block_cisa_kev_dependency: true
+  require_lockfile: true
+agent_policy:
+  require_confirmation_for:
+    - file_delete
+    - email_send
+    - db_write
+    - payment_or_procurement
+    - approval_request
+logging_policy:
+  store_code_snippets: false
+  store_hash_only: true
+  pii_masking: required
+exceptions:
+  require_approver_role: security_manager
+  expiry_days: 30

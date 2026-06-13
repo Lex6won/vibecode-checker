@@ -1,0 +1,19 @@
+# Drop-in pre-commit config: secret + PII 빠른 검사를 매 커밋 시 실행.
+# Place at the project root as .pre-commit-config.yaml and run `pre-commit install`.
+#
+# 빠른 검사용으로 detect_secrets_and_pii 카테고리만 호출합니다. 전체 스캔은
+# CI(github-actions/gvskb-scan.yml)에서 실행하세요.
+
+repos:
+  - repo: local
+    hooks:
+      - id: gvskb-secrets-pii
+        name: gvskb — secret + PII fast scan
+        entry: gvskb scan --format markdown
+        language: system
+        pass_filenames: false
+        # 변경된 파일만 검사하려면 다음 옵션을 활용:
+        # entry: bash -c 'gvskb scan $(git diff --cached --name-only)'
+        types: [text]
+        stages: [commit]
+        # critical/block(secret·내부망·PII)이 있으면 커밋 거부 (exit code 2)

@@ -1,0 +1,156 @@
+version: "2026-05-31"
+purpose: "법령, 공공 지침, 국제 보안 기준, 취약점 API의 갱신 주기 관리"
+principles:
+  - "소스코드 전문과 개인정보는 외부 취약점 API로 보내지 않는다."
+  - "법령과 공공 지침 변경은 자동 반영하지 않고 보안 담당자 검토 후 approved 룰로 승격한다."
+  - "취약점 데이터는 online-restricted 모드에서 패키지명, 버전, CVE ID 중심으로만 조회한다."
+
+legal_and_guidance:
+  - id: KR-LAW-PIPA
+    name: 개인정보 보호법
+    url: "https://www.law.go.kr"
+    checked_at: "2026-05-31"
+    latest_known: { law_id: "011357", mst: "270351", promulgated_at: "2025-04-01" }
+    cadence: daily_metadata_monthly_diff
+  - id: KR-LAW-PIPA-ENFORCEMENT
+    name: 개인정보 보호법 시행령
+    url: "https://www.law.go.kr"
+    checked_at: "2026-05-31"
+    latest_known: { law_id: "011468", mst: "286175", promulgated_at: "2026-05-19" }
+    cadence: daily_metadata_monthly_diff
+  - id: KR-LAW-EGOV
+    name: 전자정부법
+    url: "https://www.law.go.kr"
+    checked_at: "2026-05-31"
+    latest_known: { law_id: "009199", mst: "268103", promulgated_at: "2025-01-07" }
+    cadence: monthly
+  - id: KR-MOIS-SW-SECURE-CODING
+    name: 행정안전부 소프트웨어 개발보안 가이드
+    url: "https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000015&nttId=88956"
+    checked_at: "2026-05-31"
+    cadence: quarterly_or_notice_change
+    notes:
+      - "2026-05-31 실측: 2021-12-29 1.0판 이후 약 5년 미갱신. 우리 도구가 살아있는 갱신본 역할 (행안부 협의 후 권위 확보)."
+  - id: KR-KISA-KNVD
+    name: KISA/KRCERT 사이버 보안 취약점 정보 포털
+    url: "https://knvd.krcert.or.kr/about/vulnerability"
+    checked_at: "2026-05-31"
+    cadence: daily
+  - id: KR-NIS-AI-SECURITY-GUIDE
+    name: 국정원 국가·공공기관 AI 보안 가이드북
+    url: "https://www.aikorea.go.kr/web/board/brdDetail.do?menu_cd=000011&num=144"
+    checked_at: "2026-05-31"
+    latest_known: { released_at: "2025-12-10", contents: "15 threats / 30 controls / 57 checklist items" }
+    cadence: annual_or_notice_change
+    notes:
+      - "baseline 1순위. T01~T15 위협 + M01~M30 대책 + 57 체크리스트. 가장 권위 있는 최신."
+  - id: KR-PIPC-GEN-AI-GUIDE
+    name: 개인정보보호위원회 생성형 인공지능(AI) 개발·활용을 위한 개인정보 처리 안내서
+    url: "https://www.pipc.go.kr/np/cop/bbs/selectBoardArticle.do?bbsId=BS074&mCode=C020010000&nttId=11410"
+    checked_at: "2026-05-31"
+    latest_known: { released_at: "2025-08-06" }
+    cadence: annual_or_notice_change
+    notes:
+      - "모델개발자·이용자 역할 구분. 머신 언러닝·AI 에이전트 등 최신 기술 반영."
+  - id: KR-KISA-SUPPLY-CHAIN
+    name: KISA SW 공급망 보안 가이드라인
+    url: "https://www.kisa.or.kr/2060204/form?postSeq=15"
+    checked_at: "2026-05-31"
+    latest_known: { version: "1.0", released_at: "2024-05-13" }
+    cadence: annual
+    notes:
+      - "KISA + 국정원 + 디플정위 + NIPA + KISIA 합동. SBOM 정책 정렬."
+  - id: KR-KISA-PYTHON-SECURE-CODING
+    name: KISA Python 시큐어코딩 가이드
+    url: "https://www.kisa.or.kr/2060204/form?postSeq=13"
+    checked_at: "2026-05-31"
+    latest_known: { released_at: "2022-02-25", scope: "49개 중 Python 적용 가능 42항목" }
+    cadence: irregular_release
+  - id: KR-KISA-JS-SECURE-CODING
+    name: KISA JavaScript 시큐어코딩 가이드
+    url: "https://www.kisa.or.kr/2060204/form?postSeq=14"
+    checked_at: "2026-05-31"
+    latest_known: { released_at: "2023", scope: "VanillaJS / React / Express 예시 포함" }
+    cadence: irregular_release
+
+international_standards:
+  - id: NIST-SSDF-800-218
+    name: NIST SP 800-218 Secure Software Development Framework
+    url: "https://csrc.nist.gov/pubs/sp/800/218/final"
+    cadence: semiannual
+  - id: NIST-SSDF-GENAI-800-218A
+    name: NIST SP 800-218A Generative AI SSDF Profile
+    url: "https://csrc.nist.gov/pubs/sp/800/218/a/final"
+    cadence: semiannual
+  - id: NIST-AI-RMF-600-1
+    name: NIST AI RMF Generative AI Profile
+    url: "https://www.nist.gov/itl/ai-risk-management-framework"
+    cadence: semiannual
+  - id: CISA-SECURE-BY-DESIGN
+    name: CISA Secure by Design
+    url: "https://www.cisa.gov/resources-tools/resources/secure-by-design"
+    cadence: quarterly
+  - id: OWASP-LLM-TOP10
+    name: OWASP Top 10 for LLM Applications
+    url: "https://owasp.org/www-project-top-10-for-large-language-model-applications"
+    cadence: monthly
+    latest_known: { version: "2025" }
+  - id: OWASP-ASVS
+    name: OWASP Application Security Verification Standard
+    url: "https://owasp.org/www-project-application-security-verification-standard/"
+    cadence: quarterly
+    latest_known: { version: "5.0.0", released_at: "2025-05-30", scope: "350 requirements / 17 chapters" }
+  - id: OWASP-AGENTIC-TOP10
+    name: OWASP Top 10 for Agentic Applications
+    url: "https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/"
+    cadence: annual
+    latest_known: { version: "2026", released_at: "2025-12-10", scope: "ASI01 ~ ASI10" }
+  - id: OWASP-AI-TESTING-GUIDE
+    name: OWASP AI Testing Guide (AITG)
+    url: "https://owasp.org/www-project-ai-testing-guide/"
+    cadence: irregular_release
+    latest_known: { version: "v1", released_at: "2025-11", scope: "App / Model / Infra / Data 4-layer" }
+  - id: OWASP-CHEAT-SHEET-SERIES
+    name: OWASP Cheat Sheet Series
+    url: "https://cheatsheetseries.owasp.org/"
+    cadence: rolling_weekly
+
+vulnerability_sources:
+  - id: OSV
+    name: OSV.dev API
+    url: "https://google.github.io/osv.dev/api/"
+    endpoints: ["POST https://api.osv.dev/v1/query", "POST https://api.osv.dev/v1/querybatch"]
+    cadence: on_package_install_and_daily_batch
+    payload_policy: package_name_version_only
+  - id: NVD
+    name: NIST NVD API 2.0
+    url: "https://nvd.nist.gov/developers/vulnerabilities"
+    endpoint: "GET https://services.nvd.nist.gov/rest/json/cves/2.0"
+    cadence: twice_daily_or_more
+    notes:
+      - "NVD data feeds are documented as approximately two-hour update feeds."
+      - "NIST announced SSVC and affected data expansion for CVE feed/API results starting 2026-06-17."
+  - id: CISA-KEV
+    name: CISA Known Exploited Vulnerabilities Catalog
+    url: "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+    cadence: every_4h_to_daily
+  - id: CVE-ORG
+    name: CVE.org / cvelistV5
+    url: "https://www.cve.org"
+    cadence: daily
+  - id: GITHUB-ADVISORY
+    name: GitHub Advisory Database
+    url: "https://github.com/advisories"
+    cadence: daily
+  - id: FIRST-EPSS
+    name: FIRST EPSS
+    url: "https://www.first.org/epss"
+    cadence: daily
+  - id: OPENSFF-SCORECARD
+    name: OpenSSF Scorecard
+    url: "https://openssf.org/scorecard/"
+    cadence: weekly_or_on_new_dependency
+  - id: SIGSTORE
+    name: Sigstore/Rekor
+    url: "https://docs.sigstore.dev/about/overview/"
+    cadence: on_build_or_release_verification

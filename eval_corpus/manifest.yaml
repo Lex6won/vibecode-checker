@@ -1,0 +1,77 @@
+# gvskb 독립 벤치마크 — ground truth manifest
+# kind: vulnerability(탐지 대상) | negative_control(파일 단위 FP 측정) | hard_variant(경계 프로브)
+# 매칭: file 일치 AND |finding.line - line| <= 2 AND (finding.rule_id in expected_rule_ids OR category 일치)
+# expected_rule_ids 는 스모크 스캔 관측값으로 채움(취약점 시딩은 독립적). 빈 목록이면 category 로만 매칭.
+# sink: 드라이버가 해당 라인에 이 문자열이 실재하는지 자가 검증.
+
+negative_control_files:
+  - g_clean_twins/app_safe.py
+  - g_clean_twins/server_safe.js
+  - g_clean_twins/chatbot_safe.py
+  - g_clean_twins/pipeline_safe.py
+  - g_clean_twins/comments_tricky.py
+  - g_clean_twins/comments_tricky.js
+
+cases:
+  # ---------- (A) Flask 민원 앱 (Python) ----------
+  - {id: A-01, file: a_minwon_flask/app.py, line: 21, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [GOV-SQL-INJECTION-001, KISA-PY-INPUT-01], sink: "cursor.execute(f"}
+  - {id: A-02, file: a_minwon_flask/app.py, line: 12, kind: vulnerability, category: secret, expect_detected: true, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "sk-proj-FAKE"}
+  - {id: A-03, file: a_minwon_flask/app.py, line: 28, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001], sink: "900101-1234567"}
+  - {id: A-04, file: a_minwon_flask/app.py, line: 29, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001], sink: "logging.info"}
+  - {id: A-05, file: a_minwon_flask/app.py, line: 31, kind: vulnerability, category: crypto, expect_detected: true, expected_rule_ids: [KISA-PY-SEC-04, KISA-PY-SEC-14], sink: "hashlib.md5"}
+  - {id: A-06, file: a_minwon_flask/app.py, line: 38, kind: vulnerability, category: path-traversal, expect_detected: true, expected_rule_ids: [], sink: "os.path.join(UPLOAD_DIR, filename)"}
+  - {id: A-07, file: a_minwon_flask/app.py, line: 43, kind: vulnerability, category: misconfig, expect_detected: true, expected_rule_ids: [], sink: "debug=True"}
+  - {id: A-08, file: a_minwon_flask/db.py, line: 4, kind: vulnerability, category: secret, expect_detected: true, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "P@ssw0rd123!fake"}
+  - {id: A-09, file: a_minwon_flask/db.py, line: 10, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [GOV-SQL-INJECTION-001, KISA-PY-INPUT-01], sink: "WHERE id = \" + user_id"}
+  - {id: A-10, file: a_minwon_flask/utils.py, line: 6, kind: vulnerability, category: crypto, expect_detected: true, expected_rule_ids: [KISA-PY-SEC-08], sink: "random.random()"}
+  - {id: A-11, file: a_minwon_flask/utils.py, line: 12, kind: vulnerability, category: error-handling, expect_detected: true, expected_rule_ids: [KISA-PY-ERR-03], sink: "except:"}
+
+  # ---------- (B) Express API (JavaScript) ----------
+  - {id: B-01, file: b_express_api/server.js, line: 7, kind: vulnerability, category: secret, expect_detected: true, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-JS-SEC-06], sink: "fake-super-secret-jwt-key"}
+  - {id: B-02, file: b_express_api/server.js, line: 10, kind: vulnerability, category: code-exec, expect_detected: true, expected_rule_ids: [KISA-JS-API-02, KISA-JS-INPUT-02], sink: "eval(req.query.code)"}
+  - {id: B-03, file: b_express_api/server.js, line: 15, kind: vulnerability, category: xss, expect_detected: true, expected_rule_ids: [], sink: "res.send(\"<div>"}
+  - {id: B-04, file: b_express_api/server.js, line: 19, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [], sink: "exec(\"ping"}
+  - {id: B-05, file: b_express_api/routes.js, line: 7, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [KISA-JS-INPUT-01], sink: "WHERE id = \" + req.params.id"}
+  - {id: B-06, file: b_express_api/routes.js, line: 13, kind: vulnerability, category: code-exec, expect_detected: true, expected_rule_ids: [KISA-JS-API-02, KISA-JS-INPUT-02], sink: "new Function(body)"}
+
+  # ---------- (C) 정적 페이지 (HTML + vanilla JS) ----------
+  - {id: C-01, file: c_static_page/index.html, line: 7, kind: vulnerability, category: misconfig, expect_detected: true, expected_rule_ids: [], sink: "http://cdn.example.com"}
+  - {id: C-02, file: c_static_page/index.html, line: 12, kind: vulnerability, category: xss, expect_detected: true, expected_rule_ids: [], sink: "document.write(location.hash"}
+  - {id: C-03, file: c_static_page/main.js, line: 4, kind: vulnerability, category: xss, expect_detected: true, expected_rule_ids: [KISA-JS-INPUT-04], sink: "innerHTML"}
+  - {id: C-04, file: c_static_page/main.js, line: 6, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001], sink: "900101-2345678"}
+
+  # ---------- (D) LLM 챗봇/RAG (Python) ----------
+  - {id: D-01, file: d_llm_chatbot/chatbot.py, line: 5, kind: vulnerability, category: secret, expect_detected: true, expected_rule_ids: [GOV-SECRET-APIKEY-001], sink: "sk-proj-FAKE"}
+  - {id: D-02, file: d_llm_chatbot/chatbot.py, line: 10, kind: vulnerability, category: llm, expect_detected: true, expected_rule_ids: [GOV-LLM-OUTPUT-HANDLING-001, OWASP-LLM-2025-01], sink: "SYSTEM_PROMPT + \"\\n사용자"}
+  - {id: D-03, file: d_llm_chatbot/chatbot.py, line: 20, kind: vulnerability, category: code-exec, expect_detected: true, expected_rule_ids: [GOV-CODE-EXEC-001, GOV-LLM-OUTPUT-HANDLING-001, KISA-PY-INPUT-02], sink: "exec(llm_code)"}
+  - {id: D-04, file: d_llm_chatbot/rag_index.py, line: 9, kind: vulnerability, category: deserialization, expect_detected: true, expected_rule_ids: [KISA-PY-CODE-03], sink: "pickle.load(fh)"}
+  - {id: D-05, file: d_llm_chatbot/rag_index.py, line: 13, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001, GOV-LLM-PII-PROMPT-001], sink: "900101-1234567"}
+  - {id: D-06, file: d_llm_chatbot/rag_index.py, line: 18, kind: vulnerability, category: tls, expect_detected: true, expected_rule_ids: [KISA-PY-SEC-11], sink: "verify=False"}
+
+  # ---------- (E) 데이터 파이프라인 (Python) ----------
+  - {id: E-01, file: e_data_pipeline/pipeline.py, line: 8, kind: vulnerability, category: deserialization, expect_detected: true, expected_rule_ids: [KISA-PY-CODE-03], sink: "pd.read_pickle(url)"}
+  - {id: E-02, file: e_data_pipeline/pipeline.py, line: 14, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001, GOV-PII-PHONE-001], sink: "900101-1234567"}
+  - {id: E-03, file: e_data_pipeline/pipeline.py, line: 21, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [GOV-CMD-INJECTION-001, KISA-PY-INPUT-05], sink: "os.system(\"del"}
+
+  # ---------- (H) 경계 프로브 (탐지 한계 측정) ----------
+  - {id: H-01, file: h_hard_variants/alias_import.py, line: 6, kind: hard_variant, category: injection, expect_detected: false, expected_rule_ids: [KISA-PY-INPUT-05, GOV-CMD-INJECTION-001], sink: "run_cmd(\"del"}
+  - {id: H-02, file: h_hard_variants/indirect_eval.py, line: 6, kind: hard_variant, category: code-exec, expect_detected: false, expected_rule_ids: [KISA-PY-INPUT-02, GOV-CODE-EXEC-001], sink: "f(user_input)"}
+  - {id: H-03, file: h_hard_variants/indirect_eval.py, line: 11, kind: hard_variant, category: code-exec, expect_detected: false, expected_rule_ids: [KISA-PY-INPUT-02, GOV-CODE-EXEC-001], sink: "getattr(builtins"}
+  # H-04: GOV-SECRET-JWT-001 룰 추가로 이제 탐지됨 — 의도된 개선이라 expect_detected를 true로 승격.
+  - {id: H-04, file: h_hard_variants/secrets_hard.py, line: 2, kind: hard_variant, category: secret, expect_detected: true, expected_rule_ids: [GOV-SECRET-JWT-001, GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "eyJhbGciOiJIUzI1NiI"}
+  - {id: H-05, file: h_hard_variants/secrets_hard.py, line: 4, kind: hard_variant, category: secret, expect_detected: false, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "ghp_FAKE"}
+  - {id: H-06, file: h_hard_variants/secrets_hard.py, line: 6, kind: hard_variant, category: secret, expect_detected: false, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "postgres://admin"}
+  - {id: H-07, file: h_hard_variants/obfuscated.js, line: 3, kind: hard_variant, category: code-exec, expect_detected: false, expected_rule_ids: [KISA-JS-API-02, KISA-JS-INPUT-02], sink: "window[\"ev\" + \"al\"]"}
+  - {id: H-08, file: h_hard_variants/UserController.java, line: 10, kind: hard_variant, category: secret, expect_detected: false, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "P@ssw0rdFAKE"}
+  - {id: H-09, file: h_hard_variants/UserController.java, line: 14, kind: hard_variant, category: injection, expect_detected: false, expected_rule_ids: [GOV-SQL-INJECTION-001], sink: "WHERE id = \" + id"}
+
+# 의존성 트랙 (gvskb scan 은 .txt 미스캔 → check-package 경로로 별도 측정)
+dependency_track:
+  pypi:
+    file: f_dependencies/requirements.txt
+    vulnerable: [flask, pyyaml, requests]
+    typosquat: [reqeusts]
+  npm:
+    file: f_dependencies/package.json
+    vulnerable: [lodash, minimist]
+    typosquat: [expresss]

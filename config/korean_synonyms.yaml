@@ -1,0 +1,33 @@
+# Korean ↔ English synonym sets for the public-sector security domain.
+#
+# Each entry is a *bag of synonyms*. When the user types one term, search
+# expands the query with every other term in the same bag — without changing
+# the original token's weight.
+#
+# The list is intentionally narrow: only the vocabulary public officers and
+# AI coding agents actually use in security questions. New synonyms should
+# be added only when a real user query missed an obviously relevant rule.
+
+groups:
+  - [개인정보, PII, "personal information", 주민번호, 주민등록번호, "resident registration", rrn]
+  - [비밀번호, 암호, password, passwd, pwd, "패스워드"]
+  - [SQL, 쿼리, query, "데이터베이스", DB, database, sqli, "sql injection", "sql 삽입"]
+  - [XSS, "크로스사이트", "스크립트 삽입", "cross-site scripting", innerHTML]
+  - [CSRF, "크로스사이트 요청 위조", "cross site request forgery", samesite]
+  - [LLM, AI, "대규모 언어모델", "생성형 AI", "generative ai", chatgpt, claude, openai]
+  - ["프롬프트 인젝션", "prompt injection", "지시 주입", "프롬프트 공격"]
+  - [패키지, 의존성, dependency, package, npm, pypi, 라이브러리, library]
+  - [경로조작, "path traversal", "디렉터리 탐색", "directory traversal", "../"]
+  - [eval, exec, "코드 삽입", "code injection", "코드 실행"]
+  - ["내부망", "내부 네트워크", "private network", "intranet", "10.0.0", "172.16"]
+  - [secret, "비밀키", "api key", "api 키", apikey, token, 토큰, "서명키"]
+  - [세션, session, "쿠키", cookie, "jwt", samesite]
+  - [무한반복, "무한 루프", "infinite loop", "denial of service", dos]
+  - ["역직렬화", deserialization, pickle, marshal, "torch.load"]
+  - ["약한 암호화", "weak crypto", md5, sha1, des, rc4]
+  - [hardcode, "하드코딩", "하드코드", "하드 코딩"]
+  - ["민원", complaint, "민원처리"]
+  - [agent, "에이전트", "도구 호출", "tool use"]
+  - [supplychain, "공급망", "supply chain", slopsquatting, typosquatting]
+  # 사용자가 점검을 요청할 때 쓰는 표준 동작 동의어 (트리거 용어).
+  - [보안, 점검, 체크, 검토, 검사, 스캔, scan, review, audit, check, "안전한지", "안전 점검", "보안 점검"]

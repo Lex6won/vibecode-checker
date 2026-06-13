@@ -1,0 +1,19 @@
+rules:
+  - id: gvskb-js-code-injection
+    message: >-
+      JavaScript code injection — eval / new Function / string-form setTimeout /
+      vm.runIn* execute their string argument as code. Use a safe parser
+      (mathjs, JSON.parse) or a function callback instead.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: setTimeout("...", ...)
+      - pattern: setInterval("...", ...)
+      - pattern: vm.runInNewContext(...)
+      - pattern: vm.runInThisContext(...)
+    metadata:
+      gvskb_rule_id: KISA-JS-INPUT-02
+      category: kisa-secure-coding
+      source: KISA Javascript 시큐어코딩 가이드 제2절 2 (MOIS SW-21, CWE-94)

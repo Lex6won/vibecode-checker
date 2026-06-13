@@ -1,0 +1,57 @@
+[project]
+name = "vibecode-checker"
+version = "0.1.0"
+description = "Public-sector vibe-coding security knowledge base and MCP guardrail"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Lex6won", email = "firstwon77@gmail.com" }]
+keywords = ["mcp", "security", "vibe-coding", "public-sector", "korean", "llm-security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "fastmcp>=2.0.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+gvskb-server = "gvskb.server:main"
+gvskb = "gvskb.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Lex6won/vibecode-checker"
+Issues = "https://github.com/Lex6won/vibecode-checker/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gvskb"]
+# Single source of truth: ship the canonical rules/ tree (141 MD) inside the wheel
+# under gvskb/rules. This guarantees parity between development checkout and
+# installed package — see the importlib.resources fallback in src/gvskb/server.py.
+force-include = { "rules" = "gvskb/rules", "policies" = "gvskb/policies", "config" = "gvskb/config" }
+exclude = ["src/gvskb/rules/"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

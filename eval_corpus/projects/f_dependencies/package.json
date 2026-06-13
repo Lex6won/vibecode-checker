@@ -1,0 +1,11 @@
+{
+  "name": "minwon-frontend-test",
+  "version": "0.0.1",
+  "private": true,
+  "description": "의도적 취약 의존성 샘플 — 설치 금지",
+  "dependencies": {
+    "lodash": "4.17.15",
+    "minimist": "1.2.0",
+    "expresss": "0.0.1"
+  }
+}

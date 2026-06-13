@@ -1,0 +1,45 @@
+{
+  "// 설명": "VS Code tasks.json — 현재 파일 또는 프로젝트를 gvskb로 검사하는 단축 명령.",
+  "// 설치": "프로젝트의 .vscode/tasks.json 에 복사한 뒤 Ctrl+Shift+P → 'Tasks: Run Task' 로 실행하세요.",
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "gvskb: scan current file",
+      "type": "shell",
+      "command": "gvskb",
+      "args": ["scan", "${file}", "--format", "markdown"],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared",
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gvskb: scan project",
+      "type": "shell",
+      "command": "gvskb",
+      "args": ["scan", "${workspaceFolder}", "--format", "markdown", "--output", "${workspaceFolder}/.vscode/gvskb-report.md"],
+      "presentation": {"reveal": "always", "panel": "shared"},
+      "problemMatcher": []
+    },
+    {
+      "label": "gvskb: doctor",
+      "type": "shell",
+      "command": "gvskb",
+      "args": ["doctor"],
+      "presentation": {"reveal": "always", "panel": "shared"},
+      "problemMatcher": []
+    },
+    {
+      "label": "gvskb: validate-rules",
+      "type": "shell",
+      "command": "gvskb",
+      "args": ["validate-rules"],
+      "presentation": {"reveal": "always", "panel": "shared"},
+      "problemMatcher": []
+    }
+  ]
+}

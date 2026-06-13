@@ -1,0 +1,23 @@
+profile_id: civil-complaint-chatbot
+name: 민원 챗봇 (LLM)
+description: |-
+  민원 문의에 답하는 챗봇·상담 보조 도구용 정책. 시민 개인정보가 LLM 프롬프트로
+  흘러들거나 LLM 응답이 그대로 DOM에 주입되는 경로를 가장 위험하게 다룹니다.
+applies_to: [llm-integration, agent, web-app]
+data_policy:
+  allow_external_llm_for_source_code: false
+  pii_to_external_api: block
+  prompt_logging: redact
+decision_overrides:
+  # LLM 입출력 경로는 항상 차단 — 챗봇이 만든 코드를 그대로 운영에 적용하면 안 됨
+  GOV-LLM-PII-PROMPT-001: block
+  GOV-LLM-OUTPUT-HANDLING-001: block
+  OWASP-LLM-2025-LLM01: block
+  OWASP-LLM-2025-LLM02: block
+  OWASP-LLM-2025-LLM05: block
+  # 챗봇 응답을 DOM에 직접 넣으면 XSS — 강제 block
+  KISA-JS-INPUT-04: block
+category_overrides:
+  secret-scanning: block       # 챗봇 코드에 키가 박히면 모든 사용자에게 노출
+  privacy-public-sector: block # 민원인 정보 보호 절대 우선
+severity_min: low              # 챗봇은 사소한 약점도 모두 보고
