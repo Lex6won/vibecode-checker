@@ -155,13 +155,13 @@ AI 코딩 도구에서 **자연어로** 쓰려면 MCP 설정에 서버를 등록
 ```bash
 gvskb doctor                                  # 1) 내 환경 점검(룰 수·인코딩·MCP)
 gvskb scan ./my-project                        # 2) 내 폴더 검사 → 화면에 한국어 리포트
-gvskb scan ./my-project -o 보안점검.md          # 3) 파일 저장(.md + 색깔 카드형 .html 함께)
+gvskb scan ./my-project -o 보안점검.md          # 3) 결과를 파일로 저장(-o=output) → .md + .html 함께
 
 # 4) GitHub 레포는 받아서 검사 (URL → 폴더로 받은 뒤 동일하게 점검)
 git clone --depth 1 https://github.com/owner/repo /tmp/repo && gvskb scan /tmp/repo -o 보안점검.md
 ```
 
-`-o`로 저장하면 텍스트 `보안점검.md`와 인쇄→PDF 결재용 `보안점검.html`이 함께 만들어집니다.
+여기서 `-o`는 **output(출력 파일)** 옵션입니다 — `-o 파일이름`을 붙이면 결과를 화면 대신 그 이름의 파일로 저장합니다. 마크다운/HTML 형식이면 텍스트 `파일이름.md`와 인쇄→PDF 결재용 `파일이름.html`이 **함께** 만들어집니다. (`-o`를 빼면 결과가 화면에만 출력됩니다.)
 
 #### B. AI 코딩 도구에서 — 그냥 말로 (VS Code·Claude Desktop·Cursor)
 
