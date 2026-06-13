@@ -357,16 +357,16 @@ pytest -q                # 전체 테스트
 새 룰에는 `examples.positive`/`negative`를 넣어주세요 — 회귀 테스트로 자동 보증됩니다. 자세한 방법은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요.
 
 기여를 환영합니다:
-- 🐛 **버그·오탐 제보** → [Issues](../../issues)
-- 💡 **새 룰·기능 제안** → [Discussions](../../discussions)
+- 🐛 **버그·오탐 제보** → [Issues](https://github.com/Lex6won/vibecode-checker/issues)
+- 💡 **새 룰·기능 제안** → [Discussions](https://github.com/Lex6won/vibecode-checker/discussions)
 - 🔧 **직접 고치기** → Pull Request (작은 PR 환영)
 
 ---
 
 ## 📮 연락 · 문의
 
-- **버그·기능 요청**: [GitHub Issues](../../issues)
-- **사용 질문·아이디어**: [GitHub Discussions](../../discussions)
+- **버그·기능 요청**: [GitHub Issues](https://github.com/Lex6won/vibecode-checker/issues)
+- **사용 질문·아이디어**: [GitHub Discussions](https://github.com/Lex6won/vibecode-checker/discussions)
 - **보안 취약점 비공개 제보**: `SECURITY.md`의 절차를 따라주세요
 - **그 외 문의**: 메인테이너에게 이슈로 멘션해 주세요
 
