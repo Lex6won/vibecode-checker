@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- 의도적 취약 샘플 — 운영 배포 금지 -->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>민원 안내 (테스트)</title>
+  <script src="http://cdn.example.com/lib.js"></script>  <!-- C-01 http mixed content -->
+</head>
+<body>
+  <h1>민원 안내</h1>
+  <script>
+    document.write(location.hash.substring(1));  // C-02 dom xss document.write
+  </script>
+  <script src="main.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.sqlite
+*.sqlite-journal
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Source PDFs (large binaries; MD 변환본만 추적)
+Origine Document_md/origine_pdf/
+*.pdf
+
+# Local intel cache (CISA KEV, OSV, etc) — fetched via `gvskb update-intel`
+.gvskb/
+
+# Benchmark run outputs (코퍼스/manifest는 커밋, 실행 산출물은 제외)
+eval_corpus/results/

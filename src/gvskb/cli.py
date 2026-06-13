@@ -1,0 +1,548 @@
+"""gvskb CLI — MCP 없이도 단독으로 쓸 수 있는 공공 보안 스캐너 명령어.
+
+공무원이 IT 부서 도움 없이 자기 PC에서 ``gvskb scan ./프로젝트`` 한 줄로
+보고용 마크다운을 받아볼 수 있도록 설계되어 있습니다.
+
+Subcommands:
+    gvskb scan <path>            파일 또는 디렉토리 검사 → Markdown/JSON
+    gvskb check-package <name>   PyPI/npm 패키지 단건 검사 (OSV.dev)
+    gvskb report <findings.json> 저장된 ScanReport JSON을 Markdown으로 변환
+    gvskb rules                  로드된 룰 수와 ID 목록
+    gvskb doctor                 실행 환경·룰·MCP·네트워크 진단
+    gvskb validate-rules         룰 frontmatter·중복·regex·만료 검증
+    gvskb update-intel           CISA KEV·OSV 등 외부 보안 피드를 로컬 캐시에 갱신
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+from .intel import DEFAULT_PROPOSED_DIR, promote_kev_to_rules
+from .report import render_html, render_markdown
+from .scanner import scan_path
+from .schema import ScanReport
+
+EXIT_OK = 0
+EXIT_FINDINGS_WARN = 1
+EXIT_FINDINGS_BLOCK = 2
+EXIT_USAGE = 64
+EXIT_NOT_FOUND = 66
+
+
+SCAN_MAX_FILES_DEFAULT = 500
+
+
+def _scan_reproduce_command(args: argparse.Namespace) -> str:
+    """Reconstruct the minimal `gvskb scan` invocation that produced this run.
+
+    Only non-default options are emitted so the command stays readable for the
+    common case (`gvskb scan <path>`).
+    """
+    parts: list[str] = ["gvskb", "scan", str(args.path)]
+    if args.profile and args.profile != "public-default-strict":
+        parts += ["--profile", args.profile]
+    if args.scenario:
+        parts += ["--scenario", args.scenario]
+    if args.max_files and args.max_files != SCAN_MAX_FILES_DEFAULT:
+        parts += ["--max-files", str(args.max_files)]
+    return " ".join(parts)
+
+
+def _scan_exit_code(report: ScanReport, fail_on: str) -> int:
+    """Map a scan result to an exit code under the chosen --fail-on policy.
+
+    never → always 0; block → non-zero only on block; warn (default) → non-zero
+    on any finding (preserves the original CLI behavior).
+    """
+    if fail_on == "never":
+        return EXIT_OK
+    if report.summary.blocked:
+        return EXIT_FINDINGS_BLOCK
+    if fail_on == "warn" and report.summary.finding_count > 0:
+        return EXIT_FINDINGS_WARN
+    return EXIT_OK
+
+
+def _emit_doc_report(
+    report: ScanReport,
+    *,
+    fmt: str,
+    output: str | None,
+    reproduce_command: str | None,
+) -> None:
+    """Stream or save a human report (markdown/html).
+
+    파일 저장(-o) 시에는 비전공 사용자가 바로 열어볼 수 있도록 항상 .md 와 .html
+    을 함께 만든다. stdout 출력일 때만 선택한 형식 하나를 낸다.
+    """
+    md = render_markdown(report, reproduce_command=reproduce_command)
+    html_doc = render_html(report, reproduce_command=reproduce_command)
+
+    if not output:
+        text = html_doc if fmt == "html" else md
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+        return
+
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    md_path = out.with_suffix(".md")
+    html_path = out.with_suffix(".html")
+    md_path.write_text(md, encoding="utf-8")
+    html_path.write_text(html_doc, encoding="utf-8")
+    print(
+        f"[gvskb] saved report: {md_path} + {html_path} "
+        f"(scanned={len(report.scanned_files)}, findings={report.summary.finding_count})",
+        file=sys.stderr,
+    )
+
+
+def _cmd_scan(args: argparse.Namespace) -> int:
+    # (#1) 존재하지 않는 경로를 "위험 없음"으로 침묵 처리하지 않는다 — 보안
+    # 도구에서 경로 오타를 통과시키면 거짓 안심을 준다. 명확히 실패시킨다.
+    target = Path(args.path)
+    if not target.exists():
+        print(
+            f"[gvskb] 경로를 찾을 수 없습니다: {target}\n"
+            f"         경로(오타·상대경로)를 확인하세요. 검사를 수행하지 않았습니다.",
+            file=sys.stderr,
+        )
+        return EXIT_NOT_FOUND
+
+    # (#4) 알 수 없는 프로파일을 조용히 수용하지 않는다 — 오타 시 의도와 다른
+    # 정책이 적용될 수 있으므로 경고 후 기본값으로 진행한다.
+    try:
+        from .profiles import DEFAULT_PROFILE_ID, list_profiles
+        known = set(list_profiles())
+        if known and args.profile not in known:
+            print(
+                f"[gvskb] ⚠ 알 수 없는 프로파일 '{args.profile}' — 기본값 "
+                f"'{DEFAULT_PROFILE_ID}'로 진행합니다. (사용 가능: {', '.join(sorted(known))})",
+                file=sys.stderr,
+            )
+            args.profile = DEFAULT_PROFILE_ID
+    except Exception:
+        pass  # 프로파일 목록을 못 읽어도 스캔 자체는 진행
+
+    report = scan_path(
+        args.path,
+        scenario=args.scenario,
+        profile=args.profile,
+        max_files=args.max_files,
+    )
+
+    # (#1) 경로는 존재하지만 검사 대상 파일이 0개인 경우(빈 폴더·확장자 불일치)
+    # 도 "위험 없음"으로 오해하지 않도록 경고한다.
+    if not report.scanned_files:
+        print(
+            "[gvskb] ⚠ 검사된 파일이 없습니다 (스캔 대상 0개). "
+            "지원 확장자·제외 디렉터리·--max-files 설정을 확인하세요.",
+            file=sys.stderr,
+        )
+
+    if args.format == "json":
+        output_text = json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2)
+        if args.output:
+            out_path = Path(args.output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(output_text, encoding="utf-8")
+            print(
+                f"[gvskb] saved json report to {out_path} "
+                f"(scanned={len(report.scanned_files)}, findings={report.summary.finding_count})",
+                file=sys.stderr,
+            )
+        else:
+            sys.stdout.write(output_text)
+            if not output_text.endswith("\n"):
+                sys.stdout.write("\n")
+    else:
+        _emit_doc_report(
+            report,
+            fmt=args.format,
+            output=args.output,
+            reproduce_command=_scan_reproduce_command(args),
+        )
+
+    return _scan_exit_code(report, args.fail_on)
+
+
+def _cmd_check_package(args: argparse.Namespace) -> int:
+    from .tools.check_package import check_package_impl
+
+    result = asyncio.run(check_package_impl(name=args.name, ecosystem=args.ecosystem, version=args.version))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stdout.write("\n")
+    if result.get("is_malicious_package"):
+        return EXIT_FINDINGS_BLOCK
+    if result.get("vulnerability_count"):
+        return EXIT_FINDINGS_WARN
+    return EXIT_OK
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    src = Path(args.findings_json)
+    if not src.exists():
+        print(f"[gvskb] file not found: {src}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"[gvskb] invalid JSON: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        report = ScanReport.model_validate(data)
+    except Exception as exc:
+        print(f"[gvskb] not a ScanReport: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    _emit_doc_report(
+        report,
+        fmt=getattr(args, "format", "markdown"),
+        output=args.output,
+        reproduce_command=args.reproduce_command,
+    )
+    return EXIT_OK
+
+
+def _cmd_version(_args: argparse.Namespace) -> int:
+    from . import __version__
+    print(f"vibecode-checker (gvskb) {__version__}")
+    return EXIT_OK
+
+
+def _cmd_rules(_args: argparse.Namespace) -> int:
+    from .scanner import RULES as RUNTIME_RULES
+
+    print(f"runtime rules loaded: {len(RUNTIME_RULES)}")
+    for r in RUNTIME_RULES:
+        print(f"  {r['rule_id']:32s} {r['severity'].value:8s} {r['plain_title']}")
+    return EXIT_OK
+
+
+def _resolve_rules_dir_for_eval(override: str | None) -> Path:
+    if override:
+        return Path(override)
+    from .scanners.regex_scanner import _resolve_rules_dir as _rd
+    return _rd()
+
+
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    from . import evaluation
+
+    rules_dir = _resolve_rules_dir_for_eval(args.rules_dir)
+    report = evaluation.evaluate_all(rules_dir)
+
+    if args.format == "json":
+        text = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    elif args.format == "markdown":
+        text = evaluation.format_markdown(report)
+    else:
+        text = evaluation.format_text(report)
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+        print(
+            f"[gvskb] saved {args.format} evaluation to {out_path}",
+            file=sys.stderr,
+        )
+    else:
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+
+    # Any rule below 100% precision or recall surfaces as WARN exit so CI can gate.
+    has_miss = any(
+        (m.recall is not None and m.recall < 1.0)
+        or (m.precision is not None and m.precision < 1.0)
+        for m in report.per_rule
+    )
+    return EXIT_FINDINGS_WARN if has_miss else EXIT_OK
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from . import diagnostics
+
+    network = not args.offline
+    report = diagnostics.run_diagnostics(network=network)
+
+    if args.json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2))
+        sys.stdout.write("\n")
+    else:
+        sys.stdout.write(diagnostics.format_text_report(report))
+        sys.stdout.write("\n")
+
+    overall = report["overall"]
+    if overall == "error":
+        return EXIT_FINDINGS_BLOCK
+    if overall == "warn":
+        return EXIT_FINDINGS_WARN
+    return EXIT_OK
+
+
+def _cmd_update_intel(args: argparse.Namespace) -> int:
+    from .intel import IntelCache, default_cache_dir, update_sources
+    from .intel.sources.base import SOURCES
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else default_cache_dir()
+    cache = IntelCache(cache_dir)
+
+    # GVSKB_MODE=offline → force --from-cache so the air-gapped policy is honored
+    # without callers needing to remember the flag.
+    offline_env = os.environ.get("GVSKB_MODE", "").lower() == "offline"
+    if offline_env and not args.from_cache:
+        print("[gvskb] GVSKB_MODE=offline detected — using cache only", file=sys.stderr)
+        args.from_cache = True
+
+    # Determine which sources to refresh
+    if args.all:
+        source_ids = list(SOURCES.keys())
+    elif args.source:
+        source_ids = [args.source]
+    else:
+        print("[gvskb] specify --source <id> or --all", file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.from_cache:
+        # Air-gapped mode: do not call network. Just report cache contents.
+        out: list[dict] = []
+        for sid in source_ids:
+            entry = cache.load(sid)
+            out.append({
+                "source_id": sid,
+                "status": "ok" if entry else "warn",
+                "item_count": entry.item_count if entry else 0,
+                "cache_path": str(cache.path_for(sid)),
+                "fetched_at": entry.fetched_at if entry else "",
+                "error": "" if entry else "no cached data",
+            })
+        if args.promote:
+            out.append(_promote_kev_from_cache(cache, args))
+        _print_update_results(out, json_mode=args.json)
+        return EXIT_OK if all(r["status"] == "ok" for r in out) else EXIT_FINDINGS_WARN
+
+    results = update_sources(source_ids, cache=cache)
+    out = [r.to_dict() for r in results]
+
+    if args.promote:
+        out.append(_promote_kev_from_cache(cache, args))
+
+    _print_update_results(out, json_mode=args.json)
+
+    if any(r["status"] == "error" for r in out):
+        return EXIT_FINDINGS_BLOCK
+    if any(r["status"] == "warn" for r in out):
+        return EXIT_FINDINGS_WARN
+    return EXIT_OK
+
+
+def _promote_kev_from_cache(cache, args: argparse.Namespace) -> dict:
+    """Convert the cached CISA KEV catalog into proposed-rule MD files."""
+    entry = cache.load("cisa-kev")
+    if entry is None:
+        return {
+            "source_id": "promote-kev",
+            "status": "warn",
+            "item_count": 0,
+            "cache_path": str(cache.path_for("cisa-kev")),
+            "error": "no cisa-kev cache to promote (run --source cisa-kev first)",
+        }
+    rules_dir = Path(args.rules_dir) if args.rules_dir else Path(DEFAULT_PROPOSED_DIR)
+    limit = args.promote_limit if args.promote_limit and args.promote_limit > 0 else None
+    result = promote_kev_to_rules(
+        entry,
+        rules_dir,
+        overwrite=args.promote_overwrite,
+        limit=limit,
+    )
+    payload = result.to_dict()
+    payload.update({
+        "source_id": "promote-kev",
+        "status": "ok",
+        "item_count": payload["created_count"] + payload["skipped_existing_count"],
+        "delta": payload["created_count"],
+        "cache_path": payload["rules_dir"],
+    })
+    return payload
+
+
+def _print_update_results(results: list[dict], *, json_mode: bool) -> None:
+    if json_mode:
+        sys.stdout.write(json.dumps(results, ensure_ascii=False, indent=2))
+        sys.stdout.write("\n")
+        return
+    for r in results:
+        marker = {"ok": "[ OK ]", "warn": "[WARN]", "error": "[ERR ]"}.get(r["status"], "[ ?? ]")
+        delta = r.get("delta")
+        delta_str = f" (Δ {delta:+d})" if delta else ""
+        line = f"{marker}  {r['source_id']:20s} items={r.get('item_count', 0)}{delta_str}"
+        print(line)
+        if r.get("fetched_at"):
+            print(f"        fetched_at: {r['fetched_at']}")
+        if r.get("cache_path"):
+            print(f"        cache: {r['cache_path']}")
+        if r.get("error"):
+            print(f"        error: {r['error']}")
+
+
+def _cmd_validate_rules(args: argparse.Namespace) -> int:
+    from . import validation
+    from .diagnostics import _resolve_rules_dir
+
+    rules_dir = Path(args.rules_dir) if args.rules_dir else _resolve_rules_dir()[0]
+    if not rules_dir.exists():
+        print(f"[gvskb] rules dir not found: {rules_dir}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+
+    report = validation.validate_rules_dir(rules_dir)
+
+    if args.json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2))
+        sys.stdout.write("\n")
+    else:
+        sys.stdout.write(validation.format_text_report(report))
+        sys.stdout.write("\n")
+
+    overall = report["overall"]
+    if overall == "error":
+        return EXIT_FINDINGS_BLOCK
+    if overall == "warn":
+        return EXIT_FINDINGS_WARN
+    return EXIT_OK
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="gvskb",
+        description="공공 바이브코딩 보안 가드레일 (vibecode-checker) CLI",
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    scan = sub.add_parser("scan", help="파일/디렉토리 검사")
+    scan.add_argument("path", help="검사할 파일 또는 디렉토리 경로")
+    scan.add_argument(
+        "--format", choices=["markdown", "html", "json"], default="markdown",
+        help="출력 형식 (기본: markdown). markdown/html 은 파일 저장(-o) 시 .md·.html 을 함께 생성",
+    )
+    scan.add_argument("--output", "-o", help="결과 저장 경로. 미지정 시 stdout")
+    scan.add_argument("--scenario", help="시나리오 힌트 (예: data-pipeline, llm-integration)")
+    scan.add_argument(
+        "--profile", default="public-default-strict",
+        help="정책 프로파일 이름 (기본: public-default-strict)",
+    )
+    scan.add_argument("--max-files", type=int, default=SCAN_MAX_FILES_DEFAULT,
+                      help=f"최대 검사 파일 수 (기본 {SCAN_MAX_FILES_DEFAULT})")
+    scan.add_argument(
+        "--fail-on", choices=["block", "warn", "never"], default="warn",
+        help="0이 아닌 종료 코드를 낼 최소 수준 (기본 warn). "
+             "CI 게이트에서 block만 차단하고 warn은 통과시키려면 --fail-on block, "
+             "절대 실패시키지 않으려면 --fail-on never",
+    )
+    scan.set_defaults(func=_cmd_scan)
+
+    pkg = sub.add_parser("check-package", help="단일 패키지를 OSV.dev에 조회")
+    pkg.add_argument("name", help="패키지 이름")
+    pkg.add_argument("--ecosystem", choices=["pypi", "npm"], default="pypi")
+    pkg.add_argument("--version", help="검사할 버전 (선택)")
+    pkg.set_defaults(func=_cmd_check_package)
+
+    rep = sub.add_parser("report", help="저장된 ScanReport JSON을 Markdown/HTML로 변환")
+    rep.add_argument("findings_json", help="ScanReport가 저장된 JSON 파일 경로")
+    rep.add_argument("--output", "-o", help="결과 저장 경로. 미지정 시 stdout")
+    rep.add_argument(
+        "--format", choices=["markdown", "html"], default="markdown",
+        help="stdout 출력 형식 (기본: markdown). 파일 저장(-o) 시 .md·.html 을 함께 생성",
+    )
+    rep.add_argument(
+        "--reproduce-command",
+        default=None,
+        help="리포트의 재현 절차 섹션에 표시할 정확한 명령어. 미지정 시 target/profile 기반 자동 생성",
+    )
+    rep.set_defaults(func=_cmd_report)
+
+    rules = sub.add_parser("rules", help="로드된 런타임 룰 목록 출력")
+    rules.set_defaults(func=_cmd_rules)
+
+    ver = sub.add_parser("version", help="설치된 버전 출력")
+    ver.set_defaults(func=_cmd_version)
+
+    eva = sub.add_parser(
+        "evaluate",
+        help="룰 examples 기반 precision/recall/F1 메트릭 출력",
+    )
+    eva.add_argument(
+        "--format",
+        choices=["text", "markdown", "json"],
+        default="text",
+        help="출력 형식 (기본 text)",
+    )
+    eva.add_argument(
+        "--rules-dir",
+        default=None,
+        help="평가에 사용할 룰 디렉토리. 미지정 시 패키지 기본 위치",
+    )
+    eva.add_argument(
+        "--output", "-o",
+        default=None,
+        help="결과 저장 경로. 미지정 시 stdout",
+    )
+    eva.set_defaults(func=_cmd_evaluate)
+
+    doctor = sub.add_parser("doctor", help="실행 환경·룰·MCP·네트워크 진단")
+    doctor.add_argument("--json", action="store_true", help="JSON 출력 (자동화용)")
+    doctor.add_argument("--offline", action="store_true",
+                        help="네트워크 점검 건너뛰기 (망분리 환경)")
+    doctor.set_defaults(func=_cmd_doctor)
+
+    validate = sub.add_parser("validate-rules", help="룰 frontmatter·중복·regex·만료 검증")
+    validate.add_argument("--rules-dir", help="검증할 룰 디렉토리 (기본: 자동 해석)")
+    validate.add_argument("--json", action="store_true", help="JSON 출력")
+    validate.set_defaults(func=_cmd_validate_rules)
+
+    upd = sub.add_parser(
+        "update-intel",
+        help="외부 보안 피드(CISA KEV, OSV 등)를 로컬 캐시에 갱신",
+    )
+    upd.add_argument("--source", help="갱신할 단일 source id (예: cisa-kev, osv-malicious)")
+    upd.add_argument("--all", action="store_true", help="등록된 모든 출처 갱신")
+    upd.add_argument("--from-cache", action="store_true",
+                     help="네트워크 호출 없이 캐시 상태만 보고 (망분리 환경)")
+    upd.add_argument("--cache-dir", help="캐시 디렉토리 오버라이드 (기본: ~/.gvskb/cache)")
+    upd.add_argument("--json", action="store_true", help="JSON 출력")
+    upd.add_argument("--promote", action="store_true",
+                     help="CISA KEV 캐시를 status=proposed 룰 MD로 자동 생성")
+    upd.add_argument("--rules-dir",
+                     help="proposed 룰을 쓸 디렉토리 (기본: rules/intel-proposed)")
+    upd.add_argument("--promote-limit", type=int, default=0,
+                     help="한 번에 생성할 룰 수 상한 (기본 0=무제한)")
+    upd.add_argument("--promote-overwrite", action="store_true",
+                     help="기존 proposed 파일을 덮어쓰기 (기본: skip)")
+    upd.set_defaults(func=_cmd_update_intel)
+
+    return p
+
+
+def _force_utf8_streams() -> None:
+    """Ensure stdout/stderr accept Korean and em-dashes on Windows cp949 consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

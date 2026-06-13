@@ -1,0 +1,65 @@
+# Drop-in GitHub Actions workflow: run gvskb scan on every PR.
+# Place at: .github/workflows/gvskb-scan.yml
+#
+# Behavior:
+# - 모든 PR과 main 푸시에서 실행
+# - critical/block finding이 하나라도 있으면 exit code 2로 PR 실패
+# - Markdown 리포트를 PR comment로 첨부 (선택)
+# - 망분리 fork PR은 OSV 호출이 실패할 수 있으므로 update-intel은 별도 워크플로우(.github/workflows/update-intel.yml)로 분리
+
+name: gvskb-scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install gvskb
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "vibecode-checker"
+          # 사내 미러 사용 시: --index-url https://pypi.internal.example.gov/simple/
+
+      - name: Verify environment
+        run: gvskb doctor --offline
+
+      - name: Scan changed files
+        id: scan
+        run: |
+          gvskb scan . --format markdown -o /tmp/gvskb-report.md || true
+          # 실패해도 다음 단계에서 종합 판단
+          gvskb scan . --format json -o /tmp/gvskb-report.json
+        continue-on-error: true
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gvskb-report
+          path: |
+            /tmp/gvskb-report.md
+            /tmp/gvskb-report.json
+
+      - name: Fail PR on block findings
+        run: |
+          BLOCKED=$(python -c "import json,sys; r=json.load(open('/tmp/gvskb-report.json')); print(r['summary']['blocked'])")
+          if [ "$BLOCKED" = "True" ]; then
+            echo "::error::gvskb detected block-level findings. See artifact 'gvskb-report'."
+            exit 2
+          fi

@@ -1,0 +1,87 @@
+name: update-intel
+
+# Daily refresh of external security feeds (CISA KEV, OSV, NVD, EPSS) and
+# promotion of new KEV entries into rules/intel-proposed/ as status=proposed.
+# Network failures must not break this workflow — air-gapped operators run
+# `gvskb update-intel --from-cache` instead.
+
+on:
+  schedule:
+    # 18:00 UTC daily = 03:00 KST
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Which sources to refresh (--source value or 'all')"
+        required: false
+        default: "all"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install gvskb
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]"
+
+      - name: Refresh intel cache + promote KEV proposed rules
+        id: refresh
+        continue-on-error: true
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          GVSKB_CACHE_DIR: ${{ github.workspace }}/.gvskb-cache
+        run: |
+          SRC="${{ inputs.sources || 'all' }}"
+          if [ "$SRC" = "all" ]; then
+            gvskb update-intel --all --promote --json | tee intel-result.json
+          else
+            gvskb update-intel --source "$SRC" --promote --json | tee intel-result.json
+          fi
+
+      - name: Detect changes in proposed rules
+        id: detect
+        run: |
+          if git diff --quiet rules/intel-proposed/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "## New proposed rules" > /tmp/pr_body.md
+            git status --porcelain rules/intel-proposed/ | head -50 >> /tmp/pr_body.md
+            echo >> /tmp/pr_body.md
+            echo "## update-intel output (JSON)" >> /tmp/pr_body.md
+            echo '```json' >> /tmp/pr_body.md
+            head -c 4000 intel-result.json >> /tmp/pr_body.md || true
+            echo >> /tmp/pr_body.md
+            echo '```' >> /tmp/pr_body.md
+          fi
+
+      - name: Create pull request
+        if: steps.detect.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: intel/auto-update
+          base: main
+          delete-branch: true
+          add-paths: |
+            rules/intel-proposed/
+          commit-message: "[intel] refresh proposed rules from CISA KEV"
+          title: "[intel] update CISA KEV proposed rules"
+          body-path: /tmp/pr_body.md
+          labels: |
+            intel
+            proposed-rules
+            needs-review

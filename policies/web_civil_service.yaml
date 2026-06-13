@@ -1,0 +1,23 @@
+profile_id: web-civil-service
+name: 일반 민원 웹 서비스
+description: |-
+  공공기관 민원·신청·결재 웹 서비스용 정책. XSS·CSRF·경로조작·파일업로드를
+  가장 위험하게 다루고, 세션·인증 약점도 강하게 차단합니다.
+applies_to: [web-app, web-frontend]
+data_policy:
+  allow_external_llm_for_source_code: false
+  pii_to_external_api: block
+decision_overrides:
+  KISA-PY-INPUT-03: block         # 경로 조작
+  KISA-PY-INPUT-04: block         # Python XSS
+  KISA-PY-INPUT-06: block         # 파일 업로드
+  KISA-PY-INPUT-11: block         # CSRF 우회
+  KISA-JS-INPUT-03: block         # JS 경로 조작
+  KISA-JS-INPUT-04: block         # innerHTML / document.write
+  KISA-JS-INPUT-06: block         # multer 무필터
+  KISA-JS-INPUT-11: block         # SameSite=none / CORS wildcard
+  GOV-LLM-OUTPUT-HANDLING-001: block
+category_overrides:
+  secret-scanning: block
+  privacy-public-sector: block
+severity_min: low

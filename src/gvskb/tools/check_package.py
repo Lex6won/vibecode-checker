@@ -1,0 +1,282 @@
+"""Package reputation and vulnerability checks using OSV.dev.
+
+When ``GVSKB_MODE=offline``, this module does not call OSV. Instead it consults
+the on-disk intel cache populated by ``gvskb update-intel`` (CISA KEV + OSV
+malicious feed). This keeps air-gapped agencies usable: as long as their
+cache is current, they still get malicious-package verdicts. If no cache is
+present we are honest about it — the result reports ``checked=False`` and
+points the operator at ``gvskb update-intel``.
+"""
+from __future__ import annotations
+
+import os
+import re
+from typing import Literal
+
+import httpx
+
+from ..intel.cache import IntelCache
+
+OSV_QUERY_URL = "https://api.osv.dev/v1/query"
+ECOSYSTEM_MAP = {
+    "pypi": "PyPI",
+    "npm": "npm",
+}
+
+
+def _is_offline() -> bool:
+    """Honor GVSKB_MODE=offline so air-gapped agencies see a clean degraded mode."""
+    return os.environ.get("GVSKB_MODE", "").lower() == "offline"
+
+
+# 편집거리 typosquat 비교용 인기 패키지 (상위 다운로드 일부). 완전한 목록이
+# 아니라 흔한 오타 표적만 둔다 — 신호용이며 차단 근거가 아니다.
+_POPULAR_PYPI = frozenset({
+    "requests", "urllib3", "numpy", "pandas", "flask", "django", "pytest",
+    "pillow", "scipy", "setuptools", "pyyaml", "cryptography", "boto3",
+    "certifi", "jinja2", "click", "sqlalchemy", "openai", "tensorflow",
+    "torch", "scikit-learn", "matplotlib", "beautifulsoup4", "selenium",
+    "fastapi", "pydantic", "httpx", "aiohttp", "redis", "celery",
+})
+_POPULAR_NPM = frozenset({
+    "express", "lodash", "react", "axios", "chalk", "commander", "moment",
+    "webpack", "vue", "next", "typescript", "eslint", "prettier", "jest",
+    "minimist", "debug", "async", "request", "bluebird", "underscore",
+})
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Edit distance, short-circuited when length gap already exceeds 2."""
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _typosquat_suspects(name: str, ecosystem: str) -> list[dict]:
+    """Popular packages within edit distance 1–2 of this name (likely typos)."""
+    pool = _POPULAR_NPM if ecosystem.lower() == "npm" else _POPULAR_PYPI
+    n = name.lower()
+    if n in pool or len(n) < 5:        # exact match is fine; short names too noisy
+        return []
+    hits = []
+    for pkg in pool:
+        d = _levenshtein(n, pkg)
+        if 1 <= d <= 2:
+            hits.append({"similar_to": pkg, "edit_distance": d})
+    return sorted(hits, key=lambda h: h["edit_distance"])
+
+
+def _basic_heuristics(name: str, ecosystem: str = "pypi") -> dict:
+    hyphen_count = name.count("-")
+    underscore_count = name.count("_")
+    looks_compound = hyphen_count + underscore_count >= 2
+    has_ai_keywords = bool(re.search(r"(ai|gpt|llm|copilot|tool|helper|agent)", name, re.I))
+    typosquat = _typosquat_suspects(name, ecosystem)
+    return {
+        "hyphen_count": hyphen_count,
+        "underscore_count": underscore_count,
+        "name_length": len(name),
+        "looks_compound_name": looks_compound,
+        "has_ai_keywords": has_ai_keywords,
+        "typosquat_suspects": typosquat,
+        "typosquat_warning": (
+            f"'{name}'는 인기 패키지 '{typosquat[0]['similar_to']}'와 매우 유사합니다"
+            f"(편집거리 {typosquat[0]['edit_distance']}). 오타·타이포스쿼팅 가능성을 "
+            "확인하고, 의도한 패키지가 맞는지 출처를 검증하세요."
+            if typosquat else None
+        ),
+        "note": (
+            "복합 이름과 AI 관련 키워드는 slopsquatting/typosquatting 검토 신호일 수 있습니다. "
+            "이 휴리스틱만으로 차단하지 말고 출처, 다운로드, maintainer, advisory를 함께 확인하세요."
+        ),
+    }
+
+
+def _osv_advisories_for(items: list[dict], name: str, ecosystem_label: str) -> list[dict]:
+    """Return cached OSV MAL advisories whose ``affected`` list mentions this package."""
+    name_l = name.lower()
+    eco_l = ecosystem_label.lower()
+    hits: list[dict] = []
+    for item in items:
+        for aff in item.get("affected", []) or []:
+            pkg = (aff.get("package") or "").lower()
+            eco = (aff.get("ecosystem") or "").lower()
+            if pkg == name_l and eco == eco_l:
+                hits.append({
+                    "id": item.get("id"),
+                    "summary": (item.get("summary") or "")[:200],
+                    "modified": item.get("modified"),
+                })
+                break
+    return hits
+
+
+def _kev_signals_for(items: list[dict], name: str) -> list[dict]:
+    """Return KEV entries whose vendorProject/product name matches the package.
+
+    KEV is vendor/product-centric, not package-centric, so this is a *secondary*
+    signal — a true positive needs the operator to confirm the link. We still
+    surface it because matches on well-known names (log4j, lodash) are useful.
+    """
+    name_l = name.lower()
+    hits: list[dict] = []
+    for item in items:
+        product = (item.get("product") or "").lower()
+        vendor = (item.get("vendorProject") or "").lower()
+        if name_l == product or name_l == vendor:
+            hits.append({
+                "cveID": item.get("cveID"),
+                "vendorProject": item.get("vendorProject"),
+                "product": item.get("product"),
+                "vulnerabilityName": item.get("vulnerabilityName"),
+                "dateAdded": item.get("dateAdded"),
+            })
+    return hits
+
+
+def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dict:
+    """Consult the local intel cache and return a check_package-compatible dict."""
+    cache = IntelCache()
+    osv_entry = cache.load("osv-malicious")
+    kev_entry = cache.load("cisa-kev")
+
+    if osv_entry is None and kev_entry is None:
+        return {
+            "name": name,
+            "ecosystem": ecosystem,
+            "checked": False,
+            # 캐시 없는 오프라인은 "통과"가 아니라 "판정 불가"다 — 사용자가
+            # 안전으로 오해하지 않도록 verdict/requires_review를 명시한다.
+            "verdict": "unknown",
+            "requires_review": True,
+            "offline": True,
+            "verdict_severity": "info",
+            "heuristics": _basic_heuristics(name, ecosystem),
+            "cache_sources_used": [],
+            "note": (
+                "GVSKB_MODE=offline 이며 로컬 인텔 캐시가 비어 있습니다. "
+                "`gvskb update-intel` 을 먼저 실행해 OSV malicious feed와 CISA KEV 캐시를 만든 뒤 다시 검사하세요."
+            ),
+            "disclaimer": (
+                "이 결과는 휴리스틱 보조 신호이며 캐시 기반 검사가 수행되지 않았습니다. "
+                "기관 허용 목록·sigstore/SBOM 정책에 따른 별도 검토가 필요합니다."
+            ),
+        }
+
+    advisories: list[dict] = []
+    cache_sources_used: list[str] = []
+    cache_freshness: dict[str, str] = {}
+
+    if osv_entry is not None:
+        cache_sources_used.append("osv-malicious")
+        cache_freshness["osv-malicious"] = osv_entry.fetched_at
+        advisories.extend(_osv_advisories_for(osv_entry.items, name, ecosystem_label))
+
+    kev_signals: list[dict] = []
+    if kev_entry is not None:
+        cache_sources_used.append("cisa-kev")
+        cache_freshness["cisa-kev"] = kev_entry.fetched_at
+        kev_signals = _kev_signals_for(kev_entry.items, name)
+
+    has_malicious = bool(advisories)
+    severity = "high" if has_malicious else ("medium" if kev_signals else "info")
+
+    return {
+        "name": name,
+        "ecosystem": ecosystem,
+        "checked": True,
+        "verdict": "malicious" if has_malicious else "checked_clean",
+        "requires_review": has_malicious,
+        "offline": True,
+        "verdict_severity": severity,
+        "is_malicious_package": has_malicious,
+        "vulnerability_count": len(advisories),
+        "malicious_advisory_count": len(advisories),
+        "advisories": advisories,
+        "kev_signals": kev_signals,
+        "cache_sources_used": cache_sources_used,
+        "cache_freshness": cache_freshness,
+        "heuristics": _basic_heuristics(name, ecosystem),
+        "source": "local intel cache (GVSKB_MODE=offline)",
+        "disclaimer": (
+            "오프라인 캐시 기반 검사입니다. 캐시 갱신 시점 이후의 신규 advisory는 반영되지 않습니다. "
+            "운영 반영 전 `gvskb update-intel` 최신 실행 시각을 확인하세요."
+        ),
+    }
+
+
+async def check_package_impl(
+    name: str,
+    ecosystem: Literal["pypi", "npm"] = "pypi",
+    version: str | None = None,
+    timeout: float = 10.0,
+) -> dict:
+    eco = ECOSYSTEM_MAP.get(ecosystem.lower())
+    if not eco:
+        return {
+            "name": name,
+            "ecosystem": ecosystem,
+            "error": f"unsupported ecosystem: {ecosystem} (allowed: pypi, npm)",
+            "checked": False,
+        }
+
+    if _is_offline():
+        result = _offline_cache_check(name, ecosystem, eco)
+        if version is not None:
+            result["version"] = version
+        return result
+
+    payload: dict = {"package": {"name": name, "ecosystem": eco}}
+    if version:
+        payload["version"] = version
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            resp = await client.post(OSV_QUERY_URL, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as exc:
+            return {
+                "name": name,
+                "version": version,
+                "ecosystem": ecosystem,
+                "checked": False,
+                "error": f"OSV API failure: {exc!s}",
+                "heuristics": _basic_heuristics(name, ecosystem),
+            }
+
+    vulns = data.get("vulns", []) or []
+    malicious_advisories = [v for v in vulns if str(v.get("id", "")).startswith("MAL-")]
+    has_malicious = bool(malicious_advisories)
+    severity = "high" if has_malicious else ("medium" if vulns else "info")
+
+    return {
+        "name": name,
+        "version": version,
+        "ecosystem": ecosystem,
+        "checked": True,
+        "verdict_severity": severity,
+        "is_malicious_package": has_malicious,
+        "vulnerability_count": len(vulns),
+        "malicious_advisory_count": len(malicious_advisories),
+        "advisories": [
+            {
+                "id": v.get("id"),
+                "summary": (v.get("summary") or "")[:200],
+                "modified": v.get("modified"),
+            }
+            for v in vulns[:5]
+        ],
+        "heuristics": _basic_heuristics(name, ecosystem),
+        "source": "OSV.dev v1/query",
+        "disclaimer": (
+            "이 검사는 OSV.dev와 이름 기반 휴리스틱을 활용한 보조 신호입니다. "
+            "공식 보안 검토, 기관 허용 패키지 정책, lockfile/SBOM 검사를 대체하지 않습니다."
+        ),
+    }
