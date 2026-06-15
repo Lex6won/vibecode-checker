@@ -11,6 +11,7 @@ from gvskb.schema import (
     ScanReport,
     ScanSummary,
     Severity,
+    SkippedFile,
 )
 from gvskb.scanner import scan_code, scan_path
 
@@ -194,3 +195,78 @@ def test_render_html_reference_urls_are_text_not_loaded() -> None:
     lower = html.lower()
     for tag in ("<script", "<link", "<img", "<iframe"):
         assert tag not in lower
+
+
+# ---------------------------------------------------------------------------
+# 리포트 재설계 — 1페이지 요약 + 파일별 접기 + 수정 프롬프트
+# ---------------------------------------------------------------------------
+
+
+def _multi_finding_report():
+    # 같은 룰(SQL 인젝션)이 한 파일에서 두 줄에 걸리도록 → 중복제거 시연.
+    return scan_code(
+        "q = input('q')\n"
+        "cursor.execute(f\"SELECT * FROM a WHERE x = '{q}'\")\n"
+        "cursor.execute(f\"SELECT * FROM b WHERE y = '{q}'\")\n",
+        filename="views.py",
+        language="python",
+    )
+
+
+def test_render_html_has_one_page_summary_sections() -> None:
+    html = render_html(_report_with_findings())
+    for section in (
+        "한눈에 보기",
+        "위험 유형",
+        "파일별 위험 요약",
+        "가장 먼저 할 일",
+        "파일별 상세",
+        "수정 프롬프트",
+    ):
+        assert section in html, f"누락된 1페이지 요약 섹션: {section}"
+    # 스탯 카드 4종 + 파일 상세로 점프하는 앵커
+    assert "검사한 파일" in html
+    assert 'class="stat"' in html
+    assert 'href="#file-0"' in html
+    assert "<details" in html  # 순수 CSS 접기
+
+
+def test_render_html_uses_pure_css_details_no_js() -> None:
+    html = render_html(_report_with_findings())
+    assert "<details" in html and "<summary" in html
+    # 접기 동작에 외부/인라인 JS 를 쓰지 않는다(자체포함 원칙 유지).
+    assert "<script" not in html.lower()
+    assert "onclick" not in html.lower()
+
+
+def test_render_html_dedupes_same_rule_with_line_list() -> None:
+    html = render_html(_multi_finding_report())
+    # 같은 룰은 카드 한 장 + 위치목록(line a, b)로 합쳐진다.
+    assert html.count("GOV-SQL-INJECTION-001") >= 1
+    assert "2건" in html or "line 2, 3" in html
+
+
+def test_render_html_shows_build_artifact_note() -> None:
+    report = _report_with_findings()
+    report.skipped_files.append(
+        SkippedFile(path="public/assets/", reason="빌드 산출물(압축/번들) — 원본 소스 아님")
+    )
+    html = render_html(report)
+    assert "빌드 산출물" in html
+
+
+def test_render_markdown_has_type_and_file_summary_and_prompts() -> None:
+    md = render_markdown(_report_with_findings())
+    assert "## 위험 유형" in md
+    assert "## 파일별 위험 요약" in md
+    assert "## 가장 먼저 할 일" in md
+    assert "## 수정 프롬프트" in md
+    assert "## 파일별 발견 사항" in md  # 세부 헤더 보존
+
+
+def test_render_markdown_dedupes_same_rule_into_one_block() -> None:
+    md = render_markdown(_multi_finding_report())
+    # 같은 룰은 한 번만 설명되고 위치는 목록으로 합쳐진다("2건").
+    head = md.split("## 수정 프롬프트")[0]
+    assert "## 파일별 발견 사항" in head
+    assert "2건" in md

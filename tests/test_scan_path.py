@@ -83,3 +83,66 @@ def test_scan_path_returns_skipped_entry_for_missing_path(tmp_path: Path) -> Non
     assert report.summary.finding_count == 0
     assert len(report.skipped_files) == 1
     assert report.skipped_files[0].reason == "path does not exist"
+
+
+# ---------------------------------------------------------------------------
+# 노이즈 제거 — 빌드 산출물(압축/번들·빌드 출력 디렉터리) 자동 제외
+# ---------------------------------------------------------------------------
+
+from gvskb.scanner import BUILD_ARTIFACT_SKIP_REASON  # noqa: E402
+
+# 룰이 줄마다 걸리는 미니파이드 번들 한 줄. 검사하면 오탐이 폭주한다.
+_NOISY = "function deleteNode(){};function removeItem(){};agent.send_email();\n" * 40
+
+
+def test_scan_path_excludes_build_output_dirs(tmp_path: Path) -> None:
+    _write(tmp_path / "src" / "app.py", "import os\n")
+    _write(tmp_path / "public" / "assets" / "bundle.js", _NOISY)
+    _write(tmp_path / ".puppeteer-cache" / "chrome.js", _NOISY)
+    _write(tmp_path / ".tmp" / "scratch.js", _NOISY)
+    _write(tmp_path / "dist" / "out.js", _NOISY)
+
+    report = scan_path(tmp_path)
+
+    # 노이즈 파일은 한 건도 검사되지 않는다.
+    for f in report.scanned_files:
+        assert "public/assets" not in f.replace("\\", "/")
+        assert ".puppeteer-cache" not in f
+        assert ".tmp" not in f
+        assert "dist" not in f
+    # 제외 사실은 빌드 산출물로 기록된다(버리되 정직).
+    build = [s for s in report.skipped_files if s.reason == BUILD_ARTIFACT_SKIP_REASON]
+    assert len(build) >= 4
+
+
+def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
+    # 해시 파일명 · *.min.* · single-line 초장문 — 모두 빌드 산출물로 스킵.
+    _write(tmp_path / "src" / "main.py", "import os\n")
+    _write(tmp_path / "src" / "index-3f9a2c1b.js", _NOISY)   # 해시 파일명
+    _write(tmp_path / "src" / "widget.min.js", "var a=1;\n" * 5)  # *.min.*
+    _write(tmp_path / "src" / "inline.js", "x" * 3000 + ";\n")  # single-line 초장문
+
+    report = scan_path(tmp_path)
+
+    scanned = {f.replace("\\", "/") for f in report.scanned_files}
+    assert "src/main.py" in scanned
+    assert "src/index-3f9a2c1b.js" not in scanned
+    assert "src/widget.min.js" not in scanned
+    assert "src/inline.js" not in scanned
+    build = [s for s in report.skipped_files if s.reason == BUILD_ARTIFACT_SKIP_REASON]
+    assert len(build) >= 3
+
+
+def test_scan_path_keeps_real_source_when_noise_present(tmp_path: Path) -> None:
+    # 노이즈를 걷어내도 진짜 위험은 그대로 잡혀야 한다(과잉 제외 방지).
+    _write(
+        tmp_path / "src" / "app.py",
+        "name = input('name')\n"
+        "cursor.execute(f\"SELECT * FROM t WHERE n = '{name}'\")\n",
+    )
+    _write(tmp_path / "public" / "assets" / "bundle-9e8d7c6b.js", _NOISY)
+
+    report = scan_path(tmp_path)
+    rule_ids = {f.rule_id for f in report.findings}
+    assert "GOV-SQL-INJECTION-001" in rule_ids
+    assert "src/app.py" in {f.replace("\\", "/") for f in report.scanned_files}
