@@ -171,8 +171,52 @@ DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset({
     ".idea", ".vscode",
     "coverage", ".coverage", "htmlcov",
     "vendor", "third_party", "thirdparty",
+    # 프런트엔드 빌드 출력·툴 캐시 — 모두 *생성물*이라 원본 소스가 아니다.
+    # 미니파이드 번들을 스캔하면 룰이 import/토큰 단위로 대량 오탐을 낸다.
     ".next", ".nuxt", ".cache",
+    ".puppeteer-cache", ".tmp", "tmp", ".turbo", ".parcel-cache",
+    ".svelte-kit", ".astro", ".vercel", ".netlify", ".output",
+    ".angular", ".docusaurus", "storybook-static",
 })
+
+# 빌드 출력 디렉터리(이름 기준). DEFAULT_EXCLUDE_DIRS 의 부분집합으로, 이쪽은
+# 제외하되 리포트에 "빌드 산출물 제외"로 *한 줄 기록*한다(정직성). 반대로
+# .git/node_modules/__pycache__ 등 인프라 디렉터리는 조용히 제외한다.
+_BUILD_OUTPUT_DIR_NAMES: frozenset[str] = frozenset({
+    "dist", "build", "out", "target",
+    ".next", ".nuxt",
+    ".puppeteer-cache", ".tmp", "tmp", ".turbo", ".parcel-cache",
+    ".svelte-kit", ".astro", ".vercel", ".netlify", ".output",
+    ".angular", ".docusaurus", "storybook-static",
+})
+
+# 다중 세그먼트 빌드 출력 경로 — os.walk 는 디렉터리 *이름* 만 보므로
+# "public/assets" 처럼 경로로만 식별되는 산출물은 상대경로 suffix 로 매칭한다.
+# (소스의 "src/assets" 는 제외하지 않도록 "assets" 단독 이름은 막지 않는다.)
+DEFAULT_EXCLUDE_PATH_SUFFIXES: tuple[str, ...] = (
+    "public/assets",
+    "static/assets",
+    "public/build",
+    "dist/assets",
+    "build/static",
+    "wwwroot/dist",
+)
+
+# 압축/번들 산출물로 스킵된 파일에 붙는 사유 마커. 리포트가 이 부분 문자열로
+# "빌드 산출물 N건 제외" 한 줄을 집계한다(scanner→report 결합도 최소화).
+BUILD_ARTIFACT_SKIP_REASON = "빌드 산출물(압축/번들) — 원본 소스 아님"
+
+# 콘텐츠 해시가 박힌 빌드 파일명: app-3f9a2c1b.js, chunk.4F2A.css, main.min.js 등.
+# Vite/webpack/rollup/esbuild 의 캐시버스팅 산출물을 파일명만으로 거른다.
+_HASHED_ASSET_RE = re.compile(
+    r"[.\-_][0-9a-f]{8,}\.(?:js|mjs|cjs|jsx|ts|tsx|css|map)$",
+    re.IGNORECASE,
+)
+
+# single-line 초장문(미니파이드) 판정 기준.
+_MINIFIED_MAX_LINE = 2000   # 한 줄이 이 길이를 넘으면 사람이 읽는 소스가 아님
+_MINIFIED_AVG_LINE = 400    # 평균 줄 길이가 이만큼 큰 다줄 번들도 미니파이드로 본다
+_MINIFIED_MIN_BYTES = 1000  # 너무 짧은 파일은 판정 제외(정상적인 한 줄 파일 보호)
 
 DEFAULT_MAX_FILES = 500
 DEFAULT_MAX_FILE_BYTES = 1_000_000
@@ -180,6 +224,31 @@ DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 def _looks_binary(sample: bytes) -> bool:
     return b"\x00" in sample
+
+
+def _looks_like_build_artifact_name(name: str) -> bool:
+    """파일명만으로 압축/번들 산출물을 식별한다(해시 파일명 · *.min.* )."""
+    lower = name.lower()
+    if ".min." in lower:
+        return True
+    return bool(_HASHED_ASSET_RE.search(lower))
+
+
+def _looks_minified(text: str) -> bool:
+    """내용 기반 미니파이드 판정: single-line 초장문 또는 평균 줄 과대."""
+    if len(text) < _MINIFIED_MIN_BYTES:
+        return False
+    lines = text.splitlines() or [text]
+    longest = max(len(ln) for ln in lines)
+    if longest >= _MINIFIED_MAX_LINE:
+        return True
+    avg = len(text) / max(len(lines), 1)
+    return avg >= _MINIFIED_AVG_LINE
+
+
+def _path_is_excluded_suffix(rel_dir: str) -> bool:
+    posix = rel_dir.replace("\\", "/").strip("/").lower()
+    return any(posix == s or posix.endswith("/" + s) for s in DEFAULT_EXCLUDE_PATH_SUFFIXES)
 
 
 def _rel(p: Path, root: Path, is_dir: bool) -> str:
@@ -225,7 +294,26 @@ def scan_path(
         files_to_scan = [root]
     else:
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in exc]
+            # 1) 이름 기반 제외 + 2) 경로 suffix 기반 제외(public/assets 등).
+            # 빌드 출력 디렉터리는 제외하되 한 줄 기록하고, 인프라 디렉터리
+            # (.git/node_modules 등)는 조용히 버린다.
+            kept_dirs = []
+            for d in dirnames:
+                try:
+                    rel_dir = str((Path(dirpath) / d).relative_to(root))
+                except ValueError:
+                    rel_dir = d
+                is_build = d in _BUILD_OUTPUT_DIR_NAMES or _path_is_excluded_suffix(rel_dir)
+                if is_build:
+                    skipped.append(SkippedFile(
+                        path=rel_dir.replace("\\", "/") + "/",
+                        reason=BUILD_ARTIFACT_SKIP_REASON,
+                    ))
+                    continue
+                if d in exc:
+                    continue
+                kept_dirs.append(d)
+            dirnames[:] = kept_dirs
             for name in filenames:
                 if len(files_to_scan) >= max_files:
                     break
@@ -237,6 +325,14 @@ def scan_path(
                     ))
                     continue
                 if p.suffix.lower() not in inc and name.lower() not in {"dockerfile", "makefile"}:
+                    continue
+                # 압축/번들 산출물(해시 파일명 · *.min.*)은 원본이 아니므로 스킵.
+                # single-line 초장문(내용 기준)은 아래에서 텍스트 확인 후 거른다.
+                if _looks_like_build_artifact_name(name):
+                    skipped.append(SkippedFile(
+                        path=_rel(p, root, is_dir),
+                        reason=BUILD_ARTIFACT_SKIP_REASON,
+                    ))
                     continue
                 try:
                     size = p.stat().st_size
@@ -274,6 +370,10 @@ def scan_path(
             except UnicodeDecodeError:
                 skipped.append(SkippedFile(path=rel, reason="encoding: not utf-8 or cp949"))
                 continue
+        # single-line 초장문/평균 줄 과대 = 미니파이드 번들. 룰 대량 오탐의 원인.
+        if _looks_minified(text):
+            skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
+            continue
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
         all_findings.extend(report.findings)
         scanned.append(rel)

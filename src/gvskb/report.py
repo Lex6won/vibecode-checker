@@ -72,6 +72,105 @@ def _guideline_distribution(findings: list[Finding]) -> Counter[str]:
     return counts
 
 
+# ---------------------------------------------------------------------------
+# 집계 헬퍼 — Markdown/HTML 두 렌더러가 같은 요약 데이터를 공유한다.
+# (가) 1페이지 요약, (나) 파일별 세부, (다) 수정 프롬프트가 모두 이걸 쓴다.
+# ---------------------------------------------------------------------------
+
+_LINE_LIST_LIMIT = 8
+
+
+def _by_file(findings: list[Finding]) -> dict[str, list[Finding]]:
+    d: dict[str, list[Finding]] = defaultdict(list)
+    for f in findings:
+        d[f.location.file].append(f)
+    return d
+
+
+def _ordered_files(by_file: dict[str, list[Finding]]) -> list[str]:
+    """위험이 많고 심각한 파일이 위로 오도록 정렬."""
+    return sorted(
+        by_file.keys(),
+        key=lambda fn: (
+            -max(_SEVERITY_RANK[f.severity] for f in by_file[fn]),
+            -len(by_file[fn]),
+            fn,
+        ),
+    )
+
+
+def _file_max_severity(findings: list[Finding]) -> Severity:
+    return max((f.severity for f in findings), key=lambda s: _SEVERITY_RANK[s])
+
+
+def _rule_groups(findings: list[Finding]) -> list[dict]:
+    """rule_id 단위로 묶어 '무슨 문제 몇 건'을 만든다(위험 유형 Top용).
+
+    같은 룰의 설명을 한 번만 보여주고 위치는 목록으로 합치기 위한 기반.
+    심각도 높은 순 → 건수 많은 순으로 정렬.
+    """
+    groups: dict[str, list[Finding]] = defaultdict(list)
+    for f in findings:
+        groups[f.rule_id].append(f)
+    rows: list[dict] = []
+    for rid, fs in groups.items():
+        sev = _file_max_severity(fs)
+        rows.append({
+            "rule_id": rid,
+            "title": fs[0].plain_title,
+            "severity": sev,
+            "decision": fs[0].decision,
+            "count": len(fs),
+            "files": len({f.location.file for f in fs}),
+            "sample": fs[0],
+            "findings": fs,
+        })
+    rows.sort(key=lambda r: (-_SEVERITY_RANK[r["severity"]], -r["count"], r["rule_id"]))
+    return rows
+
+
+def _top_actions(findings: list[Finding], n: int = 5) -> list[dict]:
+    """가장 먼저 손볼 위험 유형 Top N — 차단 우선, 그다음 심각도·빈도."""
+    def key(r: dict) -> tuple:
+        block = 0 if r["decision"] == Decision.block else 1
+        return (block, -_SEVERITY_RANK[r["severity"]], -r["count"], r["rule_id"])
+
+    return sorted(_rule_groups(findings), key=key)[:n]
+
+
+def _line_list(findings: list[Finding], limit: int = _LINE_LIST_LIMIT) -> str:
+    """같은 룰의 발견 위치를 'line a, b, c 외 N건' 으로 합친다."""
+    lines = sorted({f.location.line for f in findings})
+    shown = ", ".join(str(n) for n in lines[:limit])
+    if len(lines) > limit:
+        shown += f" 외 {len(lines) - limit}건"
+    return shown
+
+
+def _locations_by_file(findings: list[Finding], limit_lines: int = _LINE_LIST_LIMIT) -> str:
+    """수정 프롬프트용: 'app.py(line 2, 5); other.js(line 9)' 형태."""
+    byf: dict[str, list[int]] = defaultdict(list)
+    for f in findings:
+        byf[f.location.file].append(f.location.line)
+    parts: list[str] = []
+    for fn in _ordered_files_by_name(byf):
+        lines = sorted(set(byf[fn]))
+        ls = ", ".join(str(n) for n in lines[:limit_lines])
+        if len(lines) > limit_lines:
+            ls += f" 외 {len(lines) - limit_lines}건"
+        parts.append(f"{fn.replace(chr(92), '/')}(line {ls})")
+    return "; ".join(parts)
+
+
+def _ordered_files_by_name(byf: dict[str, list[int]]) -> list[str]:
+    return sorted(byf.keys(), key=lambda fn: (-len(byf[fn]), fn))
+
+
+def _build_artifact_skips(report: ScanReport) -> list:
+    """빌드 산출물(압축/번들·빌드출력 디렉터리)로 제외된 항목."""
+    return [s for s in report.skipped_files if "빌드 산출물" in (s.reason or "")]
+
+
 def _verdict_line(report: ScanReport) -> str:
     """One sentence an executive can read without scrolling."""
     summary = report.summary
@@ -141,6 +240,14 @@ def render_markdown(
         )
         lines.append("")
 
+    build_skips = _build_artifact_skips(report)
+    if build_skips:
+        lines.append(
+            f"> 🧹 **빌드 산출물 {len(build_skips)}건 제외** — 압축·번들·캐시 파일은 원본 "
+            "소스가 아니라 검사 대상에서 자동 제외했습니다(오탐 방지)."
+        )
+        lines.append("")
+
     lines.append(f"- **대상**: `{report.target}`")
     lines.append(f"- **검사일시**: {ts}")
     lines.append(f"- **프로파일**: {report.profile}")
@@ -154,16 +261,21 @@ def render_markdown(
     lines.append("## 요약")
     lines.append("")
     summary = report.summary
+    non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
     lines.append(f"- 검사한 파일 수: **{len(report.scanned_files)}건**")
-    if report.skipped_files:
-        lines.append(f"- 생략된 파일 수: {len(report.skipped_files)}건 (이유: 크기·바이너리·인코딩 등)")
     lines.append(f"- 발견된 위험: **{summary.finding_count}건**")
+    lines.append(f"- 차단(block): **{summary.by_decision.get(Decision.block.value, 0)}건**")
     if summary.highest_severity:
         lines.append(
             f"- 최고 심각도: **{_SEVERITY_LABEL_KO[summary.highest_severity]} "
             f"({summary.highest_severity.value})**"
         )
-    lines.append(f"- 차단 항목: **{'있음' if summary.blocked else '없음'}**")
+    else:
+        lines.append("- 최고 심각도: **—**")
+    if non_build_skips:
+        lines.append(f"- 생략된 파일 수: {len(non_build_skips)}건 (이유: 크기·바이너리·인코딩 등)")
+    if build_skips:
+        lines.append(f"- 빌드 산출물 제외: {len(build_skips)}건 (압축/번들·빌드 출력 — 원본 아님)")
     lines.append("")
 
     if any(summary.by_severity.values()):
@@ -175,12 +287,43 @@ def render_markdown(
                 lines.append(f"| {_SEVERITY_LABEL_KO[sev]} ({sev.value}) | {count} |")
         lines.append("")
 
-    if any(summary.by_decision.values()):
-        lines.append("| 결정 | 건수 |")
-        lines.append("|---|---|")
-        for dec, count in summary.by_decision.items():
-            if count:
-                lines.append(f"| {dec} | {count} |")
+    by_file = _by_file(report.findings)
+    ordered_files = _ordered_files(by_file)
+
+    # --- 1페이지 요약: 위험 유형 + 파일별 요약 + 가장 먼저 할 일 -----------
+    if report.findings:
+        groups = _rule_groups(report.findings)
+        lines.append("## 위험 유형 (무슨 문제가 몇 건)")
+        lines.append("")
+        lines.append("| 위험 유형 | 룰 | 심각도 | 건수 | 파일 |")
+        lines.append("|---|---|---|---|---|")
+        for g in groups:
+            lines.append(
+                f"| {g['title']} | `{g['rule_id']}` | "
+                f"{_SEVERITY_LABEL_KO[g['severity']]} | {g['count']} | {g['files']} |"
+            )
+        lines.append("")
+
+        lines.append("## 파일별 위험 요약")
+        lines.append("")
+        lines.append("| 파일 | 최고 심각도 | 건수 |")
+        lines.append("|---|---|---|")
+        for fn in ordered_files:
+            ffs = by_file[fn]
+            msev = _file_max_severity(ffs)
+            lines.append(
+                f"| `{fn.replace(chr(92), '/')}` | {_SEVERITY_LABEL_KO[msev]} | {len(ffs)} |"
+            )
+        lines.append("")
+
+        lines.append("## 가장 먼저 할 일 (Top 5)")
+        lines.append("")
+        for g in _top_actions(report.findings, 5):
+            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+            lines.append(
+                f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
+                f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
+            )
         lines.append("")
 
     # --- 가이드라인별 분포 (출처 집계) -------------------------------------
@@ -197,7 +340,7 @@ def render_markdown(
                 lines.append(f"| {label} | {count} |")
             lines.append("")
 
-    # --- 처리 순서 + 파일별 발견 -----------------------------------------
+    # --- 처리 순서 + 파일별 발견(룰 중복제거) ----------------------------
     if summary.finding_count == 0:
         lines.append("> 발견된 위험이 없습니다. 그러나 본 도구는 보조 가드레일이며, ")
         lines.append("> 공식 보안성 검토를 대체하지 않습니다.")
@@ -211,39 +354,45 @@ def render_markdown(
         lines.append("4. **나머지 warn** — 차주 정비 일정에 반영")
         lines.append("")
 
-        by_file: dict[str, list[Finding]] = defaultdict(list)
-        for f in report.findings:
-            by_file[f.location.file].append(f)
-
-        ordered_files = sorted(
-            by_file.keys(),
-            key=lambda fn: (
-                -max(_SEVERITY_RANK[f.severity] for f in by_file[fn]),
-                -len(by_file[fn]),
-                fn,
-            ),
-        )
-
         lines.append("## 파일별 발견 사항")
         lines.append("")
         for fname in ordered_files:
-            file_findings = sorted(
-                by_file[fname],
-                key=lambda f: (-_SEVERITY_RANK[f.severity], f.location.line),
-            )
-            lines.append(f"### `{fname}` — {len(file_findings)}건")
+            ffs = by_file[fname]
+            lines.append(f"### `{fname.replace(chr(92), '/')}` — {len(ffs)}건")
             lines.append("")
-            for f in file_findings:
-                lines.extend(_render_finding(f))
+            for g in _rule_groups(ffs):
+                lines.extend(_render_finding_group_md(g))
                 lines.append("")
 
-    if report.skipped_files:
+        # --- 수정 프롬프트 (복사용) -------------------------------------
+        lines.append("## 수정 프롬프트 (복사해서 AI에게 전달)")
+        lines.append("")
+        lines.append("위험 유형별로 아래 블록을 복사해 AI 코딩 도구에 붙여넣으면 우선순위대로 수정할 수 있습니다.")
+        lines.append("")
+        for g in _rule_groups(report.findings):
+            lines.append("```text")
+            lines.append(_fix_prompt_text(g))
+            lines.append("```")
+            lines.append("")
+
+    if non_build_skips:
         lines.append("## 생략된 파일")
         lines.append("")
-        for sf in report.skipped_files[:30]:
+        for sf in non_build_skips[:30]:
             lines.append(f"- `{sf.path}` — {sf.reason}")
-        if len(report.skipped_files) > 30:
-            lines.append(f"- … 외 {len(report.skipped_files) - 30}건")
+        if len(non_build_skips) > 30:
+            lines.append(f"- … 외 {len(non_build_skips) - 30}건")
+        lines.append("")
+    if build_skips:
+        lines.append("## 빌드 산출물 제외")
+        lines.append("")
+        lines.append(
+            "> 압축/번들·빌드 출력 디렉터리는 원본 소스가 아니므로 검사하지 않습니다 (오탐 방지)."
+        )
+        for sf in build_skips[:15]:
+            lines.append(f"- `{sf.path.replace(chr(92), '/')}`")
+        if len(build_skips) > 15:
+            lines.append(f"- … 외 {len(build_skips) - 15}건")
         lines.append("")
 
     # --- 재현 절차 -------------------------------------------------------
@@ -359,11 +508,44 @@ code.ev{background:#f1f5f9;border-radius:4px;padding:1px 6px;font-size:12.5px;
 .disc{background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;
   padding:12px 16px;font-size:13.5px;color:#475569;margin:8px 0}
 .foot{text-align:center;color:#9ca3af;font-size:12px;margin-top:28px}
+.buildnote{background:#f1f5f9;border:1px dashed #cbd5e1;border-radius:6px;
+  padding:8px 13px;font-size:12.5px;color:#64748b;margin:8px 0}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 4px}
+.stat{flex:1 1 120px;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;
+  background:#fafafa;min-width:120px}
+.stat .num{font-size:24px;font-weight:800;line-height:1.1}
+.stat .lab{font-size:12.5px;color:#6b7280;margin-top:3px}
+.typetbl td.sev,.typetbl td.cnt{text-align:center;white-space:nowrap}
+.sevdot{display:inline-block;color:#fff;font-weight:700;font-size:11.5px;
+  padding:1px 8px;border-radius:5px}
+a.jump{color:#1d4ed8;text-decoration:none;font-weight:600}
+a.jump:hover{text-decoration:underline}
+ul.todo{list-style:none;margin:6px 0;padding:0}
+ul.todo li{border:1px solid #e5e7eb;border-radius:7px;padding:9px 12px;margin:7px 0;
+  background:#fff;font-size:14px}
+ul.todo .box{font-weight:800;color:#9ca3af;margin-right:8px}
+ul.todo .meta2{color:#6b7280;font-size:12.5px;margin-left:6px}
+details.file{border:1px solid #e5e7eb;border-radius:8px;margin:10px 0;background:#fff;
+  page-break-inside:avoid;overflow:hidden}
+details.file>summary{cursor:pointer;list-style:none;padding:12px 16px;font-weight:700;
+  font-size:14.5px;background:#f8fafc;display:flex;align-items:center;gap:8px}
+details.file>summary::-webkit-details-marker{display:none}
+details.file>summary::before{content:"▶";font-size:11px;color:#9ca3af;transition:none}
+details.file[open]>summary::before{content:"▼"}
+details.file>summary:hover{background:#f1f5f9}
+details.file .body{padding:6px 16px 14px}
+.fixprompt{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:13px 15px;
+  margin:10px 0;font-size:12.5px;font-family:"D2Coding","Consolas","Courier New",monospace;
+  white-space:pre-wrap;word-break:break-all}
+.fixhdr{font-weight:700;font-size:14px;margin:14px 0 4px;color:#111827}
 @media print{
   body{background:#fff}
   .page{box-shadow:none;margin:0;max-width:none;border-radius:0;padding:0 6mm}
   .card{break-inside:avoid}
-  pre{white-space:pre-wrap}
+  details.file{break-inside:avoid}
+  details.file>summary::before{content:""}
+  details.file>.body{display:block !important}
+  pre,.fixprompt{white-space:pre-wrap}
 }
 """.strip()
 
@@ -423,6 +605,14 @@ def render_html(
             '<code class="ev">scan_dependencies</code>로 따로 검사하세요.</div>'
         )
 
+    build_skips = _build_artifact_skips(report)
+    if build_skips:
+        p.append(
+            f'<div class="buildnote">🧹 빌드 산출물 {len(build_skips)}건 제외 — '
+            "압축·번들·캐시 파일은 원본 소스가 아니라 검사 대상에서 자동 제외했습니다 "
+            "(오탐 방지).</div>"
+        )
+
     p.append(f'<div class="meta"><b>대상</b> · {_esc(report.target)}</div>')
     p.append(
         f'<div class="meta"><b>검사일시</b> · {ts} &nbsp;·&nbsp; '
@@ -436,7 +626,34 @@ def render_html(
             extra.append(f"언어 힌트 {_esc(report.language)}")
         p.append(f'<div class="meta">{" · ".join(extra)}</div>')
 
-    p.append("<h2>요약</h2>")
+    # === 1페이지 요약 (안 접힘) — 결론·핵심숫자·위험유형·파일요약·할일 ============
+    p.append("<h2>한눈에 보기</h2>")
+    top_sev = summary.highest_severity
+    block_n = summary.by_decision.get(Decision.block.value, 0)
+    sev_label = (
+        f"{_SEVERITY_LABEL_KO[top_sev]}" if top_sev else "—"
+    )
+    sev_col = _SEVERITY_COLOR[top_sev] if top_sev else "#9ca3af"
+    p.append('<div class="stats">')
+    p.append(
+        f'<div class="stat"><div class="num">{len(report.scanned_files)}</div>'
+        '<div class="lab">검사한 파일</div></div>'
+    )
+    p.append(
+        f'<div class="stat"><div class="num">{summary.finding_count}</div>'
+        '<div class="lab">발견된 위험</div></div>'
+    )
+    p.append(
+        f'<div class="stat"><div class="num" style="color:'
+        f'{"#c0392b" if block_n else "#1f2937"}">{block_n}</div>'
+        '<div class="lab">차단(block)</div></div>'
+    )
+    p.append(
+        f'<div class="stat"><div class="num" style="color:{sev_col}">{sev_label}</div>'
+        '<div class="lab">최고 심각도</div></div>'
+    )
+    p.append("</div>")
+
     chips = []
     for sev in (Severity.critical, Severity.high, Severity.medium, Severity.low):
         c = summary.by_severity.get(sev.value, 0)
@@ -447,20 +664,106 @@ def render_html(
             )
     if chips:
         p.append(f'<div class="chips">{"".join(chips)}</div>')
-    p.append(f'<div class="kv">검사한 파일 수: <b>{len(report.scanned_files)}건</b></div>')
-    if report.skipped_files:
-        p.append(
-            f'<div class="kv">생략된 파일 수: {len(report.skipped_files)}건 '
-            "(크기·바이너리·인코딩 등)</div>"
-        )
-    p.append(f'<div class="kv">발견된 위험: <b>{summary.finding_count}건</b></div>')
-    if summary.highest_severity:
-        p.append(
-            f'<div class="kv">최고 심각도: <b>{_SEVERITY_LABEL_KO[summary.highest_severity]} '
-            f"({summary.highest_severity.value})</b></div>"
-        )
-    p.append(f'<div class="kv">차단 항목: <b>{"있음" if summary.blocked else "없음"}</b></div>')
 
+    if summary.finding_count == 0:
+        p.append(
+            '<div class="disc">발견된 위험이 없습니다. 다만 본 도구는 보조 가드레일이며 '
+            "공식 보안성 검토를 대체하지 않습니다.</div>"
+        )
+
+    by_file = _by_file(report.findings)
+    ordered_files = _ordered_files(by_file)
+    anchor_of = {fn: f"file-{i}" for i, fn in enumerate(ordered_files)}
+
+    if report.findings:
+        # --- 위험 유형 (많은 순) ----------------------------------------
+        groups = _rule_groups(report.findings)
+        p.append("<h2>위험 유형 (무슨 문제가 몇 건)</h2>")
+        p.append('<table class="typetbl"><tr><th>위험 유형</th><th>심각도</th>'
+                 "<th>건수</th><th>파일</th></tr>")
+        for g in groups:
+            p.append(
+                f"<tr><td>{_esc(g['title'])}<br>"
+                f'<span class="tag">{_esc(g["rule_id"])}</span></td>'
+                f'<td class="sev"><span class="sevdot" style="background:'
+                f'{_SEVERITY_COLOR[g["severity"]]}">{_SEVERITY_LABEL_KO[g["severity"]]}</span></td>'
+                f'<td class="cnt">{g["count"]}</td><td class="cnt">{g["files"]}</td></tr>'
+            )
+        p.append("</table>")
+
+        # --- 파일별 위험 요약 (상세로 점프) -----------------------------
+        p.append("<h2>파일별 위험 요약</h2>")
+        p.append("<table><tr><th>파일</th><th>최고 심각도</th><th>건수</th><th>바로가기</th></tr>")
+        for fn in ordered_files:
+            ffs = by_file[fn]
+            msev = _file_max_severity(ffs)
+            p.append(
+                f"<tr><td>{_esc(fn.replace(chr(92), '/'))}</td>"
+                f'<td class="sev"><span class="sevdot" style="background:'
+                f'{_SEVERITY_COLOR[msev]}">{_SEVERITY_LABEL_KO[msev]}</span></td>'
+                f'<td class="cnt">{len(ffs)}</td>'
+                f'<td><a class="jump" href="#{anchor_of[fn]}">상세 ↓</a></td></tr>'
+            )
+        p.append("</table>")
+
+        # --- 가장 먼저 할 일 Top5 --------------------------------------
+        p.append("<h2>가장 먼저 할 일 (Top 5)</h2>")
+        p.append('<ul class="todo">')
+        for g in _top_actions(report.findings, 5):
+            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+            p.append(
+                f'<li><span class="box">☐</span>'
+                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
+                f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
+                f"<b>{_esc(g['title'])}</b>"
+                f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
+                f'{_esc(g["rule_id"])}</span></li>'
+            )
+        p.append("</ul>")
+
+        # === 파일별 상세 (접기) =========================================
+        p.append("<h2>파일별 상세 (펼쳐 보기)</h2>")
+        for fn in ordered_files:
+            ffs = by_file[fn]
+            msev = _file_max_severity(ffs)
+            file_groups = _rule_groups(ffs)
+            p.append(
+                f'<details class="file" id="{anchor_of[fn]}"><summary>'
+                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[msev]}">'
+                f'{_SEVERITY_LABEL_KO[msev]}</span> '
+                f"📄 {_esc(fn.replace(chr(92), '/'))} — {len(ffs)}건</summary>"
+                '<div class="body">'
+            )
+            for g in file_groups:
+                p.extend(_render_rule_group_html(g))
+            p.append("</div></details>")
+
+        # === 수정 프롬프트 (복사용) =====================================
+        p.append("<h2>수정 프롬프트 (복사해서 AI에게 전달)</h2>")
+        p.append(
+            '<div class="kv">위험 유형별로 아래 블록을 복사해 AI 코딩 도구에 그대로 '
+            "붙여넣으면 우선순위대로 수정할 수 있습니다.</div>"
+        )
+        for g in _rule_groups(report.findings):
+            p.append(f'<div class="fixprompt">{_esc(_fix_prompt_text(g))}</div>')
+
+        # --- 우선순위 체크리스트(파일 기준) ----------------------------
+        p.append('<div class="fixhdr">우선순위 체크리스트 (파일 기준)</div>')
+        p.append('<ul class="todo">')
+        for fn in ordered_files:
+            ffs = by_file[fn]
+            msev = _file_max_severity(ffs)
+            p.append(
+                f'<li><span class="box">☐</span>'
+                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[msev]}">'
+                f'{_SEVERITY_LABEL_KO[msev]}</span> '
+                f"<b>{_esc(fn.replace(chr(92), '/'))}</b>"
+                f'<span class="meta2">{len(ffs)}건 — '
+                f'<a class="jump" href="#{anchor_of[fn]}">상세 ↓</a></span></li>'
+            )
+        p.append("</ul>")
+
+    # === 부록 ===========================================================
     if report.findings:
         dist = _guideline_distribution(report.findings)
         if dist:
@@ -470,43 +773,21 @@ def render_html(
                 p.append(f"<tr><td>{_esc(label)}</td><td>{count}</td></tr>")
             p.append("</table>")
 
-    if summary.finding_count == 0:
-        p.append(
-            '<div class="disc">발견된 위험이 없습니다. 다만 본 도구는 보조 가드레일이며 '
-            "공식 보안성 검토를 대체하지 않습니다.</div>"
-        )
-    else:
-        p.append("<h2>권장 처리 순서</h2>")
-        p.append('<ol class="steps">')
-        p.append("<li><b>차단(block)</b> 항목 — 커밋·배포 전 반드시 수정 또는 보안담당자 승인</li>")
-        p.append("<li><b>경고(warn) + 치명/높음</b> — 운영 반영 전 우선 수정</li>")
-        p.append("<li><b>자동 수정 가능</b> 항목 — diff 미리보기 후 적용</li>")
-        p.append("<li><b>나머지 warn</b> — 차주 정비 일정 반영</li>")
-        p.append("</ol>")
-
-        by_file: dict[str, list[Finding]] = defaultdict(list)
-        for f in report.findings:
-            by_file[f.location.file].append(f)
-        ordered_files = sorted(
-            by_file.keys(),
-            key=lambda fn: (-max(_SEVERITY_RANK[f.severity] for f in by_file[fn]), -len(by_file[fn]), fn),
-        )
-        p.append("<h2>파일별 발견 사항</h2>")
-        for fname in ordered_files:
-            file_findings = sorted(
-                by_file[fname], key=lambda f: (-_SEVERITY_RANK[f.severity], f.location.line)
-            )
-            p.append(f'<div class="filehdr">📄 {_esc(fname)} — {len(file_findings)}건</div>')
-            for f in file_findings:
-                p.extend(_render_finding_html(f))
-
-    if report.skipped_files:
+    non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
+    if non_build_skips:
         p.append("<h2>생략된 파일</h2><table><tr><th>경로</th><th>이유</th></tr>")
-        for sf in report.skipped_files[:30]:
+        for sf in non_build_skips[:30]:
             p.append(f"<tr><td>{_esc(sf.path)}</td><td>{_esc(sf.reason)}</td></tr>")
         p.append("</table>")
-        if len(report.skipped_files) > 30:
-            p.append(f'<div class="kv">… 외 {len(report.skipped_files) - 30}건</div>')
+        if len(non_build_skips) > 30:
+            p.append(f'<div class="kv">… 외 {len(non_build_skips) - 30}건</div>')
+    if build_skips:
+        sample = ", ".join(_esc(s.path) for s in build_skips[:6])
+        more = f" 외 {len(build_skips) - 6}건" if len(build_skips) > 6 else ""
+        p.append(
+            f'<div class="buildnote">빌드 산출물 제외 {len(build_skips)}건: {sample}{more} '
+            "— 압축/번들·빌드 출력 디렉터리는 원본 소스가 아니므로 검사하지 않습니다.</div>"
+        )
 
     repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
     p.append("<h2>재현 절차</h2>")
@@ -531,18 +812,38 @@ def render_html(
     return "\n".join(p)
 
 
-def _render_finding_html(f: Finding) -> list[str]:
-    out: list[str] = []
-    sev_color = _SEVERITY_COLOR[f.severity]
-    dec_color = _DECISION_COLOR.get(f.decision, "#555")
-    out.append(f'<div class="card" style="border-left-color:{sev_color}">')
+def _fix_prompt_text(group: dict) -> str:
+    """복사용 수정 프롬프트 한 블록(룰 그룹 기준). AI 도구에 그대로 붙여넣는다."""
+    f: Finding = group["sample"]
+    sev = _SEVERITY_LABEL_KO[group["severity"]]
+    dec = _DECISION_LABEL_KO.get(group["decision"], group["decision"].value)
+    locs = _locations_by_file(group["findings"])
+    out = [
+        f"[{sev}/{dec}] {f.plain_title} ({group['rule_id']}) — {group['count']}건",
+        f"위치: {locs}",
+    ]
+    if f.why_it_matters:
+        out.append(f"왜 위험: {f.why_it_matters.strip()}")
+    if f.safe_fix:
+        out.append(f"안전한 수정 방향: {f.safe_fix.strip()}")
+    out.append("지시: 위 위치의 코드를 안전한 패턴으로 수정하고, 수정 후 다시 검사해 주세요.")
+    return "\n".join(out)
+
+
+def _render_rule_group_html(group: dict) -> list[str]:
+    """파일 안에서 같은 룰을 한 카드로 묶어 렌더(설명 1번 + 위치목록 + 외 N건)."""
+    f: Finding = group["sample"]
+    findings: list[Finding] = group["findings"]
+    sev_color = _SEVERITY_COLOR[group["severity"]]
+    dec_color = _DECISION_COLOR.get(group["decision"], "#555")
+    out: list[str] = [f'<div class="card" style="border-left-color:{sev_color}">']
     out.append(
         f'<div><span class="badge" style="background:{sev_color}">'
-        f"{_SEVERITY_LABEL_KO[f.severity]}</span>"
+        f"{_SEVERITY_LABEL_KO[group['severity']]}</span>"
         f'<span class="badge" style="background:{dec_color}">'
-        f"{_DECISION_LABEL_KO.get(f.decision, f.decision.value)}</span>"
+        f"{_DECISION_LABEL_KO.get(group['decision'], group['decision'].value)}</span>"
         f'<span class="ftitle">{_esc(f.plain_title)}</span>'
-        f'<span class="loc">line {f.location.line}</span></div>'
+        f'<span class="loc">{group["count"]}건 · line {_esc(_line_list(findings))}</span></div>'
     )
     out.append(
         f'<div class="row"><span class="tag">{_esc(f.rule_id)}</span>'
@@ -585,14 +886,18 @@ def _render_finding_html(f: Finding) -> list[str]:
     return out
 
 
-def _render_finding(f: Finding) -> list[str]:
+def _render_finding_group_md(group: dict) -> list[str]:
+    """파일 안에서 같은 룰을 한 항목으로 묶어 출력(설명 1번 + 위치목록 + 외 N건)."""
+    f: Finding = group["sample"]
+    findings: list[Finding] = group["findings"]
+    tag = _SEVERITY_EMOJI[group["severity"]]
     out: list[str] = []
-    tag = _SEVERITY_EMOJI[f.severity]
     out.append(
-        f"#### {tag} {_SEVERITY_LABEL_KO[f.severity]} · {f.decision.value} — "
-        f"{f.plain_title} (line {f.location.line})"
+        f"#### {tag} {_SEVERITY_LABEL_KO[group['severity']]} · {group['decision'].value} — "
+        f"{f.plain_title} ({group['count']}건)"
     )
     out.append("")
+    out.append(f"- **위치**: line {_line_list(findings)}")
     out.append(f"- **룰**: `{f.rule_id}`")
     out.append(f"- **카테고리**: {f.category}")
     if f.evidence:
