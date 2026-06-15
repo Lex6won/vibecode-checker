@@ -171,6 +171,45 @@ def _build_artifact_skips(report: ScanReport) -> list:
     return [s for s in report.skipped_files if "빌드 산출물" in (s.reason or "")]
 
 
+# 초보자용 "다음 할 일" 행동 안내. 보안을 몰라도 결과를 받은 직후 바로 따라할
+# 수 있도록, 자기가 쓰던 AI 코딩 도구에 그대로 말하는 흐름(고치기→확인→재검사)을
+# 제시한다. 결과를 받고 "그래서 뭘 하지?" 에서 막히지 않게 하는 것이 목적.
+_SAY_FIX = "방금 보안검사에서 나온 위험들을 안전하게 고쳐줘"
+_SAY_RESCAN = "다시 검사해줘"
+
+_ACTION_STEPS: tuple[tuple[str, str, str], ...] = (
+    (
+        "고치기",
+        "지금 코딩하던 AI 도구(커서·클로드 코드 등)에 그대로 말하세요",
+        _SAY_FIX,
+    ),
+    (
+        "확인하기",
+        "AI가 바꾼 내용을 살펴보고 적용하세요. 업무 로직이 바뀌면 담당자와 상의하세요.",
+        "",
+    ),
+    (
+        "다시 검사",
+        "고친 뒤 한 번 더 검사해 0건이 되는지 확인하세요. 도구에 이렇게 말하면 됩니다",
+        _SAY_RESCAN,
+    ),
+)
+
+_ACTION_LEAD_BLOCK = "🚫 지금 이대로 올리거나 배포하면 안 됩니다. 아래 3단계로 고친 뒤 다시 검사하세요."
+_ACTION_LEAD_WARN = "⚠️ 운영에 반영하기 전에 고치는 것을 권합니다. 아래 3단계를 따르세요."
+_ACTION_CAVEAT = (
+    "코드만으론 안 끝나는 것 — API 키·비밀번호가 노출됐다면 코드에서 지우는 것만으론 "
+    "부족합니다. 그 값은 반드시 새로 발급(폐기)하고, 유출이 의심되면 보안담당자에게 알리세요."
+)
+
+
+def _action_lead(report: ScanReport) -> str:
+    block_count = report.summary.by_decision.get(Decision.block.value, 0)
+    if report.summary.blocked or block_count:
+        return _ACTION_LEAD_BLOCK
+    return _ACTION_LEAD_WARN
+
+
 def _verdict_line(report: ScanReport) -> str:
     """One sentence an executive can read without scrolling."""
     summary = report.summary
@@ -246,6 +285,23 @@ def render_markdown(
             f"> 🧹 **빌드 산출물 {len(build_skips)}건 제외** — 압축·번들·캐시 파일은 원본 "
             "소스가 아니라 검사 대상에서 자동 제외했습니다(오탐 방지)."
         )
+        lines.append("")
+
+    # --- 다음 할 일 (초보자용 행동 안내) — 발견이 있을 때만 ----------------
+    if report.findings:
+        lines.append("## 🧭 결과를 받았다면 — 다음 3단계만 하세요")
+        lines.append("")
+        lines.append(f"**{_action_lead(report)}**")
+        lines.append("")
+        for i, (title, desc, say) in enumerate(_ACTION_STEPS, 1):
+            line = f"{i}. **{title}** — {desc}"
+            if say:
+                line += f"  → `{say}`"
+            lines.append(line)
+            if title == "고치기":
+                lines.append("   (또는 아래 '수정 프롬프트' 칸을 복사해 붙여넣으세요)")
+        lines.append("")
+        lines.append(f"> ⚠ **{_ACTION_CAVEAT}**")
         lines.append("")
 
     lines.append(f"- **대상**: `{report.target}`")
@@ -367,7 +423,10 @@ def render_markdown(
         # --- 수정 프롬프트 (복사용) -------------------------------------
         lines.append("## 수정 프롬프트 (복사해서 AI에게 전달)")
         lines.append("")
-        lines.append("위험 유형별로 아래 블록을 복사해 AI 코딩 도구에 붙여넣으면 우선순위대로 수정할 수 있습니다.")
+        lines.append(
+            f"💬 **가장 쉬운 방법** — 쓰던 AI 도구에 `{_SAY_FIX}` 라고 말하면 끝입니다. "
+            "아래 블록은 유형별로 따로 복사해 쓰고 싶을 때 사용하세요."
+        )
         lines.append("")
         for g in _rule_groups(report.findings):
             lines.append("```text")
@@ -510,6 +569,23 @@ code.ev{background:#f1f5f9;border-radius:4px;padding:1px 6px;font-size:12.5px;
 .foot{text-align:center;color:#9ca3af;font-size:12px;margin-top:28px}
 .buildnote{background:#f1f5f9;border:1px dashed #cbd5e1;border-radius:6px;
   padding:8px 13px;font-size:12.5px;color:#64748b;margin:8px 0}
+.actionbox{border:2px solid #2563eb;border-radius:10px;padding:14px 18px;
+  margin:12px 0 16px;background:#eff6ff}
+.actionbox .ah{font-weight:800;font-size:15px;color:#1e3a8a;margin-bottom:8px}
+.actionbox .lead{font-size:14px;color:#1e293b;margin-bottom:10px;font-weight:600}
+.actionbox ol{margin:0;padding-left:0;list-style:none;counter-reset:step}
+.actionbox li{position:relative;padding:6px 0 6px 34px;font-size:14px;
+  border-top:1px solid #dbeafe}
+.actionbox li:first-child{border-top:none}
+.actionbox li::before{counter-increment:step;content:counter(step);
+  position:absolute;left:0;top:6px;width:23px;height:23px;border-radius:50%;
+  background:#2563eb;color:#fff;font-weight:800;font-size:12.5px;
+  text-align:center;line-height:23px}
+.actionbox .say{display:inline-block;background:#1e293b;color:#e2e8f0;
+  border-radius:5px;padding:2px 9px;font-size:13px;margin:3px 0;
+  font-family:"D2Coding","Consolas",monospace}
+.actionbox .caveat{margin-top:10px;background:#fff7ed;border:1px solid #fed7aa;
+  border-radius:6px;padding:9px 12px;font-size:12.8px;color:#9a3412}
 .stats{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 4px}
 .stat{flex:1 1 120px;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;
   background:#fafafa;min-width:120px}
@@ -612,6 +688,24 @@ def render_html(
             "압축·번들·캐시 파일은 원본 소스가 아니라 검사 대상에서 자동 제외했습니다 "
             "(오탐 방지).</div>"
         )
+
+    # === 다음 할 일 (초보자용 행동 안내) — 결론 바로 밑, 발견이 있을 때만 ======
+    if report.findings:
+        p.append('<div class="actionbox">')
+        p.append('<div class="ah">🧭 결과를 받았다면 — 다음 3단계만 하세요</div>')
+        p.append(f'<div class="lead">{_esc(_action_lead(report))}</div>')
+        p.append("<ol>")
+        for title, desc, say in _ACTION_STEPS:
+            li = f"<b>{_esc(title)}</b> · {_esc(desc)}"
+            if say:
+                li += f'<br><span class="say">▶ {_esc(say)}</span>'
+            if title == "고치기":
+                li += '<br><span style="font-size:12.5px;color:#475569">' \
+                      "(또는 아래 '수정 프롬프트' 칸을 복사해 붙여넣으세요)</span>"
+            p.append(f"<li>{li}</li>")
+        p.append("</ol>")
+        p.append(f'<div class="caveat">⚠ <b>{_esc(_ACTION_CAVEAT)}</b></div>')
+        p.append("</div>")
 
     p.append(f'<div class="meta"><b>대상</b> · {_esc(report.target)}</div>')
     p.append(
@@ -741,8 +835,10 @@ def render_html(
         # === 수정 프롬프트 (복사용) =====================================
         p.append("<h2>수정 프롬프트 (복사해서 AI에게 전달)</h2>")
         p.append(
-            '<div class="kv">위험 유형별로 아래 블록을 복사해 AI 코딩 도구에 그대로 '
-            "붙여넣으면 우선순위대로 수정할 수 있습니다.</div>"
+            '<div class="buildnote" style="border-style:solid;border-color:#93c5fd;'
+            'background:#eff6ff;color:#1e3a8a">💬 <b>가장 쉬운 방법</b> — 쓰던 AI 도구에 '
+            f'"{_esc(_SAY_FIX)}" 라고 말하면 끝입니다. 아래 블록은 유형별로 따로 '
+            "복사해 쓰고 싶을 때 사용하세요.</div>"
         )
         for g in _rule_groups(report.findings):
             p.append(f'<div class="fixprompt">{_esc(_fix_prompt_text(g))}</div>')

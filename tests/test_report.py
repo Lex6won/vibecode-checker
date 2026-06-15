@@ -270,3 +270,34 @@ def test_render_markdown_dedupes_same_rule_into_one_block() -> None:
     head = md.split("## 수정 프롬프트")[0]
     assert "## 파일별 발견 사항" in head
     assert "2건" in md
+
+
+# ---------------------------------------------------------------------------
+# 초보자용 "다음 할 일" 행동 안내 — 결과 받고 무엇을 할지 바로 알려준다
+# ---------------------------------------------------------------------------
+
+
+def test_render_html_has_beginner_action_box() -> None:
+    html = render_html(_report_with_findings())
+    assert "다음 3단계만 하세요" in html
+    assert 'class="actionbox"' in html
+    # 자기가 쓰던 AI 도구에 그대로 말하는 흐름 + 키 노출 코드외 조치 경고
+    assert "안전하게 고쳐줘" in html
+    assert "다시 검사" in html
+    assert "새로 발급" in html
+    # 수정 프롬프트 섹션도 '가장 쉬운 방법'을 맨 앞에서 안내
+    assert "가장 쉬운 방법" in html
+
+
+def test_render_markdown_has_beginner_action_box() -> None:
+    md = render_markdown(_report_with_findings())
+    head = md.split("## 요약")[0]  # 결론 직후, 요약보다 위에 위치
+    assert "다음 3단계만 하세요" in head
+    assert "안전하게 고쳐줘" in head
+    assert "새로 발급" in head
+
+
+def test_action_box_absent_when_no_findings() -> None:
+    clean = scan_code('print("hi")\n', filename="hi.py", language="python")
+    assert "다음 3단계" not in render_html(clean)
+    assert "다음 3단계" not in render_markdown(clean)
