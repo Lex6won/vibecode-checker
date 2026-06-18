@@ -22,10 +22,14 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
-    - '\.innerHTML\s*='
-    - '\.outerHTML\s*='
+    # innerHTML/outerHTML/dangerouslySetInnerHTML 는 같은 줄에서 DOMPurify·sanitize
+    # 등으로 정화한 경우 오탐이므로 부정 전방탐색으로 제외한다(실측: 정화 후 렌더가
+    # 정상 방어인데 차단으로 오탐). document.write·jQuery .html()·insertAdjacentHTML 은
+    # 정화 래핑이 드물고 실제 위험(DocView document.write 등)이라 그대로 둔다.
+    - '\.innerHTML\s*=\s*(?!.{0,80}(?:DOMPurify|sanitize|escapeHtml|escapeHTML|textContent))'
+    - '\.outerHTML\s*=\s*(?!.{0,80}(?:DOMPurify|sanitize|escapeHtml|escapeHTML|textContent))'
     - 'document\.write(?:ln)?\s*\('
-    - 'dangerouslySetInnerHTML\s*[:=]'
+    - 'dangerouslySetInnerHTML\s*[:=]\s*(?!.{0,120}(?:DOMPurify|sanitize|escapeHtml))'
     - "\\$\\([^)]*\\)\\.html\\s*\\("
     - 'insertAdjacentHTML\s*\('
   category: kisa-secure-coding
@@ -55,9 +59,12 @@ examples:
     - "el.innerHTML = userInput;"
     - "document.write(payload);"
     - "$(target).html(raw);"
+    - "<div dangerouslySetInnerHTML={{__html: post.content}} />"
   negative:
     - "el.textContent = userInput;"
     - "const safe = DOMPurify.sanitize(rawHtml);"
+    - "el.innerHTML = DOMPurify.sanitize(richHtml);"
+    - "<div dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(html)}} />"
 ---
 
 ## 무엇이 위험한가

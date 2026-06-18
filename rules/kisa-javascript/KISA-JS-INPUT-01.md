@@ -23,9 +23,12 @@ review_due: 2026-11-30
 detection:
   patterns:
     - '\.query\s*\(\s*[`][^`]*\$\{'
-    - '\.query\s*\(\s*["''][^"'']*["'']\s*\+'
+    # 결합(+)은 *변수 식별자*로 이어질 때만 SQLi로 본다. 과거 패턴(`\+`만)은
+    # 문자열 안의 "+09:00" 같은 리터럴이나 정적 SET 문도 결합으로 오인했다.
+    # 따라서 `+` 뒤에 [A-Za-z_$](식별자 시작)을 요구해 숫자·따옴표 오매칭을 제거.
+    - '\.query\s*\(\s*["''][^"'']*["'']\s*\+\s*[A-Za-z_$]'
     - "\\.(?:query|execute)\\s*\\(\\s*`[^`]*\\$\\{"
-    - 'connection\.query\s*\([^,)]*\+\s*\w'
+    - 'connection\.query\s*\([^,)]*\+\s*[A-Za-z_$]'
   category: kisa-secure-coding
   why_it_matters: >-
     Node.js의 mysql, pg, mssql 등 드라이버에서 ``db.query(`SELECT * FROM users
@@ -46,6 +49,16 @@ detection:
     - MOIS-49-INPUT-01
     - CWE-89
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - 'db.query("SELECT * FROM users WHERE n=" + name)'
+    - 'db.query(`SELECT * FROM users WHERE id=${userId}`)'
+    - "connection.query('SELECT ' + column)"
+  negative:
+    - 'pool.query(''SET time_zone = "+09:00"'')'
+    - 'db.query("SELECT * FROM users WHERE id = ?", [id])'
+    - 'db.query(`SELECT * FROM users`)'
 ---
 
 ## 무엇이 위험한가

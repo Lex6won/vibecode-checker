@@ -17,7 +17,10 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
-    - '\b01[016789]-?\d{3,4}-?\d{4}\b'
+    # 더미/예시 번호(0000-0000, 1234-5678, 1111…)와 마스킹(010-****-…)·정규식 리터럴
+    # (\d{4})은 실제 개인정보가 아니므로 제외한다. 이 룰의 '안전한 패턴'이 권장하는
+    # 더미와도 일관된다(010-0000-0000 등은 안전 권장값이므로 깃발하지 않음).
+    - '\b01[016789]-?(?!1234-?5678|0000-?0000|1111|0000\b|1234\b)\d{3,4}-?\d{4}\b'
   category: privacy-public-sector
   why_it_matters: 연락처는 민원인 식별과 연결될 수 있어 외부 전송, 로그 저장, 저장소 업로드 전에 마스킹해야 합니다.
   public_sector_impact:
@@ -27,6 +30,16 @@ detection:
   references:
     - 개인정보 보호법
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - 'const phone = "010-3825-7193";'
+    - '연락처 01038257193 으로 회신'
+  negative:
+    - '<input placeholder="010-1234-5678" />'
+    - 'const dummy = "010-0000-0000";'
+    - 'const masked = "010-****-1234";'
+    - 'const re = /^010-\d{4}-\d{4}$/;'
 ---
 
 ## 무엇이 위험한가
