@@ -11,7 +11,7 @@
 
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-338_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-344_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_96.7%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-215개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -391,7 +391,7 @@ JavaScript      ███████████████░░░░░   7
 |---|---|---|
 | **독립 코퍼스 탐지율** | **recall 96.7%** · 오탐 0 | `eval_corpus/` 30 시드, 결정론 |
 | 자체검증 매크로 P/R/F1 | 100% | 룰 내장 예제 — *의도-구현 일치* 측정 |
-| 테스트 | 338개 통과 | 유닛·통합·룰 메타 |
+| 테스트 | 344개 통과 | 유닛·통합·룰 메타 |
 
 재현: `GVSKB_MODE=offline PYTHONPATH=src python scripts/run_benchmark.py`
 

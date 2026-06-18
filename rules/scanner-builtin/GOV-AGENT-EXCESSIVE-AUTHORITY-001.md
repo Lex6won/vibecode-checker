@@ -20,7 +20,11 @@ verified_at: 2026-05-31
 review_due: 2026-08-31
 detection:
   patterns:
-    - '(?i)(tool|agent|function).*(delete|remove|send_mail|send_email|db_write|update_db|approve|payment)'
+    # agent/tool 객체가 파괴적 메서드를 *호출*하는 형태만 탐지한다. 과거 패턴은
+    # `function`+`delete|remove` 단어만 매칭해 프런트엔드 함수명(handleTextDelete,
+    # DeleteConfirmModal)·DOM/스토리지 API(removeItem, classList.remove)를 대량
+    # 오탐했다(실측 vibe_ai_web 15/15 오탐). 안전한 DOM 제거 API는 부정 전방탐색으로 제외.
+    - '(?i)\b(?:agent|tool|client|llm|assistant|mcp|bot|executor|chain)\w*\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
   category: agent-safety
   why_it_matters: 공공업무 agent는 파일 삭제, 메일 발송, DB 변경, 결재 요청 전에 반드시 사용자 확인과 권한 검사를 거쳐야 합니다.
   public_sector_impact:
@@ -33,6 +37,18 @@ detection:
     - OWASP LLM Applications
     - CISA Secure by Design
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "function run(agent){ agent.delete_account(id); }"
+    - "const r = await agent.tool_delete_file(path);"
+    - "tool.send_email(to, body);"
+  negative:
+    - "sessionStorage.removeItem('k'); localStorage.removeItem('t');"
+    - "el.classList.remove('hidden');"
+    - "function DeleteConfirmModal(){ return null; }"
+    - "function handleTextDelete(){ _doDeleteText(); }"
+    - "toolbar.removeItem(2);"
 ---
 
 ## 무엇이 위험한가
