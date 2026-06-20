@@ -20,7 +20,10 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
-    - '(?i)(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*["''][^"'']{8,}["'']'
+    # 값이 명백한 플레이스홀더(YOUR_KEY_HERE, XXXX…, <your-token>, CHANGEME, 예시 등)면
+    # 실제 시크릿이 아니므로 부정 전방탐색으로 제외한다. 실제 키 값에는 이 토큰들이
+    # 사실상 나타나지 않으므로 미탐 위험은 무시할 수 있다.
+    - '(?i)(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))[^"'']{8,}["'']'
     - 'sk-[A-Za-z0-9_-]{20,}'
     - 'AKIA[0-9A-Z]{16}'
   category: secret-scanning
@@ -43,6 +46,9 @@ examples:
   negative:
     - "pi = 3.14"
     - 'greeting = "hello world"'
+    - "api_key = 'YOUR_KEY_HERE'"
+    - 'api_key = "<your-api-key>"'
+    - 'password = "XXXXXXXXXXXX"'
 ---
 
 ## 무엇이 위험한가
