@@ -20,11 +20,16 @@ verified_at: 2026-05-31
 review_due: 2026-08-31
 detection:
   patterns:
-    # agent/tool 객체가 파괴적 메서드를 *호출*하는 형태만 탐지한다. 과거 패턴은
+    # 에이전트/도구 객체가 파괴적 메서드를 *호출*하는 형태만 탐지한다. 과거 패턴은
     # `function`+`delete|remove` 단어만 매칭해 프런트엔드 함수명(handleTextDelete,
     # DeleteConfirmModal)·DOM/스토리지 API(removeItem, classList.remove)를 대량
-    # 오탐했다(실측 vibe_ai_web 15/15 오탐). 안전한 DOM 제거 API는 부정 전방탐색으로 제외.
-    - '(?i)\b(?:agent|tool|client|llm|assistant|mcp|bot|executor|chain)\w*\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
+    # 오탐했다(실측 vibe_ai_web 15/15 오탐). 또한 `client`/`bot`은 HTTP·DB 클라이언트
+    # (client.delete)·챗봇 UI라 제외하고, `tool`은 toolbar/tooltip(UI)을 피하도록
+    # 한정한다. 안전한 DOM 제거 API는 부정 전방탐색으로 제외한다.
+    # 패턴1: 명확한 에이전트 식별자(agent/assistant/llm/mcp[+접미사]).
+    - '(?i)\b(?:agent|assistant|llm|mcp)\w*\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
+    # 패턴2: tool 계열(tool/tools/toolkit/tool_*/toolRegistry) — toolbar/tooltip 제외.
+    - '(?i)\btool(?:s|kit|_\w*|registry)?\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
   category: agent-safety
   why_it_matters: 공공업무 agent는 파일 삭제, 메일 발송, DB 변경, 결재 요청 전에 반드시 사용자 확인과 권한 검사를 거쳐야 합니다.
   public_sector_impact:
@@ -49,6 +54,10 @@ examples:
     - "function DeleteConfirmModal(){ return null; }"
     - "function handleTextDelete(){ _doDeleteText(); }"
     - "toolbar.removeItem(2);"
+    - "client.delete(`/users/${id}`);"
+    - "await apiClient.delete(url);"
+    - "bot.delete(messageId);"
+    - "Toolbar.deleteRow(2);"
 ---
 
 ## 무엇이 위험한가
