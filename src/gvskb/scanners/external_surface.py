@@ -1,0 +1,233 @@
+"""외부 연결 인벤토리 추출 — 외부 API 호출 + 설치된 외부 플러그인/라이브러리.
+
+위반(Finding) 탐지가 아니라 *검토용 목록*을 만든다. 목적: 공공 보안팀이 "이
+서비스가 어디로 데이터를 보내는가"를 한눈에 보고, 특히 개인정보(PII)가 함께
+나갈 수 있는 지점과 국외 전송을 우선 검토하도록 돕는다.
+
+정직성: 정적 분석은 실제 전송 페이로드를 증명하지 못한다. 따라서
+- 호스트가 변수로 조립되면 누락될 수 있고(= "최소 목록"),
+- data_summary·region 은 카탈로그/인접 신호 기반의 *힌트*이며 판정이 아니다.
+"""
+from __future__ import annotations
+
+import re
+
+from ..schema import ExternalConnection
+
+# ---------------------------------------------------------------------------
+# 카탈로그 — 알려진 호스트/패키지의 종류·데이터 요약·국외/국내. 부분 문자열 매칭.
+# (category, data_summary, region) — region: "국외" | "국내" | None(미상)
+# ---------------------------------------------------------------------------
+_HOST_CATALOG: tuple[tuple[str, str, str, str | None], ...] = (
+    # 외부 AI (대부분 국외)
+    ("api.openai.com", "ai", "프롬프트·임베딩 등 입력 텍스트", "국외"),
+    ("openai.azure.com", "ai", "프롬프트 텍스트(Azure OpenAI)", "국외"),
+    ("api.anthropic.com", "ai", "메시지 프롬프트", "국외"),
+    ("generativelanguage.googleapis.com", "ai", "텍스트 입력(Google Gemini)", "국외"),
+    ("aiplatform.googleapis.com", "ai", "텍스트/데이터 입력(Vertex AI)", "국외"),
+    ("api.cohere.ai", "ai", "텍스트 입력(Cohere)", "국외"),
+    ("api.mistral.ai", "ai", "프롬프트 텍스트(Mistral)", "국외"),
+    ("api-inference.huggingface.co", "ai", "추론 입력(HuggingFace)", "국외"),
+    # 국내 AI
+    ("clovastudio.apigw.ntruss.com", "ai", "프롬프트 텍스트(네이버 HyperCLOVA)", "국내"),
+    ("clovastudio.stream.ntruss.com", "ai", "프롬프트 텍스트(네이버 HyperCLOVA)", "국내"),
+    # 분석/텔레메트리
+    ("api.mixpanel.com", "analytics", "사용자ID·이벤트 속성", "국외"),
+    ("google-analytics.com", "analytics", "사용자 행동·페이지뷰", "국외"),
+    ("api.segment.io", "analytics", "사용자 이벤트", "국외"),
+    ("api.amplitude.com", "analytics", "사용자 행동 이벤트", "국외"),
+    # 에러 추적
+    ("ingest.sentry.io", "error", "예외·스택·환경값(개인정보 섞일 수 있음)", "국외"),
+    ("sentry.io", "error", "예외·스택·환경값", "국외"),
+    # 결제 (국내외)
+    ("api.stripe.com", "payment", "결제·카드 토큰", "국외"),
+    ("api.iamport.kr", "payment", "결제 정보(아임포트)", "국내"),
+    ("api.tosspayments.com", "payment", "결제 정보(토스페이먼츠)", "국내"),
+    ("kapi.kakao.com", "messaging", "카카오 API(메시지·프로필)", "국내"),
+    # 메시징
+    ("slack.com", "messaging", "메시지 본문", "국외"),
+    ("discord.com", "messaging", "메시지 본문", "국외"),
+)
+
+# SDK 호출 패턴 → 매핑 호스트(코드에 URL 리터럴이 없어도 잡는다)
+_SDK_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"openai\.(?:chat\.completions|completions|embeddings|ChatCompletion|Embedding|images|audio|moderations)|\.chat\.completions\.create"), "api.openai.com"),
+    (re.compile(r"\bgenai\.|GenerativeModel|generate_content"), "generativelanguage.googleapis.com"),
+    (re.compile(r"\banthropic\b|client\.messages\.create|Anthropic\("), "api.anthropic.com"),
+    (re.compile(r"\bcohere\.|ClientV?2?\(\s*api_key"), "api.cohere.ai"),
+    (re.compile(r"clova", re.IGNORECASE), "clovastudio.apigw.ntruss.com"),
+    (re.compile(r"\bmixpanel\."), "api.mixpanel.com"),
+    (re.compile(r"Sentry\.init|sentry_sdk\.init"), "ingest.sentry.io"),
+    (re.compile(r"\bstripe\.", re.IGNORECASE), "api.stripe.com"),
+)
+
+# 패키지(플러그인) 카탈로그 — (category, data_summary)
+_PACKAGE_CATALOG: dict[str, tuple[str, str]] = {
+    "openai": ("ai", "AI: 프롬프트·임베딩을 OpenAI로 전송"),
+    "anthropic": ("ai", "AI: 메시지 프롬프트를 Anthropic으로 전송"),
+    "@anthropic-ai/sdk": ("ai", "AI: 메시지 프롬프트를 Anthropic으로 전송"),
+    "@google/generative-ai": ("ai", "AI: 텍스트를 Google Gemini로 전송"),
+    "google-generativeai": ("ai", "AI: 텍스트를 Google Gemini로 전송"),
+    "google-cloud-aiplatform": ("ai", "AI: 데이터를 Google Vertex AI로 전송"),
+    "cohere": ("ai", "AI: 텍스트를 Cohere로 전송"),
+    "mistralai": ("ai", "AI: 프롬프트를 Mistral로 전송"),
+    "langchain": ("ai", "AI 프레임워크: 외부 LLM 호출 가능"),
+    "langchain-openai": ("ai", "AI 프레임워크: OpenAI 호출"),
+    "llama-index": ("ai", "AI 프레임워크: 외부 LLM 호출 가능"),
+    "llama_index": ("ai", "AI 프레임워크: 외부 LLM 호출 가능"),
+    "mixpanel": ("analytics", "분석: 사용자 행동 이벤트 전송"),
+    "mixpanel-browser": ("analytics", "분석: 사용자 행동 이벤트 전송"),
+    "@amplitude/analytics-browser": ("analytics", "분석: 사용자 이벤트 전송"),
+    "@segment/analytics-node": ("analytics", "분석: 사용자 이벤트 전송"),
+    "@sentry/node": ("error", "에러: 예외·스택을 Sentry로 전송"),
+    "@sentry/browser": ("error", "에러: 예외·스택을 Sentry로 전송"),
+    "@sentry/react": ("error", "에러: 예외·스택을 Sentry로 전송"),
+    "sentry-sdk": ("error", "에러: 예외·스택을 Sentry로 전송"),
+    "stripe": ("payment", "결제: 카드·결제 정보를 Stripe로 전송"),
+}
+
+# PII 인접 신호 — 같은 줄에 이 토큰들이 보이면 개인정보 전송 가능으로 표시(warn).
+_PII_SIGNAL = re.compile(
+    r"주민|rrn|전화|휴대폰|phone|이메일|email|민원|카드|계좌|account|여권|passport"
+    r"|password|비밀번호|secret|개인정보|생년월일|birth|주소",
+    re.IGNORECASE,
+)
+
+# 내부망/로컬 호스트 — 외부 전송이 아니므로 인벤토리에서 제외.
+_INTERNAL_HOST = re.compile(
+    r"^(?:localhost|127\.|0\.0\.0\.0|::1"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|192\.168\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})",
+)
+
+# userinfo(user@) 는 건너뛰고, 호스트는 점을 포함한 실제 도메인만(예: 'x' 같은
+# 사용자명·로컬 토큰 오추출 방지).
+_URL_RE = re.compile(
+    r"https?://(?:[^@/\s]+@)?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)(/[A-Za-z0-9._/-]*)?",
+    re.IGNORECASE,
+)
+_MODEL_RE = re.compile(r"""model\s*[=:]\s*["']([\w.\-:]+)["']""")
+_GENMODEL_RE = re.compile(r"""GenerativeModel\s*\(\s*["']([\w.\-:]+)["']""")
+_APIVER_RE = re.compile(r"/(v\d+\w*)")
+
+
+def _lookup_host(host: str) -> tuple[str, str, str | None]:
+    """호스트 → (category, data_summary, region). 미등록은 other/외부 서비스/미상."""
+    low = host.lower()
+    for needle, cat, summary, region in _HOST_CATALOG:
+        if needle in low:
+            return cat, summary, region
+    return "other", "외부 서비스(미분류) — 전송 데이터 확인 필요", None
+
+
+def _model_on_line(line: str) -> str | None:
+    m = _MODEL_RE.search(line) or _GENMODEL_RE.search(line)
+    return m.group(1) if m else None
+
+
+def extract_api_connections(code: str, filename: str = "<memory>") -> list[ExternalConnection]:
+    """코드에서 외부 API 호출 지점을 인벤토리로 추출.
+
+    1) https://host 리터럴, 2) 알려진 SDK 호출(URL 없이도) 둘 다 감지한다.
+    내부망 호스트는 제외하고, PII 인접 줄은 review_level=warn 으로 표시한다.
+    """
+    lines = code.splitlines()
+    agg: dict[str, dict] = {}  # 호스트(파일 단위) → 병합 누적값
+
+    for idx, line in enumerate(lines, start=1):
+        hosts_on_line: list[tuple[str, str | None]] = []  # (host, api_version)
+        for m in _URL_RE.finditer(line):
+            host = m.group(1)
+            if _INTERNAL_HOST.match(host):
+                continue
+            ver_m = _APIVER_RE.search(m.group(2) or "")
+            hosts_on_line.append((host, ver_m.group(1) if ver_m else None))
+        # URL 리터럴이 있으면 그게 더 구체적이므로 SDK 매핑은 URL이 없을 때만(중복 방지).
+        if not hosts_on_line:
+            for pat, mapped_host in _SDK_PATTERNS:
+                if pat.search(line):
+                    hosts_on_line.append((mapped_host, None))
+        if not hosts_on_line:
+            continue
+
+        window = " ".join(lines[idx - 1: idx + 2])  # 현재 줄 + 다음 2줄(인자 다중행 대응)
+        pii = bool(_PII_SIGNAL.search(window))
+        model = _model_on_line(window)
+        for host, apiver in hosts_on_line:
+            a = agg.setdefault(host, {"idx": idx, "ver": None, "model": None, "pii": False})
+            a["idx"] = min(a["idx"], idx)
+            a["ver"] = a["ver"] or apiver
+            a["model"] = a["model"] or model
+            a["pii"] = a["pii"] or pii
+
+    out: list[ExternalConnection] = []
+    for host, a in agg.items():
+        cat, summary, region = _lookup_host(host)
+        if a["pii"]:
+            summary += " · ⚠ 개인정보 인접"
+        out.append(ExternalConnection(
+            kind="api",
+            target=host,
+            category=cat,
+            model=a["model"] if cat == "ai" else None,
+            version=a["ver"],
+            location=f"{filename}:{a['idx']}",
+            data_summary=summary,
+            region=region,
+            pii_adjacent=a["pii"],
+            review_level="warn" if a["pii"] else "info",
+        ))
+    return out
+
+
+def inventory_packages(packages: list[dict], source: str = "manifest") -> list[ExternalConnection]:
+    """매니페스트에서 파싱된 패키지 목록 → 플러그인 인벤토리.
+
+    공급망 취약점 검사가 아니라 *목록화*다(취약점은 scan_dependencies가 별도로 봄).
+    알려진 외부 전송 SDK는 종류·요약을 붙이고, 그 외는 '라이브러리(로컬)'로 둔다.
+    """
+    out: list[ExternalConnection] = []
+    for pkg in packages:
+        name = pkg.get("name")
+        if not name:
+            continue
+        version = pkg.get("version")
+        cat, summary = _PACKAGE_CATALOG.get(
+            name, ("library", "라이브러리 (로컬, 외부전송 없음/미상)")
+        )
+        out.append(ExternalConnection(
+            kind="package",
+            target=name,
+            category=cat,
+            version=version,
+            location=source,
+            data_summary=summary,
+            region=None,
+            pii_adjacent=False,
+            review_level="info",
+        ))
+    return out
+
+
+def dedupe_connections(conns: list[ExternalConnection]) -> list[ExternalConnection]:
+    """동일 (kind, target, location, model) 중복 제거 후 우선순위 정렬.
+
+    정렬: warn(⚠) 먼저 → api 먼저 → 국외 먼저 → 종류 → 대상. (리포트 D 결정)
+    """
+    best: dict[tuple, ExternalConnection] = {}
+    for c in conns:
+        best.setdefault((c.kind, c.target, c.location, c.model), c)
+    _kind_order = {"api": 0, "package": 1}
+    _cat_order = {"ai": 0, "payment": 1, "analytics": 2, "messaging": 3, "error": 4, "other": 5, "library": 6}
+
+    def key(c: ExternalConnection) -> tuple:
+        return (
+            0 if c.review_level == "warn" else 1,
+            _kind_order.get(c.kind, 9),
+            0 if c.region == "국외" else 1,
+            _cat_order.get(c.category, 9),
+            c.target,
+        )
+
+    return sorted(best.values(), key=key)
