@@ -20,6 +20,11 @@ from typing import Iterable
 
 from .profiles import apply_profile, load_profile
 from .scanners.ast_scanner import PythonAstScanner
+from .scanners.external_surface import (
+    dedupe_connections,
+    extract_api_connections,
+    inventory_packages,
+)
 from .scanners.regex_scanner import (
     RULES as RULES,
     RegexScanner,
@@ -28,7 +33,15 @@ from .scanners.regex_scanner import (
     reload_rules as _reload_runtime_rules,
 )
 from .scanners.semgrep_scanner import SemgrepScanner
-from .schema import Decision, Finding, ScanReport, ScanSummary, Severity, SkippedFile
+from .schema import (
+    Decision,
+    ExternalConnection,
+    Finding,
+    ScanReport,
+    ScanSummary,
+    Severity,
+    SkippedFile,
+)
 
 # Adapter run order. Earlier adapters establish baseline findings; later
 # adapters (more precise) can supersede them via dedup_findings. SemgrepScanner
@@ -122,6 +135,7 @@ def scan_code(
         # 인메모리 조각도 "이 파일을 검사함"으로 기록 — 발견 0이 "검사 안 됨"이
         # 아니라 "위험 없음"으로 올바르게 결론나게 한다.
         scanned_files=[filename],
+        external_surface=dedupe_connections(extract_api_connections(code, filename)),
     )
 
 
@@ -275,6 +289,8 @@ def scan_path(
     inc = frozenset(e.lower() for e in (include_exts or DEFAULT_INCLUDE_EXTS))
     exc = frozenset(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
     skipped: list[SkippedFile] = []
+    external: list[ExternalConnection] = []          # 외부 연결 인벤토리 누적
+    manifest_files: list[tuple[Path, str]] = []      # (경로, ecosystem) — 플러그인 목록용
 
     if not root.exists():
         return ScanReport(
@@ -323,6 +339,9 @@ def scan_path(
                         path=_rel(p, root, is_dir),
                         reason="의존성 매니페스트 — 취약점은 `gvskb check-package` 또는 MCP `scan_dependencies`로 검사하세요",
                     ))
+                    # 외부 연결 인벤토리용으로 *직접 의존성*만 읽는다(락파일 제외).
+                    if name.lower() == "requirements.txt":
+                        manifest_files.append((p, "pypi"))
                     continue
                 if p.suffix.lower() not in inc and name.lower() not in {"dockerfile", "makefile"}:
                     continue
@@ -377,6 +396,21 @@ def scan_path(
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
         all_findings.extend(report.findings)
         scanned.append(rel)
+        # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
+        external.extend(extract_api_connections(text, rel))
+        if f.name.lower() == "package.json":
+            external.extend(
+                inventory_packages(parse_manifest_packages(text, "npm"), rel)
+            )
+
+    for mpath, eco in manifest_files:
+        try:
+            mtext = mpath.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        external.extend(
+            inventory_packages(parse_manifest_packages(mtext, eco), _rel(mpath, root, is_dir))
+        )
 
     return ScanReport(
         target=str(root),
@@ -386,6 +420,7 @@ def scan_path(
         findings=all_findings,
         scanned_files=scanned,
         skipped_files=skipped,
+        external_surface=dedupe_connections(external),
     )
 
 

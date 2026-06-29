@@ -210,6 +210,35 @@ def _action_lead(report: ScanReport) -> str:
     return _ACTION_LEAD_WARN
 
 
+# ---------------------------------------------------------------------------
+# 외부 연결 인벤토리 — 위험(findings)과 분리된 "검토용 목록". 사용 금지가 아니라
+# 어디로 데이터가 나가는지 보안팀이 보게 한다. PII 인접·국외는 우선 검토 신호.
+# ---------------------------------------------------------------------------
+
+_CATEGORY_LABEL_KO = {
+    "ai": "외부 AI",
+    "analytics": "분석",
+    "error": "에러추적",
+    "payment": "결제",
+    "messaging": "메시지",
+    "library": "라이브러리",
+    "other": "기타",
+}
+
+
+def _external_stats(report: ScanReport) -> tuple[int, int, int, int]:
+    """(외부 API 수, 플러그인 수, 국외 전송 수, ⚠검토 필요 수)."""
+    api = [c for c in report.external_surface if c.kind == "api"]
+    pkg = [c for c in report.external_surface if c.kind == "package"]
+    gukoe = sum(1 for c in report.external_surface if c.region == "국외")
+    warn = sum(1 for c in report.external_surface if c.review_level == "warn")
+    return len(api), len(pkg), gukoe, warn
+
+
+def _cat_ko(cat: str) -> str:
+    return _CATEGORY_LABEL_KO.get(cat, cat)
+
+
 def _verdict_line(report: ScanReport) -> str:
     """One sentence an executive can read without scrolling."""
     summary = report.summary
@@ -434,6 +463,10 @@ def render_markdown(
             lines.append("```")
             lines.append("")
 
+    # --- 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) --------------
+    if report.external_surface:
+        lines.extend(_render_external_surface_md(report))
+
     if non_build_skips:
         lines.append("## 생략된 파일")
         lines.append("")
@@ -614,6 +647,29 @@ details.file .body{padding:6px 16px 14px}
   margin:10px 0;font-size:12.5px;font-family:"D2Coding","Consolas","Courier New",monospace;
   white-space:pre-wrap;word-break:break-all}
 .fixhdr{font-weight:700;font-size:14px;margin:14px 0 4px;color:#111827}
+/* 접기형 일반 섹션(수정 프롬프트·외부 연결 등) */
+details.sec{border:1px solid #e5e7eb;border-radius:8px;margin:14px 0;background:#fff;overflow:hidden}
+details.sec>summary{cursor:pointer;list-style:none;padding:13px 16px;font-weight:800;font-size:16px;background:#f3f4f6}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary::before{content:"▶  ";color:#9ca3af;font-size:12px}
+details.sec[open]>summary::before{content:"▼  "}
+details.sec>summary:hover{background:#eceef1}
+details.sec .secbody{padding:4px 16px 14px}
+/* 외부 연결 인벤토리 */
+.invnote{background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:11px 15px;
+  font-size:13px;color:#1e3a8a;margin:8px 0}
+.invnote .hl{color:#9a3412;font-weight:700}
+.subh{font-weight:800;font-size:14px;margin:14px 0 6px;color:#111827}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;color:#fff}
+.pill.ai{background:#7c3aed}.pill.analytics{background:#0891b2}.pill.error{background:#475569}
+.pill.payment{background:#b45309}.pill.messaging{background:#0d9488}
+.pill.library{background:#9ca3af}.pill.other{background:#6b7280}
+tr.w td{background:#fff7ed}
+.go{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700}
+.go.out{background:#fee2e2;color:#b91c1c}.go.in{background:#dcfce7;color:#166534}.go.q{background:#eef2f7;color:#64748b}
+.rev{display:inline-block;padding:1px 8px;border-radius:5px;font-size:11px;font-weight:700}
+.rev.warn{background:#fde2c8;color:#9a3412}.rev.info{background:#eef2f7;color:#64748b}
+.invcheck{background:#f8fafc;border-left:4px solid #2563eb;padding:9px 13px;font-size:12.5px;color:#334155;margin:12px 0 4px}
 @media print{
   body{background:#fff}
   .page{box-shadow:none;margin:0;max-width:none;border-radius:0;padding:0 6mm}
@@ -621,6 +677,8 @@ details.file .body{padding:6px 16px 14px}
   details.file{break-inside:avoid}
   details.file>summary::before{content:""}
   details.file>.body{display:block !important}
+  details.sec>summary::before{content:""}
+  details.sec>.secbody{display:block !important}
   pre,.fixprompt{white-space:pre-wrap}
 }
 """.strip()
@@ -746,6 +804,14 @@ def render_html(
         f'<div class="stat"><div class="num" style="color:{sev_col}">{sev_label}</div>'
         '<div class="lab">최고 심각도</div></div>'
     )
+    if report.external_surface:  # (A) 외부 연결 현황을 최상단 요약에 노출
+        n_api, n_pkg, gukoe, ext_warn = _external_stats(report)
+        sub = f"국외 {gukoe}" + (f"·⚠{ext_warn}" if ext_warn else "")
+        p.append(
+            f'<div class="stat"><div class="num" style="color:'
+            f'{"#c0392b" if ext_warn else "#1f2937"}">{n_api + n_pkg}</div>'
+            f'<div class="lab">외부 연결 ({sub})</div></div>'
+        )
     p.append("</div>")
 
     chips = []
@@ -832,8 +898,11 @@ def render_html(
                 p.extend(_render_rule_group_html(g))
             p.append("</div></details>")
 
-        # === 수정 프롬프트 (복사용) =====================================
-        p.append("<h2>수정 프롬프트 (복사해서 AI에게 전달)</h2>")
+        # === 수정 프롬프트 (복사용) — 기본 접기(B) =======================
+        p.append(
+            '<details class="sec"><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
+            '</summary><div class="secbody">'
+        )
         p.append(
             '<div class="buildnote" style="border-style:solid;border-color:#93c5fd;'
             'background:#eff6ff;color:#1e3a8a">💬 <b>가장 쉬운 방법</b> — 쓰던 AI 도구에 '
@@ -858,6 +927,11 @@ def render_html(
                 f'<a class="jump" href="#{anchor_of[fn]}">상세 ↓</a></span></li>'
             )
         p.append("</ul>")
+        p.append("</div></details>")
+
+    # === 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) ==============
+    if report.external_surface:
+        p.extend(_render_external_surface_html(report))
 
     # === 부록 ===========================================================
     if report.findings:
@@ -926,6 +1000,75 @@ def _fix_prompt_text(group: dict) -> str:
     return "\n".join(out)
 
 
+def _render_external_surface_html(report: ScanReport) -> list[str]:
+    """외부 연결 인벤토리 섹션(HTML) — 접기형. ⚠가 있으면 기본 펼침(절충)."""
+    api = [c for c in report.external_surface if c.kind == "api"]
+    pkg = [c for c in report.external_surface if c.kind == "package"]
+    n_api, n_pkg, gukoe, warn = _external_stats(report)
+    head_extra = ""
+    if gukoe or warn:
+        bits = []
+        if gukoe:
+            bits.append(f"국외 {gukoe}")
+        if warn:
+            bits.append(f"⚠개인정보 {warn}")
+        head_extra = f' · <span style="color:#c0392b">{" · ".join(bits)}</span>'
+    out: list[str] = [
+        f'<details class="sec inv"{" open" if warn else ""}>'
+        f"<summary>🌐 외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{head_extra}</summary>"
+        '<div class="secbody">',
+        '<div class="invnote">⚠ <b>사용 금지가 아닙니다.</b> 외부로 데이터를 보낼 수 있는 지점 '
+        '목록입니다. <span class="hl">⚠ 개인정보 인접</span>·<span class="hl">국외 전송</span>을 '
+        "먼저 확인하세요.</div>",
+    ]
+    if api:
+        out.append('<div class="subh">① 외부 API 호출 (검토 필요 먼저)</div>')
+        out.append(
+            "<table><tr><th>대상(호스트)</th><th>종류</th><th>모델</th><th>위치</th>"
+            "<th>이용 정보(요약)</th><th>국외</th><th>검토</th></tr>"
+        )
+        for c in api:
+            cls = ' class="w"' if c.review_level == "warn" else ""
+            region = c.region or "확인"
+            rcls = "out" if c.region == "국외" else ("in" if c.region == "국내" else "q")
+            rev = (
+                '<span class="rev warn">검토 필요</span>'
+                if c.review_level == "warn"
+                else '<span class="rev info">참고</span>'
+            )
+            out.append(
+                f"<tr{cls}><td>{_esc(c.target)}</td>"
+                f'<td><span class="pill {c.category}">{_esc(_cat_ko(c.category))}</span></td>'
+                f"<td>{_esc(c.model or '—')}</td><td>{_esc(c.location)}</td>"
+                f"<td>{_esc(c.data_summary)}</td>"
+                f'<td><span class="go {rcls}">{_esc(region)}</span></td><td>{rev}</td></tr>'
+            )
+        out.append("</table>")
+    if pkg:
+        out.append('<div class="subh">② 설치된 외부 플러그인 · 라이브러리</div>')
+        out.append(
+            "<table><tr><th>플러그인/라이브러리</th><th>버전</th><th>종류</th>"
+            "<th>이용 정보(요약)</th></tr>"
+        )
+        for c in pkg:
+            out.append(
+                f"<tr><td>{_esc(c.target)}</td><td>{_esc(c.version or '—')}</td>"
+                f'<td><span class="pill {c.category}">{_esc(_cat_ko(c.category))}</span></td>'
+                f"<td>{_esc(c.data_summary)}</td></tr>"
+            )
+        out.append("</table>")
+    out.append(
+        '<div class="invcheck"><b>검토 체크리스트</b> — ⚠ 지점마다: ① 무슨 데이터? '
+        "② 개인정보 포함? ③ 국외이전 동의·망분리·기관 AI정책 부합?</div>"
+    )
+    out.append(
+        '<div class="disc">※ <b>최소 목록</b>입니다 — 변수로 조립된 호스트는 누락될 수 있습니다. '
+        "'이용 정보·국외'는 검토를 돕는 신호이며 실제 전송 페이로드를 확정하지 않습니다.</div>"
+    )
+    out.append("</div></details>")
+    return out
+
+
 def _render_rule_group_html(group: dict) -> list[str]:
     """파일 안에서 같은 룰을 한 카드로 묶어 렌더(설명 1번 + 위치목록 + 외 N건)."""
     f: Finding = group["sample"]
@@ -979,6 +1122,50 @@ def _render_rule_group_html(group: dict) -> list[str]:
             f'<span class="val">{_esc(", ".join(f.references[:5]))}</span></div>'
         )
     out.append("</div>")
+    return out
+
+
+def _render_external_surface_md(report: ScanReport) -> list[str]:
+    """외부 연결 인벤토리 섹션(Markdown). MD는 접기가 없으므로 표로 펼쳐 출력."""
+    api = [c for c in report.external_surface if c.kind == "api"]
+    pkg = [c for c in report.external_surface if c.kind == "package"]
+    n_api, n_pkg, gukoe, warn = _external_stats(report)
+    out: list[str] = ["## 🌐 외부 연결 인벤토리 (보안팀 검토용)", ""]
+    out.append(
+        f"> ⚠ **사용 금지가 아닙니다.** 외부로 데이터를 보낼 수 있는 지점 목록입니다 "
+        f"(API {n_api} · 플러그인 {n_pkg} · 국외 {gukoe} · ⚠개인정보 {warn}). "
+        "⚠ 개인정보 인접·국외 전송을 먼저 확인하세요."
+    )
+    out.append("")
+    if api:
+        out.append("### ① 외부 API 호출 (검토 필요 먼저)")
+        out.append("")
+        out.append("| 대상(호스트) | 종류 | 모델 | 위치 | 이용 정보 | 국외 | 검토 |")
+        out.append("|---|---|---|---|---|---|---|")
+        for c in api:
+            mark = "⚠ 검토" if c.review_level == "warn" else "참고"
+            out.append(
+                f"| `{c.target}` | {_cat_ko(c.category)} | {c.model or '—'} | "
+                f"`{c.location}` | {c.data_summary} | {c.region or '확인'} | {mark} |"
+            )
+        out.append("")
+    if pkg:
+        out.append("### ② 설치된 외부 플러그인 · 라이브러리")
+        out.append("")
+        out.append("| 플러그인/라이브러리 | 버전 | 종류 | 이용 정보 |")
+        out.append("|---|---|---|---|")
+        for c in pkg:
+            out.append(f"| `{c.target}` | {c.version or '—'} | {_cat_ko(c.category)} | {c.data_summary} |")
+        out.append("")
+    out.append(
+        "> **검토 체크리스트** — ⚠ 지점마다: ① 무슨 데이터? ② 개인정보 포함? "
+        "③ 국외이전 동의·망분리·기관 AI정책 부합?"
+    )
+    out.append(
+        "> ※ 최소 목록 — 변수로 조립된 호스트는 누락될 수 있고, '이용 정보·국외'는 "
+        "검토 신호이며 페이로드 확정이 아닙니다."
+    )
+    out.append("")
     return out
 
 
