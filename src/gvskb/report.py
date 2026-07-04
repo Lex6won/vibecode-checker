@@ -564,14 +564,9 @@ def render_markdown(
     lines.append("## 결론")
     lines.append("")
     lines.append(f"> **{hero_text}**")
-    lines.append(">")
-    lines.append(f"> {_verdict_line(report)}")
-    lines.append(">")
-    # 배포 판정 — 보안팀이 이 리포트로 배포 승인 여부를 결정할 수 있게 명시.
-    deploy_text, _deploy_color = _deploy_verdict(report)
-    lines.append(f"> **배포 판정**: {deploy_text}")
     lines.append("")
 
+    # 대상·검사일시·프로파일 — 두괄식 결과(히어로) 바로 밑.
     lines.append(f"- **대상**: `{report.target}`")
     lines.append(f"- **검사일시**: {ts}")
     lines.append(f"- **프로파일**: {report.profile}")
@@ -579,6 +574,11 @@ def render_markdown(
         lines.append(f"- **시나리오**: {report.scenario}")
     if report.language:
         lines.append(f"- **언어 힌트**: {report.language}")
+    lines.append("")
+
+    # 배포 판정 — 보안팀이 이 리포트로 배포 승인 여부를 결정할 수 있게 명시.
+    deploy_text, _deploy_color = _deploy_verdict(report)
+    lines.append(f"> **배포 판정**: {deploy_text}")
     lines.append("")
 
     # --- ② 핵심 숫자 --------------------------------------------------------
@@ -645,7 +645,7 @@ def render_markdown(
 
     # --- ③ 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 --------------
     if report.findings:
-        lines.append("## 🧭 결과를 받았다면 — 다음 3단계만 하세요")
+        lines.append("## 🛠 조치 가이드 — 3단계만 따라 하세요")
         lines.append("")
         lines.append(f"**{_action_lead(report)}**")
         lines.append("")
@@ -1139,21 +1139,8 @@ def render_html(
     # === Layer 1 — 공무원용: 두괄식 판정 히어로 배너(가장 먼저·크게) ========
     hero_text, hero_color = _hero_line(report)
     p.append(f'<div class="hero" style="background:{hero_color}">{_esc(hero_text)}</div>')
-    # 판정 근거 한 줄(작게) — 히어로를 뒷받침
-    p.append(f'<div class="kv">{_esc(_verdict_line(report))}</div>')
 
-    # --- 배포 판정 — 보안팀 승인 근거가 되는 결론(항상 표시) ----------------
-    deploy_text, deploy_color = _deploy_verdict(report)
-    p.append(
-        f'<div class="deploy" style="border-color:{deploy_color};color:{deploy_color}">'
-        f"배포 판정 · {_esc(deploy_text)}</div>"
-    )
-
-    # === Layer 1 순서(이미지 기준): 대상 → 한눈에 보기 → 검토 범위·한계 →
-    #     면책 → 다음 3단계 → Top 3 → 정직성 배너. 상세는 Layer 2로. ========
-    build_skips = _build_artifact_skips(report)
-
-    # --- 대상·검사일시 ---
+    # --- 대상·검사일시·프로파일 — 두괄식 결과(빨간 히어로 박스) 바로 밑 -----
     p.append(f'<div class="meta"><b>대상</b> · {_esc(report.target)}</div>')
     p.append(
         f'<div class="meta"><b>검사일시</b> · {ts} &nbsp;·&nbsp; '
@@ -1166,6 +1153,18 @@ def render_html(
         if report.language:
             extra.append(f"언어 힌트 {_esc(report.language)}")
         p.append(f'<div class="meta">{" · ".join(extra)}</div>')
+
+    # --- 배포 판정 — 보안팀 승인 근거가 되는 결론(항상 표시) ----------------
+    deploy_text, deploy_color = _deploy_verdict(report)
+    p.append(
+        f'<div class="deploy" style="border-color:{deploy_color};color:{deploy_color}">'
+        f"배포 판정 · {_esc(deploy_text)}</div>"
+    )
+
+    # === Layer 1 순서(이미지 기준): (히어로·대상·배포판정은 위) →
+    #     한눈에 보기 → 검토 범위·한계 → 면책 → 조치 가이드 → Top 3 →
+    #     정직성 배너. 상세는 Layer 2로. ====================================
+    build_skips = _build_artifact_skips(report)
 
     # --- 한눈에 보기 (핵심 숫자) ---
     p.append("<h2>한눈에 보기</h2>")
@@ -1248,7 +1247,7 @@ def render_html(
     # --- 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 -----------------
     if report.findings:
         p.append('<div class="actionbox">')
-        p.append('<div class="ah">🧭 결과를 받았다면 — 다음 3단계만 하세요</div>')
+        p.append('<div class="ah">🛠 조치 가이드 — 3단계만 따라 하세요</div>')
         p.append(f'<div class="lead">{_esc(_action_lead(report))}</div>')
         p.append("<ol>")
         for title, desc, say in _ACTION_STEPS:
