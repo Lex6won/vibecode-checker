@@ -64,6 +64,16 @@ def reload_rules() -> int:
     return _reload_runtime_rules()
 
 
+def _current_scan_mode() -> str | None:
+    """Honest mode marker for the report — set only in offline (air-gapped) mode.
+
+    Online is the implicit default (``None``), so normal reports are unchanged.
+    In offline mode dependency/intel checks run against a local cache only, so
+    the report must say so — an unchecked package is 'not judged', not 'safe'.
+    """
+    return "offline" if os.environ.get("GVSKB_MODE", "").lower() == "offline" else None
+
+
 def _highest(findings: Iterable[Finding]) -> Severity | None:
     highest: Severity | None = None
     for finding in findings:
@@ -136,6 +146,7 @@ def scan_code(
         # 아니라 "위험 없음"으로 올바르게 결론나게 한다.
         scanned_files=[filename],
         external_surface=dedupe_connections(extract_api_connections(code, filename)),
+        scan_mode=_current_scan_mode(),
     )
 
 
@@ -301,6 +312,7 @@ def scan_path(
             findings=[],
             scanned_files=[],
             skipped_files=[SkippedFile(path=str(root), reason="path does not exist")],
+            scan_mode=_current_scan_mode(),
         )
 
     files_to_scan: list[Path] = []
@@ -421,6 +433,7 @@ def scan_path(
         scanned_files=scanned,
         skipped_files=skipped,
         external_surface=dedupe_connections(external),
+        scan_mode=_current_scan_mode(),
     )
 
 

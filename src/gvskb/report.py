@@ -266,11 +266,140 @@ def _verdict_line(report: ScanReport) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# 보안팀 제출용 강화 — 검토 범위·한계 고지 / 배포 판정 / 개인정보 요약 /
+# 실행 모드 배너 / 같은 줄 다중 지적. MD·HTML 렌더러가 공유한다.
+# ---------------------------------------------------------------------------
+
+# 한계 고지 — 비전문가가 "발견 0건 = 안전"으로 오해하지 않도록 문서 상단부에
+# 항상 고지한다(발견 유무와 무관). HTML은 핵심 문장만 굵게 강조하기 위해 분리.
+_LIMIT_HEAD = "본 도구는 정적 분석 기반의 1차 보안 린터입니다."
+_LIMIT_ZERO = "발견 0건이 '안전'을 보장하지 않습니다."
+_LIMIT_BODY = (
+    "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입, 설계·인가·업무로직상 취약점, "
+    "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 의존성(패키지) 취약점은 "
+    "scan_dependencies(또는 gvskb check-package)로 별도 점검하세요."
+)
+_LIMIT_TAIL = "본 결과는 보안담당자의 공식 보안성 검토를 대체하지 않습니다."
+
+
+def _ext_distribution(scanned_files: list[str]) -> Counter[str]:
+    """검사한 파일의 확장자 분포 — 검토 범위(어떤 언어/파일을 봤는지) 표기용."""
+    c: Counter[str] = Counter()
+    for fp in scanned_files:
+        name = fp.replace("\\", "/").rsplit("/", 1)[-1]
+        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else "(확장자 없음)"
+        c[ext] += 1
+    return c
+
+
+def _short_reason(reason: str) -> str:
+    """생략 사유를 집계용 짧은 라벨로 축약(긴 안내문은 앞부분만)."""
+    r = (reason or "기타").split("—")[0].strip()
+    return r if len(r) <= 30 else r[:29] + "…"
+
+
+def _unique_location_count(findings: list[Finding]) -> int:
+    """같은 (파일, 줄)을 1곳으로 세는 고유 위치 수 — 이중 계상 오해 방지."""
+    return len({(f.location.file, f.location.line) for f in findings})
+
+
+def _multi_rule_lines(findings: list[Finding]) -> list[dict]:
+    """한 줄에 여러 룰이 함께 걸린 위치 목록(표시 계층 전용 — core dedupe와 무관)."""
+    by_loc: dict[tuple[str, int], list[Finding]] = defaultdict(list)
+    for f in findings:
+        by_loc[(f.location.file, f.location.line)].append(f)
+    rows: list[dict] = []
+    for (fn, line), fs in sorted(by_loc.items()):
+        rules = sorted({f.rule_id for f in fs})
+        if len(rules) >= 2:
+            rows.append({"file": fn, "line": line, "rules": rules})
+    return rows
+
+
+# 개인정보·비밀값·LLM 프롬프트 관련 발견 분류 — 공공기관에서 가장 먼저 확인해야
+# 하는 유형이라 별도 요약으로 상단 부각한다.
+_PRIVACY_CATEGORY_KEYS = ("privacy-public-sector", "secret-scanning", "llm")
+_PRIVACY_RULE_KEYS = ("PII", "SECRET", "LLM")
+
+
+def _is_privacy_related(f: Finding) -> bool:
+    cat = (f.category or "").lower()
+    if any(k in cat for k in _PRIVACY_CATEGORY_KEYS):
+        return True
+    rid = (f.rule_id or "").upper()
+    return any(k in rid for k in _PRIVACY_RULE_KEYS)
+
+
+def _privacy_findings(findings: list[Finding]) -> list[Finding]:
+    return [f for f in findings if _is_privacy_related(f)]
+
+
+def _deploy_verdict(report: ScanReport) -> tuple[str, str]:
+    """운영서버 배포 판정 한 줄 + 표시 색 — 보안팀이 승인 근거로 쓰는 결론.
+
+    항상 '잔여 위험' 개념을 함께 언급해 도구 미탐지 영역이 남아 있음을 알린다.
+    """
+    s = report.summary
+    block_n = s.by_decision.get(Decision.block.value, 0)
+    warn_n = s.by_decision.get(Decision.warn.value, 0)
+    if s.finding_count == 0 and not report.scanned_files:
+        return (
+            "판정 불가 — 검사된 파일이 0개라 배포 가부를 판단할 수 없습니다. "
+            "경로·확장자를 확인해 다시 검사하세요.",
+            "#607d8b",
+        )
+    if s.blocked or block_n:
+        return (
+            f"🚫 배포 불가 — 차단(block) {block_n}건을 해소하거나 보안담당자 승인이 "
+            "필요합니다. 미해소 항목은 잔여 위험으로 남습니다.",
+            "#c0392b",
+        )
+    if s.finding_count:
+        return (
+            f"⚠ 조건부 — 경고 {warn_n}건을 검토한 후 배포하세요. 수정하지 않기로 한 "
+            "항목은 잔여 위험으로 기록·관리해야 합니다.",
+            "#e67e22",
+        )
+    return (
+        "✅ 심각 위험 미발견 — 단, 아래 '검토 범위 및 한계' 고지를 참조하세요. "
+        "본 도구가 탐지하지 못하는 영역은 잔여 위험으로 남습니다.",
+        "#2e7d32",
+    )
+
+
+def _scan_mode_note(report: ScanReport) -> str | None:
+    """실행 모드·인텔 기준일 배너 — scan_mode가 없으면 아무것도 표시하지 않음."""
+    mode = report.scan_mode
+    if not mode:
+        return None
+    fresh = report.intel_freshness or {}
+    dates = " · ".join(f"{k} {v}" for k, v in fresh.items())
+    if mode == "offline":
+        note = "🔌 오프라인(망분리) 검사 — 의존성·인텔 정보는 로컬 캐시 기준입니다"
+        if dates:
+            note += f" (기준일 {dates})"
+        note += (
+            ". 기준일 이후 공개된 취약점은 반영되지 않았을 수 있으므로 "
+            "미갱신 항목을 '안전'으로 간주하지 마세요."
+        )
+        return note
+    note = "🌐 온라인 검사 — 실시간 의존성·인텔 정보를 사용할 수 있는 모드에서 검사했습니다"
+    if dates:
+        note += f" (기준일 {dates})"
+    return note + "."
+
+
 def render_markdown(
     report: ScanReport,
     *,
     generated_at: datetime | None = None,
     reproduce_command: str | None = None,
+    agency: str = "",
+    department: str = "",
+    author: str = "",
+    doc_no: str = "",
+    reviewer: str = "",
 ) -> str:
     """Render a ScanReport as a self-contained Korean Markdown document.
 
@@ -279,6 +408,10 @@ def render_markdown(
         generated_at: timestamp shown in the header (defaults to now).
         reproduce_command: optional exact CLI command that produced this report.
             When omitted, a sensible default referencing the target is emitted.
+        agency / department / author / doc_no / reviewer: 결재용 문서 정보.
+            전부 기본 ""(미지정)이며, 하나라도 지정되면 문서 상단 결재 헤더와
+            문서 끝 결재란(검토자/승인자 서명)을 함께 출력한다. 미지정 시
+            기존과 동일하게 렌더된다(하위호환).
 
     The output is designed to be readable on its own — anyone can paste it into
     a Word document or print it without needing to query the MCP further.
@@ -289,11 +422,33 @@ def render_markdown(
     lines.append("# 코드 보안 검사 결과")
     lines.append("")
 
+    # --- 결재 헤더 (문서 정보가 하나라도 지정된 경우에만) -------------------
+    approval = any((agency, department, author, doc_no, reviewer))
+    if approval:
+        lines.append("| 기관 | 부서 | 작성자 | 문서번호 | 작성일 |")
+        lines.append("|---|---|---|---|---|")
+        lines.append(
+            f"| {agency or '—'} | {department or '—'} | {author or '—'} | "
+            f"{doc_no or '—'} | {ts.split(' ')[0]} |"
+        )
+        lines.append("")
+
     # --- 결론 (한 줄) -----------------------------------------------------
     lines.append("## 결론")
     lines.append("")
     lines.append(f"> {_verdict_line(report)}")
     lines.append("")
+
+    # 배포 판정 — 보안팀이 이 리포트로 배포 승인 여부를 결정할 수 있게 명시.
+    deploy_text, _deploy_color = _deploy_verdict(report)
+    lines.append(f"> **배포 판정**: {deploy_text}")
+    lines.append("")
+
+    # 실행 모드·인텔 기준일 — 값이 주입된 경우에만 표시(결론 하단).
+    mode_note = _scan_mode_note(report)
+    if mode_note:
+        lines.append(f"> {mode_note}")
+        lines.append("")
 
     # 의존성 매니페스트는 코드 스캔이 아니라 SCA로 검사해야 한다 — 코드 스캔
     # 결과만 보고 "의존성도 안전"으로 오해하지 않도록 결론 바로 아래에 강조한다.
@@ -348,7 +503,10 @@ def render_markdown(
     summary = report.summary
     non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
     lines.append(f"- 검사한 파일 수: **{len(report.scanned_files)}건**")
-    lines.append(f"- 발견된 위험: **{summary.finding_count}건**")
+    # 발견 건수와 고유 위치를 함께 표기 — 같은 줄에 여러 룰이 걸리면 건수가
+    # 위치 수보다 커지므로, 이중 계상으로 오해하지 않도록 두 수치를 같이 쓴다.
+    uniq_locs = _unique_location_count(report.findings)
+    lines.append(f"- 발견된 위험: **{summary.finding_count}건** · 고유 위치 **{uniq_locs}곳**")
     lines.append(f"- 차단(block): **{summary.by_decision.get(Decision.block.value, 0)}건**")
     if summary.highest_severity:
         lines.append(
@@ -370,6 +528,47 @@ def render_markdown(
             count = summary.by_severity.get(sev.value, 0)
             if count:
                 lines.append(f"| {_SEVERITY_LABEL_KO[sev]} ({sev.value}) | {count} |")
+        lines.append("")
+
+    # --- 검토 범위 및 한계 — 발견 유무와 무관하게 항상 상단부에 고지 --------
+    lines.append("## 검토 범위 및 한계")
+    lines.append("")
+    ext_dist = _ext_distribution(report.scanned_files)
+    ext_str = " · ".join(f"{ext} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    lines.append(
+        f"- **검토 범위**: 파일 {len(report.scanned_files)}건 ({ext_str}) — "
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다"
+    )
+    if report.skipped_files:
+        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
+        rs = " · ".join(f"{r} {n}건" for r, n in reason_counts.most_common())
+        lines.append(f"- **검사 제외**: {len(report.skipped_files)}건 — {rs} (아래 목록 참조)")
+    lines.append("")
+    lines.append(
+        f"> ⚠ **한계 고지** — {_LIMIT_HEAD} **{_LIMIT_ZERO}** {_LIMIT_BODY} **{_LIMIT_TAIL}**"
+    )
+    lines.append("")
+
+    # --- 개인정보·비밀값 요약 — 해당 발견이 있을 때만 상단 부각 ------------
+    pii = _privacy_findings(report.findings)
+    if pii:
+        pii_files = len({f.location.file for f in pii})
+        lines.append("## 🔑 개인정보·비밀값 요약")
+        lines.append("")
+        lines.append(
+            f"> 개인정보·비밀값 관련 발견 **{len(pii)}건** · 파일 {pii_files}개 — "
+            "노출된 비밀값(키·비밀번호)은 코드에서 지우는 것만으로 부족하며 반드시 "
+            "**재발급(폐기)** 해야 합니다. 개인정보 유출 정황이 있으면 기관 "
+            "개인정보보호 담당자에게 지체 없이 알리세요."
+        )
+        lines.append("")
+        lines.append("| 유형 | 룰 | 심각도 | 건수 | 위치 |")
+        lines.append("|---|---|---|---|---|")
+        for g in _rule_groups(pii):
+            lines.append(
+                f"| {g['title']} | `{g['rule_id']}` | {_SEVERITY_LABEL_KO[g['severity']]} | "
+                f"{g['count']} | {_locations_by_file(g['findings'])} |"
+            )
         lines.append("")
 
     by_file = _by_file(report.findings)
@@ -400,6 +599,26 @@ def render_markdown(
                 f"| `{fn.replace(chr(92), '/')}` | {_SEVERITY_LABEL_KO[msev]} | {len(ffs)} |"
             )
         lines.append("")
+
+        # 같은 (파일, 줄)에 여러 룰이 걸린 위치 — 표시 계층에서 묶어 보여
+        # "건수가 부풀려졌다"는 오해를 막는다(core dedupe와는 무관).
+        multi = _multi_rule_lines(report.findings)
+        if multi:
+            lines.append(
+                f"> ℹ️ **같은 줄 다중 지적** — 발견 {summary.finding_count}건 중 고유 위치는 "
+                f"{uniq_locs}곳입니다. 아래 위치는 한 줄에 여러 기준(룰)이 함께 걸린 곳으로, "
+                "한 곳을 고치면 관련 룰이 함께 해소됩니다."
+            )
+            lines.append("")
+            for m in multi[:12]:
+                rules = ", ".join(f"`{r}`" for r in m["rules"])
+                lines.append(
+                    f"- `{m['file'].replace(chr(92), '/')}:{m['line']}` — "
+                    f"관련 룰 {len(m['rules'])}개: {rules}"
+                )
+            if len(multi) > 12:
+                lines.append(f"- … 외 {len(multi) - 12}곳")
+            lines.append("")
 
         lines.append("## 가장 먼저 할 일 (Top 5)")
         lines.append("")
@@ -526,6 +745,17 @@ def render_markdown(
     lines.append("")
     lines.append("> " + report.disclaimer.replace("\n", " "))
     lines.append("")
+
+    # --- 결재란 (문서 정보가 지정된 경우에만 — 인쇄·서명용) ----------------
+    if approval:
+        lines.append("## 결재")
+        lines.append("")
+        lines.append("| 구분 | 성명 | 서명 | 일자 |")
+        lines.append("|---|---|---|---|")
+        lines.append(f"| 검토자 | {reviewer or ''} | ▢ | |")
+        lines.append("| 승인자 | | ▢ | |")
+        lines.append("")
+
     lines.append("---")
     lines.append("")
     lines.append("*생성: vibecode-checker · 공공 바이브코딩 보안 가드레일*")
@@ -670,6 +900,24 @@ tr.w td{background:#fff7ed}
 .rev{display:inline-block;padding:1px 8px;border-radius:5px;font-size:11px;font-weight:700}
 .rev.warn{background:#fde2c8;color:#9a3412}.rev.info{background:#eef2f7;color:#64748b}
 .invcheck{background:#f8fafc;border-left:4px solid #2563eb;padding:9px 13px;font-size:12.5px;color:#334155;margin:12px 0 4px}
+/* 배포 판정·실행 모드·검토 범위·개인정보 요약·결재란 (보안팀 제출용) */
+.deploy{border:2px solid #9ca3af;border-radius:8px;padding:12px 16px;font-weight:700;
+  font-size:14.5px;margin:0 0 12px;background:#fff;page-break-inside:avoid}
+.scanmode{background:#f0f9ff;border:1px solid #7dd3fc;border-radius:6px;
+  padding:9px 13px;font-size:13px;color:#075985;margin:8px 0}
+.scopebox{background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;
+  padding:12px 16px;font-size:13.5px;color:#78350f;margin:8px 0;page-break-inside:avoid}
+.piibox{border:2px solid #be185d;background:#fdf2f8;border-radius:10px;
+  padding:12px 16px;margin:14px 0;page-break-inside:avoid}
+.piibox .ph{font-weight:800;color:#9d174d;font-size:15px;margin-bottom:6px}
+.dupnote{background:#f8fafc;border:1px dashed #94a3b8;border-radius:6px;
+  padding:9px 13px;font-size:12.8px;color:#475569;margin:8px 0}
+table.apprv{margin:10px 0 14px}
+table.apprv th{background:#eef2f7;white-space:nowrap}
+.signrow{display:flex;gap:12px;margin:12px 0;page-break-inside:avoid}
+.signcell{flex:1;border:1px solid #9ca3af;border-radius:6px;padding:10px 14px;
+  min-height:72px;font-size:13px;color:#374151;background:#fff}
+.signcell .role{font-weight:700;margin-right:8px}
 @media print{
   body{background:#fff}
   .page{box-shadow:none;margin:0;max-width:none;border-radius:0;padding:0 6mm}
@@ -679,6 +927,9 @@ tr.w td{background:#fff7ed}
   details.file>.body{display:block !important}
   details.sec>summary::before{content:""}
   details.sec>.secbody{display:block !important}
+  /* 최신 Chromium/Edge는 닫힌 <details> 내용을 ::details-content 로 클리핑해
+     인쇄에서 상세가 통째로 빠진다 — 인쇄 시 강제로 펼친다(위 display 규칙 유지). */
+  details::details-content{content-visibility:visible !important;display:block !important;height:auto !important}
   pre,.fixprompt{white-space:pre-wrap}
 }
 """.strip()
@@ -703,6 +954,11 @@ def render_html(
     *,
     generated_at: datetime | None = None,
     reproduce_command: str | None = None,
+    agency: str = "",
+    department: str = "",
+    author: str = "",
+    doc_no: str = "",
+    reviewer: str = "",
 ) -> str:
     """Render a ScanReport as a self-contained Korean HTML document (card style).
 
@@ -710,6 +966,10 @@ def render_html(
     ``ScanReport`` so the two outputs never diverge. The HTML embeds all CSS
     inline (no external CDN/font/JS), so it opens in air-gapped environments,
     attaches to email, and prints to PDF for an approval record.
+
+    agency/department/author/doc_no/reviewer: 결재용 문서 정보(전부 기본 "").
+    하나라도 지정되면 상단 결재 헤더와 문서 끝 결재란을 함께 출력하고,
+    미지정 시 기존과 동일하게 렌더된다(하위호환).
     """
     ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     summary = report.summary
@@ -724,10 +984,35 @@ def render_html(
     p.append("<h1>🛡️ 코드 보안 검사 결과</h1>")
     p.append('<div class="sub">vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
 
+    # --- 결재 헤더 (문서 정보가 하나라도 지정된 경우에만) -------------------
+    approval = any((agency, department, author, doc_no, reviewer))
+    if approval:
+        p.append(
+            '<table class="apprv"><tr><th>기관</th><th>부서</th><th>작성자</th>'
+            "<th>문서번호</th><th>작성일</th></tr>"
+        )
+        p.append(
+            f"<tr><td>{_esc(agency or '—')}</td><td>{_esc(department or '—')}</td>"
+            f"<td>{_esc(author or '—')}</td><td>{_esc(doc_no or '—')}</td>"
+            f"<td>{_esc(ts.split(' ')[0])}</td></tr></table>"
+        )
+
     p.append(
         f'<div class="banner" style="background:{_verdict_css_color(report)}">'
         f"{_esc(_verdict_line(report))}</div>"
     )
+
+    # --- 배포 판정 — 보안팀 승인 근거가 되는 결론(항상 표시) ----------------
+    deploy_text, deploy_color = _deploy_verdict(report)
+    p.append(
+        f'<div class="deploy" style="border-color:{deploy_color};color:{deploy_color}">'
+        f"배포 판정 · {_esc(deploy_text)}</div>"
+    )
+
+    # --- 실행 모드·인텔 기준일 — 값이 주입된 경우에만(결론 하단) ------------
+    mode_note = _scan_mode_note(report)
+    if mode_note:
+        p.append(f'<div class="scanmode">{_esc(mode_note)}</div>')
 
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
     if manifest_skips:
@@ -791,9 +1076,11 @@ def render_html(
         f'<div class="stat"><div class="num">{len(report.scanned_files)}</div>'
         '<div class="lab">검사한 파일</div></div>'
     )
+    uniq_locs = _unique_location_count(report.findings)
+    find_lab = "발견된 위험" + (f" · 고유 위치 {uniq_locs}곳" if report.findings else "")
     p.append(
         f'<div class="stat"><div class="num">{summary.finding_count}</div>'
-        '<div class="lab">발견된 위험</div></div>'
+        f'<div class="lab">{find_lab}</div></div>'
     )
     p.append(
         f'<div class="stat"><div class="num" style="color:'
@@ -831,6 +1118,51 @@ def render_html(
             "공식 보안성 검토를 대체하지 않습니다.</div>"
         )
 
+    # === 검토 범위 및 한계 — 발견 유무와 무관하게 항상 상단부에 고지 ==========
+    p.append("<h2>검토 범위 및 한계</h2>")
+    ext_dist = _ext_distribution(report.scanned_files)
+    ext_str = " · ".join(f"{_esc(ext)} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    p.append(
+        f'<div class="kv"><b>검토 범위</b> — 파일 {len(report.scanned_files)}건 ({ext_str}) · '
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다</div>"
+    )
+    if report.skipped_files:
+        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
+        rs = " · ".join(f"{_esc(r)} {n}건" for r, n in reason_counts.most_common())
+        p.append(
+            f'<div class="kv"><b>검사 제외</b> — {len(report.skipped_files)}건 ({rs}) · '
+            "아래 '생략된 파일' 목록 참조</div>"
+        )
+    p.append(
+        f'<div class="scopebox">⚠ <b>한계 고지</b> — {_esc(_LIMIT_HEAD)} '
+        f"<b>{_esc(_LIMIT_ZERO)}</b> {_esc(_LIMIT_BODY)} <b>{_esc(_LIMIT_TAIL)}</b></div>"
+    )
+
+    # === 개인정보·비밀값 요약 — 해당 발견이 있을 때만 상단 부각 ==============
+    pii = _privacy_findings(report.findings)
+    if pii:
+        pii_files = len({f.location.file for f in pii})
+        p.append('<div class="piibox">')
+        p.append(
+            f'<div class="ph">🔑 개인정보·비밀값 요약 — {len(pii)}건 · 파일 {pii_files}개</div>'
+        )
+        p.append(
+            '<div class="kv" style="font-size:13px">노출된 비밀값(키·비밀번호)은 코드 삭제만으로 '
+            "부족합니다 — <b>반드시 재발급(폐기)</b>하고, 개인정보 유출 정황은 기관 "
+            "개인정보보호 담당자에게 지체 없이 알리세요.</div>"
+        )
+        p.append("<table><tr><th>유형</th><th>룰</th><th>심각도</th><th>건수</th><th>위치</th></tr>")
+        for g in _rule_groups(pii):
+            p.append(
+                f"<tr><td>{_esc(g['title'])}</td>"
+                f'<td><span class="tag">{_esc(g["rule_id"])}</span></td>'
+                f'<td class="sev"><span class="sevdot" style="background:'
+                f'{_SEVERITY_COLOR[g["severity"]]}">{_SEVERITY_LABEL_KO[g["severity"]]}</span></td>'
+                f'<td class="cnt">{g["count"]}</td>'
+                f"<td>{_esc(_locations_by_file(g['findings']))}</td></tr>"
+            )
+        p.append("</table></div>")
+
     by_file = _by_file(report.findings)
     ordered_files = _ordered_files(by_file)
     anchor_of = {fn: f"file-{i}" for i, fn in enumerate(ordered_files)}
@@ -865,6 +1197,24 @@ def render_html(
                 f'<td><a class="jump" href="#{anchor_of[fn]}">상세 ↓</a></td></tr>'
             )
         p.append("</table>")
+
+        # 같은 (파일, 줄)에 여러 룰이 걸린 위치 — 표시 계층에서 묶어 보여
+        # "건수가 부풀려졌다"는 오해를 막는다(core dedupe와는 무관).
+        multi = _multi_rule_lines(report.findings)
+        if multi:
+            items = " · ".join(
+                f"<b>{_esc(m['file'].replace(chr(92), '/'))}:{m['line']}</b>"
+                f" — 관련 룰 {len(m['rules'])}개 ({_esc(', '.join(m['rules']))})"
+                for m in multi[:12]
+            )
+            if len(multi) > 12:
+                items += f" · 외 {len(multi) - 12}곳"
+            p.append(
+                f'<div class="dupnote">ℹ️ <b>같은 줄 다중 지적</b> — 발견 '
+                f"{summary.finding_count}건 중 고유 위치는 {uniq_locs}곳입니다. "
+                f"한 줄에 여러 기준(룰)이 함께 걸린 위치: {items}. "
+                "한 곳을 고치면 관련 룰이 함께 해소됩니다.</div>"
+            )
 
         # --- 가장 먼저 할 일 Top5 --------------------------------------
         p.append("<h2>가장 먼저 할 일 (Top 5)</h2>")
@@ -977,6 +1327,20 @@ def render_html(
     p.append("<h2>면책</h2>")
     p.append(f'<div class="disc">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
 
+    # --- 결재란 (문서 정보가 지정된 경우에만 — 인쇄 시에도 유지) ------------
+    if approval:
+        p.append("<h2>결재</h2>")
+        p.append('<div class="signrow">')
+        p.append(
+            f'<div class="signcell"><span class="role">검토자</span>{_esc(reviewer)}'
+            '<br><span style="color:#9ca3af">서명 ▢ · 날짜 __________</span></div>'
+        )
+        p.append(
+            '<div class="signcell"><span class="role">승인자</span>'
+            '<br><span style="color:#9ca3af">서명 ▢ · 날짜 __________</span></div>'
+        )
+        p.append("</div>")
+
     p.append('<div class="foot">생성: vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
     p.append("</div></body></html>")
     return "\n".join(p)
@@ -1038,7 +1402,7 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
             )
             out.append(
                 f"<tr{cls}><td>{_esc(c.target)}</td>"
-                f'<td><span class="pill {c.category}">{_esc(_cat_ko(c.category))}</span></td>'
+                f'<td><span class="pill {_esc(c.category)}">{_esc(_cat_ko(c.category))}</span></td>'
                 f"<td>{_esc(c.model or '—')}</td><td>{_esc(c.location)}</td>"
                 f"<td>{_esc(c.data_summary)}</td>"
                 f'<td><span class="go {rcls}">{_esc(region)}</span></td><td>{rev}</td></tr>'
@@ -1053,7 +1417,7 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
         for c in pkg:
             out.append(
                 f"<tr><td>{_esc(c.target)}</td><td>{_esc(c.version or '—')}</td>"
-                f'<td><span class="pill {c.category}">{_esc(_cat_ko(c.category))}</span></td>'
+                f'<td><span class="pill {_esc(c.category)}">{_esc(_cat_ko(c.category))}</span></td>'
                 f"<td>{_esc(c.data_summary)}</td></tr>"
             )
         out.append("</table>")

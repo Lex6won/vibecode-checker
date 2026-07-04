@@ -268,6 +268,16 @@ class ScanReport(BaseModel):
         default_factory=list,
         description="외부 연결 인벤토리(검토용) — 위험 건수와 분리. 비어있으면 섹션 미표시.",
     )
+    # 실행 모드·인텔 기준일 — 상위(스캐너/서버)가 주입하는 선택 정보.
+    # None이면 리포트에 아무것도 표시하지 않는다(역호환: 구버전 JSON도 그대로 파싱).
+    scan_mode: str | None = Field(
+        default=None,
+        description="검사 실행 모드: 'online' | 'offline'(망분리). None이면 리포트에 미표시.",
+    )
+    intel_freshness: dict | None = Field(
+        default=None,
+        description="의존성·인텔 캐시 기준일(예: {'advisory_db': '2026-06-01'}). None이면 미표시.",
+    )
     disclaimer: str = (
         "이 결과는 자동 보안 보조 검토입니다. 공공기관 운영 반영 전에는 기관 보안 담당자의 "
         "정책과 최신 법령·지침을 함께 확인해야 합니다."
