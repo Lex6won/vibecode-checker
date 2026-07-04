@@ -107,6 +107,83 @@ def test_ast_skips_compile_to_regex_or_non_exec() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multi-line SQL injection — variable taint (assemble on one line, run on next)
+# ---------------------------------------------------------------------------
+
+def _sql_findings(code: str) -> list:
+    r = scan_code(code, filename="t.py", language="python")
+    return [f for f in r.findings if f.rule_id == "GOV-SQL-INJECTION-001"]
+
+
+def test_taint_detects_concat_query_run_next_line() -> None:
+    code = (
+        "query = \"SELECT * FROM citizens WHERE name = '\" + name + \"'\"\n"
+        "cur.execute(query)\n"
+    )
+    hits = _sql_findings(code)
+    assert hits, "multi-line concat SQL must be flagged"
+    assert hits[0].engine == "python-ast"
+    assert hits[0].location.line == 2  # flagged at the execute() sink
+
+
+def test_taint_detects_fstring_query_run_next_line() -> None:
+    code = 'q = f"SELECT * FROM u WHERE n = {name}"\ncursor.execute(q)\n'
+    assert _sql_findings(code)
+
+
+def test_taint_detects_format_query_run_next_line() -> None:
+    code = 'q = "SELECT * FROM u WHERE n = {}".format(name)\ndb.execute(q)\n'
+    assert _sql_findings(code)
+
+
+def test_taint_detects_query_used_inside_if_block() -> None:
+    code = 'q = "SELECT " + col + " FROM t"\nif ok:\n    cur.execute(q)\n'
+    assert _sql_findings(code)
+
+
+def test_taint_detects_executemany_and_executescript() -> None:
+    code = 'q = "INSERT INTO t VALUES (" + v + ")"\ncur.executemany(q, rows)\n'
+    assert _sql_findings(code)
+
+
+# Negative — safe / parameterised forms must never be flagged (keeps FP=0)
+
+def test_taint_skips_parameter_binding() -> None:
+    assert _sql_findings('cur.execute("SELECT * FROM t WHERE n = %s", (name,))\n') == []
+
+
+def test_taint_skips_qmark_binding() -> None:
+    assert _sql_findings('cur.execute("SELECT * FROM t WHERE id = ?", (uid,))\n') == []
+
+
+def test_taint_skips_constant_query_variable() -> None:
+    assert _sql_findings('q = "SELECT 1"\ncur.execute(q)\n') == []
+
+
+def test_taint_clears_on_reassignment_to_safe_value() -> None:
+    code = 'q = "..." + name\nq = "SELECT 1"\ncur.execute(q)\n'
+    assert _sql_findings(code) == []
+
+
+def test_taint_skips_non_string_concat() -> None:
+    """a + b with no string literal is not a SQL string build."""
+    assert _sql_findings('x = a + b\ncur.execute(x)\n') == []
+
+
+def test_taint_scope_isolation_between_functions() -> None:
+    """A tainted var in one function must not leak into another's execute()."""
+    code = (
+        "def build():\n"
+        "    q = \"SELECT \" + col\n"
+        "    return q\n"
+        "def run(q):\n"           # different scope, param q is untainted here
+        "    cur.execute(q)\n"
+    )
+    hits = _sql_findings(code)
+    assert all(f.location.line != 5 for f in hits)
+
+
+# ---------------------------------------------------------------------------
 # Adapter behaviour
 # ---------------------------------------------------------------------------
 
