@@ -414,6 +414,14 @@ def render_markdown(
     ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     lines: list[str] = []
 
+    # 승인된 예외(suppressed)는 본문 통계·상세에서 분리해 전용 섹션에만 표시.
+    # (summary는 스캐너가 이미 비억제 기준으로 계산했다)
+    suppressed = [f for f in report.findings if f.suppressed]
+    if suppressed:
+        report = report.model_copy(
+            update={"findings": [f for f in report.findings if not f.suppressed]}
+        )
+
     lines.append("# 코드 보안 검사 결과")
     lines.append("")
 
@@ -433,6 +441,9 @@ def render_markdown(
     if mode_note:
         lines.append(f"> {mode_note}")
         lines.append("")
+
+    # 승인된 예외 요약 — 게이트 판정 이해에 필수라 결론 근처에 표기.
+    lines.extend(_suppression_banner_md(report, suppressed))
 
     # 의존성 매니페스트는 코드 스캔이 아니라 SCA로 검사해야 한다 — 코드 스캔
     # 결과만 보고 "의존성도 안전"으로 오해하지 않도록 결론 바로 아래에 강조한다.
@@ -670,6 +681,9 @@ def render_markdown(
             lines.append(_fix_prompt_text(g))
             lines.append("```")
             lines.append("")
+
+    # --- 승인된 예외 내역 — 있을 때만 --------------------------------------
+    lines.extend(_render_suppressions_md(suppressed))
 
     # --- 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 -----------------
     lines.extend(_render_dependency_audit_md(report))
@@ -941,6 +955,12 @@ def render_html(
     상위 공문이 담당하므로 리포트 자체에는 결재 요소를 넣지 않는다.
     """
     ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
+    # 승인된 예외(suppressed)는 본문 통계·상세에서 분리해 전용 섹션에만 표시.
+    suppressed = [f for f in report.findings if f.suppressed]
+    if suppressed:
+        report = report.model_copy(
+            update={"findings": [f for f in report.findings if not f.suppressed]}
+        )
     summary = report.summary
     p: list[str] = []
     p.append("<!DOCTYPE html>")
@@ -969,6 +989,12 @@ def render_html(
     mode_note = _scan_mode_note(report)
     if mode_note:
         p.append(f'<div class="scanmode">{_esc(mode_note)}</div>')
+
+    # --- 승인된 예외 배너 — 게이트 판정 이해에 필수 -------------------------
+    for line in _suppression_banner_md(report, suppressed):
+        text = line.lstrip("> ").strip()
+        if text:
+            p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
 
     dep_audits = _dep_audits(report)
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
@@ -1240,6 +1266,9 @@ def render_html(
         p.append("</ul>")
         p.append("</div></details>")
 
+    # === 승인된 예외 내역 — 있을 때만 =====================================
+    p.extend(_render_suppressions_html(suppressed))
+
     # === 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ================
     p.extend(_render_dependency_audit_html(report))
 
@@ -1444,6 +1473,71 @@ def _render_rule_group_html(group: dict) -> list[str]:
             f'<span class="val">{_esc(", ".join(f.references[:5]))}</span></div>'
         )
     out.append("</div>")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 게이트만 통과.
+# 보안팀은 "무엇이 왜 면제됐고 언제 만료되나"를 항상 볼 수 있어야 한다.
+# ---------------------------------------------------------------------------
+
+
+def _suppression_banner_md(report: ScanReport, suppressed: list[Finding]) -> list[str]:
+    out: list[str] = []
+    ss = report.suppression_summary or {}
+    if suppressed:
+        out.append(
+            f"> ℹ️ **승인된 예외 {len(suppressed)}건 적용** — 요약 건수·배포 판정에서 "
+            "제외됐습니다. 아래 '승인된 예외 내역'에서 사유·승인자·만료일을 확인하세요."
+        )
+        out.append("")
+    for e in ss.get("expired", []) or []:
+        out.append(
+            f"> ⚠️ **만료된 예외** — `{e.get('rule_id', '?')}` ({e.get('file', '?')}) 의 예외가 "
+            f"{e.get('expires', '?')} 에 만료돼 **다시 차단 대상**입니다. 재승인하거나 수정하세요."
+        )
+        out.append("")
+    return out
+
+
+def _render_suppressions_md(suppressed: list[Finding]) -> list[str]:
+    if not suppressed:
+        return []
+    out: list[str] = ["## 승인된 예외 내역 (게이트 통과, 기록 유지)", ""]
+    out.append("| 룰 | 위치 | 심각도 | 사유(승인·만료 포함) |")
+    out.append("|---|---|---|---|")
+    for f in suppressed:
+        reason = (f.suppress_reason or "").replace("|", "\\|")  # MD 표 파이프 이스케이프
+        out.append(
+            f"| `{f.rule_id}` | `{f.location.file}:{f.location.line}` | "
+            f"{_SEVERITY_LABEL_KO[f.severity]} | {reason} |"
+        )
+    out.append("")
+    out.append("> 예외는 위험이 사라졌다는 뜻이 아닙니다 — 만료일이 지나면 자동으로 다시 차단됩니다.")
+    out.append("")
+    return out
+
+
+def _render_suppressions_html(suppressed: list[Finding]) -> list[str]:
+    if not suppressed:
+        return []
+    out: list[str] = [
+        '<details class="sec" open><summary>승인된 예외 내역 — '
+        f"{len(suppressed)}건 (게이트 통과, 기록 유지)</summary>",
+        '<div class="secbody">',
+        "<table><tr><th>룰</th><th>위치</th><th>심각도</th><th>사유(승인·만료 포함)</th></tr>",
+    ]
+    for f in suppressed:
+        out.append(
+            f"<tr><td>{_esc(f.rule_id)}</td>"
+            f"<td>{_esc(f.location.file)}:{f.location.line}</td>"
+            f"<td>{_esc(_SEVERITY_LABEL_KO[f.severity])}</td>"
+            f"<td>{_esc(f.suppress_reason or '')}</td></tr>"
+        )
+    out.append("</table>")
+    out.append('<div class="disc">예외는 위험이 사라졌다는 뜻이 아닙니다 — '
+               "만료일이 지나면 자동으로 다시 차단됩니다.</div>")
+    out.append("</div></details>")
     return out
 
 
@@ -1673,3 +1767,92 @@ def _render_finding_group_md(group: dict) -> list[str]:
 def _oneline(text: str, limit: int = 160) -> str:
     s = " ".join(text.split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+# ---------------------------------------------------------------------------
+# SARIF 2.1.0 — CI·보안도구 연동용 표준 출력 (GitHub code scanning 업로드 가능)
+# ---------------------------------------------------------------------------
+
+_SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
+
+
+def _sarif_level(f: Finding) -> str:
+    """SARIF level 매핑 — 차단(block)과 치명·높음은 error로."""
+    if f.decision == Decision.block:
+        return "error"
+    if f.severity in (Severity.critical, Severity.high):
+        return "error"
+    if f.severity == Severity.medium:
+        return "warning"
+    return "note"
+
+
+def render_sarif(report: ScanReport) -> dict:
+    """ScanReport → SARIF 2.1.0 dict.
+
+    CI 파이프라인(GitHub code scanning `upload-sarif`)이나 기관 보안도구가
+    표준 형식으로 결과를 수집할 수 있게 한다. 사람용 md/html과 동일한
+    ScanReport 하나에서 렌더되므로 내용이 갈라지지 않는다.
+    """
+    rule_index: dict[str, int] = {}
+    rules: list[dict] = []
+    results: list[dict] = []
+    for f in report.findings:
+        if f.rule_id not in rule_index:
+            rule_index[f.rule_id] = len(rules)
+            rules.append({
+                "id": f.rule_id,
+                "name": f.title or f.rule_id,
+                "shortDescription": {"text": f.plain_title or f.title or f.rule_id},
+                "fullDescription": {"text": (f.why_it_matters or "")[:1000]},
+                "helpUri": "https://github.com/Lex6won/vibecode-checker",
+                "defaultConfiguration": {"level": _sarif_level(f)},
+                "properties": {
+                    "severity": f.severity.value,
+                    "decision": f.decision.value,
+                    "category": f.category,
+                    "references": f.references[:5],
+                },
+            })
+        message = f.plain_title or f.title
+        if f.safe_fix:
+            message += f" — 수정 방향: {f.safe_fix.strip().splitlines()[0][:200]}"
+        entry = {
+            "ruleId": f.rule_id,
+            "ruleIndex": rule_index[f.rule_id],
+            "level": _sarif_level(f),
+            "message": {"text": message},
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": f.location.file.replace("\\", "/")},
+                    "region": {"startLine": max(1, f.location.line)},
+                },
+            }],
+            "partialFingerprints": {"gvskbFindingId": f.id},
+        }
+        if f.suppressed:
+            # SARIF 표준 억제 표기 — 도구들이 자동으로 '해결됨 아님, 면제됨'으로 처리
+            entry["suppressions"] = [{
+                "kind": "external",
+                "justification": (f.suppress_reason or "")[:500],
+            }]
+        results.append(entry)
+    return {
+        "$schema": _SARIF_SCHEMA,
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "vibecode-checker",
+                "informationUri": "https://github.com/Lex6won/vibecode-checker",
+                "rules": rules,
+            }},
+            "results": results,
+            "properties": {
+                "target": report.target,
+                "profile": report.profile,
+                "scan_mode": report.scan_mode or "online",
+                "scanned_files": len(report.scanned_files),
+                "disclaimer": report.disclaimer,
+            },
+        }],
+    }
