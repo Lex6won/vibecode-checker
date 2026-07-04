@@ -424,7 +424,7 @@ def scan_path(
             inventory_packages(parse_manifest_packages(mtext, eco), _rel(mpath, root, is_dir))
         )
 
-    return ScanReport(
+    report = ScanReport(
         target=str(root),
         scenario=scenario,
         profile=profile,
@@ -435,6 +435,10 @@ def scan_path(
         external_surface=dedupe_connections(external),
         scan_mode=_current_scan_mode(),
     )
+    # 감사로그(옵트인, GVSKB_AUDIT_DIR) — 공공 점검 이력 증빙. 실패해도 스캔은 계속.
+    from .audit import record_scan
+    record_scan(report, "scan_path")
+    return report
 
 
 def detect_secrets_and_pii(code: str, *, filename: str = "<memory>") -> ScanReport:

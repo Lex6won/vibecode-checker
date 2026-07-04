@@ -203,6 +203,43 @@ def check_semgrep() -> list[CheckResult]:
     )]
 
 
+def check_intel_cache() -> list[CheckResult]:
+    """인텔 캐시(악성 패키지·KEV) 존재·신선도 — 오프라인 운영의 1차 건강신호.
+
+    망분리 PC에서 doctor가 전체 OK인데 check-package는 전건 판정불가인 상황을
+    막는다: offline 모드에서 캐시가 없으면 WARN, 신선도 초과도 WARN.
+    """
+    try:
+        from .intel.cache import IntelCache, intel_max_age_days
+    except Exception as exc:  # pragma: no cover - defensive
+        return [_check("Intel cache", _WARN, "unavailable", note=str(exc))]
+
+    offline = os.environ.get("GVSKB_MODE", "").lower() == "offline"
+    cache = IntelCache()
+    results: list[CheckResult] = []
+    for sid in ("osv-malicious", "cisa-kev"):
+        entry = cache.load(sid)
+        if entry is None:
+            status = _WARN if offline else _OK
+            note = (
+                "캐시 없음 — offline에서는 check-package가 전부 '판정 불가'가 됩니다. "
+                "외부망에서 `gvskb update-intel --all` 후 캐시를 반입하세요."
+                if offline else "캐시 없음 (온라인은 실시간 OSV 조회를 사용)"
+            )
+            results.append(_check(f"Intel cache: {sid}", status, "missing", note=note))
+            continue
+        age = entry.age_days()
+        stale = entry.is_stale()
+        value = f"{entry.item_count} items · {'?' if age is None else age}일 경과"
+        note = f"fetched_at={entry.fetched_at or '<unknown>'}"
+        if entry.ecosystems:
+            note += f" · ecosystems={','.join(entry.ecosystems)}"
+        if stale:
+            note += f" · ⚠ 신선도 기준({intel_max_age_days()}일) 초과 — update-intel 권장"
+        results.append(_check(f"Intel cache: {sid}", _WARN if stale else _OK, value, note=note))
+    return results
+
+
 def check_osv(timeout: float = 3.0) -> list[CheckResult]:
     """Network probe. Returns WARN on failure — offline environments are valid."""
     try:
@@ -239,6 +276,7 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     checks.extend(check_rules(expected_minimum=expected_minimum))
     checks.extend(check_mcp_import())
     checks.extend(check_semgrep())
+    checks.extend(check_intel_cache())
     # GVSKB_MODE=offline implies no network checks regardless of --offline flag
     offline_env = os.environ.get("GVSKB_MODE", "").lower() == "offline"
     if network and not offline_env:
@@ -310,6 +348,28 @@ def runtime_status_for_mcp() -> dict:
         info["semgrep_available"] = SemgrepScanner().is_available()
     except Exception:
         info["semgrep_available"] = False
+    # 인텔 캐시 상태 — 에이전트가 오프라인에서 scan_dependencies 호출 전에
+    # 캐시 존재·신선도를 확인하고 사용자에게 고지할 수 있게 한다.
+    try:
+        from .intel.cache import IntelCache
+        cache = IntelCache()
+        intel: dict = {}
+        for sid in ("osv-malicious", "cisa-kev"):
+            entry = cache.load(sid)
+            if entry is None:
+                intel[sid] = {"present": False}
+            else:
+                intel[sid] = {
+                    "present": True,
+                    "item_count": entry.item_count,
+                    "fetched_at": entry.fetched_at,
+                    "age_days": entry.age_days(),
+                    "stale": entry.is_stale(),
+                    "ecosystems": entry.ecosystems,
+                }
+        info["intel_cache"] = intel
+    except Exception as exc:  # pragma: no cover - defensive
+        info["intel_cache"] = {"error": str(exc)}
     try:
         from .loader import load_all_rules
         rules = load_all_rules(rules_dir, strict=True)

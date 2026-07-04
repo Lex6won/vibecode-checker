@@ -132,3 +132,51 @@ def test_wheel_includes_runtime_policy_and_config_data() -> None:
     assert force_include["rules"] == "gvskb/rules"
     assert force_include["policies"] == "gvskb/policies"
     assert force_include["config"] == "gvskb/config"
+
+
+# ---------------------------------------------------------------------------
+# 인텔 캐시 진단 — 오프라인 운영의 1차 건강신호
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_intel_cache_warns_when_offline_and_missing(monkeypatch, tmp_path):
+    """망분리 + 캐시 없음 = check-package 전건 판정불가 상황 — doctor가 WARN으로 알린다."""
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path / "none"))
+    from gvskb.diagnostics import check_intel_cache
+
+    results = check_intel_cache()
+    assert len(results) == 2  # osv-malicious · cisa-kev
+    assert all(r["status"] == "warn" for r in results)
+    assert any("update-intel" in r.get("note", "") for r in results)
+
+
+def test_doctor_intel_cache_ok_when_fresh(monkeypatch, tmp_path):
+    monkeypatch.delenv("GVSKB_MODE", raising=False)
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    from gvskb.intel.cache import IntelCache
+
+    cache = IntelCache()
+    cache.save("osv-malicious", "https://example/x", [], ecosystems=["PyPI"])
+    cache.save("cisa-kev", "https://example/x", [])
+    from gvskb.diagnostics import check_intel_cache
+
+    results = check_intel_cache()
+    assert all(r["status"] == "ok" for r in results)
+
+
+def test_server_status_exposes_intel_cache(monkeypatch, tmp_path):
+    """에이전트가 scan_dependencies 전에 캐시 존재·신선도를 알 수 있어야 한다."""
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    from gvskb.intel.cache import IntelCache
+
+    IntelCache().save("osv-malicious", "https://example/x", [], ecosystems=["PyPI"])
+    from gvskb.diagnostics import runtime_status_for_mcp
+
+    info = runtime_status_for_mcp()
+    assert "intel_cache" in info
+    osv = info["intel_cache"]["osv-malicious"]
+    assert osv["present"] is True
+    assert osv["stale"] is False
+    assert osv["ecosystems"] == ["PyPI"]
+    assert info["intel_cache"]["cisa-kev"]["present"] is False

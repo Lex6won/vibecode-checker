@@ -19,6 +19,7 @@ from .scanner import (
     suggest_fix as suggest_fix_impl,
 )
 from .schema import ScanReport
+from .audit import record_scan
 from .search import simple_search
 from .tools.check_package import audit_manifest, check_package_impl
 
@@ -141,6 +142,7 @@ def scan_code(
         scenario=scenario,
         profile=profile,
     )
+    record_scan(report, "scan_code")  # 감사로그(옵트인) — scan_path는 스캐너가 직접 기록
     return report.model_dump(mode="json")
 
 
@@ -148,6 +150,7 @@ def scan_code(
 def detect_secrets_and_pii(code: str, filename: str = "<memory>") -> dict:
     """Detect secrets, Korean personal information, and internal network values."""
     report = detect_secrets_and_pii_impl(code, filename=filename)
+    record_scan(report, "detect_secrets_and_pii")
     return report.model_dump(mode="json")
 
 
