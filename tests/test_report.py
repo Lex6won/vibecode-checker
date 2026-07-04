@@ -27,11 +27,11 @@ def test_render_markdown_includes_required_sections() -> None:
 
     assert "# 코드 보안 검사 결과" in md
     assert "## 요약" in md
-    # Layer 2 — 보안팀 상세 검토(분야별) 에 발견 상세가 들어간다
-    assert "🔍 보안팀 상세 검토" in md
+    # Layer 2 — 상세 검토 결과(분야별) 에 발견 상세가 들어간다
+    assert "## 상세 검토 결과" in md
     assert "보안 분야 개요" in md
     assert "왜 위험한가" in md and "안전한 수정 방향" in md
-    assert "## 면책" in md
+    assert "자동 보안 보조 검토" in md  # 면책 문구(제목 없이 요약부)
     assert "GOV-SQL-INJECTION-001" in md
     assert "app.py" in md
     # severity label rendered in Korean
@@ -44,7 +44,7 @@ def test_render_markdown_empty_findings_clean_message() -> None:
 
     assert "## 파일별 발견 사항" not in md
     assert "발견된 위험이 없습니다" in md
-    assert "## 면책" in md
+    assert "자동 보안 보조 검토" in md  # 면책 문구는 제목 없이 유지
 
 
 def test_render_markdown_redacts_evidence(tmp_path: Path) -> None:
@@ -86,8 +86,7 @@ def test_render_markdown_includes_one_line_verdict() -> None:
 def test_render_markdown_empty_findings_verdict_is_clean() -> None:
     report = scan_code('print("hi")\n', filename="hi.py", language="python")
     md = render_markdown(report)
-    head = md.split("## 면책")[0]
-    assert "위험 없음" in head
+    assert "위험 없음" in md.split("## 상세 검토 결과")[0]
 
 
 def test_render_markdown_includes_reproduce_section() -> None:
@@ -133,7 +132,10 @@ def test_render_html_is_self_contained_document() -> None:
     # (출처 URL이 본문에 텍스트로 인용되는 것은 허용 — 아무것도 로딩하지 않음.
     #  동적 코드의 < 는 모두 이스케이프되므로 <img 등은 &lt;img 로만 나타난다.)
     lower = html.lower()
-    for tag in ("<script", "<iframe", "<link", "<img", "<object", "<embed"):
+    # 복사 버튼용 인라인 <script>는 외부 로딩이 아니므로 허용. 외부 리소스를
+    # '불러오는' 태그만 금지한다.
+    assert "<script src" not in lower
+    for tag in ("<iframe", "<link", "<img", "<object", "<embed"):
         assert tag not in lower, f"외부 로딩 가능 태그 발견: {tag}"
     assert "@import" not in lower
     assert "url(http" not in lower
@@ -145,7 +147,7 @@ def test_render_html_includes_findings_and_safe_fix() -> None:
     assert "왜 위험한가" in html
     assert "안전한 수정 방향" in html
     assert "app.py" in html
-    assert "면책" in html
+    assert "자동 보안 보조 검토" in html  # 면책 문구(제목 없이)
 
 
 def test_render_html_escapes_dynamic_content() -> None:
@@ -196,7 +198,7 @@ def test_render_html_reference_urls_are_text_not_loaded() -> None:
     html = render_html(report)
     assert "docs.python.org/3/library/secrets.html" in html  # 텍스트로 인용됨
     lower = html.lower()
-    for tag in ("<script", "<link", "<img", "<iframe"):
+    for tag in ("<script src", "<link", "<img", "<iframe"):
         assert tag not in lower
 
 
@@ -221,7 +223,7 @@ def test_render_html_has_two_layer_sections() -> None:
     for section in (
         "한눈에 보기",          # Layer 1 — 공무원 요약
         "가장 먼저 할 일",       # Layer 1 — Top 3
-        "보안팀 상세 검토",      # Layer 2 헤더
+        "상세 검토 결과",      # Layer 2 헤더
         "보안 분야 개요",        # Layer 2 — 분야 한눈에
         "수정 프롬프트",
     ):
@@ -239,8 +241,8 @@ def test_render_html_uses_pure_css_details_no_js() -> None:
     html = render_html(_report_with_findings())
     assert "<details" in html and "<summary" in html
     # 접기 동작에 외부/인라인 JS 를 쓰지 않는다(자체포함 원칙 유지).
-    assert "<script" not in html.lower()
-    assert "onclick" not in html.lower()
+    assert "<script src" not in html.lower()  # 외부 스크립트 로딩 없음(자체완결)
+    assert "onclick" not in html.lower()  # 인라인 핸들러 대신 이벤트 위임 사용
 
 
 def test_render_html_dedupes_same_rule_with_line_list() -> None:
@@ -261,7 +263,7 @@ def test_render_html_shows_build_artifact_note() -> None:
 
 def test_render_markdown_has_domain_sections_and_prompts() -> None:
     md = render_markdown(_report_with_findings())
-    assert "## 🔍 보안팀 상세 검토" in md
+    assert "## 상세 검토 결과" in md
     assert "### 보안 분야 개요" in md
     assert "## 가장 먼저 할 일" in md
     assert "## 수정 프롬프트" in md
@@ -273,7 +275,7 @@ def test_render_markdown_dedupes_same_rule_into_one_block() -> None:
     md = render_markdown(_multi_finding_report())
     # 같은 룰은 한 번만 설명되고 위치는 목록으로 합쳐진다("2건").
     head = md.split("## 수정 프롬프트")[0]
-    assert "🔍 보안팀 상세 검토" in head
+    assert "상세 검토 결과" in head
     assert "💉 주입" in head  # SQL 두 건이 '주입' 분야로 묶인다
     assert "2건" in md
 
@@ -297,8 +299,8 @@ def test_render_html_has_beginner_action_box() -> None:
 
 def test_render_markdown_has_beginner_action_box() -> None:
     md = render_markdown(_report_with_findings())
-    # Layer 1(공무원) — 보안팀 상세 검토(Layer 2)보다 위에 위치
-    head = md.split("## 🔍 보안팀 상세 검토")[0]
+    # Layer 1(공무원) — 상세 검토 결과(Layer 2)보다 위에 위치
+    head = md.split("## 상세 검토 결과")[0]
     assert "다음 3단계만 하세요" in head
     assert "안전하게 고쳐줘" in head
     assert "새로 발급" in head
@@ -325,10 +327,10 @@ def test_scope_and_limit_section_in_md_and_html() -> None:
         assert "발견 0건이" in out
         assert "보안성 검토를 대체하지 않습니다" in out
         assert "scan_dependencies" in out
-    # 상단부(부록 아님): 보안팀 상세 검토(Layer 2) 헤더보다 앞에 위치
+    # 상단부(부록 아님): 상세 검토 결과(Layer 2) 헤더보다 앞에 위치
     # (Top 3 안내가 헤더를 '참조'하므로 헤더 형태로 정확히 비교한다)
-    assert md.index("검토 범위 및 한계") < md.index("## 🔍 보안팀 상세 검토")
-    assert html.index("검토 범위 및 한계") < html.index("<h2>🔍 보안팀 상세 검토")
+    assert md.index("검토 범위 및 한계") < md.index("## 상세 검토 결과")
+    assert html.index("검토 범위 및 한계") < html.index("<h2>상세 검토 결과")
 
 
 def test_scope_section_present_even_when_clean() -> None:
@@ -737,3 +739,33 @@ def test_domain_section_expandable_shows_location_and_fix() -> None:
     assert "위치" in html or "line" in html
     assert "왜 위험한가" in html
     assert "안전한 수정 방향" in html
+
+
+# ---------------------------------------------------------------------------
+# 수정 프롬프트 복사 버튼 — '가장 쉬운 방법' 강조 + 인라인(외부 로딩 없음)
+# ---------------------------------------------------------------------------
+
+
+def test_fix_prompt_has_copy_buttons() -> None:
+    html = render_html(_report_with_findings())
+    # '가장 쉬운 방법' 강조 박스 + 복사 버튼
+    assert 'class="easyfix"' in html
+    assert "가장 쉬운 방법" in html
+    # 유형별 프롬프트마다 복사 버튼(data-copy)
+    assert html.count('class="copybtn"') >= 2
+    assert "data-copy=" in html
+    # 복사 동작은 인라인 스크립트로만(외부 로딩 없음)
+    assert "<script>" in html
+    assert "<script src" not in html.lower()
+    assert "navigator.clipboard" in html
+
+
+def test_copy_button_text_is_escaped() -> None:
+    # data-copy 에 들어가는 프롬프트 텍스트도 이스케이프돼야 한다(속성 주입 방지).
+    report = scan_code(
+        'el.innerHTML = "<img src=x onerror=alert(1)>"\n',
+        filename="x.js", language="javascript",
+    )
+    html = render_html(report)
+    assert 'onerror=alert(1)>"' not in html  # 원문 그대로 삽입 금지
+    assert "&lt;img" in html or "&quot;" in html

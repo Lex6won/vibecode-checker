@@ -158,7 +158,9 @@ def test_render_html_has_inventory_section_and_card() -> None:
 
 def test_render_html_inventory_is_self_contained() -> None:
     html = render_html(_report_with_external()).lower()
-    for tag in ("<script", "<iframe", "<link rel", "<img", "@import", "url(http"):
+    # 복사 버튼용 인라인 <script>는 외부 로딩이 아니므로 허용 — 외부 리소스를
+    # '불러오는' 태그만 금지한다(망분리·이메일에서도 아무것도 로드하지 않음).
+    for tag in ("<script src", "<iframe", "<link rel", "<img", "@import", "url(http"):
         assert tag not in html  # 외부 로딩 태그 없음
 
 

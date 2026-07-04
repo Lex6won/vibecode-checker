@@ -495,6 +495,30 @@ def _hero_line(report: ScanReport) -> tuple[str, str]:
     )
 
 
+def _pii_callout_md(pii: list[Finding]) -> list[str]:
+    """개인정보·비밀값 주의 콜아웃(Markdown) — '비밀값' 분야 바로 아래에 붙는다."""
+    pii_files = len({f.location.file for f in pii})
+    return [
+        f"> 🔑 **개인정보·비밀값 주의** — 관련 발견 **{len(pii)}건** · 파일 {pii_files}개. "
+        "노출된 비밀값(키·비밀번호)은 코드에서 지우는 것만으로 부족하며 반드시 "
+        "**재발급(폐기)** 해야 합니다. 개인정보 유출 정황이 있으면 기관 "
+        "개인정보보호 담당자에게 지체 없이 알리세요.",
+        "",
+    ]
+
+
+def _pii_callout_html(pii: list[Finding]) -> str:
+    """개인정보·비밀값 주의 콜아웃(HTML) — '비밀값' 분야 바로 아래에 붙는다."""
+    pii_files = len({f.location.file for f in pii})
+    return (
+        f'<div class="piibox"><div class="ph">🔑 개인정보·비밀값 주의 — '
+        f"{len(pii)}건 · 파일 {pii_files}개</div>"
+        '<div class="kv" style="font-size:13px">노출된 비밀값(키·비밀번호)은 코드 삭제만으로 '
+        "부족합니다 — <b>반드시 재발급(폐기)</b>하고, 개인정보 유출 정황은 기관 "
+        "개인정보보호 담당자에게 지체 없이 알리세요.</div></div>"
+    )
+
+
 def render_markdown(
     report: ScanReport,
     *,
@@ -596,6 +620,29 @@ def render_markdown(
         lines.append("> 공식 보안성 검토를 대체하지 않습니다.")
         lines.append("")
 
+    # --- ②-b 검토 범위 및 한계 — 요약 바로 아래(발견 유무와 무관하게 고지) ---
+    lines.append("## 검토 범위 및 한계")
+    lines.append("")
+    ext_dist = _ext_distribution(report.scanned_files)
+    ext_str = " · ".join(f"{ext} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    lines.append(
+        f"- **검토 범위**: 파일 {len(report.scanned_files)}건 ({ext_str}) — "
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다"
+    )
+    if report.skipped_files:
+        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
+        rs = " · ".join(f"{r} {n}건" for r, n in reason_counts.most_common())
+        lines.append(f"- **검사 제외**: {len(report.skipped_files)}건 — {rs} (아래 목록 참조)")
+    lines.append("")
+    lines.append(
+        f"> ⚠ **한계 고지** — {_LIMIT_HEAD} **{_LIMIT_ZERO}** {_LIMIT_BODY} **{_LIMIT_TAIL}**"
+    )
+    lines.append("")
+
+    # --- ②-c 면책 — 제목 없이 요약부에 함께(공문 붙임 문서 정직성) -----------
+    lines.append(f"> {report.disclaimer.replace(chr(10), ' ')}")
+    lines.append("")
+
     # --- ③ 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 --------------
     if report.findings:
         lines.append("## 🧭 결과를 받았다면 — 다음 3단계만 하세요")
@@ -625,7 +672,7 @@ def render_markdown(
             )
         lines.append("")
         lines.append(
-            "> 각 항목의 정확한 위치·수정 방법은 아래 '🔍 보안팀 상세 검토'의 "
+            "> 각 항목의 정확한 위치·수정 방법은 아래 '상세 검토 결과'의 "
             "분야별 카드에 있습니다."
         )
         lines.append("")
@@ -665,30 +712,11 @@ def render_markdown(
         )
         lines.append("")
 
-    # 검토 범위 및 한계 — 발견 유무와 무관하게 항상 결론 근처에 고지.
-    lines.append("## 검토 범위 및 한계")
-    lines.append("")
-    ext_dist = _ext_distribution(report.scanned_files)
-    ext_str = " · ".join(f"{ext} {n}건" for ext, n in ext_dist.most_common()) or "—"
-    lines.append(
-        f"- **검토 범위**: 파일 {len(report.scanned_files)}건 ({ext_str}) — "
-        "정적(소스코드) 검사이며 코드를 실행하지 않습니다"
-    )
-    if report.skipped_files:
-        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
-        rs = " · ".join(f"{r} {n}건" for r, n in reason_counts.most_common())
-        lines.append(f"- **검사 제외**: {len(report.skipped_files)}건 — {rs} (아래 목록 참조)")
-    lines.append("")
-    lines.append(
-        f"> ⚠ **한계 고지** — {_LIMIT_HEAD} **{_LIMIT_ZERO}** {_LIMIT_BODY} **{_LIMIT_TAIL}**"
-    )
-    lines.append("")
-
     # =====================================================================
-    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세 → 개인정보
-    # 콜아웃 → 외부 연결 → 의존성 → 승인 예외 → 수정 프롬프트 → 부록.
+    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(비밀값 분야
+    # 직후 개인정보 콜아웃) → 외부 연결 → 의존성 → 승인 예외 → 수정 프롬프트 → 부록.
     # =====================================================================
-    lines.append("## 🔍 보안팀 상세 검토")
+    lines.append("## 상세 검토 결과")
     lines.append("")
 
     domains = _group_by_domain(report.findings)
@@ -729,7 +757,11 @@ def render_markdown(
         lines.append("> 발견된 위험이 없어 분야별 상세가 없습니다.")
         lines.append("")
 
-    # --- ⑦ 분야별 상세 — 분야마다 룰 그룹 카드(위치·왜 위험·대응·근거) ------
+    # --- ⑦ 분야별 상세 — 분야마다 룰 그룹 카드(위치·왜 위험·대응·근거).
+    #     개인정보·비밀값 콜아웃은 '비밀값·인증정보 노출' 분야(없으면 개인정보
+    #     분야) 바로 아래에 붙여 최민감 항목을 그 자리에서 강조한다. -----------
+    pii = _privacy_findings(report.findings)
+    pii_anchor = max((d["order"] for d in domains if d["order"] <= 2), default=None)
     for d in domains:
         lines.append(
             f"### {d['label']} — {_SEVERITY_LABEL_KO[d['max_severity']]} · "
@@ -739,19 +771,10 @@ def render_markdown(
         for g in _rule_groups(d["findings"]):
             lines.extend(_render_finding_group_md(g))
             lines.append("")
-
-    # --- ⑧ 개인정보·비밀값 콜아웃 — 상세는 위 분야 1·2 섹션에 있다 ----------
-    pii = _privacy_findings(report.findings)
-    if pii:
-        pii_files = len({f.location.file for f in pii})
-        lines.append(
-            f"> 🔑 **개인정보·비밀값 주의** — 관련 발견 **{len(pii)}건** · 파일 {pii_files}개. "
-            "노출된 비밀값(키·비밀번호)은 코드에서 지우는 것만으로 부족하며 반드시 "
-            "**재발급(폐기)** 해야 합니다. 개인정보 유출 정황이 있으면 기관 "
-            "개인정보보호 담당자에게 지체 없이 알리세요. "
-            "(위치·수정 방법은 위 분야별 상세 참조)"
-        )
-        lines.append("")
+        if pii and d["order"] == pii_anchor:
+            lines.extend(_pii_callout_md(pii))
+    if pii and pii_anchor is None:  # PII가 다른 분야로만 분류된 드문 경우
+        lines.extend(_pii_callout_md(pii))
 
     # --- ⑨ 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) --------------
     if report.external_surface:
@@ -846,12 +869,7 @@ def render_markdown(
     )
     lines.append("")
 
-    # --- 면책 — 접지 않고 항상 표시 ----------------------------------------
-    lines.append("## 면책")
-    lines.append("")
-    lines.append("> " + report.disclaimer.replace("\n", " "))
-    lines.append("")
-
+    # (면책은 상단 '검토 범위 및 한계' 아래로 이동했다 — 여기서는 반복하지 않는다)
     lines.append("---")
     lines.append("")
     lines.append("*생성: vibecode-checker · 공공 바이브코딩 보안 가드레일*")
@@ -861,8 +879,10 @@ def render_markdown(
 
 # ---------------------------------------------------------------------------
 # HTML 리포트 — MD와 동일한 ScanReport 데이터에서 직접 렌더링하는 "카드 강조형".
-# 자체 포함 단일 파일(외부 CDN·폰트·JS 없음)이라 망분리·이메일·인쇄(→PDF)에
-# 그대로 쓸 수 있다. 동적 텍스트는 전부 html.escape 로 이스케이프한다.
+# 자체 포함 단일 파일(외부 CDN·폰트·외부 스크립트 없음 — 아무 리소스도 로드하지
+# 않는다)이라 망분리·이메일·인쇄(→PDF)에 그대로 쓸 수 있다. 복사 버튼용 인라인
+# 스크립트만 있으며 미지원 환경에선 텍스트가 그대로 보인다. 동적 텍스트는 전부
+# html.escape 로 이스케이프한다.
 # ---------------------------------------------------------------------------
 
 _SEVERITY_COLOR = {
@@ -1001,6 +1021,24 @@ tr.w td{background:#fff7ed}
 .piibox .ph{font-weight:800;color:#9d174d;font-size:15px;margin-bottom:6px}
 .dupnote{background:#f8fafc;border:1px dashed #94a3b8;border-radius:6px;
   padding:9px 13px;font-size:12.8px;color:#475569;margin:8px 0}
+/* 면책 박스(요약부로 이동) — 이미지의 어두운 테두리 박스 */
+.discbox{border:2px solid #111827;border-radius:8px;background:#fff;
+  padding:12px 16px;font-size:12.8px;color:#374151;margin:10px 0 14px;page-break-inside:avoid}
+/* 수정 프롬프트 — '가장 쉬운 방법' 강조 + 복사 버튼 */
+.easyfix{border:2px solid #2563eb;background:#eff6ff;border-radius:10px;
+  padding:12px 16px;margin:4px 0 12px;page-break-inside:avoid}
+.easyfix .eh{font-weight:800;color:#1e3a8a;font-size:15px;margin-bottom:4px}
+.easyfix .ed{font-size:12.8px;color:#334155;margin-bottom:8px}
+.easyrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.saycode{flex:1;min-width:200px;background:#fff;border:1px solid #bfdbfe;border-radius:6px;
+  padding:8px 10px;font-size:13px;color:#111827}
+.fixwrap{position:relative;margin:8px 0}
+.copybtn{cursor:pointer;border:1px solid #2563eb;background:#2563eb;color:#fff;
+  border-radius:6px;padding:5px 12px;font-size:12.5px;font-weight:700;white-space:nowrap}
+.copybtn:hover{background:#1d4ed8}
+.copybtn.ok{background:#16a34a;border-color:#16a34a}
+.fixwrap .copybtn{position:absolute;top:8px;right:8px}
+.fixwrap .fixprompt{padding-right:70px}
 @media print{
   body{background:#fff}
   .page{box-shadow:none;margin:0;max-width:none;border-radius:0;padding:0 6mm}
@@ -1013,6 +1051,41 @@ tr.w td{background:#fff7ed}
   details::details-content{content-visibility:visible !important;display:block !important;height:auto !important}
   pre,.fixprompt{white-space:pre-wrap}
 }
+""".strip()
+
+
+# 복사 버튼용 인라인 스크립트 — 외부 리소스를 전혀 로딩하지 않는다(자체완결 유지).
+# navigator.clipboard 우선, 미지원(file:// 등)이면 execCommand 폴백, 둘 다 안 되면
+# 프롬프트 텍스트가 그대로 보이므로 사용자가 직접 선택·복사할 수 있다(우아한 저하).
+_COPY_SCRIPT = """
+<script>
+(function () {
+  function fallback(t) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+      return Promise.resolve();
+    } catch (e) { return Promise.reject(e); }
+  }
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(t).catch(function () { return fallback(t); });
+    }
+    return fallback(t);
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('.copybtn') : null;
+    if (!b) return;
+    var t = b.getAttribute('data-copy') || '';
+    copyText(t).then(function () {
+      var o = b.textContent; b.textContent = '✓ 복사됨'; b.classList.add('ok');
+      setTimeout(function () { b.textContent = o; b.classList.remove('ok'); }, 1500);
+    }).catch(function () { b.textContent = '직접 선택해 복사하세요'; });
+  });
+})();
+</script>
 """.strip()
 
 
@@ -1040,7 +1113,7 @@ def render_html(
 
     Same content as :func:`render_markdown` — both render from the one
     ``ScanReport`` so the two outputs never diverge. The HTML embeds all CSS
-    inline (no external CDN/font/JS), so it opens in air-gapped environments,
+    inline (no external CDN/font/script — loads nothing), so it opens in air-gapped environments,
     attaches to email, and prints to PDF as a 붙임 document. 결재(서명)는
     상위 공문이 담당하므로 리포트 자체에는 결재 요소를 넣지 않는다.
     """
@@ -1076,78 +1149,11 @@ def render_html(
         f"배포 판정 · {_esc(deploy_text)}</div>"
     )
 
-    # --- 실행 모드·인텔 기준일 — 값이 주입된 경우에만(결론 하단) ------------
-    mode_note = _scan_mode_note(report)
-    if mode_note:
-        p.append(f'<div class="scanmode">{_esc(mode_note)}</div>')
-
-    # --- 승인된 예외 배너 — 게이트 판정 이해에 필수 -------------------------
-    for line in _suppression_banner_md(report, suppressed):
-        text = line.lstrip("> ").strip()
-        if text:
-            p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
-
-    dep_audits = _dep_audits(report)
-    manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
-    if dep_audits:
-        # markdown 강조(**)를 <b>로 바꿔 배너 문구를 HTML에서도 동일하게 쓴다.
-        banner = _esc(_dep_banner_text(dep_audits)).replace("**", "")
-        p.append(f'<div class="depwarn">{banner}</div>')
-    elif manifest_skips:
-        names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
-        p.append(
-            '<div class="depwarn">⚠️ <b>의존성 검사 별도 필요</b> — '
-            f"{_esc(names)} 은(는) 코드 스캔 대상이 아닙니다. 취약·악성 패키지는 "
-            '<code class="ev">gvskb check-package</code> 또는 MCP '
-            '<code class="ev">scan_dependencies</code>로 따로 검사하세요.</div>'
-        )
-
+    # === Layer 1 순서(이미지 기준): 대상 → 한눈에 보기 → 검토 범위·한계 →
+    #     면책 → 다음 3단계 → Top 3 → 정직성 배너. 상세는 Layer 2로. ========
     build_skips = _build_artifact_skips(report)
-    if build_skips:
-        p.append(
-            f'<div class="buildnote">🧹 빌드 산출물 {len(build_skips)}건 제외 — '
-            "압축·번들·캐시 파일은 원본 소스가 아니라 검사 대상에서 자동 제외했습니다 "
-            "(오탐 방지).</div>"
-        )
 
-    # === 다음 할 일 (초보자용 행동 안내) — 결론 바로 밑, 발견이 있을 때만 ======
-    if report.findings:
-        p.append('<div class="actionbox">')
-        p.append('<div class="ah">🧭 결과를 받았다면 — 다음 3단계만 하세요</div>')
-        p.append(f'<div class="lead">{_esc(_action_lead(report))}</div>')
-        p.append("<ol>")
-        for title, desc, say in _ACTION_STEPS:
-            li = f"<b>{_esc(title)}</b> · {_esc(desc)}"
-            if say:
-                li += f'<br><span class="say">▶ {_esc(say)}</span>'
-            if title == "고치기":
-                li += '<br><span style="font-size:12.5px;color:#475569">' \
-                      "(또는 아래 '수정 프롬프트' 칸을 복사해 붙여넣으세요)</span>"
-            p.append(f"<li>{li}</li>")
-        p.append("</ol>")
-        p.append(f'<div class="caveat">⚠ <b>{_esc(_ACTION_CAVEAT)}</b></div>')
-        p.append("</div>")
-
-    # --- 가장 먼저 할 일 (Top 3) — 공무원이 뭘 먼저 고칠지 ------------------
-    if report.findings:
-        p.append("<h2>가장 먼저 할 일 (Top 3)</h2>")
-        p.append('<ul class="todo">')
-        for g in _top_actions(report.findings, 3):
-            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
-            p.append(
-                f'<li><span class="box">☐</span>'
-                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
-                f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
-                f"<b>{_esc(g['title'])}</b>"
-                f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
-                f'{_esc(g["rule_id"])}</span></li>'
-            )
-        p.append("</ul>")
-        p.append(
-            '<div class="kv" style="font-size:12.5px;color:#64748b">각 항목의 정확한 위치·수정 '
-            "방법은 아래 '🔍 보안팀 상세 검토'의 분야별 카드에 있습니다.</div>"
-        )
-
+    # --- 대상·검사일시 ---
     p.append(f'<div class="meta"><b>대상</b> · {_esc(report.target)}</div>')
     p.append(
         f'<div class="meta"><b>검사일시</b> · {ts} &nbsp;·&nbsp; '
@@ -1161,7 +1167,7 @@ def render_html(
             extra.append(f"언어 힌트 {_esc(report.language)}")
         p.append(f'<div class="meta">{" · ".join(extra)}</div>')
 
-    # === 1페이지 요약 (안 접힘) — 결론·핵심숫자·위험유형·파일요약·할일 ============
+    # --- 한눈에 보기 (핵심 숫자) ---
     p.append("<h2>한눈에 보기</h2>")
     top_sev = summary.highest_severity
     block_n = summary.by_decision.get(Decision.block.value, 0)
@@ -1236,11 +1242,81 @@ def render_html(
         f"<b>{_esc(_LIMIT_ZERO)}</b> {_esc(_LIMIT_BODY)} <b>{_esc(_LIMIT_TAIL)}</b></div>"
     )
 
+    # --- 면책 — 제목 없이 요약부에 함께(공문 붙임 정직성) -------------------
+    p.append(f'<div class="discbox">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
+
+    # --- 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 -----------------
+    if report.findings:
+        p.append('<div class="actionbox">')
+        p.append('<div class="ah">🧭 결과를 받았다면 — 다음 3단계만 하세요</div>')
+        p.append(f'<div class="lead">{_esc(_action_lead(report))}</div>')
+        p.append("<ol>")
+        for title, desc, say in _ACTION_STEPS:
+            li = f"<b>{_esc(title)}</b> · {_esc(desc)}"
+            if say:
+                li += f'<br><span class="say">▶ {_esc(say)}</span>'
+            if title == "고치기":
+                li += '<br><span style="font-size:12.5px;color:#475569">' \
+                      "(또는 아래 '수정 프롬프트' 칸의 복사 버튼을 쓰세요)</span>"
+            p.append(f"<li>{li}</li>")
+        p.append("</ol>")
+        p.append(f'<div class="caveat">⚠ <b>{_esc(_ACTION_CAVEAT)}</b></div>')
+        p.append("</div>")
+
+    # --- 가장 먼저 할 일 (Top 3) — 공무원이 뭘 먼저 고칠지 ------------------
+    if report.findings:
+        p.append("<h2>가장 먼저 할 일 (Top 3)</h2>")
+        p.append('<ul class="todo">')
+        for g in _top_actions(report.findings, 3):
+            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+            p.append(
+                f'<li><span class="box">☐</span>'
+                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
+                f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
+                f"<b>{_esc(g['title'])}</b>"
+                f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
+                f'{_esc(g["rule_id"])}</span></li>'
+            )
+        p.append("</ul>")
+        p.append(
+            '<div class="kv" style="font-size:12.5px;color:#64748b">각 항목의 정확한 위치·수정 '
+            "방법은 아래 '상세 검토 결과'의 분야별 카드에 있습니다.</div>"
+        )
+
+    # --- 정직성 배너 — 실행 모드·승인 예외·의존성·빌드 제외 -----------------
+    mode_note = _scan_mode_note(report)
+    if mode_note:
+        p.append(f'<div class="scanmode">{_esc(mode_note)}</div>')
+    for line in _suppression_banner_md(report, suppressed):
+        text = line.lstrip("> ").strip()
+        if text:
+            p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
+    dep_audits = _dep_audits(report)
+    manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
+    if dep_audits:
+        banner = _esc(_dep_banner_text(dep_audits)).replace("**", "")
+        p.append(f'<div class="depwarn">{banner}</div>')
+    elif manifest_skips:
+        names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
+        p.append(
+            '<div class="depwarn">⚠️ <b>의존성 검사 별도 필요</b> — '
+            f"{_esc(names)} 은(는) 코드 스캔 대상이 아닙니다. 취약·악성 패키지는 "
+            '<code class="ev">gvskb check-package</code> 또는 MCP '
+            '<code class="ev">scan_dependencies</code>로 따로 검사하세요.</div>'
+        )
+    if build_skips:
+        p.append(
+            f'<div class="buildnote">🧹 빌드 산출물 {len(build_skips)}건 제외 — '
+            "압축·번들·캐시 파일은 원본 소스가 아니라 검사 대상에서 자동 제외했습니다 "
+            "(오탐 방지).</div>"
+        )
+
     # =====================================================================
-    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(펼치기) →
-    # 개인정보 콜아웃 → 외부 연결 → 의존성 → 승인 예외 → 수정 프롬프트 → 부록
+    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(펼치기,
+    # 비밀값 분야 직후 개인정보 콜아웃) → 외부 연결 → 의존성 → 승인 예외 →
+    # 수정 프롬프트 → 부록
     # =====================================================================
-    p.append("<h2>🔍 보안팀 상세 검토</h2>")
+    p.append("<h2>상세 검토 결과</h2>")
     p.append(
         '<div class="kv">아래 <b>보안 분야</b>를 펼치면 위치·취약점 설명·대응방안·근거를 '
         "확인할 수 있습니다. 치명·차단 분야는 기본 펼쳐져 있습니다.</div>"
@@ -1280,7 +1356,10 @@ def render_html(
     else:
         p.append('<div class="disc">발견된 위험이 없어 분야별 상세가 없습니다.</div>')
 
-    # --- 분야별 상세 — 분야마다 <details>(치명·차단 분야는 기본 펼침) --------
+    # --- 분야별 상세 — 분야마다 <details>(치명·차단 분야는 기본 펼침).
+    #     개인정보·비밀값 콜아웃은 '비밀값' 분야(없으면 개인정보) 바로 아래. -----
+    pii = _privacy_findings(report.findings)
+    pii_anchor = max((d["order"] for d in domains if d["order"] <= 2), default=None)
     for d in domains:
         opn = " open" if _domain_has_blocker(d["findings"]) else ""
         p.append(
@@ -1293,19 +1372,10 @@ def render_html(
         for g in _rule_groups(d["findings"]):
             p.extend(_render_rule_group_html(g))
         p.append("</div></details>")
-
-    # --- 개인정보·비밀값 콜아웃 — 상세는 위 분야 1·2에 있음 -----------------
-    pii = _privacy_findings(report.findings)
-    if pii:
-        pii_files = len({f.location.file for f in pii})
-        p.append(
-            f'<div class="piibox"><div class="ph">🔑 개인정보·비밀값 주의 — '
-            f"{len(pii)}건 · 파일 {pii_files}개</div>"
-            '<div class="kv" style="font-size:13px">노출된 비밀값(키·비밀번호)은 코드 삭제만으로 '
-            "부족합니다 — <b>반드시 재발급(폐기)</b>하고, 개인정보 유출 정황은 기관 "
-            "개인정보보호 담당자에게 지체 없이 알리세요. "
-            "(위치·수정 방법은 위 분야별 상세 참조)</div></div>"
-        )
+        if pii and d["order"] == pii_anchor:
+            p.append(_pii_callout_html(pii))
+    if pii and pii_anchor is None:
+        p.append(_pii_callout_html(pii))
 
     # === 승인된 예외 내역 — 있을 때만 =====================================
     p.extend(_render_suppressions_html(suppressed))
@@ -1317,20 +1387,29 @@ def render_html(
     if report.external_surface:
         p.extend(_render_external_surface_html(report))
 
-    # === 수정 프롬프트 (복사용) — 기본 접기 ===============================
+    # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     if report.findings:
         p.append(
-            '<details class="sec"><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
+            '<details class="sec" open><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
             '</summary><div class="secbody">'
         )
+        # ① 가장 쉬운 방법 — 강조 박스 + 한 줄 프롬프트 복사 버튼
         p.append(
-            '<div class="buildnote" style="border-style:solid;border-color:#93c5fd;'
-            'background:#eff6ff;color:#1e3a8a">💬 <b>가장 쉬운 방법</b> — 쓰던 AI 도구에 '
-            f'"{_esc(_SAY_FIX)}" 라고 말하면 끝입니다. 아래 블록은 유형별로 따로 '
-            "복사해 쓰고 싶을 때 사용하세요.</div>"
+            '<div class="easyfix"><div class="eh">💬 가장 쉬운 방법</div>'
+            '<div class="ed">쓰던 AI 도구(커서·클로드 코드 등)에 아래 문장을 그대로 '
+            "붙여넣으면 끝입니다. 아래 유형별 블록은 필요할 때 따로 복사하세요.</div>"
+            f'<div class="easyrow"><code class="saycode">{_esc(_SAY_FIX)}</code>'
+            f'<button type="button" class="copybtn" data-copy="{_esc(_SAY_FIX)}">📋 복사</button>'
+            "</div></div>"
         )
+        # ② 유형별 수정 프롬프트 — 각 블록마다 복사 버튼
         for g in _rule_groups(report.findings):
-            p.append(f'<div class="fixprompt">{_esc(_fix_prompt_text(g))}</div>')
+            text = _fix_prompt_text(g)
+            p.append(
+                '<div class="fixwrap">'
+                f'<button type="button" class="copybtn" data-copy="{_esc(text)}">📋 복사</button>'
+                f'<div class="fixprompt">{_esc(text)}</div></div>'
+            )
         p.append("</div></details>")
 
     # === 부록 (기술 정보) — 기본 접기 ====================================
@@ -1373,11 +1452,13 @@ def render_html(
     p.append("</ol>")
     p.append("</div></details>")
 
-    p.append("<h2>면책</h2>")
-    p.append(f'<div class="disc">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
-
+    # (면책은 상단 '검토 범위 및 한계' 아래로 이동했다 — 여기서는 반복하지 않는다)
     p.append('<div class="foot">생성: vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
-    p.append("</div></body></html>")
+    p.append("</div>")  # .page
+    # 복사 버튼용 인라인 스크립트(외부 리소스 로딩 없음 — 자체완결 유지).
+    # 클립보드 미지원 환경에서도 프롬프트 텍스트는 그대로 보인다(우아한 저하).
+    p.append(_COPY_SCRIPT)
+    p.append("</body></html>")
     return "\n".join(p)
 
 
