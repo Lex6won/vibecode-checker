@@ -80,19 +80,19 @@ def test_render_markdown_includes_one_line_verdict() -> None:
     md = render_markdown(_report_with_findings())
     assert "## 결론" in md
     head = md.split("## 요약")[0]
-    # 한 줄 결론은 히어로 문장 + 배포 판정으로 표현된다(차단권고 줄은 제거됨).
+    # 한 줄 결론은 승인/미승인 박스 + 배포 판정으로 표현된다(차단권고 줄은 제거됨).
     assert "배포 판정" in head
     assert (
-        "배포하면 안 됩니다" in head
-        or "고칠 것이 있습니다" in head
-        or "심각한 위험은 발견되지 않았습니다" in head
+        "배포 미승인" in head
+        or "배포 보류" in head
+        or "배포 승인 가능" in head
     )
 
 
 def test_render_markdown_empty_findings_verdict_is_clean() -> None:
     report = scan_code('print("hi")\n', filename="hi.py", language="python")
     md = render_markdown(report)
-    assert "심각한 위험은 발견되지 않았습니다" in md.split("## 상세 검토 결과")[0]
+    assert "배포 승인 가능" in md.split("## 상세 검토 결과")[0]
 
 
 def test_render_markdown_includes_reproduce_section() -> None:
@@ -171,7 +171,7 @@ def test_render_html_escapes_dynamic_content() -> None:
 def test_render_html_empty_findings_clean_banner() -> None:
     report = scan_code('print("hi")\n', filename="hi.py", language="python")
     html = render_html(report)
-    assert "심각한 위험은 발견되지 않았습니다" in html
+    assert "배포 승인 가능" in html
     assert html.startswith("<!DOCTYPE html>")
 
 

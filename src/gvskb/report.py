@@ -495,6 +495,74 @@ def _hero_line(report: ScanReport) -> tuple[str, str]:
     )
 
 
+# 배포 승인/미승인 — 두괄식 결과 박스(초록=승인 · 빨강=미승인 · 주황=보류).
+_VERDICT_TONE = {
+    "ok": ("배포 승인 가능", "✅"),
+    "block": ("배포 미승인 — 차단", "🚫"),
+    "warn": ("배포 보류 — 확인 필요", "⚠"),
+    "none": ("판정 불가", "❔"),
+}
+
+
+def _deploy_status(report: ScanReport) -> str:
+    """배포 판정 tone: 'ok'(초록) | 'block'(빨강) | 'warn'(주황) | 'none'(회색)."""
+    s = report.summary
+    if s.finding_count == 0 and not report.scanned_files:
+        return "none"
+    if s.finding_count == 0:
+        return "ok"
+    if s.blocked or s.by_decision.get(Decision.block.value, 0):
+        return "block"
+    return "warn"
+
+
+def _verdict_box_md(report: ScanReport) -> list[str]:
+    """결론 = 승인/미승인 박스(Markdown). 색은 HTML에서만 — MD는 이모지·문구로."""
+    tone = _deploy_status(report)
+    label, emoji = _VERDICT_TONE[tone]
+    deploy_text, _ = _deploy_verdict(report)
+    return [f"> ### {emoji} {label}", ">", f"> **배포 판정** · {deploy_text}", ""]
+
+
+def _verdict_box_html(report: ScanReport) -> str:
+    """결론 = 승인(초록)/미승인(빨강) 박스(HTML). 두괄식으로 가장 크게."""
+    tone = _deploy_status(report)
+    label, emoji = _VERDICT_TONE[tone]
+    deploy_text, _ = _deploy_verdict(report)
+    return (
+        f'<div class="verdict v-{tone}">'
+        f'<div class="vstatus">{emoji} {_esc(label)}</div>'
+        f'<div class="vdetail">배포 판정 · {_esc(deploy_text)}</div>'
+        "</div>"
+    )
+
+
+def _meta_rows(report: ScanReport, ts: str) -> list[tuple[str, str]]:
+    rows = [("대상", report.target), ("검사일시", ts), ("프로파일", report.profile)]
+    if report.scenario:
+        rows.append(("시나리오", report.scenario))
+    if report.language:
+        rows.append(("언어 힌트", report.language))
+    return rows
+
+
+def _meta_table_md(report: ScanReport, ts: str) -> list[str]:
+    """문서 헤더 — 대상·검사일시·프로파일을 키-값 표로(긴 경로도 깔끔하게)."""
+    out = ["| 항목 | 값 |", "|---|---|"]
+    for k, v in _meta_rows(report, ts):
+        val = f"`{v}`" if k in ("대상",) else v
+        out.append(f"| {k} | {val} |")
+    out.append("")
+    return out
+
+
+def _meta_table_html(report: ScanReport, ts: str) -> str:
+    cells = "".join(
+        f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _meta_rows(report, ts)
+    )
+    return f'<table class="metatbl">{cells}</table>'
+
+
 def _pii_callout_md(pii: list[Finding]) -> list[str]:
     """개인정보·비밀값 주의 콜아웃(Markdown) — '비밀값' 분야 바로 아래에 붙는다."""
     pii_files = len({f.location.file for f in pii})
@@ -559,27 +627,11 @@ def render_markdown(
     # 빌드제외·한계 고지). 어려운 상세는 전부 Layer 2(보안팀)로 내린다.
     # =====================================================================
 
-    # --- ① 판정 히어로 — 쉬운 한 문장 + 기술 요약 + 배포 판정 --------------
-    hero_text, _hero_color = _hero_line(report)
+    # --- ① 문서 헤더(대상·일시·프로파일 표) → 결론(승인/미승인 박스) --------
+    lines.extend(_meta_table_md(report, ts))
     lines.append("## 결론")
     lines.append("")
-    lines.append(f"> **{hero_text}**")
-    lines.append("")
-
-    # 대상·검사일시·프로파일 — 두괄식 결과(히어로) 바로 밑.
-    lines.append(f"- **대상**: `{report.target}`")
-    lines.append(f"- **검사일시**: {ts}")
-    lines.append(f"- **프로파일**: {report.profile}")
-    if report.scenario:
-        lines.append(f"- **시나리오**: {report.scenario}")
-    if report.language:
-        lines.append(f"- **언어 힌트**: {report.language}")
-    lines.append("")
-
-    # 배포 판정 — 보안팀이 이 리포트로 배포 승인 여부를 결정할 수 있게 명시.
-    deploy_text, _deploy_color = _deploy_verdict(report)
-    lines.append(f"> **배포 판정**: {deploy_text}")
-    lines.append("")
+    lines.extend(_verdict_box_md(report))
 
     # --- ② 핵심 숫자 --------------------------------------------------------
     lines.append("## 요약")
@@ -620,30 +672,7 @@ def render_markdown(
         lines.append("> 공식 보안성 검토를 대체하지 않습니다.")
         lines.append("")
 
-    # --- ②-b 검토 범위 및 한계 — 요약 바로 아래(발견 유무와 무관하게 고지) ---
-    lines.append("## 검토 범위 및 한계")
-    lines.append("")
-    ext_dist = _ext_distribution(report.scanned_files)
-    ext_str = " · ".join(f"{ext} {n}건" for ext, n in ext_dist.most_common()) or "—"
-    lines.append(
-        f"- **검토 범위**: 파일 {len(report.scanned_files)}건 ({ext_str}) — "
-        "정적(소스코드) 검사이며 코드를 실행하지 않습니다"
-    )
-    if report.skipped_files:
-        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
-        rs = " · ".join(f"{r} {n}건" for r, n in reason_counts.most_common())
-        lines.append(f"- **검사 제외**: {len(report.skipped_files)}건 — {rs} (아래 목록 참조)")
-    lines.append("")
-    lines.append(
-        f"> ⚠ **한계 고지** — {_LIMIT_HEAD} **{_LIMIT_ZERO}** {_LIMIT_BODY} **{_LIMIT_TAIL}**"
-    )
-    lines.append("")
-
-    # --- ②-c 면책 — 제목 없이 요약부에 함께(공문 붙임 문서 정직성) -----------
-    lines.append(f"> {report.disclaimer.replace(chr(10), ' ')}")
-    lines.append("")
-
-    # --- ③ 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 --------------
+    # --- ③ 조치 가이드 (초보자용 행동 안내) — 발견이 있을 때만 -------------
     if report.findings:
         lines.append("## 🛠 조치 가이드 — 3단계만 따라 하세요")
         lines.append("")
@@ -711,6 +740,27 @@ def render_markdown(
             "소스가 아니라 검사 대상에서 자동 제외했습니다(오탐 방지)."
         )
         lines.append("")
+
+    # --- ⑥ 검토 범위 및 한계 + 면책 — 조치 안내 뒤, 상세 검토 앞(신뢰성 고지) -
+    lines.append("## 검토 범위 및 한계")
+    lines.append("")
+    ext_dist = _ext_distribution(report.scanned_files)
+    ext_str = " · ".join(f"{ext} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    lines.append(
+        f"- **검토 범위**: 파일 {len(report.scanned_files)}건 ({ext_str}) — "
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다"
+    )
+    if report.skipped_files:
+        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
+        rs = " · ".join(f"{r} {n}건" for r, n in reason_counts.most_common())
+        lines.append(f"- **검사 제외**: {len(report.skipped_files)}건 — {rs} (아래 목록 참조)")
+    lines.append("")
+    lines.append(
+        f"> ⚠ **한계 고지** — {_LIMIT_HEAD} **{_LIMIT_ZERO}** {_LIMIT_BODY} **{_LIMIT_TAIL}**"
+    )
+    lines.append("")
+    lines.append(f"> {report.disclaimer.replace(chr(10), ' ')}")
+    lines.append("")
 
     # =====================================================================
     # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(비밀값 분야
@@ -1021,6 +1071,19 @@ tr.w td{background:#fff7ed}
 .piibox .ph{font-weight:800;color:#9d174d;font-size:15px;margin-bottom:6px}
 .dupnote{background:#f8fafc;border:1px dashed #94a3b8;border-radius:6px;
   padding:9px 13px;font-size:12.8px;color:#475569;margin:8px 0}
+/* 문서 헤더 표(대상·검사일시·프로파일) */
+.metatbl{border-collapse:collapse;margin:6px 0 14px;font-size:13px;width:100%}
+.metatbl th{text-align:left;background:#f3f4f6;color:#374151;padding:6px 10px;
+  white-space:nowrap;width:96px;border:1px solid #e5e7eb;font-weight:700}
+.metatbl td{padding:6px 10px;color:#111827;border:1px solid #e5e7eb;word-break:break-all}
+/* 결론 = 승인(초록)/미승인(빨강) 박스 — 두괄식 결과 */
+.verdict{border:3px solid;border-radius:12px;padding:16px 20px;margin:6px 0 16px;page-break-inside:avoid}
+.verdict .vstatus{font-size:22px;font-weight:800;margin-bottom:6px}
+.verdict .vdetail{font-size:14px;line-height:1.55}
+.v-ok{background:#ecfdf5;border-color:#16a34a;color:#065f46}
+.v-block{background:#fef2f2;border-color:#dc2626;color:#991b1b}
+.v-warn{background:#fffbeb;border-color:#d97706;color:#92400e}
+.v-none{background:#f3f4f6;border-color:#6b7280;color:#374151}
 /* 면책 박스(요약부로 이동) — 이미지의 어두운 테두리 박스 */
 .discbox{border:2px solid #111827;border-radius:8px;background:#fff;
   padding:12px 16px;font-size:12.8px;color:#374151;margin:10px 0 14px;page-break-inside:avoid}
@@ -1136,34 +1199,12 @@ def render_html(
     p.append("<h1>🛡️ 코드 보안 검사 결과</h1>")
     p.append('<div class="sub">vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
 
-    # === Layer 1 — 공무원용: 두괄식 판정 히어로 배너(가장 먼저·크게) ========
-    hero_text, hero_color = _hero_line(report)
-    p.append(f'<div class="hero" style="background:{hero_color}">{_esc(hero_text)}</div>')
+    # === Layer 1 — 공무원용: 문서 헤더 표 → 결론(승인/미승인 박스) ==========
+    #   순서: 헤더표 → 결론 박스 → 한눈에 보기 → 조치 가이드 → Top 3 →
+    #   정직성 배너 → 검토 범위·한계+면책. 상세는 Layer 2로. ================
+    p.append(_meta_table_html(report, ts))
+    p.append(_verdict_box_html(report))
 
-    # --- 대상·검사일시·프로파일 — 두괄식 결과(빨간 히어로 박스) 바로 밑 -----
-    p.append(f'<div class="meta"><b>대상</b> · {_esc(report.target)}</div>')
-    p.append(
-        f'<div class="meta"><b>검사일시</b> · {ts} &nbsp;·&nbsp; '
-        f'<b>프로파일</b> · {_esc(report.profile)}</div>'
-    )
-    if report.scenario or report.language:
-        extra = []
-        if report.scenario:
-            extra.append(f"시나리오 {_esc(report.scenario)}")
-        if report.language:
-            extra.append(f"언어 힌트 {_esc(report.language)}")
-        p.append(f'<div class="meta">{" · ".join(extra)}</div>')
-
-    # --- 배포 판정 — 보안팀 승인 근거가 되는 결론(항상 표시) ----------------
-    deploy_text, deploy_color = _deploy_verdict(report)
-    p.append(
-        f'<div class="deploy" style="border-color:{deploy_color};color:{deploy_color}">'
-        f"배포 판정 · {_esc(deploy_text)}</div>"
-    )
-
-    # === Layer 1 순서(이미지 기준): (히어로·대상·배포판정은 위) →
-    #     한눈에 보기 → 검토 범위·한계 → 면책 → 조치 가이드 → Top 3 →
-    #     정직성 배너. 상세는 Layer 2로. ====================================
     build_skips = _build_artifact_skips(report)
 
     # --- 한눈에 보기 (핵심 숫자) ---
@@ -1221,30 +1262,7 @@ def render_html(
             "공식 보안성 검토를 대체하지 않습니다.</div>"
         )
 
-    # === 검토 범위 및 한계 — 발견 유무와 무관하게 항상 상단부에 고지 ==========
-    p.append("<h2>검토 범위 및 한계</h2>")
-    ext_dist = _ext_distribution(report.scanned_files)
-    ext_str = " · ".join(f"{_esc(ext)} {n}건" for ext, n in ext_dist.most_common()) or "—"
-    p.append(
-        f'<div class="kv"><b>검토 범위</b> — 파일 {len(report.scanned_files)}건 ({ext_str}) · '
-        "정적(소스코드) 검사이며 코드를 실행하지 않습니다</div>"
-    )
-    if report.skipped_files:
-        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
-        rs = " · ".join(f"{_esc(r)} {n}건" for r, n in reason_counts.most_common())
-        p.append(
-            f'<div class="kv"><b>검사 제외</b> — {len(report.skipped_files)}건 ({rs}) · '
-            "아래 '생략된 파일' 목록 참조</div>"
-        )
-    p.append(
-        f'<div class="scopebox">⚠ <b>한계 고지</b> — {_esc(_LIMIT_HEAD)} '
-        f"<b>{_esc(_LIMIT_ZERO)}</b> {_esc(_LIMIT_BODY)} <b>{_esc(_LIMIT_TAIL)}</b></div>"
-    )
-
-    # --- 면책 — 제목 없이 요약부에 함께(공문 붙임 정직성) -------------------
-    p.append(f'<div class="discbox">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
-
-    # --- 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 -----------------
+    # --- 조치 가이드 (초보자용 행동 안내) — 발견이 있을 때만 ---------------
     if report.findings:
         p.append('<div class="actionbox">')
         p.append('<div class="ah">🛠 조치 가이드 — 3단계만 따라 하세요</div>')
@@ -1310,15 +1328,36 @@ def render_html(
             "(오탐 방지).</div>"
         )
 
+    # --- 검토 범위 및 한계 + 면책 — 조치 안내 뒤, 상세 검토 앞(신뢰성 고지) --
+    p.append("<h2>검토 범위 및 한계</h2>")
+    ext_dist = _ext_distribution(report.scanned_files)
+    ext_str = " · ".join(f"{_esc(ext)} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    p.append(
+        f'<div class="kv"><b>검토 범위</b> — 파일 {len(report.scanned_files)}건 ({ext_str}) · '
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다</div>"
+    )
+    if report.skipped_files:
+        reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
+        rs = " · ".join(f"{_esc(r)} {n}건" for r, n in reason_counts.most_common())
+        p.append(
+            f'<div class="kv"><b>검사 제외</b> — {len(report.skipped_files)}건 ({rs}) · '
+            "아래 '생략된 파일' 목록 참조</div>"
+        )
+    p.append(
+        f'<div class="scopebox">⚠ <b>한계 고지</b> — {_esc(_LIMIT_HEAD)} '
+        f"<b>{_esc(_LIMIT_ZERO)}</b> {_esc(_LIMIT_BODY)} <b>{_esc(_LIMIT_TAIL)}</b></div>"
+    )
+    p.append(f'<div class="discbox">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
+
     # =====================================================================
-    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(펼치기,
+    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(기본 닫힘,
     # 비밀값 분야 직후 개인정보 콜아웃) → 외부 연결 → 의존성 → 승인 예외 →
     # 수정 프롬프트 → 부록
     # =====================================================================
     p.append("<h2>상세 검토 결과</h2>")
     p.append(
-        '<div class="kv">아래 <b>보안 분야</b>를 펼치면 위치·취약점 설명·대응방안·근거를 '
-        "확인할 수 있습니다. 치명·차단 분야는 기본 펼쳐져 있습니다.</div>"
+        '<div class="kv">각 <b>보안 분야</b>를 클릭해 펼치면 위치·취약점 설명·대응방안·근거를 '
+        "확인할 수 있습니다. (인쇄 시에는 모두 펼쳐집니다.)</div>"
     )
 
     domains = _group_by_domain(report.findings)
@@ -1360,9 +1399,9 @@ def render_html(
     pii = _privacy_findings(report.findings)
     pii_anchor = max((d["order"] for d in domains if d["order"] <= 2), default=None)
     for d in domains:
-        opn = " open" if _domain_has_blocker(d["findings"]) else ""
+        # 기본은 닫힘(사용자 요청) — 클릭해 펼친다. 인쇄 시에는 print CSS 로 모두 펼쳐짐.
         p.append(
-            f'<details class="sec"{opn}><summary>'
+            '<details class="sec"><summary>'
             f'<span class="sevdot" style="background:{_SEVERITY_COLOR[d["max_severity"]]}">'
             f'{_SEVERITY_LABEL_KO[d["max_severity"]]}</span> '
             f'{_esc(d["label"])} — {d["count"]}건 · 파일 {d["files"]}개</summary>'
@@ -1389,7 +1428,7 @@ def render_html(
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     if report.findings:
         p.append(
-            '<details class="sec" open><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
+            '<details class="sec"><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
             '</summary><div class="secbody">'
         )
         # ① 가장 쉬운 방법 — 강조 박스 + 한 줄 프롬프트 복사 버튼
