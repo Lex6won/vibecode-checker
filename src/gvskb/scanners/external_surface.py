@@ -15,38 +15,41 @@ import re
 from ..schema import ExternalConnection
 
 # ---------------------------------------------------------------------------
-# 카탈로그 — 알려진 호스트/패키지의 종류·데이터 요약·국외/국내. 부분 문자열 매칭.
-# (category, data_summary, region) — region: "국외" | "국내" | None(미상)
+# 카탈로그 — 알려진 호스트/패키지의 종류·데이터 요약·국외/국내·운영주체.
+# (category, data_summary, region, operator) — 부분 문자열 매칭.
+#   region: "국외" | "국내" | None(미상)
+#   operator: 운영주체·국가 — 개인정보 국외이전 검토는 "누구에게, 어느 나라로"가
+#   특정돼야 하므로 "국외" 표시만으로는 부족하다. 미등록 호스트는 None(직접 확인).
 # ---------------------------------------------------------------------------
-_HOST_CATALOG: tuple[tuple[str, str, str, str | None], ...] = (
+_HOST_CATALOG: tuple[tuple[str, str, str, str | None, str | None], ...] = (
     # 외부 AI (대부분 국외)
-    ("api.openai.com", "ai", "프롬프트·임베딩 등 입력 텍스트", "국외"),
-    ("openai.azure.com", "ai", "프롬프트 텍스트(Azure OpenAI)", "국외"),
-    ("api.anthropic.com", "ai", "메시지 프롬프트", "국외"),
-    ("generativelanguage.googleapis.com", "ai", "텍스트 입력(Google Gemini)", "국외"),
-    ("aiplatform.googleapis.com", "ai", "텍스트/데이터 입력(Vertex AI)", "국외"),
-    ("api.cohere.ai", "ai", "텍스트 입력(Cohere)", "국외"),
-    ("api.mistral.ai", "ai", "프롬프트 텍스트(Mistral)", "국외"),
-    ("api-inference.huggingface.co", "ai", "추론 입력(HuggingFace)", "국외"),
+    ("api.openai.com", "ai", "프롬프트·임베딩 등 입력 텍스트", "국외", "OpenAI(미국)"),
+    ("openai.azure.com", "ai", "프롬프트 텍스트(Azure OpenAI)", "국외", "Microsoft(미국)"),
+    ("api.anthropic.com", "ai", "메시지 프롬프트", "국외", "Anthropic(미국)"),
+    ("generativelanguage.googleapis.com", "ai", "텍스트 입력(Google Gemini)", "국외", "Google(미국)"),
+    ("aiplatform.googleapis.com", "ai", "텍스트/데이터 입력(Vertex AI)", "국외", "Google(미국)"),
+    ("api.cohere.ai", "ai", "텍스트 입력(Cohere)", "국외", "Cohere(캐나다)"),
+    ("api.mistral.ai", "ai", "프롬프트 텍스트(Mistral)", "국외", "Mistral AI(프랑스)"),
+    ("api-inference.huggingface.co", "ai", "추론 입력(HuggingFace)", "국외", "Hugging Face(미국)"),
     # 국내 AI
-    ("clovastudio.apigw.ntruss.com", "ai", "프롬프트 텍스트(네이버 HyperCLOVA)", "국내"),
-    ("clovastudio.stream.ntruss.com", "ai", "프롬프트 텍스트(네이버 HyperCLOVA)", "국내"),
+    ("clovastudio.apigw.ntruss.com", "ai", "프롬프트 텍스트(네이버 HyperCLOVA)", "국내", "네이버클라우드(한국)"),
+    ("clovastudio.stream.ntruss.com", "ai", "프롬프트 텍스트(네이버 HyperCLOVA)", "국내", "네이버클라우드(한국)"),
     # 분석/텔레메트리
-    ("api.mixpanel.com", "analytics", "사용자ID·이벤트 속성", "국외"),
-    ("google-analytics.com", "analytics", "사용자 행동·페이지뷰", "국외"),
-    ("api.segment.io", "analytics", "사용자 이벤트", "국외"),
-    ("api.amplitude.com", "analytics", "사용자 행동 이벤트", "국외"),
+    ("api.mixpanel.com", "analytics", "사용자ID·이벤트 속성", "국외", "Mixpanel(미국)"),
+    ("google-analytics.com", "analytics", "사용자 행동·페이지뷰", "국외", "Google(미국)"),
+    ("api.segment.io", "analytics", "사용자 이벤트", "국외", "Twilio Segment(미국)"),
+    ("api.amplitude.com", "analytics", "사용자 행동 이벤트", "국외", "Amplitude(미국)"),
     # 에러 추적
-    ("ingest.sentry.io", "error", "예외·스택·환경값(개인정보 섞일 수 있음)", "국외"),
-    ("sentry.io", "error", "예외·스택·환경값", "국외"),
+    ("ingest.sentry.io", "error", "예외·스택·환경값(개인정보 섞일 수 있음)", "국외", "Sentry(미국)"),
+    ("sentry.io", "error", "예외·스택·환경값", "국외", "Sentry(미국)"),
     # 결제 (국내외)
-    ("api.stripe.com", "payment", "결제·카드 토큰", "국외"),
-    ("api.iamport.kr", "payment", "결제 정보(아임포트)", "국내"),
-    ("api.tosspayments.com", "payment", "결제 정보(토스페이먼츠)", "국내"),
-    ("kapi.kakao.com", "messaging", "카카오 API(메시지·프로필)", "국내"),
+    ("api.stripe.com", "payment", "결제·카드 토큰", "국외", "Stripe(미국)"),
+    ("api.iamport.kr", "payment", "결제 정보(포트원/아임포트)", "국내", "포트원(한국)"),
+    ("api.tosspayments.com", "payment", "결제 정보(토스페이먼츠)", "국내", "토스페이먼츠(한국)"),
+    ("kapi.kakao.com", "messaging", "카카오 API(메시지·프로필)", "국내", "카카오(한국)"),
     # 메시징
-    ("slack.com", "messaging", "메시지 본문", "국외"),
-    ("discord.com", "messaging", "메시지 본문", "국외"),
+    ("slack.com", "messaging", "메시지 본문", "국외", "Slack/Salesforce(미국)"),
+    ("discord.com", "messaging", "메시지 본문", "국외", "Discord(미국)"),
 )
 
 # SDK 호출 패턴 → 매핑 호스트(코드에 URL 리터럴이 없어도 잡는다)
@@ -61,29 +64,30 @@ _SDK_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bstripe\.", re.IGNORECASE), "api.stripe.com"),
 )
 
-# 패키지(플러그인) 카탈로그 — (category, data_summary)
-_PACKAGE_CATALOG: dict[str, tuple[str, str]] = {
-    "openai": ("ai", "AI: 프롬프트·임베딩을 OpenAI로 전송"),
-    "anthropic": ("ai", "AI: 메시지 프롬프트를 Anthropic으로 전송"),
-    "@anthropic-ai/sdk": ("ai", "AI: 메시지 프롬프트를 Anthropic으로 전송"),
-    "@google/generative-ai": ("ai", "AI: 텍스트를 Google Gemini로 전송"),
-    "google-generativeai": ("ai", "AI: 텍스트를 Google Gemini로 전송"),
-    "google-cloud-aiplatform": ("ai", "AI: 데이터를 Google Vertex AI로 전송"),
-    "cohere": ("ai", "AI: 텍스트를 Cohere로 전송"),
-    "mistralai": ("ai", "AI: 프롬프트를 Mistral로 전송"),
-    "langchain": ("ai", "AI 프레임워크: 외부 LLM 호출 가능"),
-    "langchain-openai": ("ai", "AI 프레임워크: OpenAI 호출"),
-    "llama-index": ("ai", "AI 프레임워크: 외부 LLM 호출 가능"),
-    "llama_index": ("ai", "AI 프레임워크: 외부 LLM 호출 가능"),
-    "mixpanel": ("analytics", "분석: 사용자 행동 이벤트 전송"),
-    "mixpanel-browser": ("analytics", "분석: 사용자 행동 이벤트 전송"),
-    "@amplitude/analytics-browser": ("analytics", "분석: 사용자 이벤트 전송"),
-    "@segment/analytics-node": ("analytics", "분석: 사용자 이벤트 전송"),
-    "@sentry/node": ("error", "에러: 예외·스택을 Sentry로 전송"),
-    "@sentry/browser": ("error", "에러: 예외·스택을 Sentry로 전송"),
-    "@sentry/react": ("error", "에러: 예외·스택을 Sentry로 전송"),
-    "sentry-sdk": ("error", "에러: 예외·스택을 Sentry로 전송"),
-    "stripe": ("payment", "결제: 카드·결제 정보를 Stripe로 전송"),
+# 패키지(플러그인) 카탈로그 — (category, data_summary, operator)
+# operator: SDK가 데이터를 보내는 운영주체·국가(국외이전 검토용). None=로컬/미상.
+_PACKAGE_CATALOG: dict[str, tuple[str, str, str | None]] = {
+    "openai": ("ai", "AI: 프롬프트·임베딩을 OpenAI로 전송", "OpenAI(미국)"),
+    "anthropic": ("ai", "AI: 메시지 프롬프트를 Anthropic으로 전송", "Anthropic(미국)"),
+    "@anthropic-ai/sdk": ("ai", "AI: 메시지 프롬프트를 Anthropic으로 전송", "Anthropic(미국)"),
+    "@google/generative-ai": ("ai", "AI: 텍스트를 Google Gemini로 전송", "Google(미국)"),
+    "google-generativeai": ("ai", "AI: 텍스트를 Google Gemini로 전송", "Google(미국)"),
+    "google-cloud-aiplatform": ("ai", "AI: 데이터를 Google Vertex AI로 전송", "Google(미국)"),
+    "cohere": ("ai", "AI: 텍스트를 Cohere로 전송", "Cohere(캐나다)"),
+    "mistralai": ("ai", "AI: 프롬프트를 Mistral로 전송", "Mistral AI(프랑스)"),
+    "langchain": ("ai", "AI 프레임워크: 외부 LLM 호출 가능", None),
+    "langchain-openai": ("ai", "AI 프레임워크: OpenAI 호출", "OpenAI(미국)"),
+    "llama-index": ("ai", "AI 프레임워크: 외부 LLM 호출 가능", None),
+    "llama_index": ("ai", "AI 프레임워크: 외부 LLM 호출 가능", None),
+    "mixpanel": ("analytics", "분석: 사용자 행동 이벤트 전송", "Mixpanel(미국)"),
+    "mixpanel-browser": ("analytics", "분석: 사용자 행동 이벤트 전송", "Mixpanel(미국)"),
+    "@amplitude/analytics-browser": ("analytics", "분석: 사용자 이벤트 전송", "Amplitude(미국)"),
+    "@segment/analytics-node": ("analytics", "분석: 사용자 이벤트 전송", "Twilio Segment(미국)"),
+    "@sentry/node": ("error", "에러: 예외·스택을 Sentry로 전송", "Sentry(미국)"),
+    "@sentry/browser": ("error", "에러: 예외·스택을 Sentry로 전송", "Sentry(미국)"),
+    "@sentry/react": ("error", "에러: 예외·스택을 Sentry로 전송", "Sentry(미국)"),
+    "sentry-sdk": ("error", "에러: 예외·스택을 Sentry로 전송", "Sentry(미국)"),
+    "stripe": ("payment", "결제: 카드·결제 정보를 Stripe로 전송", "Stripe(미국)"),
 }
 
 # PII 인접 신호 — 같은 줄에 이 토큰들이 보이면 개인정보 전송 가능으로 표시(warn).
@@ -112,13 +116,13 @@ _GENMODEL_RE = re.compile(r"""GenerativeModel\s*\(\s*["']([\w.\-:]+)["']""")
 _APIVER_RE = re.compile(r"/(v\d+\w*)")
 
 
-def _lookup_host(host: str) -> tuple[str, str, str | None]:
-    """호스트 → (category, data_summary, region). 미등록은 other/외부 서비스/미상."""
+def _lookup_host(host: str) -> tuple[str, str, str | None, str | None]:
+    """호스트 → (category, data_summary, region, operator). 미등록은 미상."""
     low = host.lower()
-    for needle, cat, summary, region in _HOST_CATALOG:
+    for needle, cat, summary, region, operator in _HOST_CATALOG:
         if needle in low:
-            return cat, summary, region
-    return "other", "외부 서비스(미분류) — 전송 데이터 확인 필요", None
+            return cat, summary, region, operator
+    return "other", "외부 서비스(미분류) — 전송 데이터 확인 필요", None, None
 
 
 def _model_on_line(line: str) -> str | None:
@@ -155,15 +159,16 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
         pii = bool(_PII_SIGNAL.search(window))
         model = _model_on_line(window)
         for host, apiver in hosts_on_line:
-            a = agg.setdefault(host, {"idx": idx, "ver": None, "model": None, "pii": False})
+            a = agg.setdefault(host, {"idx": idx, "ver": None, "model": None, "pii": False, "count": 0})
             a["idx"] = min(a["idx"], idx)
             a["ver"] = a["ver"] or apiver
             a["model"] = a["model"] or model
             a["pii"] = a["pii"] or pii
+            a["count"] += 1  # 호출 지점 수 — 보안팀이 검토 범위(규모)를 알 수 있게
 
     out: list[ExternalConnection] = []
     for host, a in agg.items():
-        cat, summary, region = _lookup_host(host)
+        cat, summary, region, operator = _lookup_host(host)
         if a["pii"]:
             summary += " · ⚠ 개인정보 인접"
         out.append(ExternalConnection(
@@ -175,6 +180,8 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
             location=f"{filename}:{a['idx']}",
             data_summary=summary,
             region=region,
+            operator=operator,
+            call_count=a["count"],
             pii_adjacent=a["pii"],
             review_level="warn" if a["pii"] else "info",
         ))
@@ -193,8 +200,8 @@ def inventory_packages(packages: list[dict], source: str = "manifest") -> list[E
         if not name:
             continue
         version = pkg.get("version")
-        cat, summary = _PACKAGE_CATALOG.get(
-            name, ("library", "라이브러리 (로컬, 외부전송 없음/미상)")
+        cat, summary, operator = _PACKAGE_CATALOG.get(
+            name, ("library", "라이브러리 (로컬, 외부전송 없음/미상)", None)
         )
         out.append(ExternalConnection(
             kind="package",
@@ -204,6 +211,7 @@ def inventory_packages(packages: list[dict], source: str = "manifest") -> list[E
             location=source,
             data_summary=summary,
             region=None,
+            operator=operator,
             pii_adjacent=False,
             review_level="info",
         ))

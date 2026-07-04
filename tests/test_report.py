@@ -514,43 +514,91 @@ def test_deploy_verdict_undecidable_when_nothing_scanned() -> None:
     assert "판정 불가" in render_html(report)
 
 
-def test_approval_header_and_signature_when_params_given() -> None:
-    report = _report_with_findings()
-    md = render_markdown(
-        report, agency="경기도", department="AI국", author="원준석",
-        doc_no="제2026-42호", reviewer="김보안",
-    )
-    for token in ("경기도", "AI국", "원준석", "제2026-42호", "김보안"):
-        assert token in md
-    assert "## 결재" in md
-    assert "검토자" in md and "승인자" in md and "▢" in md
-    html = render_html(
-        report, agency="경기도", department="AI국", author="원준석",
-        doc_no="제2026-42호", reviewer="김보안",
-    )
-    for token in ("경기도", "AI국", "원준석", "제2026-42호", "김보안"):
-        assert token in html
-    assert "승인자" in html and "▢" in html
-
-
-def test_approval_params_are_escaped_in_html() -> None:
-    html = render_html(_report_with_findings(), agency='<img src=x onerror=1>')
-    assert "<img" not in html.lower()
-    assert "&lt;img" in html
-
-
-def test_no_approval_artifacts_without_params() -> None:
-    # 파라미터 미지정 시 기존과 동일 렌더 — 결재 헤더·서명란 없음(하위호환).
+def test_no_approval_artifacts_in_report() -> None:
+    # 리포트는 공문 '붙임'으로 제출된다 — 결재는 상위 공문이 담당하므로
+    # 리포트 자체에 결재 헤더·서명란이 있어서는 안 된다.
     report = _report_with_findings()
     md = render_markdown(report)
     html = render_html(report)
     for out in (md, html):
         assert "승인자" not in out
         assert "▢" not in out
+        assert "## 결재" not in out
 
 
-def test_render_signatures_backcompat_positional_free() -> None:
+def test_render_call_backcompat() -> None:
     # 기존 호출부(cli.py·server.py)와 동일한 호출 방식이 그대로 동작한다.
     report = _report_with_findings()
     assert render_markdown(report, reproduce_command="gvskb scan app.py")
     assert render_html(report, reproduce_command="gvskb scan app.py")
+
+
+# ---------------------------------------------------------------------------
+# 의존성(패키지) 취약점 검사 — dependency_audit 병합 렌더
+# ---------------------------------------------------------------------------
+
+
+def _audit_with_vulns() -> dict:
+    return {
+        "audits": [{
+            "ecosystem": "pypi", "manifest": "requirements.txt",
+            "parsed_count": 2, "checked_count": 2, "unchecked_count": 0,
+            "blocked": False, "requires_review": True, "verdict": "review_required",
+            "checks": [
+                {"name": "flask", "version": "0.12.2", "checked": True,
+                 "is_malicious_package": False, "vulnerability_count": 7},
+                {"name": "openai", "version": None, "checked": True,
+                 "is_malicious_package": False, "vulnerability_count": 0},
+            ],
+        }],
+    }
+
+
+def test_dependency_audit_section_rendered_when_present() -> None:
+    report = _report_with_findings()
+    report.dependency_audit = _audit_with_vulns()
+    md = render_markdown(report)
+    html = render_html(report)
+    for out in (md, html):
+        assert "의존성(패키지) 취약점 검사" in out
+        assert "flask" in out and "0.12.2" in out
+        assert "취약점 7건" in out
+    # 배너가 "별도 필요"가 아니라 결과 요약으로 대체된다
+    assert "의존성 검사 별도 필요" not in md
+
+
+def test_dependency_audit_absent_by_default() -> None:
+    report = _report_with_findings()
+    assert report.dependency_audit is None
+    md = render_markdown(report)
+    assert "의존성(패키지) 취약점 검사" not in md
+
+
+def test_dependency_audit_unchecked_flagged_not_safe() -> None:
+    report = _report_with_findings()
+    report.dependency_audit = {
+        "audits": [{
+            "ecosystem": "pypi", "manifest": "requirements.txt",
+            "parsed_count": 1, "checked_count": 0, "unchecked_count": 1,
+            "blocked": False, "requires_review": True, "verdict": "review_required",
+            "checks": [{"name": "requests", "version": "2.19.1", "checked": False}],
+        }],
+    }
+    md = render_markdown(report)
+    html = render_html(report)
+    for out in (md, html):
+        assert "판정 불가" in out
+        assert "안전'이 아닙니다" in out or "안전'으로" in out
+
+
+def test_dependency_audit_unparsed_lockfile_note() -> None:
+    report = _report_with_findings()
+    report.dependency_audit = {
+        "ecosystem": "npm", "manifest": "yarn.lock", "verdict": "unparsed",
+        "parsed_count": 0, "checked_count": 0, "unchecked_count": 0,
+        "blocked": False, "requires_review": True, "checks": [],
+        "note": "락파일 형식(yarn.lock)은 이 도구가 파싱하지 못합니다.",
+    }
+    md = render_markdown(report)
+    assert "unparsed" in md
+    assert "파싱 0건은 '안전'이 아닙니다" in md

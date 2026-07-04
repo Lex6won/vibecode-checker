@@ -14,14 +14,13 @@ from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
 from .scanner import (
     detect_secrets_and_pii as detect_secrets_and_pii_impl,
-    parse_manifest_packages,
     scan_code as scan_code_impl,
     scan_path as scan_path_impl,
     suggest_fix as suggest_fix_impl,
 )
 from .schema import ScanReport
 from .search import simple_search
-from .tools.check_package import check_package_impl
+from .tools.check_package import audit_manifest, check_package_impl
 
 PKG_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PKG_ROOT.parent.parent
@@ -48,7 +47,9 @@ mcp = FastMCP(
         "   - 단, GVSKB_MODE=offline(망분리)이면 clone(외부 통신)이 불가하므로 URL은 거부하고 "
         "사용자에게 외부망에서 받은 폴더를 반입하도록 안내합니다.\n"
         "2) 결과에 의존성 매니페스트(requirements.txt, package.json 등)가 '검사 제외'로 "
-        "표시되면 scan_dependencies 로 패키지를 따로 검사합니다.\n"
+        "표시되면 scan_dependencies 로 패키지를 따로 검사하고, 그 결과를 scan 결과 JSON의 "
+        "dependency_audit 필드에 넣은 뒤 render_report 를 호출하세요(보고서에 의존성 섹션이 "
+        "함께 들어갑니다).\n"
         "3) render_report 로 한국어 보고서를 만들어 사용자에게 보여줍니다. 사람이 읽을 "
         "보고서가 필요하면 format='html', 둘 다면 format='both' 를 씁니다.\n"
         "4) 발견 사항은 결과 JSON의 decision/severity 기준으로 '차단(block) → 치명·높음 → "
@@ -168,41 +169,13 @@ async def scan_dependencies(
     """Parse a dependency manifest and check packages with OSV.dev.
 
     Only package names and versions are sent to OSV.dev. Source code is not sent.
+
+    락파일(poetry.lock·yarn.lock 등)은 파싱하지 못하므로 verdict="unparsed"로
+    정직하게 거절합니다 — 원본 매니페스트(requirements.txt·package.json)를 주세요.
+    결과를 scan_path 결과 JSON의 ``dependency_audit`` 필드에 넣어 render_report를
+    호출하면 사람용 보고서에 '의존성 취약점' 섹션이 함께 렌더됩니다.
     """
-    packages = parse_manifest_packages(manifest_text, ecosystem)
-    limited = packages[: max(0, min(limit, 100))]
-    checks = []
-    for package in limited:
-        checks.append(
-            await check_package_impl(
-                name=str(package["name"]),
-                version=str(package["version"]) if package.get("version") else None,
-                ecosystem=ecosystem,
-            )
-        )
-    blocked = any(c.get("is_malicious_package") or c.get("verdict_severity") == "high" for c in checks)
-    # 판정 불가(캐시 없는 오프라인·API 실패)를 "안전"으로 오해하지 않도록 실제
-    # 검사된 수와 판정 불가 수를 분리하고, 검토 필요 여부를 명시한다.
-    actually_checked = sum(1 for c in checks if c.get("checked", False))
-    unchecked = len(checks) - actually_checked
-    requires_review = blocked or unchecked > 0 or any(c.get("requires_review") for c in checks)
-    verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
-    return {
-        "ecosystem": ecosystem,
-        "parsed_count": len(packages),
-        "checked_count": actually_checked,
-        "unchecked_count": unchecked,
-        "blocked": blocked,
-        "requires_review": requires_review,
-        "verdict": verdict,
-        "packages": limited,
-        "checks": checks,
-        "disclaimer": (
-            "취약점 API에는 패키지명과 ecosystem만 전송합니다. "
-            "unchecked_count>0 이면 일부 패키지가 '판정 불가'(캐시 없는 오프라인·API 실패)이며 '안전'이 아닙니다. "
-            "운영 반영 전 lockfile/SBOM 기준 재검사를 권장합니다."
-        ),
-    }
+    return await audit_manifest(manifest_text, ecosystem=ecosystem, limit=limit)
 
 
 @mcp.tool()

@@ -169,3 +169,80 @@ def test_offline_marker_still_set_when_cache_present(offline_with_cache: Path) -
     result = asyncio.run(check_package_impl(name="x", ecosystem="pypi"))
     assert result["offline"] is True
     assert "heuristics" in result
+
+
+# ---------------------------------------------------------------------------
+# audit_manifest — 락파일 거짓-ok 봉쇄 · 취약점 있으면 ok 금지 · 판정불가 명시
+# ---------------------------------------------------------------------------
+
+
+def test_audit_manifest_rejects_lockfiles_as_unparsed() -> None:
+    """락파일을 넘기면 '0건 파싱 → ok'가 아니라 unparsed로 정직하게 거절한다."""
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    cases = {
+        "yarn.lock": '# yarn lockfile v1\n"lodash@^4":\n  version "4.17.21"\n',
+        "poetry.lock": '[[package]]\nname = "flask"\nversion = "0.12"\n',
+        "package-lock.json": '{"lockfileVersion": 3, "packages": {}}',
+        "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    }
+    for label, text in cases.items():
+        r = asyncio.run(audit_manifest(text, ecosystem="npm"))
+        assert r["verdict"] == "unparsed", label
+        assert r["requires_review"] is True, label
+        assert r["parsed_count"] == 0, label
+
+
+def test_audit_manifest_empty_text_is_unparsed_not_ok() -> None:
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    r = asyncio.run(audit_manifest("", ecosystem="pypi"))
+    assert r["verdict"] == "unparsed"
+    assert r["requires_review"] is True
+
+
+def test_audit_manifest_vulnerable_package_is_not_ok(monkeypatch) -> None:
+    """알려진 CVE가 있는 패키지는 verdict가 'ok'여선 안 된다(거짓 안심 방지)."""
+    import asyncio
+    import gvskb.tools.check_package as cp
+
+    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0):
+        return {
+            "name": name, "version": version, "ecosystem": ecosystem,
+            "checked": True, "is_malicious_package": False,
+            "vulnerability_count": 7, "verdict_severity": "medium",
+        }
+
+    monkeypatch.setattr(cp, "check_package_impl", fake_check)
+    r = asyncio.run(cp.audit_manifest("flask==0.12.2\n", ecosystem="pypi"))
+    assert r["verdict"] == "review_required"
+    assert r["requires_review"] is True
+    assert r["blocked"] is False  # 취약≠악성 — 차단이 아니라 검토 대상
+
+
+def test_audit_manifest_offline_empty_cache_requires_review(tmp_path, monkeypatch) -> None:
+    """오프라인+캐시 없음 → unchecked>0 → '안전 아님'(review_required)."""
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    r = asyncio.run(audit_manifest("requests==2.19.1\n", ecosystem="pypi"))
+    assert r["unchecked_count"] == 1
+    assert r["requires_review"] is True
+    assert r["verdict"] == "review_required"
+
+
+def test_cli_check_package_unknown_verdict_exits_nonzero(tmp_path, monkeypatch, capsys) -> None:
+    """판정 불가(오프라인·캐시 없음)를 CI가 '통과(0)'로 처리하면 안 된다."""
+    import argparse
+    from gvskb.cli import EXIT_OK, _cmd_check_package
+
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    args = argparse.Namespace(name="requests", ecosystem="pypi", version=None)
+    code = _cmd_check_package(args)
+    capsys.readouterr()
+    assert code != EXIT_OK

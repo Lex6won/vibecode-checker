@@ -49,6 +49,8 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
         parts += ["--scenario", args.scenario]
     if args.max_files and args.max_files != SCAN_MAX_FILES_DEFAULT:
         parts += ["--max-files", str(args.max_files)]
+    if getattr(args, "check_deps", False):
+        parts += ["--check-deps"]
     return " ".join(parts)
 
 
@@ -102,6 +104,68 @@ def _emit_doc_report(
     )
 
 
+def _run_dependency_audit(root: Path, report: ScanReport) -> dict | None:
+    """스캔 결과에서 매니페스트를 찾아 패키지 취약·악성 검사를 수행한다.
+
+    requirements*.txt(pypi)는 스캔에서 제외(skipped)되고 package.json(npm)은
+    스캔 대상(scanned)이므로 두 목록을 모두 본다. 락파일은 audit_manifest 가
+    'unparsed'로 정직하게 거절하므로 여기서는 원본 매니페스트만 수집한다.
+    """
+    from .tools.check_package import audit_manifest
+
+    def _classify(name: str) -> str | None:
+        low = name.lower()
+        if low.startswith("requirements") and low.endswith(".txt"):
+            return "pypi"
+        if low == "package.json":
+            return "npm"
+        return None
+
+    manifests: list[tuple[Path, str, str]] = []  # (절대경로, 표시명, ecosystem)
+    if root.is_file():
+        eco = _classify(root.name)
+        if eco:
+            manifests.append((root, root.name, eco))
+    else:
+        seen: set[str] = set()
+        for rel in [s.path for s in report.skipped_files] + list(report.scanned_files):
+            name = rel.replace("\\", "/").rsplit("/", 1)[-1]
+            eco = _classify(name)
+            if not eco or rel in seen:
+                continue
+            seen.add(rel)
+            p = root / rel
+            if p.is_file():
+                manifests.append((p, rel, eco))
+
+    if not manifests:
+        print(
+            "[gvskb] --check-deps: 검사할 매니페스트(requirements*.txt·package.json)를 찾지 못했습니다.",
+            file=sys.stderr,
+        )
+        return None
+
+    async def _gather() -> list[dict]:
+        out: list[dict] = []
+        for p, rel, eco in manifests:
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                out.append({
+                    "ecosystem": eco, "manifest": rel, "verdict": "unparsed",
+                    "requires_review": True, "parsed_count": 0, "checked_count": 0,
+                    "unchecked_count": 0, "blocked": False, "checks": [],
+                    "note": f"파일을 읽지 못했습니다: {exc}",
+                })
+                continue
+            audit = await audit_manifest(text, ecosystem=eco)
+            audit["manifest"] = rel
+            out.append(audit)
+        return out
+
+    return {"audits": asyncio.run(_gather())}
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     # (#1) 존재하지 않는 경로를 "위험 없음"으로 침묵 처리하지 않는다 — 보안
     # 도구에서 경로 오타를 통과시키면 거짓 안심을 준다. 명확히 실패시킨다.
@@ -135,6 +199,12 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         profile=args.profile,
         max_files=args.max_files,
     )
+
+    # --check-deps: 발견된 매니페스트(requirements.txt·package.json)의 패키지
+    # 취약·악성 검사를 함께 수행해 리포트에 병합한다 — 보안팀이 "코드+패키지"
+    # 위험을 한 문서에서 보게 한다. 전송 데이터는 패키지명·버전뿐이다.
+    if getattr(args, "check_deps", False):
+        report.dependency_audit = _run_dependency_audit(target, report)
 
     # (#1) 경로는 존재하지만 검사 대상 파일이 0개인 경우(빈 폴더·확장자 불일치)
     # 도 "위험 없음"으로 오해하지 않도록 경고한다.
@@ -180,6 +250,15 @@ def _cmd_check_package(args: argparse.Namespace) -> int:
     if result.get("is_malicious_package"):
         return EXIT_FINDINGS_BLOCK
     if result.get("vulnerability_count"):
+        return EXIT_FINDINGS_WARN
+    # 판정 불가(캐시 없는 오프라인·API 실패)는 '안전'이 아니다 — CI 게이트가
+    # "검사 못 함"을 통과(0)로 처리하지 않도록 warn 코드로 실패시킨다.
+    if not result.get("checked", False) or result.get("requires_review"):
+        print(
+            "[gvskb] ⚠ 판정 불가 — 검사가 수행되지 않았거나 추가 검토가 필요합니다. "
+            "'안전'이 아닙니다 (온라인 환경 또는 `gvskb update-intel` 후 재검사).",
+            file=sys.stderr,
+        )
         return EXIT_FINDINGS_WARN
     return EXIT_OK
 
@@ -438,6 +517,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--max-files", type=int, default=SCAN_MAX_FILES_DEFAULT,
                       help=f"최대 검사 파일 수 (기본 {SCAN_MAX_FILES_DEFAULT})")
+    scan.add_argument(
+        "--check-deps", action="store_true",
+        help="의존성 매니페스트(requirements*.txt·package.json)의 취약·악성 패키지 검사를 "
+             "함께 수행해 리포트에 병합 (온라인: OSV.dev 조회 — 패키지명·버전만 전송 / "
+             "오프라인: 로컬 인텔 캐시. 판정 불가는 '안전'이 아님)",
+    )
     scan.add_argument(
         "--fail-on", choices=["block", "warn", "never"], default="warn",
         help="0이 아닌 종료 코드를 낼 최소 수준 (기본 warn). "

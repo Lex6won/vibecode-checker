@@ -1,7 +1,8 @@
 """사람이 읽는 한국어 리포트 생성.
 
-공무원이 검사 결과를 그대로 상위 결재·보고용으로 사용할 수 있도록
+공무원이 검사 결과를 그대로 공문 '붙임'(보안팀 제출·보고)으로 사용할 수 있도록
 Markdown 한 장 분량의 결론·요약·증거·수정 가이드·재현 절차·면책을 묶어서 출력합니다.
+결재(서명)는 상위 공문이 담당하므로 리포트에는 결재 요소를 넣지 않습니다.
 
 핵심 시나리오는 "MCP로 코딩 → 완성 소스 재검증 → 리포트"이므로, 리포트는
 *수정 후 다시 검증하는 방법*까지 명시합니다.
@@ -395,11 +396,6 @@ def render_markdown(
     *,
     generated_at: datetime | None = None,
     reproduce_command: str | None = None,
-    agency: str = "",
-    department: str = "",
-    author: str = "",
-    doc_no: str = "",
-    reviewer: str = "",
 ) -> str:
     """Render a ScanReport as a self-contained Korean Markdown document.
 
@@ -408,10 +404,9 @@ def render_markdown(
         generated_at: timestamp shown in the header (defaults to now).
         reproduce_command: optional exact CLI command that produced this report.
             When omitted, a sensible default referencing the target is emitted.
-        agency / department / author / doc_no / reviewer: 결재용 문서 정보.
-            전부 기본 ""(미지정)이며, 하나라도 지정되면 문서 상단 결재 헤더와
-            문서 끝 결재란(검토자/승인자 서명)을 함께 출력한다. 미지정 시
-            기존과 동일하게 렌더된다(하위호환).
+
+    이 문서는 공문의 '붙임'으로 제출되는 것을 전제로 한다 — 결재(서명)는
+    상위 공문이 담당하므로 리포트 자체에는 결재 요소를 넣지 않는다.
 
     The output is designed to be readable on its own — anyone can paste it into
     a Word document or print it without needing to query the MCP further.
@@ -421,17 +416,6 @@ def render_markdown(
 
     lines.append("# 코드 보안 검사 결과")
     lines.append("")
-
-    # --- 결재 헤더 (문서 정보가 하나라도 지정된 경우에만) -------------------
-    approval = any((agency, department, author, doc_no, reviewer))
-    if approval:
-        lines.append("| 기관 | 부서 | 작성자 | 문서번호 | 작성일 |")
-        lines.append("|---|---|---|---|---|")
-        lines.append(
-            f"| {agency or '—'} | {department or '—'} | {author or '—'} | "
-            f"{doc_no or '—'} | {ts.split(' ')[0]} |"
-        )
-        lines.append("")
 
     # --- 결론 (한 줄) -----------------------------------------------------
     lines.append("## 결론")
@@ -452,10 +436,15 @@ def render_markdown(
 
     # 의존성 매니페스트는 코드 스캔이 아니라 SCA로 검사해야 한다 — 코드 스캔
     # 결과만 보고 "의존성도 안전"으로 오해하지 않도록 결론 바로 아래에 강조한다.
+    # 감사 결과(dependency_audit)가 병합돼 있으면 그 요약으로 대체한다.
+    dep_audits = _dep_audits(report)
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
     ]
-    if manifest_skips:
+    if dep_audits:
+        lines.append(f"> {_dep_banner_text(dep_audits)}")
+        lines.append("")
+    elif manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
         lines.append(
             f"> ⚠️ **의존성 검사 별도 필요** — {names} 은(는) 코드 스캔 대상이 아닙니다. "
@@ -682,6 +671,9 @@ def render_markdown(
             lines.append("```")
             lines.append("")
 
+    # --- 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 -----------------
+    lines.extend(_render_dependency_audit_md(report))
+
     # --- 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) --------------
     if report.external_surface:
         lines.extend(_render_external_surface_md(report))
@@ -745,16 +737,6 @@ def render_markdown(
     lines.append("")
     lines.append("> " + report.disclaimer.replace("\n", " "))
     lines.append("")
-
-    # --- 결재란 (문서 정보가 지정된 경우에만 — 인쇄·서명용) ----------------
-    if approval:
-        lines.append("## 결재")
-        lines.append("")
-        lines.append("| 구분 | 성명 | 서명 | 일자 |")
-        lines.append("|---|---|---|---|")
-        lines.append(f"| 검토자 | {reviewer or ''} | ▢ | |")
-        lines.append("| 승인자 | | ▢ | |")
-        lines.append("")
 
     lines.append("---")
     lines.append("")
@@ -900,7 +882,8 @@ tr.w td{background:#fff7ed}
 .rev{display:inline-block;padding:1px 8px;border-radius:5px;font-size:11px;font-weight:700}
 .rev.warn{background:#fde2c8;color:#9a3412}.rev.info{background:#eef2f7;color:#64748b}
 .invcheck{background:#f8fafc;border-left:4px solid #2563eb;padding:9px 13px;font-size:12.5px;color:#334155;margin:12px 0 4px}
-/* 배포 판정·실행 모드·검토 범위·개인정보 요약·결재란 (보안팀 제출용) */
+.oper{font-size:11px;color:#6b7280;white-space:nowrap}
+/* 배포 판정·실행 모드·검토 범위·개인정보 요약 (보안팀 제출용) */
 .deploy{border:2px solid #9ca3af;border-radius:8px;padding:12px 16px;font-weight:700;
   font-size:14.5px;margin:0 0 12px;background:#fff;page-break-inside:avoid}
 .scanmode{background:#f0f9ff;border:1px solid #7dd3fc;border-radius:6px;
@@ -912,12 +895,6 @@ tr.w td{background:#fff7ed}
 .piibox .ph{font-weight:800;color:#9d174d;font-size:15px;margin-bottom:6px}
 .dupnote{background:#f8fafc;border:1px dashed #94a3b8;border-radius:6px;
   padding:9px 13px;font-size:12.8px;color:#475569;margin:8px 0}
-table.apprv{margin:10px 0 14px}
-table.apprv th{background:#eef2f7;white-space:nowrap}
-.signrow{display:flex;gap:12px;margin:12px 0;page-break-inside:avoid}
-.signcell{flex:1;border:1px solid #9ca3af;border-radius:6px;padding:10px 14px;
-  min-height:72px;font-size:13px;color:#374151;background:#fff}
-.signcell .role{font-weight:700;margin-right:8px}
 @media print{
   body{background:#fff}
   .page{box-shadow:none;margin:0;max-width:none;border-radius:0;padding:0 6mm}
@@ -954,22 +931,14 @@ def render_html(
     *,
     generated_at: datetime | None = None,
     reproduce_command: str | None = None,
-    agency: str = "",
-    department: str = "",
-    author: str = "",
-    doc_no: str = "",
-    reviewer: str = "",
 ) -> str:
     """Render a ScanReport as a self-contained Korean HTML document (card style).
 
     Same content as :func:`render_markdown` — both render from the one
     ``ScanReport`` so the two outputs never diverge. The HTML embeds all CSS
     inline (no external CDN/font/JS), so it opens in air-gapped environments,
-    attaches to email, and prints to PDF for an approval record.
-
-    agency/department/author/doc_no/reviewer: 결재용 문서 정보(전부 기본 "").
-    하나라도 지정되면 상단 결재 헤더와 문서 끝 결재란을 함께 출력하고,
-    미지정 시 기존과 동일하게 렌더된다(하위호환).
+    attaches to email, and prints to PDF as a 붙임 document. 결재(서명)는
+    상위 공문이 담당하므로 리포트 자체에는 결재 요소를 넣지 않는다.
     """
     ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     summary = report.summary
@@ -983,19 +952,6 @@ def render_html(
 
     p.append("<h1>🛡️ 코드 보안 검사 결과</h1>")
     p.append('<div class="sub">vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
-
-    # --- 결재 헤더 (문서 정보가 하나라도 지정된 경우에만) -------------------
-    approval = any((agency, department, author, doc_no, reviewer))
-    if approval:
-        p.append(
-            '<table class="apprv"><tr><th>기관</th><th>부서</th><th>작성자</th>'
-            "<th>문서번호</th><th>작성일</th></tr>"
-        )
-        p.append(
-            f"<tr><td>{_esc(agency or '—')}</td><td>{_esc(department or '—')}</td>"
-            f"<td>{_esc(author or '—')}</td><td>{_esc(doc_no or '—')}</td>"
-            f"<td>{_esc(ts.split(' ')[0])}</td></tr></table>"
-        )
 
     p.append(
         f'<div class="banner" style="background:{_verdict_css_color(report)}">'
@@ -1014,8 +970,13 @@ def render_html(
     if mode_note:
         p.append(f'<div class="scanmode">{_esc(mode_note)}</div>')
 
+    dep_audits = _dep_audits(report)
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
-    if manifest_skips:
+    if dep_audits:
+        # markdown 강조(**)를 <b>로 바꿔 배너 문구를 HTML에서도 동일하게 쓴다.
+        banner = _esc(_dep_banner_text(dep_audits)).replace("**", "")
+        p.append(f'<div class="depwarn">{banner}</div>')
+    elif manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
         p.append(
             '<div class="depwarn">⚠️ <b>의존성 검사 별도 필요</b> — '
@@ -1279,6 +1240,9 @@ def render_html(
         p.append("</ul>")
         p.append("</div></details>")
 
+    # === 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ================
+    p.extend(_render_dependency_audit_html(report))
+
     # === 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) ==============
     if report.external_surface:
         p.extend(_render_external_surface_html(report))
@@ -1326,20 +1290,6 @@ def render_html(
 
     p.append("<h2>면책</h2>")
     p.append(f'<div class="disc">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
-
-    # --- 결재란 (문서 정보가 지정된 경우에만 — 인쇄 시에도 유지) ------------
-    if approval:
-        p.append("<h2>결재</h2>")
-        p.append('<div class="signrow">')
-        p.append(
-            f'<div class="signcell"><span class="role">검토자</span>{_esc(reviewer)}'
-            '<br><span style="color:#9ca3af">서명 ▢ · 날짜 __________</span></div>'
-        )
-        p.append(
-            '<div class="signcell"><span class="role">승인자</span>'
-            '<br><span style="color:#9ca3af">서명 ▢ · 날짜 __________</span></div>'
-        )
-        p.append("</div>")
 
     p.append('<div class="foot">생성: vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
     p.append("</div></body></html>")
@@ -1389,7 +1339,7 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
         out.append('<div class="subh">① 외부 API 호출 (검토 필요 먼저)</div>')
         out.append(
             "<table><tr><th>대상(호스트)</th><th>종류</th><th>모델</th><th>위치</th>"
-            "<th>이용 정보(요약)</th><th>국외</th><th>검토</th></tr>"
+            "<th>이용 정보(요약)</th><th>국외이전(운영주체)</th><th>검토</th></tr>"
         )
         for c in api:
             cls = ' class="w"' if c.review_level == "warn" else ""
@@ -1400,30 +1350,38 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
                 if c.review_level == "warn"
                 else '<span class="rev info">참고</span>'
             )
+            # 호출 지점 수 — 첫 위치 + "외 N곳"으로 검토 규모를 보여준다.
+            loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
+            # 운영주체·국가 — 국외이전 검토는 "누구에게, 어느 나라로"가 특정돼야 한다.
+            oper = c.operator or "미상 — 직접 확인"
             out.append(
                 f"<tr{cls}><td>{_esc(c.target)}</td>"
                 f'<td><span class="pill {_esc(c.category)}">{_esc(_cat_ko(c.category))}</span></td>'
-                f"<td>{_esc(c.model or '—')}</td><td>{_esc(c.location)}</td>"
+                f"<td>{_esc(c.model or '—')}</td><td>{_esc(loc)}</td>"
                 f"<td>{_esc(c.data_summary)}</td>"
-                f'<td><span class="go {rcls}">{_esc(region)}</span></td><td>{rev}</td></tr>'
+                f'<td><span class="go {rcls}">{_esc(region)}</span>'
+                f'<br><span class="oper">{_esc(oper)}</span></td><td>{rev}</td></tr>'
             )
         out.append("</table>")
     if pkg:
         out.append('<div class="subh">② 설치된 외부 플러그인 · 라이브러리</div>')
         out.append(
             "<table><tr><th>플러그인/라이브러리</th><th>버전</th><th>종류</th>"
-            "<th>이용 정보(요약)</th></tr>"
+            "<th>전송 대상(운영주체)</th><th>이용 정보(요약)</th></tr>"
         )
         for c in pkg:
             out.append(
                 f"<tr><td>{_esc(c.target)}</td><td>{_esc(c.version or '—')}</td>"
                 f'<td><span class="pill {_esc(c.category)}">{_esc(_cat_ko(c.category))}</span></td>'
+                f"<td>{_esc(c.operator or '—')}</td>"
                 f"<td>{_esc(c.data_summary)}</td></tr>"
             )
         out.append("</table>")
     out.append(
         '<div class="invcheck"><b>검토 체크리스트</b> — ⚠ 지점마다: ① 무슨 데이터? '
-        "② 개인정보 포함? ③ 국외이전 동의·망분리·기관 AI정책 부합?</div>"
+        "② 개인정보 포함? ③ 국외이전 동의·망분리·기관 AI정책 부합? "
+        "④ AI API 입력 데이터의 <b>학습 이용·보존 여부</b>는 서비스 약관과 기관 계약"
+        "(옵트아웃 설정)으로 확인</div>"
     )
     out.append(
         '<div class="disc">※ <b>최소 목록</b>입니다 — 변수로 조립된 호스트는 누락될 수 있습니다. '
@@ -1489,6 +1447,142 @@ def _render_rule_group_html(group: dict) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 의존성(패키지) 취약점 감사 — scan_dependencies/audit_manifest 결과를 사람용
+# 리포트에 병합한다. 보안팀이 "코드 + 패키지" 위험을 한 문서에서 보게 하고,
+# 판정 불가(unchecked/unparsed)를 '안전'으로 오해하지 않도록 명시한다.
+# ---------------------------------------------------------------------------
+
+
+def _dep_audits(report: ScanReport) -> list[dict]:
+    """dependency_audit 필드 → audit dict 목록. 단일 dict / {'audits':[...]} 모두 수용."""
+    da = report.dependency_audit
+    if not da or not isinstance(da, dict):
+        return []
+    if isinstance(da.get("audits"), list):
+        return [a for a in da["audits"] if isinstance(a, dict)]
+    return [da]
+
+
+def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool]:
+    """(검사됨, 판정불가, 취약·악성 패키지 수, 차단 여부) 합계."""
+    checked = sum(int(a.get("checked_count") or 0) for a in audits)
+    unchecked = sum(int(a.get("unchecked_count") or 0) for a in audits)
+    unchecked += sum(1 for a in audits if a.get("verdict") == "unparsed")  # 파싱 실패도 판정불가
+    vuln = 0
+    for a in audits:
+        for c in a.get("checks") or []:
+            if c.get("is_malicious_package") or c.get("vulnerability_count"):
+                vuln += 1
+    blocked = any(a.get("blocked") for a in audits)
+    return checked, unchecked, vuln, blocked
+
+
+def _dep_banner_text(audits: list[dict]) -> str:
+    checked, unchecked, vuln, blocked = _dep_stats(audits)
+    if blocked:
+        return (f"🚫 **의존성 검사 포함** — 악성·고위험 패키지 발견(취약·악성 {vuln}건). "
+                "아래 '의존성(패키지) 취약점 검사' 섹션을 확인하세요.")
+    if vuln:
+        return (f"⚠️ **의존성 검사 포함** — 알려진 취약점 있는 패키지 {vuln}건. "
+                "아래 '의존성(패키지) 취약점 검사' 섹션을 확인하세요.")
+    if unchecked:
+        return (f"⚠️ **의존성 일부 판정 불가** — {unchecked}건은 검사되지 못했습니다"
+                "(캐시 없는 오프라인·API 실패·파싱 불가). **판정 불가는 '안전'이 아닙니다.**")
+    return f"✅ **의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음(검사 시점 기준)."
+
+
+def _pkg_verdict_label(check: dict) -> str:
+    if check.get("is_malicious_package"):
+        return "🚫 악성 의심"
+    n = check.get("vulnerability_count") or 0
+    if n:
+        return f"⚠ 취약점 {n}건"
+    if check.get("checked"):
+        return "이상 없음(검사 시점)"
+    return "판정 불가"
+
+
+def _pkg_note(check: dict) -> str:
+    bits: list[str] = []
+    heur = check.get("heuristics") or {}
+    if heur.get("typosquat_warning"):
+        bits.append("타이포스쿼팅 의심")
+    if check.get("kev_signals"):
+        bits.append("CISA KEV 신호")
+    if not check.get("checked") and check.get("note"):
+        bits.append("검사 불가 사유 있음")
+    return " · ".join(bits)
+
+
+def _render_dependency_audit_md(report: ScanReport) -> list[str]:
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    checked, unchecked, vuln, blocked = _dep_stats(audits)
+    out: list[str] = ["## 📦 의존성(패키지) 취약점 검사", ""]
+    out.append(f"> 검사 {checked}건 · 판정 불가 {unchecked}건 · 취약·악성 {vuln}건"
+               + (" · **차단 권고**" if blocked else ""))
+    out.append("")
+    for a in audits:
+        title = a.get("manifest") or a.get("ecosystem", "manifest")
+        out.append(f"### `{title}` ({a.get('ecosystem', '?')}) — 판정: {a.get('verdict', '?')}")
+        out.append("")
+        if a.get("verdict") == "unparsed":
+            out.append(f"> ⚠ {a.get('note', '파싱하지 못했습니다.')} **파싱 0건은 '안전'이 아닙니다.**")
+            out.append("")
+            continue
+        out.append("| 패키지 | 버전 | 판정 | 비고 |")
+        out.append("|---|---|---|---|")
+        for c in a.get("checks") or []:
+            out.append(
+                f"| `{c.get('name', '?')}` | {c.get('version') or '—'} | "
+                f"{_pkg_verdict_label(c)} | {_pkg_note(c)} |"
+            )
+        out.append("")
+    if unchecked:
+        out.append("> ⚠ **판정 불가는 '안전'이 아닙니다** — 온라인 환경 또는 최신 인텔 캐시"
+                   "(`gvskb update-intel`)로 다시 검사하세요.")
+        out.append("")
+    return out
+
+
+def _render_dependency_audit_html(report: ScanReport) -> list[str]:
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    checked, unchecked, vuln, blocked = _dep_stats(audits)
+    keep_open = blocked or vuln > 0 or unchecked > 0
+    out: list[str] = [
+        f'<details class="sec"{" open" if keep_open else ""}>'
+        f"<summary>📦 의존성(패키지) 취약점 검사 — 검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}</summary>"
+        '<div class="secbody">',
+    ]
+    for a in audits:
+        title = a.get("manifest") or a.get("ecosystem", "manifest")
+        out.append(f'<div class="subh">{_esc(str(title))} ({_esc(str(a.get("ecosystem", "?")))}) '
+                   f"— 판정: {_esc(str(a.get('verdict', '?')))}</div>")
+        if a.get("verdict") == "unparsed":
+            out.append(f'<div class="depwarn">⚠ {_esc(str(a.get("note", "파싱하지 못했습니다.")))} '
+                       "<b>파싱 0건은 '안전'이 아닙니다.</b></div>")
+            continue
+        out.append("<table><tr><th>패키지</th><th>버전</th><th>판정</th><th>비고</th></tr>")
+        for c in a.get("checks") or []:
+            bad = c.get("is_malicious_package") or c.get("vulnerability_count")
+            cls = ' class="w"' if bad else ""
+            out.append(
+                f"<tr{cls}><td>{_esc(str(c.get('name', '?')))}</td>"
+                f"<td>{_esc(str(c.get('version') or '—'))}</td>"
+                f"<td>{_esc(_pkg_verdict_label(c))}</td><td>{_esc(_pkg_note(c))}</td></tr>"
+            )
+        out.append("</table>")
+    if unchecked:
+        out.append('<div class="depwarn">⚠ <b>판정 불가는 \'안전\'이 아닙니다</b> — 온라인 환경 '
+                   '또는 최신 인텔 캐시(<code class="ev">gvskb update-intel</code>)로 다시 검사하세요.</div>')
+    out.append("</div></details>")
+    return out
+
+
 def _render_external_surface_md(report: ScanReport) -> list[str]:
     """외부 연결 인벤토리 섹션(Markdown). MD는 접기가 없으므로 표로 펼쳐 출력."""
     api = [c for c in report.external_surface if c.kind == "api"]
@@ -1504,26 +1598,32 @@ def _render_external_surface_md(report: ScanReport) -> list[str]:
     if api:
         out.append("### ① 외부 API 호출 (검토 필요 먼저)")
         out.append("")
-        out.append("| 대상(호스트) | 종류 | 모델 | 위치 | 이용 정보 | 국외 | 검토 |")
+        out.append("| 대상(호스트) | 종류 | 모델 | 위치 | 이용 정보 | 국외이전(운영주체) | 검토 |")
         out.append("|---|---|---|---|---|---|---|")
         for c in api:
             mark = "⚠ 검토" if c.review_level == "warn" else "참고"
+            loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
+            oper = f"{c.region or '확인'} — {c.operator}" if c.operator else f"{c.region or '확인'} — 미상(직접 확인)"
             out.append(
                 f"| `{c.target}` | {_cat_ko(c.category)} | {c.model or '—'} | "
-                f"`{c.location}` | {c.data_summary} | {c.region or '확인'} | {mark} |"
+                f"`{loc}` | {c.data_summary} | {oper} | {mark} |"
             )
         out.append("")
     if pkg:
         out.append("### ② 설치된 외부 플러그인 · 라이브러리")
         out.append("")
-        out.append("| 플러그인/라이브러리 | 버전 | 종류 | 이용 정보 |")
-        out.append("|---|---|---|---|")
+        out.append("| 플러그인/라이브러리 | 버전 | 종류 | 전송 대상(운영주체) | 이용 정보 |")
+        out.append("|---|---|---|---|---|")
         for c in pkg:
-            out.append(f"| `{c.target}` | {c.version or '—'} | {_cat_ko(c.category)} | {c.data_summary} |")
+            out.append(
+                f"| `{c.target}` | {c.version or '—'} | {_cat_ko(c.category)} | "
+                f"{c.operator or '—'} | {c.data_summary} |"
+            )
         out.append("")
     out.append(
         "> **검토 체크리스트** — ⚠ 지점마다: ① 무슨 데이터? ② 개인정보 포함? "
-        "③ 국외이전 동의·망분리·기관 AI정책 부합?"
+        "③ 국외이전 동의·망분리·기관 AI정책 부합? "
+        "④ AI API 입력 데이터의 **학습 이용·보존 여부**는 서비스 약관·기관 계약(옵트아웃 설정)으로 확인"
     )
     out.append(
         "> ※ 최소 목록 — 변수로 조립된 호스트는 누락될 수 있고, '이용 정보·국외'는 "

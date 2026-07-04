@@ -186,6 +186,11 @@ class ExternalConnection(BaseModel):
     location: str = Field(default="", description="file:line(api) 또는 매니페스트 파일(package)")
     data_summary: str = Field(default="", description="이용 정보 요약(카탈로그 + 인접 신호)")
     region: str | None = Field(default=None, description="국외 | 국내 | None(미상)")
+    operator: str | None = Field(
+        default=None,
+        description="운영주체·국가(예: 'OpenAI(미국)') — 국외이전 검토는 '누구에게, 어느 나라로'가 특정돼야 함. None=미상(직접 확인)",
+    )
+    call_count: int = Field(default=1, description="같은 파일 내 호출 지점 수(api 전용). location은 첫 지점")
     pii_adjacent: bool = Field(default=False, description="같은 줄/근접에 개인정보 신호")
     review_level: Literal["info", "warn"] = "info"
 
@@ -277,6 +282,14 @@ class ScanReport(BaseModel):
     intel_freshness: dict | None = Field(
         default=None,
         description="의존성·인텔 캐시 기준일(예: {'advisory_db': '2026-06-01'}). None이면 미표시.",
+    )
+    dependency_audit: dict | None = Field(
+        default=None,
+        description=(
+            "의존성(패키지) 취약점 검사 결과 — scan_dependencies/audit_manifest 반환값. "
+            "단일 audit dict 또는 {'audits': [...]}(여러 매니페스트). None이면 섹션 미표시. "
+            "보안팀이 코드+패키지 위험을 한 문서에서 보도록 리포트에 병합된다."
+        ),
     )
     disclaimer: str = (
         "이 결과는 자동 보안 보조 검토입니다. 공공기관 운영 반영 전에는 기관 보안 담당자의 "

@@ -211,6 +211,111 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
     }
 
 
+# ---------------------------------------------------------------------------
+# Manifest audit — shared by MCP scan_dependencies and `gvskb scan --check-deps`
+# ---------------------------------------------------------------------------
+
+# 락파일 시그니처 — 락파일을 requirements/package.json 파서에 넣으면 가짜
+# 패키지명(name/version/description 같은 키워드)이 추출돼 "0건 → ok" 또는
+# 쓰레기 OSV 질의가 나간다. 파싱 *전에* 감지해 정직하게 거절한다.
+_LOCKFILE_HINTS: tuple[tuple[str, str], ...] = (
+    ("[[package]]", "poetry.lock"),
+    ('"lockfileVersion"', "package-lock.json"),
+    ("# yarn lockfile", "yarn.lock"),
+    ("lockfileVersion:", "pnpm-lock.yaml"),
+)
+
+
+def _detect_lockfile(manifest_text: str) -> str | None:
+    head = manifest_text[:2000]
+    for needle, label in _LOCKFILE_HINTS:
+        if needle in head:
+            return label
+    return None
+
+
+def _unparsed_result(ecosystem: str, note: str) -> dict:
+    """파싱 0건은 '안전(ok)'이 아니라 '검사되지 않음'이다 — 거짓 통과 방지."""
+    return {
+        "ecosystem": ecosystem,
+        "parsed_count": 0,
+        "checked_count": 0,
+        "unchecked_count": 0,
+        "blocked": False,
+        "requires_review": True,
+        "verdict": "unparsed",
+        "packages": [],
+        "checks": [],
+        "note": note,
+        "disclaimer": (
+            "파싱된 패키지가 0건입니다 — '안전'이 아니라 '검사되지 않음'입니다. "
+            "requirements.txt(pypi) 또는 package.json(npm) 원본 매니페스트로 다시 검사하세요."
+        ),
+    }
+
+
+async def audit_manifest(
+    manifest_text: str,
+    ecosystem: Literal["pypi", "npm"] = "pypi",
+    limit: int = 20,
+) -> dict:
+    """의존성 매니페스트를 파싱해 패키지별 취약·악성 검사를 수행한다.
+
+    온라인: OSV.dev 조회(패키지명·버전만 전송). 오프라인(GVSKB_MODE=offline):
+    로컬 인텔 캐시 기반 — 판정 불가는 '안전'이 아니라 requires_review로 표시.
+    """
+    from ..scanner import parse_manifest_packages  # 지연 import — 경량 경로 유지
+
+    lock = _detect_lockfile(manifest_text)
+    if lock:
+        return _unparsed_result(
+            ecosystem,
+            f"락파일 형식({lock})은 이 도구가 파싱하지 못합니다. "
+            "원본 매니페스트(requirements.txt·package.json)를 검사하세요.",
+        )
+
+    packages = parse_manifest_packages(manifest_text, ecosystem)
+    if not packages:
+        return _unparsed_result(ecosystem, "이 텍스트에서 패키지를 파싱하지 못했습니다. 형식·ecosystem을 확인하세요.")
+
+    limited = packages[: max(0, min(limit, 100))]
+    checks = []
+    for package in limited:
+        checks.append(
+            await check_package_impl(
+                name=str(package["name"]),
+                version=str(package["version"]) if package.get("version") else None,
+                ecosystem=ecosystem,
+            )
+        )
+    blocked = any(c.get("is_malicious_package") or c.get("verdict_severity") == "high" for c in checks)
+    # 판정 불가(캐시 없는 오프라인·API 실패)를 "안전"으로 오해하지 않도록 실제
+    # 검사된 수와 판정 불가 수를 분리하고, 검토 필요 여부를 명시한다.
+    # 알려진 취약점(CVE)이 있는 패키지도 'ok'가 아니라 검토 대상이다 — 악성만
+    # 걸러내고 취약 버전을 통과시키면 보안팀이 거짓 안심을 하게 된다.
+    actually_checked = sum(1 for c in checks if c.get("checked", False))
+    unchecked = len(checks) - actually_checked
+    has_vulns = any(c.get("vulnerability_count") for c in checks)
+    requires_review = blocked or unchecked > 0 or has_vulns or any(c.get("requires_review") for c in checks)
+    verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
+    return {
+        "ecosystem": ecosystem,
+        "parsed_count": len(packages),
+        "checked_count": actually_checked,
+        "unchecked_count": unchecked,
+        "blocked": blocked,
+        "requires_review": requires_review,
+        "verdict": verdict,
+        "packages": limited,
+        "checks": checks,
+        "disclaimer": (
+            "취약점 API에는 패키지명과 ecosystem만 전송합니다. "
+            "unchecked_count>0 이면 일부 패키지가 '판정 불가'(캐시 없는 오프라인·API 실패)이며 '안전'이 아닙니다. "
+            "운영 반영 전 lockfile/SBOM 기준 재검사를 권장합니다."
+        ),
+    }
+
+
 async def check_package_impl(
     name: str,
     ecosystem: Literal["pypi", "npm"] = "pypi",
