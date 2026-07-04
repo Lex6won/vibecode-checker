@@ -54,7 +54,9 @@ jobs:
       - name: Detect changes in proposed rules
         id: detect
         run: |
-          if git diff --quiet rules/intel-proposed/; then
+          # git diff 는 untracked(신규) 파일을 보지 못한다 — 새 proposed 룰은
+          # 항상 신규 파일이므로 status --porcelain 으로 감지해야 PR이 생성된다.
+          if [ -z "$(git status --porcelain rules/intel-proposed/ 2>/dev/null)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -70,7 +72,8 @@ jobs:
 
       - name: Create pull request
         if: steps.detect.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        # SHA 핀 — 태그는 이동할 수 있으므로 공급망 안전을 위해 커밋으로 고정 (= v6)
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c  # v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: intel/auto-update

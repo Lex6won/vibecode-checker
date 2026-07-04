@@ -296,11 +296,15 @@ gvskb check-package reqeusts --ecosystem pypi    # 오타 패키지(typosquat) �
 <summary><b>인터넷 없는 망분리 환경에서 쓰기</b></summary>
 
 ```bash
-# (외부망 PC) 보안 피드 캐시를 미리 받아둡니다
+# (외부망 PC) 보안 피드 캐시를 받아 검증 가능한 반입 번들로 만듭니다
 gvskb update-intel --all                       # npm 패키지도 쓰면: GVSKB_OSV_INCLUDE_NPM=1
+gvskb intel-bundle export intel-반입.zip        # 캐시 + sha256 manifest 를 zip 하나로
 
-# (망분리 PC) 캐시를 옮긴 뒤, 외부 호출 없이 로컬 룰·캐시로만 검사
+# (매체 반입) intel-반입.zip 을 USB로 옮깁니다
+
+# (망분리 PC) 무결성 전수 검증 후 반입하고, 외부 호출 없이 로컬 룰·캐시로만 검사
 #   캐시 위치: %USERPROFILE%\.gvskb\cache  (환경변수 GVSKB_CACHE_DIR로 변경 가능)
+gvskb intel-bundle import intel-반입.zip         # sha256 불일치면 전체 거부
 $env:GVSKB_MODE = "offline"      # PowerShell
 gvskb doctor --offline           # 인텔 캐시 존재·신선도까지 점검됩니다
 gvskb scan ./my-project --check-deps
@@ -310,9 +314,39 @@ gvskb scan ./my-project --check-deps
 (`GVSKB_INTEL_MAX_AGE_DAYS`로 조정)이 지나면 '이상 없음'을 **판정 보류로 승격**해
 오래된 캐시가 최신처럼 보이지 않게 합니다.
 
-> 🧾 **점검 이력(감사로그)** — `GVSKB_AUDIT_DIR` 환경변수를 설정하면 스캔·차단·인텔
-> 갱신 이력이 월별 JSONL로 append 기록됩니다. 원본 코드·개인정보는 저장하지 않고
-> 해시와 마스킹된 증거만 남깁니다(기관 감사 증빙용, 기본 비활성).
+> 🧾 **점검 이력(감사로그)** — `GVSKB_AUDIT_DIR` 환경변수를 설정하면 스캔·차단·예외
+> 승인·인텔 갱신 이력이 월별 JSONL로 append 기록됩니다. 원본 코드·개인정보는 저장하지
+> 않고 해시와 마스킹된 증거만 남깁니다(기관 감사 증빙용, 기본 비활성).
+
+<details>
+<summary><b>오탐·수용 위험을 '승인된 예외'로 관리하기</b></summary>
+
+스캔 루트에 `.gvskb-exceptions.yaml` 을 두면, 오탐이거나 기관이 위험을 수용하기로
+결정한 발견을 **숨기지 않고 기록하며** 게이트(exit code·배포 판정)만 통과시킵니다.
+
+```yaml
+exceptions:
+  - rule_id: GOV-FLASK-DEBUG-001
+    file: app.py
+    line: 47                 # 선택 — 지정하면 그 줄만
+    reason: 내부 개발서버 전용 — 외부 노출 없음
+    approved_by: 김보안(정보보안담당관)
+    expires: 2026-12-31      # 만료되면 자동으로 다시 차단됩니다
+```
+
+`reason`·`approved_by`·`expires`가 **모두 있어야** 유효합니다. 억제된 발견은
+리포트의 '승인된 예외 내역'과 감사로그(`approve_bypass`)에 남습니다.
+</details>
+
+<details>
+<summary><b>CI·보안도구 연동 (SARIF)</b></summary>
+
+```bash
+gvskb scan ./src --format sarif -o result.sarif   # SARIF 2.1.0
+```
+
+GitHub code scanning 에 업로드하거나 기관 보안도구로 수집할 수 있습니다.
+</details>
 </details>
 
 ### 🌳 CI에 넣고 싶다면 — 자동 게이트
