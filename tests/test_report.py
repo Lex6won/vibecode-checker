@@ -27,7 +27,10 @@ def test_render_markdown_includes_required_sections() -> None:
 
     assert "# 코드 보안 검사 결과" in md
     assert "## 요약" in md
-    assert "## 파일별 발견 사항" in md
+    # Layer 2 — 보안팀 상세 검토(분야별) 에 발견 상세가 들어간다
+    assert "🔍 보안팀 상세 검토" in md
+    assert "보안 분야 개요" in md
+    assert "왜 위험한가" in md and "안전한 수정 방향" in md
     assert "## 면책" in md
     assert "GOV-SQL-INJECTION-001" in md
     assert "app.py" in md
@@ -213,22 +216,23 @@ def _multi_finding_report():
     )
 
 
-def test_render_html_has_one_page_summary_sections() -> None:
+def test_render_html_has_two_layer_sections() -> None:
     html = render_html(_report_with_findings())
     for section in (
-        "한눈에 보기",
-        "위험 유형",
-        "파일별 위험 요약",
-        "가장 먼저 할 일",
-        "파일별 상세",
+        "한눈에 보기",          # Layer 1 — 공무원 요약
+        "가장 먼저 할 일",       # Layer 1 — Top 3
+        "보안팀 상세 검토",      # Layer 2 헤더
+        "보안 분야 개요",        # Layer 2 — 분야 한눈에
         "수정 프롬프트",
     ):
-        assert section in html, f"누락된 1페이지 요약 섹션: {section}"
-    # 스탯 카드 4종 + 파일 상세로 점프하는 앵커
+        assert section in html, f"누락된 섹션: {section}"
+    # 스탯 카드 + 분야별 접기(details)
     assert "검사한 파일" in html
     assert 'class="stat"' in html
-    assert 'href="#file-0"' in html
-    assert "<details" in html  # 순수 CSS 접기
+    assert "<details" in html  # 순수 CSS 접기(분야별 상세)
+    # 옛 파일별 구조는 제거됐다
+    assert "파일별 상세" not in html
+    assert 'href="#file-0"' not in html
 
 
 def test_render_html_uses_pure_css_details_no_js() -> None:
@@ -255,20 +259,22 @@ def test_render_html_shows_build_artifact_note() -> None:
     assert "빌드 산출물" in html
 
 
-def test_render_markdown_has_type_and_file_summary_and_prompts() -> None:
+def test_render_markdown_has_domain_sections_and_prompts() -> None:
     md = render_markdown(_report_with_findings())
-    assert "## 위험 유형" in md
-    assert "## 파일별 위험 요약" in md
+    assert "## 🔍 보안팀 상세 검토" in md
+    assert "### 보안 분야 개요" in md
     assert "## 가장 먼저 할 일" in md
     assert "## 수정 프롬프트" in md
-    assert "## 파일별 발견 사항" in md  # 세부 헤더 보존
+    # 발견 상세(왜 위험·대응방안)는 분야별 카드에 보존된다
+    assert "왜 위험한가" in md and "안전한 수정 방향" in md
 
 
 def test_render_markdown_dedupes_same_rule_into_one_block() -> None:
     md = render_markdown(_multi_finding_report())
     # 같은 룰은 한 번만 설명되고 위치는 목록으로 합쳐진다("2건").
     head = md.split("## 수정 프롬프트")[0]
-    assert "## 파일별 발견 사항" in head
+    assert "🔍 보안팀 상세 검토" in head
+    assert "💉 주입" in head  # SQL 두 건이 '주입' 분야로 묶인다
     assert "2건" in md
 
 
@@ -291,7 +297,8 @@ def test_render_html_has_beginner_action_box() -> None:
 
 def test_render_markdown_has_beginner_action_box() -> None:
     md = render_markdown(_report_with_findings())
-    head = md.split("## 요약")[0]  # 결론 직후, 요약보다 위에 위치
+    # Layer 1(공무원) — 보안팀 상세 검토(Layer 2)보다 위에 위치
+    head = md.split("## 🔍 보안팀 상세 검토")[0]
     assert "다음 3단계만 하세요" in head
     assert "안전하게 고쳐줘" in head
     assert "새로 발급" in head
@@ -318,9 +325,10 @@ def test_scope_and_limit_section_in_md_and_html() -> None:
         assert "발견 0건이" in out
         assert "보안성 검토를 대체하지 않습니다" in out
         assert "scan_dependencies" in out
-    # 상단부(부록 아님): 파일별 상세보다 앞에 위치
-    assert md.index("검토 범위 및 한계") < md.index("## 파일별 발견 사항")
-    assert html.index("검토 범위 및 한계") < html.index("파일별 상세")
+    # 상단부(부록 아님): 보안팀 상세 검토(Layer 2) 헤더보다 앞에 위치
+    # (Top 3 안내가 헤더를 '참조'하므로 헤더 형태로 정확히 비교한다)
+    assert md.index("검토 범위 및 한계") < md.index("## 🔍 보안팀 상세 검토")
+    assert html.index("검토 범위 및 한계") < html.index("<h2>🔍 보안팀 상세 검토")
 
 
 def test_scope_section_present_even_when_clean() -> None:
@@ -403,12 +411,12 @@ def test_pii_summary_section_when_secret_found(tmp_path: Path) -> None:
     md = render_markdown(report)
     html = render_html(report)
     for out in (md, html):
-        assert "개인정보·비밀값 요약" in out
+        assert "개인정보·비밀값 주의" in out  # 분야 상세 뒤의 콜아웃
         assert "재발급" in out  # 코드 삭제만으로 부족 — 재발급 안내
 
 
 def test_pii_summary_absent_when_no_pii_findings() -> None:
-    # SQL 인젝션만 있는 리포트 — 개인정보·비밀값 섹션은 나오지 않는다.
+    # SQL 인젝션만 있는 리포트 — 개인정보·비밀값 콜아웃은 나오지 않는다.
     report = scan_code(
         "q = input('q')\n"
         "cursor.execute(f\"SELECT * FROM t WHERE x = '{q}'\")\n",
@@ -416,7 +424,7 @@ def test_pii_summary_absent_when_no_pii_findings() -> None:
         language="python",
     )
     assert report.findings  # 전제: SQLi 발견 존재
-    assert "개인정보·비밀값 요약" not in render_markdown(report)
+    assert "개인정보·비밀값 주의" not in render_markdown(report)
     assert "개인정보·비밀값 요약" not in render_html(report)
 
 
@@ -654,3 +662,78 @@ def test_render_sarif_empty_findings_ok() -> None:
     sarif = render_sarif(report)
     assert sarif["runs"][0]["results"] == []
     assert sarif["runs"][0]["properties"]["scanned_files"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 보안 분야 분류 — 발견을 보안팀이 아는 '분야'로 묶어 두괄식 검토를 돕는다
+# ---------------------------------------------------------------------------
+
+
+def _domain_label(code: str, filename: str = "app.py", language: str = "python") -> set[str]:
+    from gvskb.report import _security_domain
+    from gvskb.scanner import scan_code
+
+    r = scan_code(code, filename=filename, language=language)
+    return {_security_domain(f)[1] for f in r.findings}
+
+
+def test_domain_classifier_maps_sql_to_injection() -> None:
+    labels = _domain_label(
+        "q = input('q')\ncursor.execute(f\"SELECT * FROM t WHERE n='{q}'\")\n"
+    )
+    assert any("주입" in x for x in labels)
+
+
+def test_domain_classifier_maps_secret_to_secret_domain() -> None:
+    labels = _domain_label('DB_PASSWORD = "SuperSecretValue123"\n')
+    assert any("비밀값" in x for x in labels)
+
+
+def test_domain_classifier_maps_innerhtml_to_web() -> None:
+    labels = _domain_label(
+        'const h = "<p>"+c+"</p>";\ndocument.getElementById("b").innerHTML = h;\n',
+        filename="ui.js", language="javascript",
+    )
+    assert any("웹" in x for x in labels)
+
+
+def test_domain_classifier_maps_flask_debug_to_misconfig() -> None:
+    labels = _domain_label('app.run(host="0.0.0.0", debug=True)\n')
+    assert any("설정" in x for x in labels)
+
+
+def test_group_by_domain_orders_and_counts() -> None:
+    from gvskb.report import _group_by_domain
+    from gvskb.scanner import scan_path
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "app.py"
+        p.write_text(
+            'DB_PASSWORD = "SuperSecretValue123"\n'
+            "q = input('q')\n"
+            'os.system("ls " + q)\n',
+            encoding="utf-8",
+        )
+        report = scan_path(d)
+    domains = _group_by_domain(report.findings)
+    assert domains, "분야가 하나 이상 있어야 한다"
+    # 정렬 순서(개인정보<비밀값<주입…)를 지킨다
+    orders = [dm["order"] for dm in domains]
+    assert orders == sorted(orders)
+    # 각 분야 dict 필수 키
+    for dm in domains:
+        assert {"order", "label", "findings", "count", "files", "max_severity"} <= set(dm)
+        assert dm["count"] == len(dm["findings"])
+
+
+def test_domain_section_expandable_shows_location_and_fix() -> None:
+    # 분야를 펼치면 위치·왜위험·대응방안이 보여야 한다(보안팀 세부 확인).
+    report = _report_with_findings()
+    html = render_html(report)
+    # 분야 details 안에 발견 카드의 핵심 3요소
+    assert "<details" in html
+    assert "위치" in html or "line" in html
+    assert "왜 위험한가" in html
+    assert "안전한 수정 방향" in html

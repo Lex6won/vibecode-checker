@@ -391,6 +391,110 @@ def _scan_mode_note(report: ScanReport) -> str | None:
     return note + "."
 
 
+# ---------------------------------------------------------------------------
+# 보안 분야 분류기 — 보안담당자가 "어느 보안 분야가 문제인지" 한눈에 보도록
+# rule_id / category 를 9개 분야로 매핑한다. 위에서부터 첫 매칭 우선(first
+# match wins)이므로 더 구체적인 분야(개인정보·비밀값)가 먼저 걸린다.
+# ---------------------------------------------------------------------------
+
+_DOMAIN_PRIVACY = (1, "🆔 개인정보 노출")
+_DOMAIN_SECRET = (2, "🔑 비밀값·인증정보 노출")
+_DOMAIN_INJECTION = (3, "💉 주입·원격 코드 실행")
+_DOMAIN_WEB = (4, "🌐 웹 취약점")
+_DOMAIN_CRYPTO = (5, "🔐 암호화·통신 보안")
+_DOMAIN_MISCONFIG = (6, "⚙️ 보안 설정 오류")
+_DOMAIN_AI = (7, "🤖 AI·자동화 위험")
+_DOMAIN_QUALITY = (8, "🧩 코드 안정성·오류처리")
+_DOMAIN_OTHER = (9, "🔎 그 외 보안 점검")
+
+
+def _security_domain(f: Finding) -> tuple[int, str]:
+    """발견 1건 → (정렬순서, "이모지 분야명"). 위에서부터 첫 매칭 우선."""
+    cat = (f.category or "").lower()
+    rid = (f.rule_id or "").upper()
+    if cat in ("privacy-public-sector", "public-sector-internal") or "PII" in rid:
+        return _DOMAIN_PRIVACY
+    if cat == "secret-scanning" or "SECRET" in rid or "SEC-06" in rid or "SEC-13" in rid:
+        return _DOMAIN_SECRET
+    if any(k in rid for k in (
+            "SQL", "CMD", "INPUT-01", "INPUT-02", "INPUT-05", "CODE-03", "CODE-05")):
+        return _DOMAIN_INJECTION
+    if cat == "xss" or any(k in rid for k in (
+            "XSS", "HTML", "INPUT-04", "INPUT-03", "INPUT-07",
+            "INPUT-11", "INPUT-12", "INPUT-13")):
+        return _DOMAIN_WEB
+    if any(k in rid for k in (
+            "SEC-04", "SEC-05", "SEC-07", "SEC-10", "SEC-11", "SEC-14", "SEC-15",
+            "TLS", "CERT", "CRYPTO")):
+        return _DOMAIN_CRYPTO
+    if cat == "misconfig" or any(k in rid for k in (
+            "FLASK", "DEBUG", "SEC-03", "SEC-12", "ENCAP-02")):
+        return _DOMAIN_MISCONFIG
+    if cat in ("llm-appsec", "agent-safety") or "LLM" in rid or "AGENT" in rid:
+        return _DOMAIN_AI
+    if any(k in rid for k in ("CODE", "ERR", "TIME", "ENCAP")):
+        return _DOMAIN_QUALITY
+    return _DOMAIN_OTHER
+
+
+def _group_by_domain(findings: list[Finding]) -> list[dict]:
+    """분야별로 findings 를 모아 정렬순서대로 반환. 빈 분야는 생략."""
+    buckets: dict[tuple[int, str], list[Finding]] = defaultdict(list)
+    for f in findings:
+        buckets[_security_domain(f)].append(f)
+    out: list[dict] = []
+    for (order, label), fs in sorted(buckets.items()):
+        out.append({
+            "order": order,
+            "label": label,
+            "findings": fs,
+            "count": len(fs),
+            "files": len({f.location.file for f in fs}),
+            "max_severity": _file_max_severity(fs),
+        })
+    return out
+
+
+def _domain_has_blocker(findings: list[Finding]) -> bool:
+    """치명(critical) 또는 차단(block)이 포함된 분야인지 — 기본 펼침 판단용."""
+    return any(
+        f.decision == Decision.block or f.severity == Severity.critical
+        for f in findings
+    )
+
+
+def _hero_line(report: ScanReport) -> tuple[str, str]:
+    """판정 히어로 배너 — 비전문가가 첫 문장만 읽어도 되는 쉬운 결론. (문장, 색)."""
+    s = report.summary
+    if s.finding_count == 0 and not report.scanned_files:
+        return (
+            "⚠ 검사된 파일이 없습니다 — 경로·확장자를 확인해 다시 검사하세요. "
+            "이 결과를 '안전'으로 해석하면 안 됩니다.",
+            "#607d8b",
+        )
+    block_n = s.by_decision.get(Decision.block.value, 0)
+    if s.blocked or block_n:
+        danger = sum(
+            1 for f in report.findings
+            if f.decision == Decision.block or f.severity == Severity.critical
+        ) or block_n
+        return (
+            f"🚫 지금 이대로 배포하면 안 됩니다 — 치명·차단 위험 {danger}건. "
+            "아래를 고치고 다시 검사하세요.",
+            "#c0392b",
+        )
+    if s.finding_count:
+        return (
+            f"⚠️ 배포 전에 고칠 것이 있습니다 — 주의 필요 {s.finding_count}건. "
+            "아래 순서대로 고친 뒤 다시 검사하세요.",
+            "#e67e22",
+        )
+    return (
+        "✅ 심각한 위험은 발견되지 않았습니다 — 단, 아래 '검토 범위 및 한계'를 꼭 확인하세요.",
+        "#2e7d32",
+    )
+
+
 def render_markdown(
     report: ScanReport,
     *,
@@ -425,68 +529,24 @@ def render_markdown(
     lines.append("# 코드 보안 검사 결과")
     lines.append("")
 
-    # --- 결론 (한 줄) -----------------------------------------------------
+    # =====================================================================
+    # Layer 1 — 공무원용 (접기 없음, 두괄식): 판정 히어로 → 핵심 숫자 →
+    # 다음 3단계 → 가장 먼저 할 일 Top3 → 정직성 배너(모드·예외·의존성·
+    # 빌드제외·한계 고지). 어려운 상세는 전부 Layer 2(보안팀)로 내린다.
+    # =====================================================================
+
+    # --- ① 판정 히어로 — 쉬운 한 문장 + 기술 요약 + 배포 판정 --------------
+    hero_text, _hero_color = _hero_line(report)
     lines.append("## 결론")
     lines.append("")
+    lines.append(f"> **{hero_text}**")
+    lines.append(">")
     lines.append(f"> {_verdict_line(report)}")
-    lines.append("")
-
+    lines.append(">")
     # 배포 판정 — 보안팀이 이 리포트로 배포 승인 여부를 결정할 수 있게 명시.
     deploy_text, _deploy_color = _deploy_verdict(report)
     lines.append(f"> **배포 판정**: {deploy_text}")
     lines.append("")
-
-    # 실행 모드·인텔 기준일 — 값이 주입된 경우에만 표시(결론 하단).
-    mode_note = _scan_mode_note(report)
-    if mode_note:
-        lines.append(f"> {mode_note}")
-        lines.append("")
-
-    # 승인된 예외 요약 — 게이트 판정 이해에 필수라 결론 근처에 표기.
-    lines.extend(_suppression_banner_md(report, suppressed))
-
-    # 의존성 매니페스트는 코드 스캔이 아니라 SCA로 검사해야 한다 — 코드 스캔
-    # 결과만 보고 "의존성도 안전"으로 오해하지 않도록 결론 바로 아래에 강조한다.
-    # 감사 결과(dependency_audit)가 병합돼 있으면 그 요약으로 대체한다.
-    dep_audits = _dep_audits(report)
-    manifest_skips = [
-        s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
-    ]
-    if dep_audits:
-        lines.append(f"> {_dep_banner_text(dep_audits)}")
-        lines.append("")
-    elif manifest_skips:
-        names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
-        lines.append(
-            f"> ⚠️ **의존성 검사 별도 필요** — {names} 은(는) 코드 스캔 대상이 아닙니다. "
-            f"취약·악성 패키지는 `gvskb check-package` 또는 MCP `scan_dependencies`로 따로 검사하세요."
-        )
-        lines.append("")
-
-    build_skips = _build_artifact_skips(report)
-    if build_skips:
-        lines.append(
-            f"> 🧹 **빌드 산출물 {len(build_skips)}건 제외** — 압축·번들·캐시 파일은 원본 "
-            "소스가 아니라 검사 대상에서 자동 제외했습니다(오탐 방지)."
-        )
-        lines.append("")
-
-    # --- 다음 할 일 (초보자용 행동 안내) — 발견이 있을 때만 ----------------
-    if report.findings:
-        lines.append("## 🧭 결과를 받았다면 — 다음 3단계만 하세요")
-        lines.append("")
-        lines.append(f"**{_action_lead(report)}**")
-        lines.append("")
-        for i, (title, desc, say) in enumerate(_ACTION_STEPS, 1):
-            line = f"{i}. **{title}** — {desc}"
-            if say:
-                line += f"  → `{say}`"
-            lines.append(line)
-            if title == "고치기":
-                lines.append("   (또는 아래 '수정 프롬프트' 칸을 복사해 붙여넣으세요)")
-        lines.append("")
-        lines.append(f"> ⚠ **{_ACTION_CAVEAT}**")
-        lines.append("")
 
     lines.append(f"- **대상**: `{report.target}`")
     lines.append(f"- **검사일시**: {ts}")
@@ -497,10 +557,11 @@ def render_markdown(
         lines.append(f"- **언어 힌트**: {report.language}")
     lines.append("")
 
-    # --- 요약 -------------------------------------------------------------
+    # --- ② 핵심 숫자 --------------------------------------------------------
     lines.append("## 요약")
     lines.append("")
     summary = report.summary
+    build_skips = _build_artifact_skips(report)
     non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
     lines.append(f"- 검사한 파일 수: **{len(report.scanned_files)}건**")
     # 발견 건수와 고유 위치를 함께 표기 — 같은 줄에 여러 룰이 걸리면 건수가
@@ -530,7 +591,81 @@ def render_markdown(
                 lines.append(f"| {_SEVERITY_LABEL_KO[sev]} ({sev.value}) | {count} |")
         lines.append("")
 
-    # --- 검토 범위 및 한계 — 발견 유무와 무관하게 항상 상단부에 고지 --------
+    if summary.finding_count == 0:
+        lines.append("> 발견된 위험이 없습니다. 그러나 본 도구는 보조 가드레일이며, ")
+        lines.append("> 공식 보안성 검토를 대체하지 않습니다.")
+        lines.append("")
+
+    # --- ③ 다음 3단계 (초보자용 행동 안내) — 발견이 있을 때만 --------------
+    if report.findings:
+        lines.append("## 🧭 결과를 받았다면 — 다음 3단계만 하세요")
+        lines.append("")
+        lines.append(f"**{_action_lead(report)}**")
+        lines.append("")
+        for i, (title, desc, say) in enumerate(_ACTION_STEPS, 1):
+            line = f"{i}. **{title}** — {desc}"
+            if say:
+                line += f"  → `{say}`"
+            lines.append(line)
+            if title == "고치기":
+                lines.append("   (또는 아래 '수정 프롬프트' 칸을 복사해 붙여넣으세요)")
+        lines.append("")
+        lines.append(f"> ⚠ **{_ACTION_CAVEAT}**")
+        lines.append("")
+
+    # --- ④ 가장 먼저 할 일 (Top 3) — 쉬운 말 체크리스트 --------------------
+    if report.findings:
+        lines.append("## 가장 먼저 할 일 (Top 3)")
+        lines.append("")
+        for g in _top_actions(report.findings, 3):
+            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+            lines.append(
+                f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
+                f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
+            )
+        lines.append("")
+        lines.append(
+            "> 각 항목의 정확한 위치·수정 방법은 아래 '🔍 보안팀 상세 검토'의 "
+            "분야별 카드에 있습니다."
+        )
+        lines.append("")
+
+    # --- ⑤ 정직성 배너 — 실행 모드·승인 예외·의존성·빌드 제외·한계 고지 ----
+    # 실행 모드·인텔 기준일 — 값이 주입된 경우에만 표시.
+    mode_note = _scan_mode_note(report)
+    if mode_note:
+        lines.append(f"> {mode_note}")
+        lines.append("")
+
+    # 승인된 예외 요약 — 게이트 판정 이해에 필수라 결론 근처에 표기.
+    lines.extend(_suppression_banner_md(report, suppressed))
+
+    # 의존성 매니페스트는 코드 스캔이 아니라 SCA로 검사해야 한다 — 코드 스캔
+    # 결과만 보고 "의존성도 안전"으로 오해하지 않도록 상단부에 강조한다.
+    # 감사 결과(dependency_audit)가 병합돼 있으면 그 요약으로 대체한다.
+    dep_audits = _dep_audits(report)
+    manifest_skips = [
+        s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
+    ]
+    if dep_audits:
+        lines.append(f"> {_dep_banner_text(dep_audits)}")
+        lines.append("")
+    elif manifest_skips:
+        names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
+        lines.append(
+            f"> ⚠️ **의존성 검사 별도 필요** — {names} 은(는) 코드 스캔 대상이 아닙니다. "
+            f"취약·악성 패키지는 `gvskb check-package` 또는 MCP `scan_dependencies`로 따로 검사하세요."
+        )
+        lines.append("")
+
+    if build_skips:
+        lines.append(
+            f"> 🧹 **빌드 산출물 {len(build_skips)}건 제외** — 압축·번들·캐시 파일은 원본 "
+            "소스가 아니라 검사 대상에서 자동 제외했습니다(오탐 방지)."
+        )
+        lines.append("")
+
+    # 검토 범위 및 한계 — 발견 유무와 무관하게 항상 결론 근처에 고지.
     lines.append("## 검토 범위 및 한계")
     lines.append("")
     ext_dist = _ext_distribution(report.scanned_files)
@@ -549,54 +684,25 @@ def render_markdown(
     )
     lines.append("")
 
-    # --- 개인정보·비밀값 요약 — 해당 발견이 있을 때만 상단 부각 ------------
-    pii = _privacy_findings(report.findings)
-    if pii:
-        pii_files = len({f.location.file for f in pii})
-        lines.append("## 🔑 개인정보·비밀값 요약")
-        lines.append("")
-        lines.append(
-            f"> 개인정보·비밀값 관련 발견 **{len(pii)}건** · 파일 {pii_files}개 — "
-            "노출된 비밀값(키·비밀번호)은 코드에서 지우는 것만으로 부족하며 반드시 "
-            "**재발급(폐기)** 해야 합니다. 개인정보 유출 정황이 있으면 기관 "
-            "개인정보보호 담당자에게 지체 없이 알리세요."
-        )
-        lines.append("")
-        lines.append("| 유형 | 룰 | 심각도 | 건수 | 위치 |")
-        lines.append("|---|---|---|---|---|")
-        for g in _rule_groups(pii):
-            lines.append(
-                f"| {g['title']} | `{g['rule_id']}` | {_SEVERITY_LABEL_KO[g['severity']]} | "
-                f"{g['count']} | {_locations_by_file(g['findings'])} |"
-            )
-        lines.append("")
+    # =====================================================================
+    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세 → 개인정보
+    # 콜아웃 → 외부 연결 → 의존성 → 승인 예외 → 수정 프롬프트 → 부록.
+    # =====================================================================
+    lines.append("## 🔍 보안팀 상세 검토")
+    lines.append("")
 
-    by_file = _by_file(report.findings)
-    ordered_files = _ordered_files(by_file)
+    domains = _group_by_domain(report.findings)
 
-    # --- 1페이지 요약: 위험 유형 + 파일별 요약 + 가장 먼저 할 일 -----------
-    if report.findings:
-        groups = _rule_groups(report.findings)
-        lines.append("## 위험 유형 (무슨 문제가 몇 건)")
-        lines.append("")
-        lines.append("| 위험 유형 | 룰 | 심각도 | 건수 | 파일 |")
-        lines.append("|---|---|---|---|---|")
-        for g in groups:
+    # --- ⑥ 보안 분야 개요 — 어느 보안 분야가 문제인지 한눈에 ----------------
+    lines.append("### 보안 분야 개요")
+    lines.append("")
+    if domains:
+        lines.append("| 분야 | 최고 심각도 | 건수 | 파일 |")
+        lines.append("|---|---|---|---|")
+        for d in domains:
             lines.append(
-                f"| {g['title']} | `{g['rule_id']}` | "
-                f"{_SEVERITY_LABEL_KO[g['severity']]} | {g['count']} | {g['files']} |"
-            )
-        lines.append("")
-
-        lines.append("## 파일별 위험 요약")
-        lines.append("")
-        lines.append("| 파일 | 최고 심각도 | 건수 |")
-        lines.append("|---|---|---|")
-        for fn in ordered_files:
-            ffs = by_file[fn]
-            msev = _file_max_severity(ffs)
-            lines.append(
-                f"| `{fn.replace(chr(92), '/')}` | {_SEVERITY_LABEL_KO[msev]} | {len(ffs)} |"
+                f"| {d['label']} | {_SEVERITY_LABEL_KO[d['max_severity']]} | "
+                f"{d['count']} | {d['files']} |"
             )
         lines.append("")
 
@@ -619,56 +725,46 @@ def render_markdown(
             if len(multi) > 12:
                 lines.append(f"- … 외 {len(multi) - 12}곳")
             lines.append("")
-
-        lines.append("## 가장 먼저 할 일 (Top 5)")
-        lines.append("")
-        for g in _top_actions(report.findings, 5):
-            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
-            lines.append(
-                f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
-                f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
-            )
-        lines.append("")
-
-    # --- 가이드라인별 분포 (출처 집계) -------------------------------------
-    if report.findings:
-        dist = _guideline_distribution(report.findings)
-        if dist:
-            lines.append("## 가이드라인별 분포")
-            lines.append("")
-            lines.append("> 한 발견 사항이 여러 가이드라인을 인용한 경우 각 그룹에서 1회씩 집계합니다.")
-            lines.append("")
-            lines.append("| 가이드라인 | 인용 건수 |")
-            lines.append("|---|---|")
-            for label, count in dist.most_common():
-                lines.append(f"| {label} | {count} |")
-            lines.append("")
-
-    # --- 처리 순서 + 파일별 발견(룰 중복제거) ----------------------------
-    if summary.finding_count == 0:
-        lines.append("> 발견된 위험이 없습니다. 그러나 본 도구는 보조 가드레일이며, ")
-        lines.append("> 공식 보안성 검토를 대체하지 않습니다.")
-        lines.append("")
     else:
-        lines.append("## 권장 처리 순서")
-        lines.append("")
-        lines.append("1. **차단(block)** 항목 — 커밋·배포 전에 반드시 수정 또는 보안담당자 승인 필요")
-        lines.append("2. **경고(warn) + 치명/높음** — 운영 반영 전 우선 수정")
-        lines.append("3. **자동 수정 가능** 항목 — diff 미리보기 후 적용")
-        lines.append("4. **나머지 warn** — 차주 정비 일정에 반영")
+        lines.append("> 발견된 위험이 없어 분야별 상세가 없습니다.")
         lines.append("")
 
-        lines.append("## 파일별 발견 사항")
+    # --- ⑦ 분야별 상세 — 분야마다 룰 그룹 카드(위치·왜 위험·대응·근거) ------
+    for d in domains:
+        lines.append(
+            f"### {d['label']} — {_SEVERITY_LABEL_KO[d['max_severity']]} · "
+            f"{d['count']}건 · 파일 {d['files']}개"
+        )
         lines.append("")
-        for fname in ordered_files:
-            ffs = by_file[fname]
-            lines.append(f"### `{fname.replace(chr(92), '/')}` — {len(ffs)}건")
+        for g in _rule_groups(d["findings"]):
+            lines.extend(_render_finding_group_md(g))
             lines.append("")
-            for g in _rule_groups(ffs):
-                lines.extend(_render_finding_group_md(g))
-                lines.append("")
 
-        # --- 수정 프롬프트 (복사용) -------------------------------------
+    # --- ⑧ 개인정보·비밀값 콜아웃 — 상세는 위 분야 1·2 섹션에 있다 ----------
+    pii = _privacy_findings(report.findings)
+    if pii:
+        pii_files = len({f.location.file for f in pii})
+        lines.append(
+            f"> 🔑 **개인정보·비밀값 주의** — 관련 발견 **{len(pii)}건** · 파일 {pii_files}개. "
+            "노출된 비밀값(키·비밀번호)은 코드에서 지우는 것만으로 부족하며 반드시 "
+            "**재발급(폐기)** 해야 합니다. 개인정보 유출 정황이 있으면 기관 "
+            "개인정보보호 담당자에게 지체 없이 알리세요. "
+            "(위치·수정 방법은 위 분야별 상세 참조)"
+        )
+        lines.append("")
+
+    # --- ⑨ 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) --------------
+    if report.external_surface:
+        lines.extend(_render_external_surface_md(report))
+
+    # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
+    lines.extend(_render_dependency_audit_md(report))
+
+    # --- ⑪ 승인된 예외 내역 — 있을 때만 -------------------------------------
+    lines.extend(_render_suppressions_md(suppressed))
+
+    # --- ⑫ 수정 프롬프트 (복사용) --------------------------------------------
+    if report.findings:
         lines.append("## 수정 프롬프트 (복사해서 AI에게 전달)")
         lines.append("")
         lines.append(
@@ -682,18 +778,24 @@ def render_markdown(
             lines.append("```")
             lines.append("")
 
-    # --- 승인된 예외 내역 — 있을 때만 --------------------------------------
-    lines.extend(_render_suppressions_md(suppressed))
-
-    # --- 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 -----------------
-    lines.extend(_render_dependency_audit_md(report))
-
-    # --- 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) --------------
-    if report.external_surface:
-        lines.extend(_render_external_surface_md(report))
+    # --- ⑬ 부록 — 가이드라인 분포·생략 파일·재현 절차·재검증 ----------------
+    lines.append("## 부록")
+    lines.append("")
+    if report.findings:
+        dist = _guideline_distribution(report.findings)
+        if dist:
+            lines.append("### 가이드라인별 분포")
+            lines.append("")
+            lines.append("> 한 발견 사항이 여러 가이드라인을 인용한 경우 각 그룹에서 1회씩 집계합니다.")
+            lines.append("")
+            lines.append("| 가이드라인 | 인용 건수 |")
+            lines.append("|---|---|")
+            for label, count in dist.most_common():
+                lines.append(f"| {label} | {count} |")
+            lines.append("")
 
     if non_build_skips:
-        lines.append("## 생략된 파일")
+        lines.append("### 생략된 파일")
         lines.append("")
         for sf in non_build_skips[:30]:
             lines.append(f"- `{sf.path}` — {sf.reason}")
@@ -701,7 +803,7 @@ def render_markdown(
             lines.append(f"- … 외 {len(non_build_skips) - 30}건")
         lines.append("")
     if build_skips:
-        lines.append("## 빌드 산출물 제외")
+        lines.append("### 빌드 산출물 제외")
         lines.append("")
         lines.append(
             "> 압축/번들·빌드 출력 디렉터리는 원본 소스가 아니므로 검사하지 않습니다 (오탐 방지)."
@@ -712,8 +814,7 @@ def render_markdown(
             lines.append(f"- … 외 {len(build_skips) - 15}건")
         lines.append("")
 
-    # --- 재현 절차 -------------------------------------------------------
-    lines.append("## 재현 절차")
+    lines.append("### 재현 절차")
     lines.append("")
     repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
     lines.append("같은 결과를 다시 만들거나 다른 환경에서 검증하려면 다음과 같이 실행합니다.")
@@ -730,8 +831,7 @@ def render_markdown(
     lines.append("- 룰셋은 `gvskb rules` 또는 `gvskb doctor` 로 현재 로드된 목록·버전을 확인할 수 있습니다.")
     lines.append("")
 
-    # --- 수정 후 다시 검증 ----------------------------------------------
-    lines.append("## 수정 후 다시 검증")
+    lines.append("### 수정 후 다시 검증")
     lines.append("")
     lines.append("발견 사항을 수정한 뒤에는 같은 검사를 한 번 더 돌려 회귀를 막으세요.")
     lines.append("")
@@ -741,12 +841,12 @@ def render_markdown(
         "`scan_path` 를 호출합니다."
     )
     lines.append(
-        "- **수정 시 LLM 안내**: 위 권장 처리 순서(차단 → 치명·높음 → 자동수정 → 나머지) 를 "
+        "- **수정 시 LLM 안내**: 처리 순서(차단 → 치명·높음 → 자동수정 → 나머지)를 "
         "그대로 LLM 프롬프트의 지시문으로 사용하면 우선순위가 어긋나지 않습니다."
     )
     lines.append("")
 
-    # --- 면책 ------------------------------------------------------------
+    # --- 면책 — 접지 않고 항상 표시 ----------------------------------------
     lines.append("## 면책")
     lines.append("")
     lines.append("> " + report.disclaimer.replace("\n", " "))
@@ -791,9 +891,12 @@ body{margin:0;background:#eceff1;color:#1f2937;
   box-shadow:0 1px 6px rgba(0,0,0,.12);border-radius:8px}
 h1{font-size:24px;margin:0 0 4px;letter-spacing:-.3px}
 h2{font-size:17px;margin:30px 0 12px;padding-bottom:6px;border-bottom:2px solid #e5e7eb}
+h3{font-size:15px;margin:22px 0 8px;color:#111827}
 .sub{color:#6b7280;font-size:13px;margin-bottom:18px}
-.banner{padding:16px 20px;border-radius:8px;font-weight:700;font-size:16px;
-  color:#fff;margin:8px 0 16px}
+.hero{padding:20px 24px;border-radius:10px;color:#fff;margin:10px 0 12px;
+  page-break-inside:avoid}
+.hero .heromain{font-weight:800;font-size:20px;line-height:1.45}
+.hero .herosub{font-size:13px;font-weight:600;opacity:.93;margin-top:8px}
 .meta{font-size:14px;color:#374151;margin:0 0 8px}
 .meta b{color:#111827}
 .depwarn{background:#fff8e1;border:1px solid #f0d27a;border-radius:6px;
@@ -806,7 +909,6 @@ th,td{border:1px solid #e5e7eb;padding:6px 10px;text-align:left}
 th{background:#f3f4f6}
 ol.steps{margin:6px 0 0;padding-left:22px}
 ol.steps li{margin:3px 0}
-.filehdr{font-size:15px;font-weight:700;margin:22px 0 10px;color:#111827}
 .card{border:1px solid #e5e7eb;border-left:6px solid #999;border-radius:8px;
   padding:14px 16px;margin:12px 0;background:#fff;page-break-inside:avoid}
 .card .badge{display:inline-block;color:#fff;font-weight:700;font-size:12px;
@@ -860,20 +962,10 @@ ul.todo li{border:1px solid #e5e7eb;border-radius:7px;padding:9px 12px;margin:7p
   background:#fff;font-size:14px}
 ul.todo .box{font-weight:800;color:#9ca3af;margin-right:8px}
 ul.todo .meta2{color:#6b7280;font-size:12.5px;margin-left:6px}
-details.file{border:1px solid #e5e7eb;border-radius:8px;margin:10px 0;background:#fff;
-  page-break-inside:avoid;overflow:hidden}
-details.file>summary{cursor:pointer;list-style:none;padding:12px 16px;font-weight:700;
-  font-size:14.5px;background:#f8fafc;display:flex;align-items:center;gap:8px}
-details.file>summary::-webkit-details-marker{display:none}
-details.file>summary::before{content:"▶";font-size:11px;color:#9ca3af;transition:none}
-details.file[open]>summary::before{content:"▼"}
-details.file>summary:hover{background:#f1f5f9}
-details.file .body{padding:6px 16px 14px}
 .fixprompt{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:13px 15px;
   margin:10px 0;font-size:12.5px;font-family:"D2Coding","Consolas","Courier New",monospace;
   white-space:pre-wrap;word-break:break-all}
-.fixhdr{font-weight:700;font-size:14px;margin:14px 0 4px;color:#111827}
-/* 접기형 일반 섹션(수정 프롬프트·외부 연결 등) */
+/* 접기형 일반 섹션(분야별 상세·수정 프롬프트·외부 연결·부록 등) */
 details.sec{border:1px solid #e5e7eb;border-radius:8px;margin:14px 0;background:#fff;overflow:hidden}
 details.sec>summary{cursor:pointer;list-style:none;padding:13px 16px;font-weight:800;font-size:16px;background:#f3f4f6}
 details.sec>summary::-webkit-details-marker{display:none}
@@ -913,9 +1005,7 @@ tr.w td{background:#fff7ed}
   body{background:#fff}
   .page{box-shadow:none;margin:0;max-width:none;border-radius:0;padding:0 6mm}
   .card{break-inside:avoid}
-  details.file{break-inside:avoid}
-  details.file>summary::before{content:""}
-  details.file>.body{display:block !important}
+  details.sec{break-inside:auto}
   details.sec>summary::before{content:""}
   details.sec>.secbody{display:block !important}
   /* 최신 Chromium/Edge는 닫힌 <details> 내용을 ::details-content 로 클리핑해
@@ -973,10 +1063,11 @@ def render_html(
     p.append("<h1>🛡️ 코드 보안 검사 결과</h1>")
     p.append('<div class="sub">vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
 
-    p.append(
-        f'<div class="banner" style="background:{_verdict_css_color(report)}">'
-        f"{_esc(_verdict_line(report))}</div>"
-    )
+    # === Layer 1 — 공무원용: 두괄식 판정 히어로 배너(가장 먼저·크게) ========
+    hero_text, hero_color = _hero_line(report)
+    p.append(f'<div class="hero" style="background:{hero_color}">{_esc(hero_text)}</div>')
+    # 판정 근거 한 줄(작게) — 히어로를 뒷받침
+    p.append(f'<div class="kv">{_esc(_verdict_line(report))}</div>')
 
     # --- 배포 판정 — 보안팀 승인 근거가 되는 결론(항상 표시) ----------------
     deploy_text, deploy_color = _deploy_verdict(report)
@@ -1036,6 +1127,26 @@ def render_html(
         p.append("</ol>")
         p.append(f'<div class="caveat">⚠ <b>{_esc(_ACTION_CAVEAT)}</b></div>')
         p.append("</div>")
+
+    # --- 가장 먼저 할 일 (Top 3) — 공무원이 뭘 먼저 고칠지 ------------------
+    if report.findings:
+        p.append("<h2>가장 먼저 할 일 (Top 3)</h2>")
+        p.append('<ul class="todo">')
+        for g in _top_actions(report.findings, 3):
+            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+            p.append(
+                f'<li><span class="box">☐</span>'
+                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
+                f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
+                f"<b>{_esc(g['title'])}</b>"
+                f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
+                f'{_esc(g["rule_id"])}</span></li>'
+            )
+        p.append("</ul>")
+        p.append(
+            '<div class="kv" style="font-size:12.5px;color:#64748b">각 항목의 정확한 위치·수정 '
+            "방법은 아래 '🔍 보안팀 상세 검토'의 분야별 카드에 있습니다.</div>"
+        )
 
     p.append(f'<div class="meta"><b>대상</b> · {_esc(report.target)}</div>')
     p.append(
@@ -1125,68 +1236,32 @@ def render_html(
         f"<b>{_esc(_LIMIT_ZERO)}</b> {_esc(_LIMIT_BODY)} <b>{_esc(_LIMIT_TAIL)}</b></div>"
     )
 
-    # === 개인정보·비밀값 요약 — 해당 발견이 있을 때만 상단 부각 ==============
-    pii = _privacy_findings(report.findings)
-    if pii:
-        pii_files = len({f.location.file for f in pii})
-        p.append('<div class="piibox">')
-        p.append(
-            f'<div class="ph">🔑 개인정보·비밀값 요약 — {len(pii)}건 · 파일 {pii_files}개</div>'
-        )
-        p.append(
-            '<div class="kv" style="font-size:13px">노출된 비밀값(키·비밀번호)은 코드 삭제만으로 '
-            "부족합니다 — <b>반드시 재발급(폐기)</b>하고, 개인정보 유출 정황은 기관 "
-            "개인정보보호 담당자에게 지체 없이 알리세요.</div>"
-        )
-        p.append("<table><tr><th>유형</th><th>룰</th><th>심각도</th><th>건수</th><th>위치</th></tr>")
-        for g in _rule_groups(pii):
-            p.append(
-                f"<tr><td>{_esc(g['title'])}</td>"
-                f'<td><span class="tag">{_esc(g["rule_id"])}</span></td>'
-                f'<td class="sev"><span class="sevdot" style="background:'
-                f'{_SEVERITY_COLOR[g["severity"]]}">{_SEVERITY_LABEL_KO[g["severity"]]}</span></td>'
-                f'<td class="cnt">{g["count"]}</td>'
-                f"<td>{_esc(_locations_by_file(g['findings']))}</td></tr>"
-            )
-        p.append("</table></div>")
+    # =====================================================================
+    # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(펼치기) →
+    # 개인정보 콜아웃 → 외부 연결 → 의존성 → 승인 예외 → 수정 프롬프트 → 부록
+    # =====================================================================
+    p.append("<h2>🔍 보안팀 상세 검토</h2>")
+    p.append(
+        '<div class="kv">아래 <b>보안 분야</b>를 펼치면 위치·취약점 설명·대응방안·근거를 '
+        "확인할 수 있습니다. 치명·차단 분야는 기본 펼쳐져 있습니다.</div>"
+    )
 
-    by_file = _by_file(report.findings)
-    ordered_files = _ordered_files(by_file)
-    anchor_of = {fn: f"file-{i}" for i, fn in enumerate(ordered_files)}
+    domains = _group_by_domain(report.findings)
 
-    if report.findings:
-        # --- 위험 유형 (많은 순) ----------------------------------------
-        groups = _rule_groups(report.findings)
-        p.append("<h2>위험 유형 (무슨 문제가 몇 건)</h2>")
-        p.append('<table class="typetbl"><tr><th>위험 유형</th><th>심각도</th>'
-                 "<th>건수</th><th>파일</th></tr>")
-        for g in groups:
+    # --- 보안 분야 개요 — 어느 분야가 문제인지 한눈에 -----------------------
+    p.append('<div class="subh">보안 분야 개요</div>')
+    if domains:
+        p.append("<table><tr><th>분야</th><th>최고 심각도</th><th>건수</th><th>파일</th></tr>")
+        for d in domains:
             p.append(
-                f"<tr><td>{_esc(g['title'])}<br>"
-                f'<span class="tag">{_esc(g["rule_id"])}</span></td>'
+                f"<tr><td>{_esc(d['label'])}</td>"
                 f'<td class="sev"><span class="sevdot" style="background:'
-                f'{_SEVERITY_COLOR[g["severity"]]}">{_SEVERITY_LABEL_KO[g["severity"]]}</span></td>'
-                f'<td class="cnt">{g["count"]}</td><td class="cnt">{g["files"]}</td></tr>'
+                f'{_SEVERITY_COLOR[d["max_severity"]]}">{_SEVERITY_LABEL_KO[d["max_severity"]]}</span></td>'
+                f'<td class="cnt">{d["count"]}</td><td class="cnt">{d["files"]}</td></tr>'
             )
         p.append("</table>")
 
-        # --- 파일별 위험 요약 (상세로 점프) -----------------------------
-        p.append("<h2>파일별 위험 요약</h2>")
-        p.append("<table><tr><th>파일</th><th>최고 심각도</th><th>건수</th><th>바로가기</th></tr>")
-        for fn in ordered_files:
-            ffs = by_file[fn]
-            msev = _file_max_severity(ffs)
-            p.append(
-                f"<tr><td>{_esc(fn.replace(chr(92), '/'))}</td>"
-                f'<td class="sev"><span class="sevdot" style="background:'
-                f'{_SEVERITY_COLOR[msev]}">{_SEVERITY_LABEL_KO[msev]}</span></td>'
-                f'<td class="cnt">{len(ffs)}</td>'
-                f'<td><a class="jump" href="#{anchor_of[fn]}">상세 ↓</a></td></tr>'
-            )
-        p.append("</table>")
-
-        # 같은 (파일, 줄)에 여러 룰이 걸린 위치 — 표시 계층에서 묶어 보여
-        # "건수가 부풀려졌다"는 오해를 막는다(core dedupe와는 무관).
+        # 같은 (파일, 줄)에 여러 룰이 걸린 위치 — 건수 부풀림 오해 방지.
         multi = _multi_rule_lines(report.findings)
         if multi:
             items = " · ".join(
@@ -1202,40 +1277,48 @@ def render_html(
                 f"한 줄에 여러 기준(룰)이 함께 걸린 위치: {items}. "
                 "한 곳을 고치면 관련 룰이 함께 해소됩니다.</div>"
             )
+    else:
+        p.append('<div class="disc">발견된 위험이 없어 분야별 상세가 없습니다.</div>')
 
-        # --- 가장 먼저 할 일 Top5 --------------------------------------
-        p.append("<h2>가장 먼저 할 일 (Top 5)</h2>")
-        p.append('<ul class="todo">')
-        for g in _top_actions(report.findings, 5):
-            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
-            p.append(
-                f'<li><span class="box">☐</span>'
-                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
-                f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
-                f"<b>{_esc(g['title'])}</b>"
-                f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
-                f'{_esc(g["rule_id"])}</span></li>'
-            )
-        p.append("</ul>")
+    # --- 분야별 상세 — 분야마다 <details>(치명·차단 분야는 기본 펼침) --------
+    for d in domains:
+        opn = " open" if _domain_has_blocker(d["findings"]) else ""
+        p.append(
+            f'<details class="sec"{opn}><summary>'
+            f'<span class="sevdot" style="background:{_SEVERITY_COLOR[d["max_severity"]]}">'
+            f'{_SEVERITY_LABEL_KO[d["max_severity"]]}</span> '
+            f'{_esc(d["label"])} — {d["count"]}건 · 파일 {d["files"]}개</summary>'
+            '<div class="secbody">'
+        )
+        for g in _rule_groups(d["findings"]):
+            p.extend(_render_rule_group_html(g))
+        p.append("</div></details>")
 
-        # === 파일별 상세 (접기) =========================================
-        p.append("<h2>파일별 상세 (펼쳐 보기)</h2>")
-        for fn in ordered_files:
-            ffs = by_file[fn]
-            msev = _file_max_severity(ffs)
-            file_groups = _rule_groups(ffs)
-            p.append(
-                f'<details class="file" id="{anchor_of[fn]}"><summary>'
-                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[msev]}">'
-                f'{_SEVERITY_LABEL_KO[msev]}</span> '
-                f"📄 {_esc(fn.replace(chr(92), '/'))} — {len(ffs)}건</summary>"
-                '<div class="body">'
-            )
-            for g in file_groups:
-                p.extend(_render_rule_group_html(g))
-            p.append("</div></details>")
+    # --- 개인정보·비밀값 콜아웃 — 상세는 위 분야 1·2에 있음 -----------------
+    pii = _privacy_findings(report.findings)
+    if pii:
+        pii_files = len({f.location.file for f in pii})
+        p.append(
+            f'<div class="piibox"><div class="ph">🔑 개인정보·비밀값 주의 — '
+            f"{len(pii)}건 · 파일 {pii_files}개</div>"
+            '<div class="kv" style="font-size:13px">노출된 비밀값(키·비밀번호)은 코드 삭제만으로 '
+            "부족합니다 — <b>반드시 재발급(폐기)</b>하고, 개인정보 유출 정황은 기관 "
+            "개인정보보호 담당자에게 지체 없이 알리세요. "
+            "(위치·수정 방법은 위 분야별 상세 참조)</div></div>"
+        )
 
-        # === 수정 프롬프트 (복사용) — 기본 접기(B) =======================
+    # === 승인된 예외 내역 — 있을 때만 =====================================
+    p.extend(_render_suppressions_html(suppressed))
+
+    # === 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ================
+    p.extend(_render_dependency_audit_html(report))
+
+    # === 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) ==============
+    if report.external_surface:
+        p.extend(_render_external_surface_html(report))
+
+    # === 수정 프롬프트 (복사용) — 기본 접기 ===============================
+    if report.findings:
         p.append(
             '<details class="sec"><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
             '</summary><div class="secbody">'
@@ -1248,47 +1331,22 @@ def render_html(
         )
         for g in _rule_groups(report.findings):
             p.append(f'<div class="fixprompt">{_esc(_fix_prompt_text(g))}</div>')
-
-        # --- 우선순위 체크리스트(파일 기준) ----------------------------
-        p.append('<div class="fixhdr">우선순위 체크리스트 (파일 기준)</div>')
-        p.append('<ul class="todo">')
-        for fn in ordered_files:
-            ffs = by_file[fn]
-            msev = _file_max_severity(ffs)
-            p.append(
-                f'<li><span class="box">☐</span>'
-                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[msev]}">'
-                f'{_SEVERITY_LABEL_KO[msev]}</span> '
-                f"<b>{_esc(fn.replace(chr(92), '/'))}</b>"
-                f'<span class="meta2">{len(ffs)}건 — '
-                f'<a class="jump" href="#{anchor_of[fn]}">상세 ↓</a></span></li>'
-            )
-        p.append("</ul>")
         p.append("</div></details>")
 
-    # === 승인된 예외 내역 — 있을 때만 =====================================
-    p.extend(_render_suppressions_html(suppressed))
-
-    # === 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ================
-    p.extend(_render_dependency_audit_html(report))
-
-    # === 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) ==============
-    if report.external_surface:
-        p.extend(_render_external_surface_html(report))
-
-    # === 부록 ===========================================================
-    if report.findings:
-        dist = _guideline_distribution(report.findings)
-        if dist:
-            p.append("<h2>가이드라인별 분포</h2>")
-            p.append("<table><tr><th>가이드라인</th><th>인용 건수</th></tr>")
-            for label, count in dist.most_common():
-                p.append(f"<tr><td>{_esc(label)}</td><td>{count}</td></tr>")
-            p.append("</table>")
-
+    # === 부록 (기술 정보) — 기본 접기 ====================================
     non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
+    repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
+    p.append('<details class="sec"><summary>📎 부록 (가이드라인 분포·생략 파일·재현·재검증)'
+             '</summary><div class="secbody">')
+    dist = _guideline_distribution(report.findings) if report.findings else None
+    if dist:
+        p.append('<div class="subh">가이드라인별 분포</div>')
+        p.append("<table><tr><th>가이드라인</th><th>인용 건수</th></tr>")
+        for label, count in dist.most_common():
+            p.append(f"<tr><td>{_esc(label)}</td><td>{count}</td></tr>")
+        p.append("</table>")
     if non_build_skips:
-        p.append("<h2>생략된 파일</h2><table><tr><th>경로</th><th>이유</th></tr>")
+        p.append('<div class="subh">생략된 파일</div><table><tr><th>경로</th><th>이유</th></tr>')
         for sf in non_build_skips[:30]:
             p.append(f"<tr><td>{_esc(sf.path)}</td><td>{_esc(sf.reason)}</td></tr>")
         p.append("</table>")
@@ -1301,13 +1359,10 @@ def render_html(
             f'<div class="buildnote">빌드 산출물 제외 {len(build_skips)}건: {sample}{more} '
             "— 압축/번들·빌드 출력 디렉터리는 원본 소스가 아니므로 검사하지 않습니다.</div>"
         )
-
-    repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
-    p.append("<h2>재현 절차</h2>")
+    p.append('<div class="subh">재현 절차</div>')
     p.append('<div class="kv">같은 결과를 다시 만들거나 다른 환경에서 검증하려면 다음을 실행합니다.</div>')
     p.append(f"<pre>{_esc(repro)}</pre>")
-
-    p.append("<h2>수정 후 다시 검증</h2>")
+    p.append('<div class="subh">수정 후 다시 검증</div>')
     p.append('<ol class="steps">')
     p.append('<li><b>CLI</b>: 위 재현 명령(<code class="ev">gvskb scan ...</code>)을 다시 실행</li>')
     p.append(
@@ -1316,6 +1371,7 @@ def render_html(
     )
     p.append("<li><b>LLM 안내</b>: 위 권장 처리 순서(차단→치명·높음→자동수정→나머지)를 그대로 지시문으로 사용</li>")
     p.append("</ol>")
+    p.append("</div></details>")
 
     p.append("<h2>면책</h2>")
     p.append(f'<div class="disc">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
