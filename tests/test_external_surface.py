@@ -175,3 +175,49 @@ def test_no_inventory_section_when_no_external() -> None:
     # 섹션 마커로 확인(CSS 주석에 같은 한국어 문구가 있어 phrase 매칭은 부적절).
     assert 'class="sec inv"' not in render_html(report)
     assert "## 🌐 외부 연결 인벤토리" not in render_markdown(report)
+# ---------------------------------------------------------------------------
+# 운영주체·호출 지점 수 — 국외이전 검토는 "누구에게, 어느 나라로"가 특정돼야 한다
+# ---------------------------------------------------------------------------
+
+
+def test_api_connection_carries_operator_and_call_count() -> None:
+    code = (
+        'r1 = openai.chat.completions.create(model="gpt-4o", messages=m1)\n'
+        "x = 1\n"
+        'r2 = openai.chat.completions.create(model="gpt-4o", messages=m2)\n'
+    )
+    conns = extract_api_connections(code, "app.py")
+    assert len(conns) == 1
+    c = conns[0]
+    assert c.operator == "OpenAI(미국)"
+    assert c.call_count == 2          # 호출 지점 2곳
+    assert c.location == "app.py:1"   # location은 첫 지점
+
+
+def test_unknown_host_operator_is_none() -> None:
+    conns = extract_api_connections('requests.post("https://api.unknown-vendor.io/v1/x")', "a.py")
+    assert conns[0].operator is None
+
+
+def test_package_operator_from_catalog() -> None:
+    pkgs = inventory_packages(
+        [{"name": "openai", "version": "1.2.0"}, {"name": "flask", "version": "2.0"}],
+        "requirements.txt",
+    )
+    by_name = {c.target: c for c in pkgs}
+    assert by_name["openai"].operator == "OpenAI(미국)"
+    assert by_name["flask"].operator is None  # 로컬 라이브러리 — 전송 대상 없음/미상
+
+
+def test_report_renders_operator_and_extra_call_sites(tmp_path: Path) -> None:
+    _write(tmp_path / "app.py", (
+        'r1 = openai.chat.completions.create(model="gpt-4o", messages=m1)\n'
+        'r2 = openai.chat.completions.create(model="gpt-4o", messages=m2)\n'
+    ))
+    report = scan_path(tmp_path)
+    md = render_markdown(report)
+    html = render_html(report)
+    for out in (md, html):
+        assert "OpenAI(미국)" in out          # 운영주체·국가
+        assert "외 1곳" in out                 # 첫 지점 + 추가 호출 수
+        assert "학습 이용·보존" in out          # 체크리스트 문구
