@@ -155,13 +155,16 @@ AI 코딩 도구에서 **자연어로** 쓰려면 MCP 설정에 서버를 등록
 #### A. 명령어(CLI)로 — 터미널에서
 
 ```bash
-gvskb doctor                                  # 1) 내 환경 점검(룰 수·인코딩·MCP)
+gvskb doctor                                  # 1) 내 환경 점검(룰 수·인코딩·MCP·인텔 캐시)
 gvskb scan ./my-project                        # 2) 내 폴더 검사 → 화면에 한국어 리포트
 gvskb scan ./my-project -o 보안점검.md          # 3) 결과를 파일로 저장(-o=output) → .md + .html 함께
+gvskb scan ./my-project --check-deps -o 보안점검.md   # 4) 취약·악성 패키지 검사까지 리포트에 병합
 
-# 4) GitHub 레포는 받아서 검사 (URL → 폴더로 받은 뒤 동일하게 점검)
+# 5) GitHub 레포는 받아서 검사 (URL → 폴더로 받은 뒤 동일하게 점검)
 git clone --depth 1 https://github.com/owner/repo /tmp/repo && gvskb scan /tmp/repo -o 보안점검.md
 ```
+
+> 💡 `--check-deps`는 requirements.txt·package.json의 패키지를 취약점 DB로 검사해 **코드+패키지 위험을 보고서 한 장**에 담습니다(전송되는 것은 패키지명·버전뿐). 망분리에서는 반입한 인텔 캐시 기준으로 판정하며, **판정 불가는 '안전'이 아니라고 표시**됩니다.
 
 여기서 `-o`는 **output(출력 파일)** 옵션입니다 — `-o 파일이름`을 붙이면 결과를 화면 대신 그 이름의 파일로 저장합니다. 마크다운/HTML 형식이면 텍스트 `파일이름.md`와 인쇄→PDF 결재용 `파일이름.html`이 **함께** 만들어집니다. (`-o`를 빼면 결과가 화면에만 출력됩니다.)
 
@@ -294,14 +297,22 @@ gvskb check-package reqeusts --ecosystem pypi    # 오타 패키지(typosquat) �
 
 ```bash
 # (외부망 PC) 보안 피드 캐시를 미리 받아둡니다
-gvskb update-intel --all
+gvskb update-intel --all                       # npm 패키지도 쓰면: GVSKB_OSV_INCLUDE_NPM=1
 
 # (망분리 PC) 캐시를 옮긴 뒤, 외부 호출 없이 로컬 룰·캐시로만 검사
+#   캐시 위치: %USERPROFILE%\.gvskb\cache  (환경변수 GVSKB_CACHE_DIR로 변경 가능)
 $env:GVSKB_MODE = "offline"      # PowerShell
-gvskb doctor --offline
-gvskb scan ./my-project
+gvskb doctor --offline           # 인텔 캐시 존재·신선도까지 점검됩니다
+gvskb scan ./my-project --check-deps
 ```
-정적 분석 룰 95개는 **외부 통신 없이 그대로 동작**합니다.
+정적 분석 룰은 **외부 통신 없이 그대로 동작**합니다. 반입한 캐시는 로드 시
+**sha256 무결성을 재검증**하고(변조·손상 시 자동 무시), 기본 **30일**
+(`GVSKB_INTEL_MAX_AGE_DAYS`로 조정)이 지나면 '이상 없음'을 **판정 보류로 승격**해
+오래된 캐시가 최신처럼 보이지 않게 합니다.
+
+> 🧾 **점검 이력(감사로그)** — `GVSKB_AUDIT_DIR` 환경변수를 설정하면 스캔·차단·인텔
+> 갱신 이력이 월별 JSONL로 append 기록됩니다. 원본 코드·개인정보는 저장하지 않고
+> 해시와 마스킹된 증거만 남깁니다(기관 감사 증빙용, 기본 비활성).
 </details>
 
 ### 🌳 CI에 넣고 싶다면 — 자동 게이트
@@ -311,8 +322,9 @@ gvskb scan ./my-project
 | 종료 코드 | 의미 |
 |---|---|
 | `0` | 통과 |
-| `1` | 경고(warn) 발견 |
+| `1` | 경고(warn) 발견 · **판정 불가**(오프라인 캐시 없음 등 — '안전' 아님) |
 | `2` | 차단(block) 발견 |
+| `64` | 사용법 오류(잘못된 인자) |
 | `66` | 경로를 찾을 수 없음 |
 
 ```bash
@@ -352,10 +364,10 @@ repos:
     hooks:
       - id: gvskb-scan
         name: vibecode-checker 보안 스캔
-        entry: gvskb scan
+        entry: gvskb scan .
         args: ["--format", "json", "--fail-on", "block"]
         language: system
-        types: [text]
+        pass_filenames: false   # scan은 경로 1개를 받음 — 파일 목록 전달 금지
 ```
 </details>
 

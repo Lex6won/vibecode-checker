@@ -15,7 +15,7 @@ from importlib import resources
 from pathlib import Path
 
 from ..loader import load_all_rules
-from ..schema import CodeLocation, Decision, Finding, Rule
+from ..schema import CodeLocation, Decision, Finding, Rule, Status
 from .base import ScannerAdapter
 
 _FLAG_NAMES = {
@@ -228,9 +228,24 @@ def _compile_rule(rule: Rule) -> dict | None:
 
 
 def _load_runtime_rules() -> list[dict]:
+    """Compile runnable rules, gated by rule status.
+
+    실행(집행) 게이트 — 검색/설명(search_rules·get_rule)은 모든 status를 그대로
+    보여주지만, *스캐너가 실제로 집행*하는 룰은 status로 거른다:
+    - approved / stale: 집행 (stale은 재검토 기한 초과일 뿐 룰 자체는 유효 —
+      조용히 꺼지면 recall이 보이지 않게 줄어든다. doctor가 별도로 경고)
+    - proposed: 기본 미집행. 자동 생성 룰(intel promote)이 사람 검토 없이
+      바로 발화하는 것을 막는다. GVSKB_ALLOW_PROPOSED=1 로 옵트인.
+    - deprecated: 절대 미집행.
+    """
     runtime: list[dict] = []
     strict = os.environ.get("GVSKB_STRICT_RULES", "").lower() in {"1", "true", "yes"}
+    allow_proposed = os.environ.get("GVSKB_ALLOW_PROPOSED", "").lower() in {"1", "true", "yes"}
     for rule in load_all_rules(_resolve_rules_dir(), strict=strict):
+        if rule.status == Status.deprecated:
+            continue
+        if rule.status == Status.proposed and not allow_proposed:
+            continue
         compiled = _compile_rule(rule)
         if compiled is not None:
             runtime.append(compiled)

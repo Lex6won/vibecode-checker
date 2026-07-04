@@ -23,6 +23,9 @@ class SourceAdapter:
     id: str
     description: str
     fetch: FetchFn
+    # 이번 수집이 커버하는 생태계 목록(예: ["PyPI", "npm"]). 캐시 envelope에
+    # 기록돼, 오프라인 조회 시 미포함 생태계를 '깨끗함'으로 오판하지 않게 한다.
+    ecosystems: Callable[[], list[str]] | None = None
 
 
 SOURCES: dict[str, SourceAdapter] = {}

@@ -121,4 +121,5 @@ register_source(SourceAdapter(
         "set GVSKB_OSV_INCLUDE_NPM=1 to also download the npm dataset (~200 MB)."
     ),
     fetch=fetch_osv_malicious,
+    ecosystems=lambda: list(_selected_ecosystems()),
 ))

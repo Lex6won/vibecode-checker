@@ -390,16 +390,31 @@ def _cmd_update_intel(args: argparse.Namespace) -> int:
 
     if args.from_cache:
         # Air-gapped mode: do not call network. Just report cache contents.
+        # 신선도 초과 캐시를 [ OK ]로 보여주면 몇 달 묵은 반입 캐시가 최신처럼
+        # 보인다 — age를 표시하고 stale이면 WARN으로 강등한다.
         out: list[dict] = []
         for sid in source_ids:
             entry = cache.load(sid)
+            if entry is None:
+                out.append({
+                    "source_id": sid, "status": "warn", "item_count": 0,
+                    "cache_path": str(cache.path_for(sid)), "fetched_at": "",
+                    "error": "no cached data",
+                })
+                continue
+            age = entry.age_days()
+            stale = entry.is_stale()
             out.append({
                 "source_id": sid,
-                "status": "ok" if entry else "warn",
-                "item_count": entry.item_count if entry else 0,
+                "status": "warn" if stale else "ok",
+                "item_count": entry.item_count,
                 "cache_path": str(cache.path_for(sid)),
-                "fetched_at": entry.fetched_at if entry else "",
-                "error": "" if entry else "no cached data",
+                "fetched_at": entry.fetched_at,
+                "age_days": age,
+                "error": (
+                    f"stale: {'?' if age is None else age}일 경과 — 외부망에서 update-intel 후 재반입 권장"
+                    if stale else ""
+                ),
             })
         if args.promote:
             out.append(_promote_kev_from_cache(cache, args))
@@ -408,6 +423,10 @@ def _cmd_update_intel(args: argparse.Namespace) -> int:
 
     results = update_sources(source_ids, cache=cache)
     out = [r.to_dict() for r in results]
+
+    # 감사로그(옵트인) — 어떤 피드를 언제 갱신했는지 남긴다.
+    from .audit import record_update_intel
+    record_update_intel(source_ids)
 
     if args.promote:
         out.append(_promote_kev_from_cache(cache, args))

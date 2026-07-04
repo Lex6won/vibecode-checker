@@ -172,27 +172,36 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
     advisories: list[dict] = []
     cache_sources_used: list[str] = []
     cache_freshness: dict[str, str] = {}
+    stale_sources: list[str] = []
 
     if osv_entry is not None:
         cache_sources_used.append("osv-malicious")
         cache_freshness["osv-malicious"] = osv_entry.fetched_at
+        if osv_entry.is_stale():
+            stale_sources.append("osv-malicious")
         advisories.extend(_osv_advisories_for(osv_entry.items, name, ecosystem_label))
 
     kev_signals: list[dict] = []
     if kev_entry is not None:
         cache_sources_used.append("cisa-kev")
         cache_freshness["cisa-kev"] = kev_entry.fetched_at
+        if kev_entry.is_stale():
+            stale_sources.append("cisa-kev")
         kev_signals = _kev_signals_for(kev_entry.items, name)
+
+    # 생태계 커버리지 — 악성 판정을 '깨끗함'으로 내리려면 osv-malicious 캐시가
+    # *이 생태계를 실제로 담고 있어야* 한다. v1 캐시(ecosystems 미기록)는 당시
+    # 기본 수집이 PyPI뿐이었으므로 ["PyPI"]로 간주한다. KEV는 vendor/product
+    # 중심의 보조 신호일 뿐 '깨끗함'의 근거가 아니다.
+    covered_ecosystems = (osv_entry.ecosystems or ["PyPI"]) if osv_entry is not None else []
+    osv_covers = ecosystem_label in covered_ecosystems
 
     has_malicious = bool(advisories)
     severity = "high" if has_malicious else ("medium" if kev_signals else "info")
 
-    return {
+    result = {
         "name": name,
         "ecosystem": ecosystem,
-        "checked": True,
-        "verdict": "malicious" if has_malicious else "checked_clean",
-        "requires_review": has_malicious,
         "offline": True,
         "verdict_severity": severity,
         "is_malicious_package": has_malicious,
@@ -202,6 +211,8 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
         "kev_signals": kev_signals,
         "cache_sources_used": cache_sources_used,
         "cache_freshness": cache_freshness,
+        "cache_ecosystems": covered_ecosystems,
+        "cache_stale_sources": stale_sources,
         "heuristics": _basic_heuristics(name, ecosystem),
         "source": "local intel cache (GVSKB_MODE=offline)",
         "disclaimer": (
@@ -209,6 +220,46 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
             "운영 반영 전 `gvskb update-intel` 최신 실행 시각을 확인하세요."
         ),
     }
+
+    if has_malicious:
+        # 양성 판정(악성 발견)은 캐시가 오래됐어도 유효한 신호다.
+        result.update({"checked": True, "verdict": "malicious", "requires_review": True})
+        if stale_sources:
+            result["note"] = f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
+        return result
+
+    if not osv_covers:
+        # 이 생태계의 악성 피드가 캐시에 없다 → '깨끗함'이 아니라 '판정 불가'.
+        result.update({
+            "checked": False,
+            "verdict": "unknown",
+            "requires_review": True,
+            "note": (
+                f"오프라인 캐시가 {ecosystem_label} 생태계를 포함하지 않습니다"
+                f"(캐시 커버리지: {covered_ecosystems or '없음'}). "
+                "외부망에서 `gvskb update-intel --all` 실행 시 npm까지 받으려면 "
+                "GVSKB_OSV_INCLUDE_NPM=1 을 설정한 뒤 캐시를 반입하세요."
+            ),
+        })
+        return result
+
+    if stale_sources:
+        # 신선도 초과 캐시의 '깨끗함'은 확정이 아니다 — 검토 필요로 승격.
+        from ..intel.cache import intel_max_age_days
+        result.update({
+            "checked": True,
+            "verdict": "checked_stale",
+            "requires_review": True,
+            "note": (
+                f"캐시가 신선도 기준({intel_max_age_days()}일)을 초과했습니다: "
+                f"{', '.join(stale_sources)}. 이 '이상 없음'은 오래된 데이터 기준입니다 — "
+                "외부망에서 `gvskb update-intel` 후 캐시를 다시 반입하세요."
+            ),
+        })
+        return result
+
+    result.update({"checked": True, "verdict": "checked_clean", "requires_review": False})
+    return result
 
 
 # ---------------------------------------------------------------------------

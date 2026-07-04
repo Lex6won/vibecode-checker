@@ -8,7 +8,9 @@ behavior so the offline path is more than a heuristic placeholder.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,20 +18,41 @@ import pytest
 from gvskb.tools.check_package import check_package_impl
 
 
-def _write_cache(cache_dir: Path, source_id: str, items: list[dict]) -> None:
+def _write_cache(
+    cache_dir: Path,
+    source_id: str,
+    items: list[dict],
+    *,
+    fetched_at: str | None = None,
+    sha256: str | None = None,
+    ecosystems: list[str] | None = None,
+) -> None:
+    """실제 IntelCache.save()와 동일한 envelope을 만든다(올바른 sha256 포함).
+
+    sha256/fetched_at/ecosystems 를 오버라이드하면 변조·신선도·커버리지
+    시나리오를 시뮬레이션할 수 있다.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
+    blob = json.dumps(items, sort_keys=True, ensure_ascii=False).encode("utf-8")
     envelope = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_id": source_id,
-        "fetched_at": "2026-06-01T00:00:00+00:00",
+        "fetched_at": fetched_at
+        or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "url": "https://example/test",
-        "sha256": "deadbeef",
+        "sha256": sha256 if sha256 is not None else hashlib.sha256(blob).hexdigest(),
         "item_count": len(items),
         "items": items,
     }
+    if ecosystems is not None:
+        envelope["ecosystems"] = ecosystems
     (cache_dir / f"{source_id}.json").write_text(
         json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def _days_ago(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
 
 
 @pytest.fixture
@@ -246,3 +269,78 @@ def test_cli_check_package_unknown_verdict_exits_nonzero(tmp_path, monkeypatch, 
     code = _cmd_check_package(args)
     capsys.readouterr()
     assert code != EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# 캐시 무결성·신선도·생태계 커버리지 — 반입 캐시의 거짓 안심 봉쇄
+# ---------------------------------------------------------------------------
+
+
+def test_tampered_cache_is_rejected_and_not_used(offline_with_cache: Path) -> None:
+    """sha256 불일치(변조·손상) 캐시는 무시되고 '판정 불가'로 강등돼야 한다."""
+    _write_cache(
+        offline_with_cache, "osv-malicious",
+        [{"id": "MAL-1", "affected": [{"package": "evilpkg", "ecosystem": "PyPI"}]}],
+        sha256="TAMPERED_HASH_0000",
+    )
+    result = asyncio.run(check_package_impl(name="evilpkg", ecosystem="pypi"))
+    assert result["checked"] is False           # 변조 캐시로 판정하지 않는다
+    assert result.get("is_malicious_package") is not True
+    assert result["requires_review"] is True
+
+
+def test_stale_cache_clean_becomes_checked_stale(offline_with_cache: Path) -> None:
+    """신선도(기본 30일) 초과 캐시의 '깨끗함'은 checked_stale + 검토 필요."""
+    _write_cache(offline_with_cache, "osv-malicious", [], fetched_at=_days_ago(90))
+    result = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
+    assert result["checked"] is True
+    assert result["verdict"] == "checked_stale"
+    assert result["requires_review"] is True
+    assert "osv-malicious" in result.get("cache_stale_sources", [])
+
+
+def test_stale_cache_malicious_verdict_still_valid(offline_with_cache: Path) -> None:
+    """캐시가 오래됐어도 '악성 발견'(양성)은 유효한 신호다."""
+    _write_cache(
+        offline_with_cache, "osv-malicious",
+        [{"id": "MAL-2", "affected": [{"package": "evilpkg", "ecosystem": "PyPI"}]}],
+        fetched_at=_days_ago(90),
+    )
+    result = asyncio.run(check_package_impl(name="evilpkg", ecosystem="pypi"))
+    assert result["verdict"] == "malicious"
+    assert result["is_malicious_package"] is True
+
+
+def test_pypi_only_cache_cannot_clear_npm_package(offline_with_cache: Path) -> None:
+    """PyPI만 담은 캐시로 npm 패키지를 '깨끗함' 판정하면 안 된다(거짓 클린)."""
+    _write_cache(offline_with_cache, "osv-malicious", [], ecosystems=["PyPI"])
+    result = asyncio.run(check_package_impl(name="left-pad", ecosystem="npm"))
+    assert result["checked"] is False
+    assert result["verdict"] == "unknown"
+    assert result["requires_review"] is True
+    assert "GVSKB_OSV_INCLUDE_NPM" in result.get("note", "")
+
+
+def test_v1_cache_without_ecosystems_assumed_pypi(offline_with_cache: Path) -> None:
+    """v1 캐시(ecosystems 미기록)는 당시 기본 수집(PyPI)으로 간주 — pypi는 판정, npm은 불가."""
+    _write_cache(offline_with_cache, "osv-malicious", [])  # ecosystems 미기록
+    ok = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
+    assert ok["checked"] is True and ok["verdict"] == "checked_clean"
+    npm = asyncio.run(check_package_impl(name="left-pad", ecosystem="npm"))
+    assert npm["checked"] is False and npm["verdict"] == "unknown"
+
+
+def test_npm_covered_cache_clears_npm_package(offline_with_cache: Path) -> None:
+    _write_cache(offline_with_cache, "osv-malicious", [], ecosystems=["PyPI", "npm"])
+    result = asyncio.run(check_package_impl(name="left-pad", ecosystem="npm"))
+    assert result["checked"] is True
+    assert result["verdict"] == "checked_clean"
+
+
+def test_kev_only_cache_is_not_clearance(offline_with_cache: Path) -> None:
+    """KEV는 보조 신호일 뿐 — 악성 피드(osv) 없이 '깨끗함'을 선언하면 안 된다."""
+    _write_cache(offline_with_cache, "cisa-kev", [])
+    result = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
+    assert result["checked"] is False
+    assert result["verdict"] == "unknown"
+    assert result["requires_review"] is True

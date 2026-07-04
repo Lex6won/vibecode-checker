@@ -76,7 +76,8 @@ def update_source(
                 cache_path=str(cache.path_for(source_id)) if prev else "",
                 error=f"fetch failed: {exc!s}",
             )
-        entry: CacheEntry = cache.save(source_id, url, items)
+        ecosystems = adapter.ecosystems() if adapter.ecosystems else None
+        entry: CacheEntry = cache.save(source_id, url, items, ecosystems=ecosystems)
         return IntelUpdateResult(
             source_id=source_id,
             status="ok",
