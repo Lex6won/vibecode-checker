@@ -282,7 +282,7 @@ def test_render_markdown_dedupes_same_rule_into_one_block() -> None:
     # 같은 룰은 한 번만 설명되고 위치는 목록으로 합쳐진다("2건").
     head = md.split("## 수정 프롬프트")[0]
     assert "상세 검토 결과" in head
-    assert "💉 주입" in head  # SQL 두 건이 '주입' 분야로 묶인다
+    assert "주입" in head  # SQL 두 건이 '주입' 분야로 묶인다
     assert "2건" in md
 
 

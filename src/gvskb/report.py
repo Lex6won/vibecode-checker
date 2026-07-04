@@ -196,7 +196,7 @@ _ACTION_STEPS: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
-_ACTION_LEAD_BLOCK = "🚫 지금 이대로 올리거나 배포하면 안 됩니다. 아래 3단계로 고친 뒤 다시 검사하세요."
+_ACTION_LEAD_BLOCK = "지금 이대로 올리거나 배포하면 안 됩니다. 아래 3단계로 고친 뒤 다시 검사하세요."
 _ACTION_LEAD_WARN = "⚠️ 운영에 반영하기 전에 고치는 것을 권합니다. 아래 3단계를 따르세요."
 _ACTION_CAVEAT = (
     "코드만으론 안 끝나는 것 — API 키·비밀번호가 노출됐다면 코드에서 지우는 것만으론 "
@@ -352,7 +352,7 @@ def _deploy_verdict(report: ScanReport) -> tuple[str, str]:
         )
     if s.blocked or block_n:
         return (
-            f"🚫 배포 불가 — 차단(block) {block_n}건을 해소하거나 보안담당자 승인이 "
+            f"배포 불가 — 차단(block) {block_n}건을 해소하거나 보안담당자 승인이 "
             "필요합니다. 미해소 항목은 잔여 위험으로 남습니다.",
             "#c0392b",
         )
@@ -363,7 +363,7 @@ def _deploy_verdict(report: ScanReport) -> tuple[str, str]:
             "#e67e22",
         )
     return (
-        "✅ 심각 위험 미발견 — 단, 아래 '검토 범위 및 한계' 고지를 참조하세요. "
+        "심각 위험 미발견 — 단, 아래 '검토 범위 및 한계' 고지를 참조하세요. "
         "본 도구가 탐지하지 못하는 영역은 잔여 위험으로 남습니다.",
         "#2e7d32",
     )
@@ -385,7 +385,7 @@ def _scan_mode_note(report: ScanReport) -> str | None:
             "미갱신 항목을 '안전'으로 간주하지 마세요."
         )
         return note
-    note = "🌐 온라인 검사 — 실시간 의존성·인텔 정보를 사용할 수 있는 모드에서 검사했습니다"
+    note = "온라인 검사 — 실시간 의존성·인텔 정보를 사용할 수 있는 모드에서 검사했습니다"
     if dates:
         note += f" (기준일 {dates})"
     return note + "."
@@ -397,15 +397,15 @@ def _scan_mode_note(report: ScanReport) -> str | None:
 # match wins)이므로 더 구체적인 분야(개인정보·비밀값)가 먼저 걸린다.
 # ---------------------------------------------------------------------------
 
-_DOMAIN_PRIVACY = (1, "🆔 개인정보 노출")
-_DOMAIN_SECRET = (2, "🔑 비밀값·인증정보 노출")
-_DOMAIN_INJECTION = (3, "💉 주입·원격 코드 실행")
-_DOMAIN_WEB = (4, "🌐 웹 취약점")
-_DOMAIN_CRYPTO = (5, "🔐 암호화·통신 보안")
-_DOMAIN_MISCONFIG = (6, "⚙️ 보안 설정 오류")
-_DOMAIN_AI = (7, "🤖 AI·자동화 위험")
-_DOMAIN_QUALITY = (8, "🧩 코드 안정성·오류처리")
-_DOMAIN_OTHER = (9, "🔎 그 외 보안 점검")
+_DOMAIN_PRIVACY = (1, "개인정보 노출")
+_DOMAIN_SECRET = (2, "비밀값·인증정보 노출")
+_DOMAIN_INJECTION = (3, "주입·원격 코드 실행")
+_DOMAIN_WEB = (4, "웹 취약점")
+_DOMAIN_CRYPTO = (5, "암호화·통신 보안")
+_DOMAIN_MISCONFIG = (6, "보안 설정 오류")
+_DOMAIN_AI = (7, "AI·자동화 위험")
+_DOMAIN_QUALITY = (8, "코드 안정성·오류처리")
+_DOMAIN_OTHER = (9, "그 외 보안 점검")
 
 
 def _security_domain(f: Finding) -> tuple[int, str]:
@@ -479,7 +479,7 @@ def _hero_line(report: ScanReport) -> tuple[str, str]:
             if f.decision == Decision.block or f.severity == Severity.critical
         ) or block_n
         return (
-            f"🚫 지금 이대로 배포하면 안 됩니다 — 치명·차단 위험 {danger}건. "
+            f"지금 이대로 배포하면 안 됩니다 — 치명·차단 위험 {danger}건. "
             "아래를 고치고 다시 검사하세요.",
             "#c0392b",
         )
@@ -490,17 +490,18 @@ def _hero_line(report: ScanReport) -> tuple[str, str]:
             "#e67e22",
         )
     return (
-        "✅ 심각한 위험은 발견되지 않았습니다 — 단, 아래 '검토 범위 및 한계'를 꼭 확인하세요.",
+        "심각한 위험은 발견되지 않았습니다 — 단, 아래 '검토 범위 및 한계'를 꼭 확인하세요.",
         "#2e7d32",
     )
 
 
 # 배포 승인/미승인 — 두괄식 결과 박스(초록=승인 · 빨강=미승인 · 주황=보류).
-_VERDICT_TONE = {
-    "ok": ("배포 승인 가능", "✅"),
-    "block": ("배포 미승인 — 차단", "🚫"),
-    "warn": ("배포 보류 — 확인 필요", "⚠"),
-    "none": ("판정 불가", "❔"),
+# 색과 굵은 글씨로만 구분(장식 아이콘 없이 공문서 톤).
+_VERDICT_LABEL = {
+    "ok": "배포 승인 가능",
+    "block": "배포 미승인 (차단)",
+    "warn": "배포 보류 (확인 필요)",
+    "none": "판정 불가",
 }
 
 
@@ -517,21 +518,20 @@ def _deploy_status(report: ScanReport) -> str:
 
 
 def _verdict_box_md(report: ScanReport) -> list[str]:
-    """결론 = 승인/미승인 박스(Markdown). 색은 HTML에서만 — MD는 이모지·문구로."""
-    tone = _deploy_status(report)
-    label, emoji = _VERDICT_TONE[tone]
+    """결론 = 승인/미승인 박스(Markdown). 색은 HTML에서만 — MD는 문구로."""
+    label = _VERDICT_LABEL[_deploy_status(report)]
     deploy_text, _ = _deploy_verdict(report)
-    return [f"> ### {emoji} {label}", ">", f"> **배포 판정** · {deploy_text}", ""]
+    return [f"> ### {label}", ">", f"> **배포 판정** · {deploy_text}", ""]
 
 
 def _verdict_box_html(report: ScanReport) -> str:
     """결론 = 승인(초록)/미승인(빨강) 박스(HTML). 두괄식으로 가장 크게."""
     tone = _deploy_status(report)
-    label, emoji = _VERDICT_TONE[tone]
+    label = _VERDICT_LABEL[tone]
     deploy_text, _ = _deploy_verdict(report)
     return (
         f'<div class="verdict v-{tone}">'
-        f'<div class="vstatus">{emoji} {_esc(label)}</div>'
+        f'<div class="vstatus">{_esc(label)}</div>'
         f'<div class="vdetail">배포 판정 · {_esc(deploy_text)}</div>'
         "</div>"
     )
@@ -567,7 +567,7 @@ def _pii_callout_md(pii: list[Finding]) -> list[str]:
     """개인정보·비밀값 주의 콜아웃(Markdown) — '비밀값' 분야 바로 아래에 붙는다."""
     pii_files = len({f.location.file for f in pii})
     return [
-        f"> 🔑 **개인정보·비밀값 주의** — 관련 발견 **{len(pii)}건** · 파일 {pii_files}개. "
+        f"> **개인정보·비밀값 주의** — 관련 발견 **{len(pii)}건** · 파일 {pii_files}개. "
         "노출된 비밀값(키·비밀번호)은 코드에서 지우는 것만으로 부족하며 반드시 "
         "**재발급(폐기)** 해야 합니다. 개인정보 유출 정황이 있으면 기관 "
         "개인정보보호 담당자에게 지체 없이 알리세요.",
@@ -579,7 +579,7 @@ def _pii_callout_html(pii: list[Finding]) -> str:
     """개인정보·비밀값 주의 콜아웃(HTML) — '비밀값' 분야 바로 아래에 붙는다."""
     pii_files = len({f.location.file for f in pii})
     return (
-        f'<div class="piibox"><div class="ph">🔑 개인정보·비밀값 주의 — '
+        f'<div class="piibox"><div class="ph">개인정보·비밀값 주의 — '
         f"{len(pii)}건 · 파일 {pii_files}개</div>"
         '<div class="kv" style="font-size:13px">노출된 비밀값(키·비밀번호)은 코드 삭제만으로 '
         "부족합니다 — <b>반드시 재발급(폐기)</b>하고, 개인정보 유출 정황은 기관 "
@@ -656,6 +656,17 @@ def render_markdown(
         lines.append(f"- 생략된 파일 수: {len(non_build_skips)}건 (이유: 크기·바이너리·인코딩 등)")
     if build_skips:
         lines.append(f"- 빌드 산출물 제외: {len(build_skips)}건 (압축/번들·빌드 출력 — 원본 아님)")
+    # 의존성(패키지)·승인 예외 수치 — 별도 배너 대신 요약 숫자로 정직하게 표기.
+    _dep_audits_sum = _dep_audits(report)
+    if _dep_audits_sum:
+        _, _dep_unchecked, _dep_vuln, _ = _dep_stats(_dep_audits_sum)
+        lines.append(
+            f"- 취약 패키지: **{_dep_vuln}건**"
+            + (f" · 판정 불가 {_dep_unchecked}건" if _dep_unchecked else "")
+            + " (아래 '의존성(패키지) 취약점 검사')"
+        )
+    if suppressed:
+        lines.append(f"- 승인된 예외(요약에서 제외): {len(suppressed)}건 (아래 '승인된 예외 내역')")
     lines.append("")
 
     if any(summary.by_severity.values()):
@@ -674,7 +685,7 @@ def render_markdown(
 
     # --- ③ 조치 가이드 (초보자용 행동 안내) — 발견이 있을 때만 -------------
     if report.findings:
-        lines.append("## 🛠 조치 가이드 — 3단계만 따라 하세요")
+        lines.append("## 조치 가이드 — 3단계만 따라 하세요")
         lines.append("")
         lines.append(f"**{_action_lead(report)}**")
         lines.append("")
@@ -701,8 +712,8 @@ def render_markdown(
             )
         lines.append("")
         lines.append(
-            "> 각 항목의 정확한 위치·수정 방법은 아래 '상세 검토 결과'의 "
-            "분야별 카드에 있습니다."
+            "> 📌 **각 항목의 정확한 위치·취약점·대응 방법은 아래 '상세 검토 결과'의 "
+            "분야별 카드에서 확인하세요.**"
         )
         lines.append("")
 
@@ -716,27 +727,23 @@ def render_markdown(
     # 승인된 예외 요약 — 게이트 판정 이해에 필수라 결론 근처에 표기.
     lines.extend(_suppression_banner_md(report, suppressed))
 
-    # 의존성 매니페스트는 코드 스캔이 아니라 SCA로 검사해야 한다 — 코드 스캔
-    # 결과만 보고 "의존성도 안전"으로 오해하지 않도록 상단부에 강조한다.
-    # 감사 결과(dependency_audit)가 병합돼 있으면 그 요약으로 대체한다.
+    # 의존성 결과는 아래 '의존성(패키지) 취약점 검사' 섹션 + 요약 수치로 전달한다.
+    # 여기서는 --check-deps 를 안 써서 아예 검사되지 않은 경우만 경고한다.
     dep_audits = _dep_audits(report)
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
     ]
-    if dep_audits:
-        lines.append(f"> {_dep_banner_text(dep_audits)}")
-        lines.append("")
-    elif manifest_skips:
+    if not dep_audits and manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
         lines.append(
-            f"> ⚠️ **의존성 검사 별도 필요** — {names} 은(는) 코드 스캔 대상이 아닙니다. "
+            f"> ⚠ **의존성 검사 별도 필요** — {names} 은(는) 코드 스캔 대상이 아닙니다. "
             f"취약·악성 패키지는 `gvskb check-package` 또는 MCP `scan_dependencies`로 따로 검사하세요."
         )
         lines.append("")
 
     if build_skips:
         lines.append(
-            f"> 🧹 **빌드 산출물 {len(build_skips)}건 제외** — 압축·번들·캐시 파일은 원본 "
+            f"> **빌드 산출물 {len(build_skips)}건 제외** — 압축·번들·캐시 파일은 원본 "
             "소스가 아니라 검사 대상에서 자동 제외했습니다(오탐 방지)."
         )
         lines.append("")
@@ -746,20 +753,22 @@ def render_markdown(
     lines.append("")
     ext_dist = _ext_distribution(report.scanned_files)
     ext_str = " · ".join(f"{ext} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    lines.append("| 구분 | 내용 |")
+    lines.append("|---|---|")
     lines.append(
-        f"- **검토 범위**: 파일 {len(report.scanned_files)}건 ({ext_str}) — "
-        "정적(소스코드) 검사이며 코드를 실행하지 않습니다"
+        f"| 검토 범위 | 파일 {len(report.scanned_files)}건 ({ext_str}) · "
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다 |"
     )
     if report.skipped_files:
         reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
         rs = " · ".join(f"{r} {n}건" for r, n in reason_counts.most_common())
-        lines.append(f"- **검사 제외**: {len(report.skipped_files)}건 — {rs} (아래 목록 참조)")
+        lines.append(f"| 검사 제외 | {len(report.skipped_files)}건 — {rs} (아래 목록 참조) |")
     lines.append("")
     lines.append(
         f"> ⚠ **한계 고지** — {_LIMIT_HEAD} **{_LIMIT_ZERO}** {_LIMIT_BODY} **{_LIMIT_TAIL}**"
     )
     lines.append("")
-    lines.append(f"> {report.disclaimer.replace(chr(10), ' ')}")
+    lines.append(f"※ 참고 — {report.disclaimer.replace(chr(10), ' ')}")
     lines.append("")
 
     # =====================================================================
@@ -789,7 +798,7 @@ def render_markdown(
         multi = _multi_rule_lines(report.findings)
         if multi:
             lines.append(
-                f"> ℹ️ **같은 줄 다중 지적** — 발견 {summary.finding_count}건 중 고유 위치는 "
+                f"> **같은 줄 다중 지적** — 발견 {summary.finding_count}건 중 고유 위치는 "
                 f"{uniq_locs}곳입니다. 아래 위치는 한 줄에 여러 기준(룰)이 함께 걸린 곳으로, "
                 "한 곳을 고치면 관련 룰이 함께 해소됩니다."
             )
@@ -1076,14 +1085,25 @@ tr.w td{background:#fff7ed}
 .metatbl th{text-align:left;background:#f3f4f6;color:#374151;padding:6px 10px;
   white-space:nowrap;width:96px;border:1px solid #e5e7eb;font-weight:700}
 .metatbl td{padding:6px 10px;color:#111827;border:1px solid #e5e7eb;word-break:break-all}
-/* 결론 = 승인(초록)/미승인(빨강) 박스 — 두괄식 결과 */
-.verdict{border:3px solid;border-radius:12px;padding:16px 20px;margin:6px 0 16px;page-break-inside:avoid}
+/* 결론 = 승인(초록)/미승인(빨강) 박스 — 두괄식 결과. 인쇄에서도 색 유지 */
+.verdict{border:3px solid;border-radius:12px;padding:16px 20px;margin:6px 0 16px;
+  page-break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .verdict .vstatus{font-size:22px;font-weight:800;margin-bottom:6px}
 .verdict .vdetail{font-size:14px;line-height:1.55}
 .v-ok{background:#ecfdf5;border-color:#16a34a;color:#065f46}
 .v-block{background:#fef2f2;border-color:#dc2626;color:#991b1b}
 .v-warn{background:#fffbeb;border-color:#d97706;color:#92400e}
 .v-none{background:#f3f4f6;border-color:#6b7280;color:#374151}
+/* 검토 범위 표 */
+.scopetbl{border-collapse:collapse;margin:6px 0 10px;font-size:13px;width:100%}
+.scopetbl th{text-align:left;background:#f3f4f6;color:#374151;padding:6px 10px;
+  white-space:nowrap;width:96px;border:1px solid #e5e7eb;font-weight:700}
+.scopetbl td{padding:6px 10px;color:#111827;border:1px solid #e5e7eb}
+/* 면책 — 박스 없이 참고 텍스트 */
+.discnote{font-size:12px;color:#6b7280;margin:8px 0 4px;line-height:1.5}
+/* Top 3 아래 강조 안내(상세 검토로 유도) */
+.jumpnote{background:#eff6ff;border-left:4px solid #2563eb;border-radius:0 6px 6px 0;
+  padding:9px 13px;font-size:13.5px;color:#1e3a8a;margin:10px 0}
 /* 면책 박스(요약부로 이동) — 이미지의 어두운 테두리 박스 */
 .discbox{border:2px solid #111827;border-radius:8px;background:#fff;
   padding:12px 16px;font-size:12.8px;color:#374151;margin:10px 0 14px;page-break-inside:avoid}
@@ -1196,7 +1216,7 @@ def render_html(
     p.append(f"<style>{_HTML_CSS}</style></head><body>")
     p.append('<div class="page">')
 
-    p.append("<h1>🛡️ 코드 보안 검사 결과</h1>")
+    p.append("<h1>코드 보안 검사 결과</h1>")
     p.append('<div class="sub">vibecode-checker · 공공 바이브 코딩 보안 가드레일</div>')
 
     # === Layer 1 — 공무원용: 문서 헤더 표 → 결론(승인/미승인 박스) ==========
@@ -1243,6 +1263,21 @@ def render_html(
             f'{"#c0392b" if ext_warn else "#1f2937"}">{n_api + n_pkg}</div>'
             f'<div class="lab">외부 연결 ({sub})</div></div>'
         )
+    # (B) 의존성 취약 패키지·승인 예외 수치 — 별도 배너 대신 요약 카드로 표기.
+    _dep_audits_sum = _dep_audits(report)
+    if _dep_audits_sum:
+        _, _dep_unchecked, _dep_vuln, _ = _dep_stats(_dep_audits_sum)
+        sub = f"판정불가 {_dep_unchecked}" if _dep_unchecked else "검사 시점 기준"
+        p.append(
+            f'<div class="stat"><div class="num" style="color:'
+            f'{"#c0392b" if _dep_vuln else "#1f2937"}">{_dep_vuln}</div>'
+            f'<div class="lab">취약 패키지 ({sub})</div></div>'
+        )
+    if suppressed:
+        p.append(
+            f'<div class="stat"><div class="num">{len(suppressed)}</div>'
+            '<div class="lab">승인된 예외 (요약 제외)</div></div>'
+        )
     p.append("</div>")
 
     chips = []
@@ -1265,7 +1300,7 @@ def render_html(
     # --- 조치 가이드 (초보자용 행동 안내) — 발견이 있을 때만 ---------------
     if report.findings:
         p.append('<div class="actionbox">')
-        p.append('<div class="ah">🛠 조치 가이드 — 3단계만 따라 하세요</div>')
+        p.append('<div class="ah">조치 가이드 — 3단계만 따라 하세요</div>')
         p.append(f'<div class="lead">{_esc(_action_lead(report))}</div>')
         p.append("<ol>")
         for title, desc, say in _ACTION_STEPS:
@@ -1296,11 +1331,12 @@ def render_html(
             )
         p.append("</ul>")
         p.append(
-            '<div class="kv" style="font-size:12.5px;color:#64748b">각 항목의 정확한 위치·수정 '
-            "방법은 아래 '상세 검토 결과'의 분야별 카드에 있습니다.</div>"
+            '<div class="jumpnote">📌 <b>각 항목의 정확한 위치·취약점·대응 방법은 아래 '
+            "'상세 검토 결과'의 분야별 카드에서 확인하세요.</b></div>"
         )
 
-    # --- 정직성 배너 — 실행 모드·승인 예외·의존성·빌드 제외 -----------------
+    # --- 정직성 배너 — 실행 모드·만료 예외·의존성 미검사 경고 --------------
+    # (승인된 예외 '적용'·의존성 '포함' 안내는 요약 수치로 대체 — 배너 최소화)
     mode_note = _scan_mode_note(report)
     if mode_note:
         p.append(f'<div class="scanmode">{_esc(mode_note)}</div>')
@@ -1310,20 +1346,17 @@ def render_html(
             p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
     dep_audits = _dep_audits(report)
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
-    if dep_audits:
-        banner = _esc(_dep_banner_text(dep_audits)).replace("**", "")
-        p.append(f'<div class="depwarn">{banner}</div>')
-    elif manifest_skips:
+    if not dep_audits and manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
         p.append(
-            '<div class="depwarn">⚠️ <b>의존성 검사 별도 필요</b> — '
+            '<div class="depwarn">⚠ <b>의존성 검사 별도 필요</b> — '
             f"{_esc(names)} 은(는) 코드 스캔 대상이 아닙니다. 취약·악성 패키지는 "
             '<code class="ev">gvskb check-package</code> 또는 MCP '
             '<code class="ev">scan_dependencies</code>로 따로 검사하세요.</div>'
         )
     if build_skips:
         p.append(
-            f'<div class="buildnote">🧹 빌드 산출물 {len(build_skips)}건 제외 — '
+            f'<div class="buildnote">빌드 산출물 {len(build_skips)}건 제외 — '
             "압축·번들·캐시 파일은 원본 소스가 아니라 검사 대상에서 자동 제외했습니다 "
             "(오탐 방지).</div>"
         )
@@ -1332,22 +1365,25 @@ def render_html(
     p.append("<h2>검토 범위 및 한계</h2>")
     ext_dist = _ext_distribution(report.scanned_files)
     ext_str = " · ".join(f"{_esc(ext)} {n}건" for ext, n in ext_dist.most_common()) or "—"
+    p.append('<table class="scopetbl"><tr><th>구분</th><th>내용</th></tr>')
     p.append(
-        f'<div class="kv"><b>검토 범위</b> — 파일 {len(report.scanned_files)}건 ({ext_str}) · '
-        "정적(소스코드) 검사이며 코드를 실행하지 않습니다</div>"
+        f"<tr><th>검토 범위</th><td>파일 {len(report.scanned_files)}건 ({ext_str}) · "
+        "정적(소스코드) 검사이며 코드를 실행하지 않습니다</td></tr>"
     )
     if report.skipped_files:
         reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
         rs = " · ".join(f"{_esc(r)} {n}건" for r, n in reason_counts.most_common())
         p.append(
-            f'<div class="kv"><b>검사 제외</b> — {len(report.skipped_files)}건 ({rs}) · '
-            "아래 '생략된 파일' 목록 참조</div>"
+            f"<tr><th>검사 제외</th><td>{len(report.skipped_files)}건 ({rs}) · "
+            "아래 '생략된 파일' 목록 참조</td></tr>"
         )
+    p.append("</table>")
     p.append(
         f'<div class="scopebox">⚠ <b>한계 고지</b> — {_esc(_LIMIT_HEAD)} '
         f"<b>{_esc(_LIMIT_ZERO)}</b> {_esc(_LIMIT_BODY)} <b>{_esc(_LIMIT_TAIL)}</b></div>"
     )
-    p.append(f'<div class="discbox">{_esc(report.disclaimer.replace(chr(10), " "))}</div>')
+    # 면책 — 박스 없이 '※ 참고' 텍스트로만 제공(가벼운 고지).
+    p.append(f'<div class="discnote">※ 참고 — {_esc(report.disclaimer.replace(chr(10), " "))}</div>')
 
     # =====================================================================
     # Layer 2 — 보안담당자용 상세 검토: 분야 개요 → 분야별 상세(기본 닫힘,
@@ -1386,7 +1422,7 @@ def render_html(
             if len(multi) > 12:
                 items += f" · 외 {len(multi) - 12}곳"
             p.append(
-                f'<div class="dupnote">ℹ️ <b>같은 줄 다중 지적</b> — 발견 '
+                f'<div class="dupnote"><b>같은 줄 다중 지적</b> — 발견 '
                 f"{summary.finding_count}건 중 고유 위치는 {uniq_locs}곳입니다. "
                 f"한 줄에 여러 기준(룰)이 함께 걸린 위치: {items}. "
                 "한 곳을 고치면 관련 룰이 함께 해소됩니다.</div>"
@@ -1428,7 +1464,7 @@ def render_html(
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     if report.findings:
         p.append(
-            '<details class="sec"><summary>🛠 수정 프롬프트 (복사해서 AI에게 전달)'
+            '<details class="sec"><summary>수정 프롬프트 (복사해서 AI에게 전달)'
             '</summary><div class="secbody">'
         )
         # ① 가장 쉬운 방법 — 강조 박스 + 한 줄 프롬프트 복사 버튼
@@ -1453,7 +1489,7 @@ def render_html(
     # === 부록 (기술 정보) — 기본 접기 ====================================
     non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
     repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
-    p.append('<details class="sec"><summary>📎 부록 (가이드라인 분포·생략 파일·재현·재검증)'
+    p.append('<details class="sec"><summary>부록 (가이드라인 분포·생략 파일·재현·재검증)'
              '</summary><div class="secbody">')
     dist = _guideline_distribution(report.findings) if report.findings else None
     if dist:
@@ -1533,7 +1569,7 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
         head_extra = f' · <span style="color:#c0392b">{" · ".join(bits)}</span>'
     out: list[str] = [
         f'<details class="sec inv"{" open" if warn else ""}>'
-        f"<summary>🌐 외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{head_extra}</summary>"
+        f"<summary>외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{head_extra}</summary>"
         '<div class="secbody">',
         '<div class="invnote">⚠ <b>사용 금지가 아닙니다.</b> 외부로 데이터를 보낼 수 있는 지점 '
         '목록입니다. <span class="hl">⚠ 개인정보 인접</span>·<span class="hl">국외 전송</span>을 '
@@ -1658,14 +1694,10 @@ def _render_rule_group_html(group: dict) -> list[str]:
 
 
 def _suppression_banner_md(report: ScanReport, suppressed: list[Finding]) -> list[str]:
+    # 승인된 예외 '적용' 안내는 요약 수치(승인된 예외 N건)로 대체하고, 여기서는
+    # 놓치면 안 되는 '만료된 예외'(다시 차단 대상)만 경고로 남긴다.
     out: list[str] = []
     ss = report.suppression_summary or {}
-    if suppressed:
-        out.append(
-            f"> ℹ️ **승인된 예외 {len(suppressed)}건 적용** — 요약 건수·배포 판정에서 "
-            "제외됐습니다. 아래 '승인된 예외 내역'에서 사유·승인자·만료일을 확인하세요."
-        )
-        out.append("")
     for e in ss.get("expired", []) or []:
         out.append(
             f"> ⚠️ **만료된 예외** — `{e.get('rule_id', '?')}` ({e.get('file', '?')}) 의 예외가 "
@@ -1697,7 +1729,7 @@ def _render_suppressions_html(suppressed: list[Finding]) -> list[str]:
     if not suppressed:
         return []
     out: list[str] = [
-        '<details class="sec" open><summary>승인된 예외 내역 — '
+        '<details class="sec"><summary>승인된 예외 내역 — '
         f"{len(suppressed)}건 (게이트 통과, 기록 유지)</summary>",
         '<div class="secbody">',
         "<table><tr><th>룰</th><th>위치</th><th>심각도</th><th>사유(승인·만료 포함)</th></tr>",
@@ -1750,7 +1782,7 @@ def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool]:
 def _dep_banner_text(audits: list[dict]) -> str:
     checked, unchecked, vuln, blocked = _dep_stats(audits)
     if blocked:
-        return (f"🚫 **의존성 검사 포함** — 악성·고위험 패키지 발견(취약·악성 {vuln}건). "
+        return (f"**의존성 검사 포함** — 악성·고위험 패키지 발견(취약·악성 {vuln}건). "
                 "아래 '의존성(패키지) 취약점 검사' 섹션을 확인하세요.")
     if vuln:
         return (f"⚠️ **의존성 검사 포함** — 알려진 취약점 있는 패키지 {vuln}건. "
@@ -1758,12 +1790,12 @@ def _dep_banner_text(audits: list[dict]) -> str:
     if unchecked:
         return (f"⚠️ **의존성 일부 판정 불가** — {unchecked}건은 검사되지 못했습니다"
                 "(캐시 없는 오프라인·API 실패·파싱 불가). **판정 불가는 '안전'이 아닙니다.**")
-    return f"✅ **의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음(검사 시점 기준)."
+    return f"**의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음(검사 시점 기준)."
 
 
 def _pkg_verdict_label(check: dict) -> str:
     if check.get("is_malicious_package"):
-        return "🚫 악성 의심"
+        return "악성 의심"
     n = check.get("vulnerability_count") or 0
     if n:
         return f"⚠ 취약점 {n}건"
@@ -1789,7 +1821,7 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
     if not audits:
         return []
     checked, unchecked, vuln, blocked = _dep_stats(audits)
-    out: list[str] = ["## 📦 의존성(패키지) 취약점 검사", ""]
+    out: list[str] = ["## 의존성(패키지) 취약점 검사", ""]
     out.append(f"> 검사 {checked}건 · 판정 불가 {unchecked}건 · 취약·악성 {vuln}건"
                + (" · **차단 권고**" if blocked else ""))
     out.append("")
@@ -1821,10 +1853,9 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
     if not audits:
         return []
     checked, unchecked, vuln, blocked = _dep_stats(audits)
-    keep_open = blocked or vuln > 0 or unchecked > 0
     out: list[str] = [
-        f'<details class="sec"{" open" if keep_open else ""}>'
-        f"<summary>📦 의존성(패키지) 취약점 검사 — 검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}</summary>"
+        '<details class="sec"><summary>의존성(패키지) 취약점 검사 — '
+        f"검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}</summary>"
         '<div class="secbody">',
     ]
     for a in audits:
@@ -1857,7 +1888,7 @@ def _render_external_surface_md(report: ScanReport) -> list[str]:
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
     n_api, n_pkg, gukoe, warn = _external_stats(report)
-    out: list[str] = ["## 🌐 외부 연결 인벤토리 (보안팀 검토용)", ""]
+    out: list[str] = ["## 외부 연결 인벤토리 (보안팀 검토용)", ""]
     out.append(
         f"> ⚠ **사용 금지가 아닙니다.** 외부로 데이터를 보낼 수 있는 지점 목록입니다 "
         f"(API {n_api} · 플러그인 {n_pkg} · 국외 {gukoe} · ⚠개인정보 {warn}). "

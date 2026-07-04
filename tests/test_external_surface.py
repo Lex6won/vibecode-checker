@@ -166,7 +166,7 @@ def test_render_html_inventory_is_self_contained() -> None:
 
 def test_render_markdown_has_inventory_section() -> None:
     md = render_markdown(_report_with_external())
-    assert "## 🌐 외부 연결 인벤토리" in md
+    assert "## 외부 연결 인벤토리" in md
     assert "api.openai.com" in md
     assert "국외" in md
 
@@ -176,7 +176,7 @@ def test_no_inventory_section_when_no_external() -> None:
     assert not report.external_surface
     # 섹션 마커로 확인(CSS 주석에 같은 한국어 문구가 있어 phrase 매칭은 부적절).
     assert 'class="sec inv"' not in render_html(report)
-    assert "## 🌐 외부 연결 인벤토리" not in render_markdown(report)
+    assert "## 외부 연결 인벤토리" not in render_markdown(report)
 # ---------------------------------------------------------------------------
 # 운영주체·호출 지점 수 — 국외이전 검토는 "누구에게, 어느 나라로"가 특정돼야 한다
 # ---------------------------------------------------------------------------
