@@ -74,8 +74,15 @@ def record_scan(report: ScanReport, tool: str) -> None:
     for f in report.findings:
         if f.decision == Decision.allow:
             continue
+        if f.suppressed:
+            # 승인된 예외로 게이트를 통과한 발견 — 감사상 가장 중요한 이벤트다.
+            event_type = "approve_bypass"
+        elif f.decision == Decision.block:
+            event_type = "block"
+        else:
+            event_type = "warn"
         events.append(AuditEvent(
-            event_type="block" if f.decision == Decision.block else "warn",
+            event_type=event_type,
             timestamp=ts,
             tool=tool,
             profile=report.profile,
@@ -83,7 +90,7 @@ def record_scan(report: ScanReport, tool: str) -> None:
             decision=f.decision,
             finding_id=f.id,
             target_hash=_hash(f.location.file, f.location.line),
-            redacted_evidence=f.evidence[:240],  # 이미 마스킹된 증거만
+            redacted_evidence=(f.suppress_reason or f.evidence)[:240],  # 마스킹 증거/사유만
         ))
     _append(events)
 

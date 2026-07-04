@@ -215,14 +215,19 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    if args.format == "json":
-        output_text = json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2)
+    if args.format in ("json", "sarif"):
+        if args.format == "sarif":
+            from .report import render_sarif
+            payload = render_sarif(report)
+        else:
+            payload = report.model_dump(mode="json")
+        output_text = json.dumps(payload, ensure_ascii=False, indent=2)
         if args.output:
             out_path = Path(args.output)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(output_text, encoding="utf-8")
             print(
-                f"[gvskb] saved json report to {out_path} "
+                f"[gvskb] saved {args.format} report to {out_path} "
                 f"(scanned={len(report.scanned_files)}, findings={report.summary.finding_count})",
                 file=sys.stderr,
             )
@@ -440,6 +445,32 @@ def _cmd_update_intel(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_intel_bundle(args: argparse.Namespace) -> int:
+    """망분리 반입 번들 — export(외부망)·import(망분리, sha256 전수 검증)."""
+    from .intel.bundle import export_bundle, import_bundle
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    if args.action == "export":
+        result = export_bundle(args.bundle, cache_dir=cache_dir)
+    else:
+        result = import_bundle(args.bundle, cache_dir=cache_dir)
+        if result.get("ok"):
+            from .audit import record_update_intel
+            record_update_intel(list(result.get("sources", [])), tool="intel-bundle-import")
+
+    if args.json:
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    elif result.get("ok"):
+        verb = "내보냈습니다" if args.action == "export" else "반입했습니다(무결성 검증 통과)"
+        print(f"[gvskb] 번들 {verb}: {result.get('bundle') or result.get('cache_dir')}")
+        print(f"        sources: {', '.join(result.get('sources', []))}")
+        if args.action == "import":
+            print("        다음: `gvskb doctor --offline` 로 캐시 존재·신선도를 확인하세요.")
+    else:
+        print(f"[gvskb] ✖ {result.get('error', 'unknown error')}", file=sys.stderr)
+    return EXIT_OK if result.get("ok") else EXIT_FINDINGS_WARN
+
+
 def _promote_kev_from_cache(cache, args: argparse.Namespace) -> dict:
     """Convert the cached CISA KEV catalog into proposed-rule MD files."""
     entry = cache.load("cisa-kev")
@@ -525,8 +556,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="파일/디렉토리 검사")
     scan.add_argument("path", help="검사할 파일 또는 디렉토리 경로")
     scan.add_argument(
-        "--format", choices=["markdown", "html", "json"], default="markdown",
-        help="출력 형식 (기본: markdown). markdown/html 은 파일 저장(-o) 시 .md·.html 을 함께 생성",
+        "--format", choices=["markdown", "html", "json", "sarif"], default="markdown",
+        help="출력 형식 (기본: markdown). markdown/html 은 파일 저장(-o) 시 .md·.html 을 함께 생성. "
+             "sarif 는 CI·보안도구 연동용 SARIF 2.1.0 (GitHub code scanning 업로드 가능)",
     )
     scan.add_argument("--output", "-o", help="결과 저장 경로. 미지정 시 stdout")
     scan.add_argument("--scenario", help="시나리오 힌트 (예: data-pipeline, llm-integration)")
@@ -628,6 +660,16 @@ def build_parser() -> argparse.ArgumentParser:
     upd.add_argument("--promote-overwrite", action="store_true",
                      help="기존 proposed 파일을 덮어쓰기 (기본: skip)")
     upd.set_defaults(func=_cmd_update_intel)
+
+    bundle = sub.add_parser(
+        "intel-bundle",
+        help="망분리 반입 번들 — export(외부망)에서 만들고 import(망분리)에서 sha256 전수 검증 후 반입",
+    )
+    bundle.add_argument("action", choices=["export", "import"], help="export=캐시→zip, import=zip→캐시(검증)")
+    bundle.add_argument("bundle", help="번들 zip 경로")
+    bundle.add_argument("--cache-dir", help="캐시 디렉토리 오버라이드 (기본: ~/.gvskb/cache)")
+    bundle.add_argument("--json", action="store_true", help="JSON 출력")
+    bundle.set_defaults(func=_cmd_intel_bundle)
 
     return p
 

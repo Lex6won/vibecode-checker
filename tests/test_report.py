@@ -602,3 +602,55 @@ def test_dependency_audit_unparsed_lockfile_note() -> None:
     md = render_markdown(report)
     assert "unparsed" in md
     assert "파싱 0건은 '안전'이 아닙니다" in md
+
+
+# ---------------------------------------------------------------------------
+# SARIF 2.1.0 — CI·보안도구 연동 출력
+# ---------------------------------------------------------------------------
+
+
+def test_render_sarif_minimal_valid_shape() -> None:
+    from gvskb.report import render_sarif
+
+    report = _report_with_findings()
+    sarif = render_sarif(report)
+    assert sarif["version"] == "2.1.0"
+    assert "sarif-2.1.0" in sarif["$schema"]
+    run = sarif["runs"][0]
+    assert run["tool"]["driver"]["name"] == "vibecode-checker"
+    rules = run["tool"]["driver"]["rules"]
+    results = run["results"]
+    assert results and rules
+    # 모든 result의 ruleId/ruleIndex가 rules와 일치해야 한다
+    ids = [r["id"] for r in rules]
+    for res in results:
+        assert res["ruleId"] == ids[res["ruleIndex"]]
+        assert res["level"] in ("error", "warning", "note")
+        loc = res["locations"][0]["physicalLocation"]
+        assert loc["artifactLocation"]["uri"]
+        assert loc["region"]["startLine"] >= 1
+
+
+def test_render_sarif_block_maps_to_error_and_evidence_masked() -> None:
+    import json
+
+    from gvskb.report import render_sarif
+
+    report = scan_code(
+        'DB_PASSWORD = "SuperSecretValue123"\n', filename="a.py", language="python"
+    )
+    sarif = render_sarif(report)
+    blob = json.dumps(sarif, ensure_ascii=False)
+    assert '"level": "error"' in blob or any(
+        r["level"] == "error" for r in sarif["runs"][0]["results"]
+    )
+    assert "SuperSecretValue123" not in blob  # SARIF에도 원문 비밀값 없음
+
+
+def test_render_sarif_empty_findings_ok() -> None:
+    from gvskb.report import render_sarif
+
+    report = scan_code('print("hi")\n', filename="hi.py", language="python")
+    sarif = render_sarif(report)
+    assert sarif["runs"][0]["results"] == []
+    assert sarif["runs"][0]["properties"]["scanned_files"] == 1

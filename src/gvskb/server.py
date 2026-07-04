@@ -216,7 +216,7 @@ def scan_path(
 @mcp.tool()
 def render_report(
     report: dict,
-    format: Literal["markdown", "html", "both"] = "markdown",
+    format: Literal["markdown", "html", "both", "sarif"] = "markdown",
 ) -> dict:
     """ScanReport(scan_code / scan_path 결과)를 한국어 보고서로 렌더링합니다.
 
@@ -224,6 +224,7 @@ def render_report(
     - format="markdown": Markdown 본문(기본)
     - format="html": 자체 포함 단일 HTML(외부 CDN·JS 없음, 인쇄→PDF·이메일 가능)
     - format="both": Markdown + HTML 모두
+    - format="sarif": SARIF 2.1.0 (CI·보안도구 연동, GitHub code scanning 업로드)
 
     출력은 자체 완결적이라 비전공 이해관계자 공유나 내부 승인 기록 첨부에 적합합니다.
     """
@@ -243,6 +244,9 @@ def render_report(
         out["content"] = md  # 하위 호환: 기존 호출자는 content(=markdown)를 읽음
     if format in ("html", "both"):
         out["html"] = render_html_impl(parsed)
+    if format == "sarif":
+        from .report import render_sarif
+        out["sarif"] = render_sarif(parsed)
     return out
 
 

@@ -20,6 +20,7 @@ from typing import Iterable
 
 from .profiles import apply_profile, load_profile
 from .scanners.ast_scanner import PythonAstScanner
+from .scanners.js_taint import JsTaintScanner
 from .scanners.external_surface import (
     dedupe_connections,
     extract_api_connections,
@@ -46,10 +47,10 @@ from .schema import (
 # Adapter run order. Earlier adapters establish baseline findings; later
 # adapters (more precise) can supersede them via dedup_findings. SemgrepScanner
 # self-disables when the binary or rules dir is missing, so safe to include.
-_ADAPTERS = [RegexScanner(), PythonAstScanner(), SemgrepScanner()]
+_ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner()]
 
 # Engine precision ranking — higher number wins on collisions.
-_ENGINE_PRECISION = {"regex": 0, "python-ast": 1, "semgrep": 2}
+_ENGINE_PRECISION = {"regex": 0, "python-ast": 1, "js-taint": 1, "semgrep": 2}
 
 SEVERITY_RANK = {
     Severity.low: 0,
@@ -424,16 +425,30 @@ def scan_path(
             inventory_packages(parse_manifest_packages(mtext, eco), _rel(mpath, root, is_dir))
         )
 
+    # 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 표시만 하며,
+    # 요약(건수·차단)과 exit code 는 비억제 발견 기준으로 계산한다.
+    from .suppressions import apply_suppressions, load_exceptions
+    sup = apply_suppressions(all_findings, load_exceptions(root))
+    active = [f for f in all_findings if not f.suppressed]
+    suppression_summary = None
+    if sup.applied or sup.expired or sup.invalid:
+        suppression_summary = {
+            "applied": sup.applied,
+            "expired": sup.expired,
+            "invalid": sup.invalid,
+        }
+
     report = ScanReport(
         target=str(root),
         scenario=scenario,
         profile=profile,
-        summary=_summary(all_findings),
+        summary=_summary(active),
         findings=all_findings,
         scanned_files=scanned,
         skipped_files=skipped,
         external_surface=dedupe_connections(external),
         scan_mode=_current_scan_mode(),
+        suppression_summary=suppression_summary,
     )
     # 감사로그(옵트인, GVSKB_AUDIT_DIR) — 공공 점검 이력 증빙. 실패해도 스캔은 계속.
     from .audit import record_scan

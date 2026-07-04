@@ -162,7 +162,16 @@ class Finding(BaseModel):
     requires_approval_to_bypass: bool = False
     engine: str = Field(
         default="regex",
-        description="Detection engine: regex | python-ast | semgrep | secret | ...",
+        description="Detection engine: regex | python-ast | js-taint | semgrep | ...",
+    )
+    # 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 게이트만 통과.
+    suppressed: bool = Field(
+        default=False,
+        description="승인된 예외로 억제됨 — 요약 건수·차단 판정에서 제외되지만 리포트에는 남는다",
+    )
+    suppress_reason: str | None = Field(
+        default=None,
+        description="억제 사유(원 사유 + 승인자 + 만료일). suppressed=True일 때만 존재",
     )
 
 
@@ -289,6 +298,13 @@ class ScanReport(BaseModel):
             "의존성(패키지) 취약점 검사 결과 — scan_dependencies/audit_manifest 반환값. "
             "단일 audit dict 또는 {'audits': [...]}(여러 매니페스트). None이면 섹션 미표시. "
             "보안팀이 코드+패키지 위험을 한 문서에서 보도록 리포트에 병합된다."
+        ),
+    )
+    suppression_summary: dict | None = Field(
+        default=None,
+        description=(
+            "승인된 예외(.gvskb-exceptions.yaml) 적용 요약 — "
+            "{'applied': N, 'expired': [...], 'invalid': [...]}. None이면 예외 없음."
         ),
     )
     disclaimer: str = (
