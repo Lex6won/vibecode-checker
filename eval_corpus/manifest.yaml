@@ -42,7 +42,7 @@ cases:
 
   # ---------- (D) LLM 챗봇/RAG (Python) ----------
   - {id: D-01, file: d_llm_chatbot/chatbot.py, line: 5, kind: vulnerability, category: secret, expect_detected: true, expected_rule_ids: [GOV-SECRET-APIKEY-001], sink: "sk-proj-FAKE"}
-  - {id: D-02, file: d_llm_chatbot/chatbot.py, line: 10, kind: vulnerability, category: llm, expect_detected: true, expected_rule_ids: [GOV-LLM-OUTPUT-HANDLING-001, OWASP-LLM-2025-01], sink: "SYSTEM_PROMPT + \"\\n사용자"}
+  - {id: D-02, file: d_llm_chatbot/chatbot.py, line: 10, kind: vulnerability, category: llm, expect_detected: true, expected_rule_ids: [GOV-LLM-PROMPT-INJECTION-001, GOV-LLM-OUTPUT-HANDLING-001, OWASP-LLM-2025-01], sink: "SYSTEM_PROMPT + \"\\n사용자"}
   - {id: D-03, file: d_llm_chatbot/chatbot.py, line: 20, kind: vulnerability, category: code-exec, expect_detected: true, expected_rule_ids: [GOV-CODE-EXEC-001, GOV-LLM-OUTPUT-HANDLING-001, KISA-PY-INPUT-02], sink: "exec(llm_code)"}
   - {id: D-04, file: d_llm_chatbot/rag_index.py, line: 9, kind: vulnerability, category: deserialization, expect_detected: true, expected_rule_ids: [KISA-PY-CODE-03], sink: "pickle.load(fh)"}
   - {id: D-05, file: d_llm_chatbot/rag_index.py, line: 13, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001, GOV-LLM-PII-PROMPT-001], sink: "900101-1234567"}

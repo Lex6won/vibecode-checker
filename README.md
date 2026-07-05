@@ -11,8 +11,8 @@
 
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-455_passed-success.svg)
-![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_96.7%25-success.svg)
+![Tests](https://img.shields.io/badge/tests-467_passed-success.svg)
+![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-215개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
 
@@ -226,7 +226,7 @@ git clone --depth 1 https://github.com/owner/repo /tmp/repo && gvskb scan /tmp/r
 | ⚡ 위험한 코드 실행 | `eval()`, `exec()`, `os.system(사용자입력)` |
 | 🌐 웹 취약점 | XSS, 경로 조작, Flask `debug=True` 배포 |
 | 📦 취약·가짜 패키지 | 알려진 CVE, 오타 노린 typosquat(`reqeusts`) |
-| 🤖 AI 특화 위험 | 프롬프트에 개인정보 전송, LLM 출력 무검증 실행 |
+| 🤖 AI 특화 위험 | **프롬프트 인젝션**(신뢰 못할 입력이 LLM 프롬프트에 결합), 프롬프트에 개인정보 전송, LLM 출력 무검증 실행 |
 | 🌐 외부 데이터 전송 | 외부 AI API·플러그인이 **어디로(국외 포함) 무슨 데이터**를 보내는지 인벤토리로 정리(검토용) |
 
 
@@ -455,22 +455,24 @@ repos:
 시크릿·키       ████████████████████  100%   (4/4)
 코드 실행       ████████████████████  100%   (3/3)
 암호화·TLS      ████████████████████  100%   (3/3)
+AI·LLM 주입     ████████████████████  100%   (1/1)   ← 프롬프트 인젝션 taint
 Python 전체     █████████████████░░░   85%
 SQL·명령 주입   ████████████████░░░░   80%
 JavaScript      ███████████████░░░░░   75%
 ─────────────────────────────────────────────
-종합 recall     ███████████████████░   96.7%  · 오탐 0
+종합 recall     ████████████████████  100%   · 오탐 0 (30 시드)
 ```
 
 | 측정 | 값 | 방식 |
 |---|---|---|
-| **독립 코퍼스 탐지율** | **recall 96.7%** · 오탐 0 | `eval_corpus/` 30 시드, 결정론 |
+| **독립 코퍼스 탐지율** | **recall 100%** (30/30) · 오탐 0 | `eval_corpus/` 30 시드, 결정론 |
 | 자체검증 매크로 P/R/F1 | 100% | 룰 내장 예제 — *의도-구현 일치* 측정 |
-| 테스트 | 455개 통과 | 유닛·통합·룰 메타 |
+| 테스트 | 467개 통과 | 유닛·통합·룰 메타 |
+| 경계 프로브(난독·별칭) | 4/9 탐지 | 한계 측정 — 미탐이 정상 |
 
 재현: `GVSKB_MODE=offline PYTHONPATH=src python scripts/run_benchmark.py`
 
-> **정직성 원칙**: "자체검증 100%"는 룰이 자기 예제를 맞히는 측정이라 외부 코드 성능을 뜻하지 않습니다. 그래서 *독립 코퍼스*로 따로 측정해 **96.7%**를 함께 공개합니다. **보안 전문 검토를 대체하지 않는 1차 보안 린터**로 설계되었습니다.
+> **정직성 원칙**: "자체검증 100%"는 룰이 자기 예제를 맞히는 측정이라 외부 코드 성능을 뜻하지 않습니다. 그래서 *독립 코퍼스*(30 시드)로 따로 측정해 **recall 100% · 오탐 0**을 함께 공개하며, 난독화·별칭 등 **경계 프로브는 의도적으로 부분 탐지(4/9)** 로 한계를 함께 드러냅니다. **보안 전문 검토를 대체하지 않는 1차 보안 린터**로 설계되었습니다.
 
 ---
 
