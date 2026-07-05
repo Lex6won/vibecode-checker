@@ -33,7 +33,13 @@
 **아래는 실제로 생성되는 HTML 보고서 화면입니다.** 검사 결과를 파일로 저장하면 텍스트(`.md`)와 함께 이 HTML 보고서가 자동으로 만들어지고, 인쇄하면 그대로 PDF 결재 문서로 쓸 수 있습니다.
 
 <p align="center">
-  <img src="docs/assets/sample_report.png" alt="vibecode-checker HTML 보안 점검 보고서 예시" width="680"/>
+  <img src="docs/assets/sample_report.png" alt="vibecode-checker 보고서 — 요약층(공무원): 배포 승인/미승인 결론·핵심 숫자·조치 가이드" width="620"/>
+  <br/><sub><b>① 요약층 (공무원)</b> — 배포 승인/미승인 결론 박스 → 핵심 숫자 → 조치 가이드(3단계)</sub>
+</p>
+
+<p align="center">
+  <img src="docs/assets/sample_report_detail.png" alt="vibecode-checker 보고서 — 상세층(보안팀): 보안 분야별 접힘 카드·개인정보 콜아웃·의존성/예외" width="620"/>
+  <br/><sub><b>② 상세층 (보안팀)</b> — 보안 분야별로 묶어 접힘, 펼치면 위치·취약점·대응·근거. 개인정보·의존성·승인 예외도 함께</sub>
 </p>
 
 <!-- 터미널 데모 GIF를 추가하려면 docs/assets/demo.gif 녹화 후 아래 주석을 해제하세요 -->
