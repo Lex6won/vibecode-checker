@@ -10,6 +10,7 @@ patterns are left empty — these are *advisory* rules, not regex scanners.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -19,6 +20,33 @@ from typing import Iterable
 from .cache import CacheEntry
 
 DEFAULT_PROPOSED_DIR = "rules/intel-proposed"
+
+# 최근 등재분만 초안으로 승격하는 기본 기간(일). KEV 카탈로그 전체(2002년~)를
+# 백필하면 1,600+개의 무관한 카드가 쏟아진다 — 바이브코딩 검사와 관련 있는 것은
+# "지금 새로 악용되기 시작한" 취약점이다. 0 이하로 설정하면 필터 해제(전체 승격).
+DEFAULT_PROMOTE_SINCE_DAYS = 90
+
+
+def promote_since_days() -> int:
+    """승격 대상 기간(일). GVSKB_KEV_PROMOTE_SINCE_DAYS 로 기관 정책에 맞게 조정."""
+    raw = os.environ.get("GVSKB_KEV_PROMOTE_SINCE_DAYS", "")
+    try:
+        return int(raw) if raw else DEFAULT_PROMOTE_SINCE_DAYS
+    except ValueError:
+        return DEFAULT_PROMOTE_SINCE_DAYS
+
+
+def _is_recent(item: dict, since_days: int) -> bool:
+    """KEV 등재일(dateAdded)이 기준 기간 이내인가. 날짜가 없거나 못 읽으면
+    보수적으로 제외한다 — 등재 시점을 검증할 수 없는 항목은 백필로 간주."""
+    if since_days <= 0:
+        return True
+    raw = item.get("dateAdded", "")
+    try:
+        added = date.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return False
+    return (date.today() - added).days <= since_days
 
 # IDs we write must be filesystem-safe and stable across runs.
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
@@ -143,12 +171,14 @@ class PromoteResult:
     skipped_existing: list[str]
     skipped_no_cve: int
     rules_dir: str
+    skipped_old: int = 0
 
     def to_dict(self) -> dict:
         return {
             "created_count": len(self.created),
             "skipped_existing_count": len(self.skipped_existing),
             "skipped_no_cve": self.skipped_no_cve,
+            "skipped_old_count": self.skipped_old,
             "rules_dir": self.rules_dir,
             "created": self.created[:20],  # cap for compact output
         }
@@ -160,15 +190,22 @@ def promote_kev_to_rules(
     *,
     overwrite: bool = False,
     limit: int | None = None,
+    since_days: int | None = None,
 ) -> PromoteResult:
-    """Write one proposed MD per KEV item. Existing files are skipped by default."""
+    """Write one proposed MD per *recent* KEV item. Existing files are skipped.
+
+    ``since_days``(기본 90, env ``GVSKB_KEV_PROMOTE_SINCE_DAYS``) 이내에 KEV에
+    등재된 항목만 초안으로 만든다 — 2002년부터의 전체 카탈로그 백필을 막는다.
+    """
     if entry.source_id != "cisa-kev":
         raise ValueError(f"promote_kev_to_rules expects cisa-kev cache, got {entry.source_id}")
 
+    window = promote_since_days() if since_days is None else since_days
     rules_dir.mkdir(parents=True, exist_ok=True)
     created: list[str] = []
     skipped_existing: list[str] = []
     skipped_no_cve = 0
+    skipped_old = 0
 
     items: Iterable[dict] = entry.items
     if limit is not None:
@@ -178,6 +215,9 @@ def promote_kev_to_rules(
         cve = item.get("cveID", "")
         if not cve:
             skipped_no_cve += 1
+            continue
+        if not _is_recent(item, window):
+            skipped_old += 1
             continue
         try:
             rule_id, md = render_kev_rule(item)
@@ -196,4 +236,56 @@ def promote_kev_to_rules(
         skipped_existing=skipped_existing,
         skipped_no_cve=skipped_no_cve,
         rules_dir=str(rules_dir),
+        skipped_old=skipped_old,
     )
+
+
+# ---------------------------------------------------------------------------
+# 만료 초안 자동 폐기 — 사람이 하나하나 정리하지 않아도 되도록
+#
+# proposed 초안은 review_due(생성 +90일)가 지나도록 승인되지 않으면 "채택하지
+# 않기로 한 것"으로 보고 자동 삭제한다. 안전한 이유: 초안은 애초에 집행되지
+# 않고(status 게이트), KEV 위협 데이터 자체는 캐시로 계속 판정에 반영되므로
+# 카드를 지워도 보안 공백이 없다. 사람이 승격한 룰(status: approved)은 절대
+# 건드리지 않는다.
+# ---------------------------------------------------------------------------
+
+_FM_STATUS_RE = re.compile(r"^status:\s*proposed\s*$", re.MULTILINE)
+_FM_REVIEW_DUE_RE = re.compile(r"^review_due:\s*(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+
+
+def prune_expired_proposed(rules_dir: Path, *, today: date | None = None) -> dict:
+    """review_due가 지난 proposed 초안(.md)을 삭제하고 내역을 반환한다.
+
+    INTEL- 접두 파일만 대상(자동 생성분) — 사람이 수동으로 만든 파일은 접두가
+    달라 제외된다. status가 proposed가 아니면(승인·수정본) 보존한다.
+    """
+    now = today or date.today()
+    pruned: list[str] = []
+    kept = 0
+    if not rules_dir.exists():
+        return {"pruned_count": 0, "pruned": [], "kept": 0}
+    for path in sorted(rules_dir.glob("INTEL-*.md")):
+        try:
+            head = path.read_text(encoding="utf-8")[:4000]
+        except OSError:
+            kept += 1
+            continue
+        if not _FM_STATUS_RE.search(head):
+            kept += 1          # 승인(approved)·수정된 카드는 사람 결정 — 보존
+            continue
+        m = _FM_REVIEW_DUE_RE.search(head)
+        if m is None:
+            kept += 1          # 기한을 못 읽으면 지우지 않는다(보수적)
+            continue
+        try:
+            due = date.fromisoformat(m.group(1))
+        except ValueError:
+            kept += 1
+            continue
+        if due < now:
+            path.unlink()
+            pruned.append(path.stem)
+        else:
+            kept += 1
+    return {"pruned_count": len(pruned), "pruned": pruned[:20], "kept": kept}

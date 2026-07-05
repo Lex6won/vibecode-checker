@@ -490,6 +490,10 @@ def _promote_kev_from_cache(cache, args: argparse.Namespace) -> dict:
         overwrite=args.promote_overwrite,
         limit=limit,
     )
+    # 수명주기: 승격과 함께, 기한(review_due)이 지나도록 승인되지 않은 초안을
+    # 자동 폐기한다 — 사람이 카드를 하나하나 정리하지 않아도 목록이 최신으로 유지.
+    from .intel import prune_expired_proposed
+    prune = prune_expired_proposed(rules_dir)
     payload = result.to_dict()
     payload.update({
         "source_id": "promote-kev",
@@ -497,6 +501,8 @@ def _promote_kev_from_cache(cache, args: argparse.Namespace) -> dict:
         "item_count": payload["created_count"] + payload["skipped_existing_count"],
         "delta": payload["created_count"],
         "cache_path": payload["rules_dir"],
+        "pruned_expired_count": prune["pruned_count"],
+        "pruned_expired": prune["pruned"],
     })
     return payload
 

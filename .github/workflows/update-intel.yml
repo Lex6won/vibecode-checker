@@ -117,6 +117,10 @@ jobs:
             echo "## New proposed rules" > /tmp/pr_body.md
             git status --porcelain rules/intel-proposed/ | head -50 >> /tmp/pr_body.md
             echo >> /tmp/pr_body.md
+            echo "> 자동 수명주기: 이 카드들은 지식층 전용(스캐너 집행 안 됨)이라 CI 통과 시 자동 병합됩니다." >> /tmp/pr_body.md
+            echo "> 90일 내 status: approved 로 승격되지 않으면 다음 갱신에서 자동 폐기됩니다." >> /tmp/pr_body.md
+            echo "> 우선 검토 후보는 매월 1일 다이제스트 이슈로 정리됩니다." >> /tmp/pr_body.md
+            echo >> /tmp/pr_body.md
             echo "## update-intel output (JSON)" >> /tmp/pr_body.md
             echo '```json' >> /tmp/pr_body.md
             head -c 4000 intel-result.json >> /tmp/pr_body.md || true
@@ -125,6 +129,7 @@ jobs:
           fi
 
       - name: Create pull request
+        id: cpr
         if: steps.detect.outputs.changed == 'true'
         # SHA 핀 — 태그는 이동할 수 있으므로 공급망 안전을 위해 커밋으로 고정 (= v6)
         uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c  # v6
@@ -142,3 +147,13 @@ jobs:
             intel
             proposed-rules
             needs-review
+
+      # 초안 카드는 지식층 전용(집행 게이트는 status: approved)이므로, 테스트가
+      # 전부 통과하면 자동 병합한다 — 사람의 결정은 "스캐너 집행 승격"과 월간
+      # 다이제스트 검토로 옮겨진다(1인 운영에서 PR 수동 병합 부담 제거).
+      - name: Enable auto-merge (advisory cards only)
+        if: steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --squash --auto "${{ steps.cpr.outputs.pull-request-number }}"
