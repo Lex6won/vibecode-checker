@@ -94,7 +94,7 @@
       <p>AI로 생성된 코드(바이브 코딩)를 <b>한국 정부·국제 보안 가이드 기준</b>으로 점검하는 공공기관용 MCP·CLI 도구.
          본 문서는 <b>보안 검토자·개발자</b>가 도구의 소스·기능·근거·한계를 검증할 수 있도록 상세히 설명합니다.</p>
       <div class="trust">
-        <div class="t"><b>216 / 96</b><span>총 룰 / 실행형 룰</span></div>
+        <div class="t"><b>216 / 96</b><span>핵심 룰 / 실행형 (+인텔 카드 가변)</span></div>
         <div class="t"><b>100% · 0</b><span>독립 벤치마크 recall / 오탐(30 시드)</span></div>
         <div class="t"><b>471</b><span>자동화 테스트 통과</span></div>
         <div class="t"><b>MIT</b><span>오픈소스 · 룰=Markdown</span></div>
@@ -287,11 +287,12 @@ examples:                        <span class="c"># 회귀 테스트로 자동 �
   │   ├─ ② 번들   gvskb intel-bundle export              · 캐시 전체 + manifest(파일별 sha256)
   │   └─ ③ 게시   릴리스 intel-latest 에 고정 URL 업로드    · +sha256 사이드카, 아티팩트 30일 보존
   │
-  └─ 산출물 2 — 초안 룰 (지식 배포, 사람 게이트)
-      ├─ ④ 승격   신규 KEV → rules/intel-proposed/*.md    · status: proposed 초안 룰 생성
-      ├─ ⑤ 감지   git status --porcelain                 · 신규 파일까지 잡아 빈 PR 방지
-      ├─ ⑥ 검토요청 create-pull-request (커밋 SHA 핀)      · 브랜치 intel/auto-update, 라벨 needs-review
-      └─ ⑦ 게이트  proposed 룰은 승인(approved) 전까지 발화하지 않음  ← 사람이 최종 결정</pre>
+  └─ 산출물 2 — 초안 지식 카드 (수명주기 전자동, 집행만 사람)
+      ├─ ④ 승격   최근 90일 등재 KEV만 → intel-proposed/   · 전체 카탈로그 백필 방지(1,631→수십 건)
+      ├─ ⑤ 병합   PR 자동 병합 (CI 테스트 통과 시)          · 카드는 지식층 전용 — 검사 집행 불가
+      ├─ ⑥ 폐기   90일 내 미승격 초안 자동 삭제             · review_due 경과 시 스스로 정리
+      ├─ ⑦ 보고   매월 1일 다이제스트 이슈 자동 생성          · 우선 검토 후보(랜섬웨어 연계)만 추려서
+      └─ ⑧ 게이트  스캐너 집행은 status: approved 승격뿐     ← 사람의 유일한 결정 지점</pre>
       <h3>갱신된 데이터는 어디에 쓰이나 — 활용 3경로</h3>
       <table>
         <tr><th style="width:190px">활용 지점</th><th>동작</th></tr>
@@ -299,10 +300,11 @@ examples:                        <span class="c"># 회귀 테스트로 자동 �
         <tr><td class="k">우선순위 점수 병기</td><td>KEV 등재 취약점 신호에 <b>EPSS 악용확률(0~1)·백분위</b>와 <b>CVSS 3.1 점수·심각도</b>를 병기 — 보안팀이 조회 없이 위험도 순서를 정함.</td></tr>
         <tr><td class="k">리포트 기준일 표기</td><td>오프라인 리포트 배너에 피드별 캐시 기준일을 자동 표기 — "며칠 데이터 기준의 판정인지"를 문서가 스스로 밝힘.</td></tr>
       </table>
-      <div class="box"><h4>신뢰 포인트 — 자동 소싱 ✓ / 자동 집행 ✗</h4>
-        <p>새 위협은 매일 자동으로 <b>번들(데이터)</b>과 <b>대기열(초안 룰)</b>에 오르지만, 룰이 실제
-        차단 판정에 쓰이려면 <b>사람의 검토·병합</b>이 필요합니다(§08 런타임 status 게이트).
-        자동화의 편익(신선도)과 통제(오탐·오차단 방지)를 분리한 설계입니다.</p></div>
+      <div class="box"><h4>신뢰 포인트 — 자동 소싱·수명주기 ✓ / 자동 집행 ✗</h4>
+        <p>카드의 수집·병합·만료 폐기는 전자동이지만, 룰이 실제 차단 판정에 쓰이려면 사람이
+        <code>status: approved</code>로 <b>승격</b>해야 합니다(§08 런타임 status 게이트) — 사람의
+        결정 지점을 "PR 하나하나 검토"에서 <b>"월간 다이제스트에서 승격 후보만 판단"</b>으로 옮겨,
+        통제(오탐·오차단 방지)는 유지하고 운영 부담만 제거한 설계입니다.</p></div>
       <p class="b">외부 액션은 <b>커밋 SHA로 고정</b>
         (<code>peter-evans/create-pull-request@c5a7806…</code>)해 공급망 변조를 차단합니다.
         망분리 환경에서는 이 워크플로가 <b>외부망(GitHub)에서만</b> 돌고, 기관은 매일 갱신되는

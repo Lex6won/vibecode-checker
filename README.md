@@ -477,7 +477,7 @@ repos:
 | **OWASP** | LLM Top 10 · Agentic Top 10 · AI Testing Guide |
 | **실시간 취약점 피드** | OSV.dev · CISA KEV · NVD · FIRST EPSS |
 
-> 총 **216개 룰** (자동 탐지 96 + 지식·참조 120). 모든 룰은 Markdown 한 장으로 정의돼 누구나 읽고 검토·확장할 수 있습니다.
+> 핵심 룰 **216개** (자동 탐지 96 + 지식·참조 120) + 매일 갱신되는 **인텔 초안 카드**(가변 — 최근 90일 KEV, 자동 수명주기). 모든 룰은 Markdown 한 장으로 정의돼 누구나 읽고 검토·확장할 수 있습니다.
 
 **실시간 피드는 매일 자동으로 갱신·배포됩니다** — GitHub Actions가 매일 03:00(KST)
 4개 피드를 수집해 ① 망분리 반입용 **검증 번들을 [`intel-latest` 릴리스](https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest)로 게시**하고,

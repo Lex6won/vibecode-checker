@@ -111,9 +111,9 @@
 
       <!-- 산출물2 -->
       <rect x="520" y="172" width="215" height="100" rx="10" fill="#fdf6e7" stroke="#b7791f" stroke-width="1.5"/>
-      <text x="627" y="198" font-size="13.5" font-weight="800" fill="#96660a" text-anchor="middle">산출물 2 · 초안 룰 PR</text>
-      <text x="627" y="222" font-size="12" fill="#2c3542" text-anchor="middle">rules/intel-proposed/ (proposed)</text>
-      <text x="627" y="244" font-size="12" fill="#2c3542" text-anchor="middle">라벨 needs-review — 사람 검토</text>
+      <text x="627" y="198" font-size="13.5" font-weight="800" fill="#96660a" text-anchor="middle">산출물 2 · 초안 지식 카드</text>
+      <text x="627" y="222" font-size="12" fill="#2c3542" text-anchor="middle">최근 90일 KEV만 · CI 통과 시 자동 병합</text>
+      <text x="627" y="244" font-size="12" fill="#2c3542" text-anchor="middle">90일 미승격 시 자동 폐기 · 월간 다이제스트</text>
 
       <!-- 사람 검토 -->
       <rect x="790" y="172" width="200" height="100" rx="10" fill="#fff" stroke="#b7791f" stroke-dasharray="5 3"/>
@@ -208,10 +208,12 @@
 ② 번들    gvskb intel-bundle export            <span class="c">· 캐시 전체 + manifest(파일별 sha256)</span>
 ③ 게시    릴리스 intel-latest 업로드            <span class="c">· 고정 URL + sha256 사이드카, 아티팩트 30일</span>
 
-<span class="y">산출물 2 — 초안 룰 PR (지식 배포 · 사람 게이트)</span>
-④ 승격    신규 KEV → rules/intel-proposed/     <span class="c">· status: proposed 초안 룰 생성</span>
-⑤ 검토요청 Pull Request (커밋 SHA 핀 액션)      <span class="c">· 라벨 needs-review — 자동 병합 없음</span>
-⑥ 게이트   proposed 룰은 승인 전 집행 금지        <span class="c">· 사람이 status: approved 로 바꿔야 발화</span></pre>
+<span class="y">산출물 2 — 초안 지식 카드 (수명주기 전자동 · 집행만 사람)</span>
+④ 승격    최근 90일 등재 KEV만 → intel-proposed/ <span class="c">· 전체 백필 방지, 등재일 미확인은 제외</span>
+⑤ 병합    PR 자동 병합 (CI 테스트 통과 시)        <span class="c">· 카드는 지식층 전용 — 검사 집행 불가</span>
+⑥ 폐기    90일 내 미승격 초안 자동 삭제           <span class="c">· review_due 경과 시 스스로 정리</span>
+⑦ 보고    매월 1일 다이제스트 이슈               <span class="c">· 우선 검토 후보(랜섬웨어 연계)만 추림</span>
+⑧ 게이트   검사 집행은 status: approved 승격뿐    <span class="c">· 사람의 유일한 결정 지점</span></pre>
   <h3>산출물 내려받기 주소 (고정)</h3>
   <table>
     <tr><th style="width:210px">파일</th><th>주소</th></tr>
@@ -300,7 +302,8 @@ gvskb scan ./내프로젝트 --check-deps --format html</pre>
     <tr><th style="width:330px">질문</th><th>답</th></tr>
     <tr><td class="k">갱신을 오래 안 하면 검사가 멈추나?</td><td>아니요. 코드 정적 분석(216룰)은 캐시와 무관하게 동작합니다. 의존성 검사만 <code>checked_stale</code>(검토 필요)로 강등됩니다.</td></tr>
     <tr><td class="k">번들이 변조되면?</td><td>반입 단계에서 파일별 sha256 불일치로 <b>전체 거부</b>되고, 설령 반입 후 변조돼도 로드 시 재검증으로 해당 캐시가 무시됩니다.</td></tr>
-    <tr><td class="k">새 KEV 취약점이 바로 검사에 반영되나?</td><td>데이터(캐시)로는 즉시 반영됩니다(KEV 신호·EPSS 병기). <b>룰</b>로는 보안 담당자가 초안 PR을 검토·승인한 뒤에만 집행됩니다.</td></tr>
+    <tr><td class="k">새 KEV 취약점이 바로 검사에 반영되나?</td><td>데이터(캐시)로는 즉시 반영됩니다(KEV 신호·EPSS 병기). 지식 카드도 자동 수록되지만, <b>검사 집행</b>은 사람이 <code>status: approved</code>로 승격한 룰만 가능합니다.</td></tr>
+    <tr><td class="k">초안 카드가 쌓이면 누가 정리하나?</td><td>아무도 안 해도 됩니다 — 90일 내 승격되지 않은 카드는 <b>자동 폐기</b>되고, 매월 1일 다이제스트 이슈가 <b>우선 검토 후보만</b> 추려서 알려줍니다(랜섬웨어 연계 critical 등).</td></tr>
     <tr><td class="k">GitHub Actions가 실패한 날은?</td><td>릴리스에는 마지막 성공본이 그대로 남아 있어 반입에 지장이 없습니다. 신선도는 번들 안의 수집 시각 기준으로 판정됩니다.</td></tr>
   </table>
 </section>

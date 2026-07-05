@@ -86,10 +86,10 @@
         <td>위협 인텔 캐시(OSV 악성·CISA KEV·NVD·EPSS) — 패키지 판정·점수 병기의 근거</td>
         <td>GitHub Actions<br><b>매일 03:00 자동</b></td>
         <td>30일 초과 시 도구가 스스로 '이상 없음'을 <b>판정 보류로 강등</b> — 거짓 안심 없음</td></tr>
-    <tr><td class="k">② 지식층<br><span class="badge amber">사람 게이트</span></td>
-        <td>보안 룰 216장(탐지 패턴+지침) — 검사의 내용. KEV 초안 룰 PR + 출처 가이드 개정 반영</td>
-        <td>유지관리자·기여자<br><b>주간(PR)·반기(개정)</b></td>
-        <td>기존 룰은 계속 유효하게 동작. 새 위협 유형만 미커버 — <code>review_due</code>로 재검토 시점 관리</td></tr>
+    <tr><td class="k">② 지식층<br><span class="badge amber">집행만 사람</span></td>
+        <td>보안 룰 216장(탐지 패턴+지침) — 검사의 내용. KEV 초안 카드는 수집·병합·만료 폐기가 전자동(최근 90일분만), <b>검사 집행 승격만 사람이 결정</b></td>
+        <td>카드: 자동(일일)<br>승격·개정: 사람<br><b>월간(다이제스트)·반기(개정)</b></td>
+        <td>기존 룰은 계속 유효하게 동작. 미승격 초안은 90일 후 자동 폐기 — 적체 없음</td></tr>
     <tr><td class="k">③ 품질층<br><span class="badge blue">회귀 자동</span></td>
         <td>테스트 471개·독립 벤치마크(30시드+경계 프로브)·룰 예제 메타테스트 — 점검이 '의미있게' 유지되는 장치</td>
         <td>CI(push·PR마다 자동)<br>벤치마크는 <b>릴리스 전 필수</b></td>
@@ -107,12 +107,12 @@
   <table>
     <tr><th style="width:120px">주기</th><th style="width:200px">담당</th><th>할 일</th></tr>
     <tr><td class="k">매일<br>(자동)</td><td>GitHub Actions</td>
-        <td>피드 4종 수집 → <code>intel-latest</code> 번들 게시 → 신규 KEV를 proposed 초안 룰 PR로 생성. <b>사람 작업 없음.</b></td></tr>
-    <tr><td class="k">주간</td><td>유지관리자 /<br>기관 보안팀</td>
-        <td>· <b>proposed 룰 PR 검토</b>(라벨 needs-review) — 자산 관련성 확인 후 병합 또는 닫기<br>
-            · (망분리 기관) <code>intel-latest</code> 번들 다운로드 → 해시 확인 → 반입 → <code>doctor --offline</code></td></tr>
-    <tr><td class="k">월간</td><td>기관 보안팀</td>
-        <td>· <code>.gvskb-exceptions.yaml</code> <b>만료 임박 예외</b> 재심사(연장 또는 코드 수정 요구)<br>
+        <td>피드 4종 수집 → <code>intel-latest</code> 번들 게시 → 최근 90일 KEV를 초안 카드로 생성 → CI 통과 시 <b>자동 병합</b> → 만료(90일 미승격) 초안 <b>자동 폐기</b>. <b>사람 작업 없음.</b></td></tr>
+    <tr><td class="k">주간</td><td>반입 담당<br>(망분리 기관)</td>
+        <td>· <code>intel-latest</code> 번들 다운로드 → 해시 확인 → 반입 → <code>doctor --offline</code></td></tr>
+    <tr><td class="k">월간</td><td>유지관리자 /<br>기관 보안팀</td>
+        <td>· <b>인텔 다이제스트 이슈 확인</b>(매월 1일 자동 생성) — 우선 검토 후보(랜섬웨어 연계 등)의 <b>승격 여부만 판단</b><br>
+            · <code>.gvskb-exceptions.yaml</code> <b>만료 임박 예외</b> 재심사(연장 또는 코드 수정 요구)<br>
             · 감사로그(JSONL) 표본 점검 — 차단 우회(approve_bypass) 이력 확인</td></tr>
     <tr><td class="k">분기</td><td>유지관리자</td>
         <td>· <code>review_due</code> 도래 룰 일괄 재검토(출처 가이드 조항 유효성·패턴 정밀도)<br>
@@ -202,7 +202,7 @@ GVSKB_MODE=offline PYTHONPATH=src python scripts/run_benchmark.py   <span class=
     <tr><td class="k">GitHub Actions 장기 중단</td><td>번들·초안 룰 갱신 정지</td><td>릴리스에 마지막 성공본 유지 — 반입은 계속 가능. 30일 넘으면 도구가 자동으로 보류 승격. 수동 대안: 아무 외부망 PC에서 <code>update-intel --all</code> + <code>export</code>.</td></tr>
     <tr><td class="k">피드 API 사양 변경(OSV·KEV 등)</td><td>해당 소스 수집 실패</td><td>워크플로는 <code>continue-on-error</code> — 다른 소스는 계속 갱신. 어댑터(<code>intel/sources/*.py</code>) 1파일 수정으로 복구. 실패는 Actions 로그로 즉시 확인.</td></tr>
     <tr><td class="k">출처 가이드 대개정(KISA 등)</td><td>룰-조항 매핑 어긋남</td><td>룰의 <code>sources</code> 필드로 영향 룰을 기계적으로 추출 → 대조표 만들어 반기 개정 작업. 개정 전까지 기존 룰은 기술적으로 계속 유효.</td></tr>
-    <tr><td class="k">proposed PR 방치(검토 인력 부족)</td><td>초안 룰 적체</td><td>위험하지 않음 — proposed는 어차피 집행되지 않음. 적체 시 KEV는 <b>데이터(캐시)로는 이미 반영</b>되어 있으므로 판정 공백 없음.</td></tr>
+    <tr><td class="k">다이제스트 방치(검토 인력 부족)</td><td>초안 카드 미승격</td><td>위험하지 않음 — 미승격 카드는 90일 후 <b>자동 폐기</b>되고, KEV는 <b>데이터(캐시)로 이미 판정에 반영</b>되어 있으므로 공백 없음. 적체 자체가 발생하지 않는 구조.</td></tr>
     <tr><td class="k">유지관리자 교체</td><td>운영 연속성</td><td>이 문서 + CONTRIBUTING + 기술설명서로 인수인계. 모든 검증이 명령 1줄로 재현되므로 "현재 상태가 정상인지"를 신임자가 즉시 확인 가능.</td></tr>
   </table>
 </section>
@@ -233,7 +233,7 @@ GVSKB_MODE=offline PYTHONPATH=src python scripts/run_benchmark.py   <span class=
     <tr><td>☐</td><td><code>review_due</code> 도래 룰 재검토·연장</td></tr>
     <tr><td>☐</td><td>벤치마크 재실행 — recall·FP·경계 프로브 직전 수치와 비교</td></tr>
     <tr><td>☐</td><td>현장 신고 백로그 → 시드·예제 편입 완료</td></tr>
-    <tr><td>☐</td><td>proposed PR 큐 비우기(병합/닫기) + 자기 자신 의존성 검사</td></tr>
+    <tr><td>☐</td><td>최근 3개월 다이제스트에서 미처리 승격 후보 소진 + 자기 자신 의존성 검사</td></tr>
     <tr><td>☐</td><td>출처 가이드 개정 발표 여부 확인(KISA·행안부·국정원·OWASP)</td></tr>
   </table>
 </section>
