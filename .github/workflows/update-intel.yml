@@ -157,3 +157,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr merge --squash --auto "${{ steps.cpr.outputs.pull-request-number }}"
+          # GITHUB_TOKEN으로 만든 PR에는 pull_request CI가 자동 실행되지 않는다
+          # (GitHub 재귀 방지) — 필수 체크(pytest)가 돌도록 직접 호출한다.
+          gh workflow run test.yml --ref intel/auto-update
