@@ -344,3 +344,50 @@ def test_kev_only_cache_is_not_clearance(offline_with_cache: Path) -> None:
     assert result["checked"] is False
     assert result["verdict"] == "unknown"
     assert result["requires_review"] is True
+
+
+# ---------------------------------------------------------------------------
+# EPSS·NVD 병기 — 매일 수집되는 점수 캐시가 KEV 신호의 우선순위 근거로 쓰인다
+# ---------------------------------------------------------------------------
+
+
+_KEV_LOG4J = [{
+    "cveID": "CVE-2021-44228",
+    "vendorProject": "Apache",
+    "product": "Log4j2",
+    "vulnerabilityName": "Apache Log4j2 RCE",
+    "dateAdded": "2021-12-10",
+}]
+
+
+def test_kev_signal_enriched_with_epss_and_nvd(offline_with_cache: Path) -> None:
+    """KEV 매칭 시 epss-recent(악용확률)·nvd-recent(CVSS)가 병기돼야 한다."""
+    _write_cache(offline_with_cache, "cisa-kev", _KEV_LOG4J)
+    _write_cache(
+        offline_with_cache, "epss-recent",
+        [{"cve": "CVE-2021-44228", "epss": 0.976, "percentile": 0.999, "date": "2026-07-01"}],
+    )
+    _write_cache(
+        offline_with_cache, "nvd-recent",
+        [{"id": "CVE-2021-44228", "cvss31_base_score": 10.0, "cvss31_severity": "CRITICAL"}],
+    )
+
+    result = asyncio.run(check_package_impl(name="log4j2", ecosystem="pypi"))
+
+    sig = result["kev_signals"][0]
+    assert sig["epss_score"] == 0.976
+    assert sig["epss_percentile"] == 0.999
+    assert sig["cvss31_base_score"] == 10.0
+    assert sig["cvss31_severity"] == "CRITICAL"
+    assert "epss-recent" in result["cache_sources_used"]
+    assert "nvd-recent" in result["cache_sources_used"]
+
+
+def test_kev_signal_without_score_caches_still_works(offline_with_cache: Path) -> None:
+    """점수 캐시가 없어도 KEV 신호는 그대로 동작한다(병기만 생략)."""
+    _write_cache(offline_with_cache, "cisa-kev", _KEV_LOG4J)
+    result = asyncio.run(check_package_impl(name="log4j2", ecosystem="pypi"))
+    sig = result["kev_signals"][0]
+    assert "epss_score" not in sig
+    assert "cvss31_severity" not in sig
+    assert "epss-recent" not in result["cache_sources_used"]
