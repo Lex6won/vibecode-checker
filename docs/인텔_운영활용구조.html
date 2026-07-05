@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vibecode-checker — 실시간 위협 인텔 운영·활용 구조</title>
+<style>
+  /* 자체 완결형 — 외부 CDN·폰트 로딩 없음(망분리 열람 가능) */
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Pretendard','Noto Sans KR','Malgun Gothic',sans-serif;
+       background:#f6f7f9;color:#1e2530;line-height:1.75;font-size:16px}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 32px 96px}
+  header{border-bottom:3px solid #16324f;padding-bottom:24px;margin-bottom:40px}
+  header .doc{font-size:13px;color:#5b6470;letter-spacing:.12em;font-weight:700}
+  header h1{font-size:30px;font-weight:800;color:#16324f;margin-top:8px}
+  header p.sub{margin-top:10px;color:#3d4654;font-size:16.5px}
+  section{margin-top:56px}
+  h2{font-size:22px;font-weight:800;color:#16324f;border-left:6px solid #16324f;
+     padding-left:14px;margin-bottom:18px}
+  h2 .no{color:#8a93a3;font-weight:700;margin-right:10px;font-size:18px}
+  h3{font-size:17.5px;font-weight:800;color:#24435f;margin:26px 0 10px}
+  p.b{color:#2c3542;margin:10px 0}
+  b{color:#16324f}
+  code{background:#eceff3;border:1px solid #dde2e9;border-radius:5px;
+       padding:1px 7px;font-family:Consolas,'D2Coding',monospace;font-size:13.5px;color:#243447}
+  pre{background:#101a28;color:#dbe4ee;border-radius:12px;padding:20px 24px;overflow:auto;
+      font-family:Consolas,'D2Coding',monospace;font-size:13.5px;line-height:1.9;margin:14px 0}
+  pre .c{color:#7d8da1}  pre .g{color:#7fd08f}  pre .y{color:#ffd479}
+  table{width:100%;border-collapse:collapse;margin:14px 0;background:#fff;
+        border:1px solid #dde2e9;border-radius:10px;overflow:hidden;font-size:14.5px}
+  th{background:#16324f;color:#fff;text-align:left;padding:10px 14px;font-weight:700}
+  td{padding:10px 14px;border-top:1px solid #e7ebf0;vertical-align:top;color:#2c3542}
+  td.k{font-weight:800;color:#16324f;white-space:nowrap}
+  tr:nth-child(even) td{background:#fafbfc}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
+  .box{background:#fff;border:1px solid #dde2e9;border-radius:12px;padding:18px 20px}
+  .box h4{font-size:15.5px;font-weight:800;color:#16324f;margin-bottom:6px}
+  .box p{font-size:14.5px;color:#3d4654}
+  .good{border-left:5px solid #1a7f4b}
+  .warn{border-left:5px solid #b7791f;background:#fffdf5}
+  .flow{background:#fff;border:1px solid #dde2e9;border-radius:14px;padding:22px;margin:16px 0}
+  .badge{display:inline-block;background:#eaf3ee;color:#1a7f4b;border:1px solid #bfdccc;
+         border-radius:20px;padding:2px 12px;font-size:12.5px;font-weight:700;margin-right:6px}
+  .badge.red{background:#fdeeee;color:#b02a2a;border-color:#ecc8c8}
+  .badge.amber{background:#fdf6e7;color:#96660a;border-color:#ecd9ae}
+  .badge.gray{background:#eef0f3;color:#546071;border-color:#d4dae2}
+  .note{font-size:13.5px;color:#5b6470;margin-top:8px}
+  ul.b{margin:8px 0 8px 22px;color:#2c3542}
+  ul.b li{margin:7px 0}
+  ol.b{margin:8px 0 8px 24px;color:#2c3542}
+  ol.b li{margin:9px 0}
+  .kv{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+  .kv .t{background:#fff;border:1px solid #dde2e9;border-radius:12px;padding:14px 22px;text-align:center}
+  .kv .t b{display:block;font-size:21px;color:#16324f}
+  .kv .t span{font-size:12.5px;color:#5b6470}
+  footer{margin-top:72px;border-top:1px solid #dde2e9;padding-top:18px;
+         font-size:13px;color:#7a8494}
+  @media print{ body{background:#fff} .wrap{padding:0} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="doc">VIBECODE-CHECKER · 기술 부속 문서</div>
+  <h1>실시간 위협 인텔 — 운영·활용 구조</h1>
+  <p class="sub">매일 자동 갱신되는 보안 데이터가 <b>어떻게 수집·배포되고, 검사·판정·리포트에서
+  실제로 어떻게 쓰이며, 각 단계가 어떻게 검증되는지</b>를 정확히 설명합니다.
+  망분리(오프라인) 기관의 반입 절차와 역할 분담을 포함합니다.</p>
+  <div class="kv">
+    <div class="t"><b>4개</b><span>수집 피드</span></div>
+    <div class="t"><b>매일 03:00</b><span>자동 갱신(KST)</span></div>
+    <div class="t"><b>2개</b><span>산출물(번들·초안 룰)</span></div>
+    <div class="t"><b>7겹</b><span>검증 장치</span></div>
+    <div class="t"><b>0건</b><span>소스코드 외부 전송</span></div>
+  </div>
+</header>
+
+<!-- ================================================================ -->
+<section id="s1">
+  <h2><span class="no">01</span>전체 구조 한눈에</h2>
+  <div class="flow">
+    <svg viewBox="0 0 1020 560" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="'Pretendard','Malgun Gothic',sans-serif">
+      <!-- 외부망 존 -->
+      <rect x="10" y="10" width="1000" height="300" rx="14" fill="#f0f4f8" stroke="#c3ceda"/>
+      <text x="30" y="40" font-size="15" font-weight="800" fill="#16324f">외부망 (GitHub · 인터넷)</text>
+
+      <!-- 피드 -->
+      <rect x="30" y="60" width="170" height="180" rx="10" fill="#fff" stroke="#c3ceda"/>
+      <text x="115" y="86" font-size="13.5" font-weight="800" fill="#16324f" text-anchor="middle">위협 인텔 피드</text>
+      <text x="115" y="115" font-size="12.5" fill="#3d4654" text-anchor="middle">OSV.dev 악성 피드</text>
+      <text x="115" y="140" font-size="12.5" fill="#3d4654" text-anchor="middle">CISA KEV</text>
+      <text x="115" y="165" font-size="12.5" fill="#3d4654" text-anchor="middle">NVD (CVSS)</text>
+      <text x="115" y="190" font-size="12.5" fill="#3d4654" text-anchor="middle">FIRST EPSS</text>
+      <text x="115" y="222" font-size="11.5" fill="#8a93a3" text-anchor="middle">공개 데이터 수신만</text>
+
+      <!-- Actions -->
+      <rect x="250" y="60" width="215" height="180" rx="10" fill="#fff" stroke="#16324f" stroke-width="2"/>
+      <text x="357" y="86" font-size="13.5" font-weight="800" fill="#16324f" text-anchor="middle">GitHub Actions</text>
+      <text x="357" y="108" font-size="12" fill="#5b6470" text-anchor="middle">매일 03:00 KST (cron)</text>
+      <text x="357" y="136" font-size="12.5" fill="#3d4654" text-anchor="middle">update-intel --all --promote</text>
+      <text x="357" y="161" font-size="12.5" fill="#3d4654" text-anchor="middle">intel-bundle export + sha256</text>
+      <text x="357" y="186" font-size="12.5" fill="#3d4654" text-anchor="middle">KEV → proposed 초안 룰</text>
+      <text x="357" y="218" font-size="11.5" fill="#8a93a3" text-anchor="middle">외부 액션 커밋 SHA 고정</text>
+
+      <!-- 산출물1 -->
+      <rect x="520" y="52" width="215" height="100" rx="10" fill="#eaf3ee" stroke="#1a7f4b" stroke-width="1.5"/>
+      <text x="627" y="78" font-size="13.5" font-weight="800" fill="#1a7f4b" text-anchor="middle">산출물 1 · 반입 번들</text>
+      <text x="627" y="102" font-size="12" fill="#2c3542" text-anchor="middle">릴리스 intel-latest (고정 URL)</text>
+      <text x="627" y="124" font-size="12" fill="#2c3542" text-anchor="middle">zip + manifest sha256 + 사이드카</text>
+
+      <!-- 산출물2 -->
+      <rect x="520" y="172" width="215" height="100" rx="10" fill="#fdf6e7" stroke="#b7791f" stroke-width="1.5"/>
+      <text x="627" y="198" font-size="13.5" font-weight="800" fill="#96660a" text-anchor="middle">산출물 2 · 초안 룰 PR</text>
+      <text x="627" y="222" font-size="12" fill="#2c3542" text-anchor="middle">rules/intel-proposed/ (proposed)</text>
+      <text x="627" y="244" font-size="12" fill="#2c3542" text-anchor="middle">라벨 needs-review — 사람 검토</text>
+
+      <!-- 사람 검토 -->
+      <rect x="790" y="172" width="200" height="100" rx="10" fill="#fff" stroke="#b7791f" stroke-dasharray="5 3"/>
+      <text x="890" y="204" font-size="13" font-weight="800" fill="#96660a" text-anchor="middle">보안 담당자 검토</text>
+      <text x="890" y="228" font-size="12" fill="#2c3542" text-anchor="middle">승인 시 status: approved</text>
+      <text x="890" y="250" font-size="12" fill="#2c3542" text-anchor="middle">→ 그때부터 검사에 집행</text>
+
+      <!-- 외부망 PC -->
+      <rect x="790" y="52" width="200" height="100" rx="10" fill="#fff" stroke="#1a7f4b" stroke-dasharray="5 3"/>
+      <text x="890" y="84" font-size="13" font-weight="800" fill="#1a7f4b" text-anchor="middle">기관 외부망 PC</text>
+      <text x="890" y="108" font-size="12" fill="#2c3542" text-anchor="middle">번들 다운로드</text>
+      <text x="890" y="130" font-size="12" fill="#2c3542" text-anchor="middle">sha256 대조 확인</text>
+
+      <!-- 화살표 외부망 -->
+      <g stroke="#8a93a3" stroke-width="2" fill="none" marker-end="url(#ar)">
+        <path d="M200 150 L246 150"/>
+        <path d="M465 110 L516 102"/>
+        <path d="M465 195 L516 216"/>
+        <path d="M735 102 L786 102"/>
+        <path d="M735 222 L786 222"/>
+      </g>
+
+      <!-- 망분리 존 -->
+      <rect x="10" y="350" width="1000" height="200" rx="14" fill="#fbf6f1" stroke="#d9c9b8"/>
+      <text x="30" y="380" font-size="15" font-weight="800" fill="#7a4a1d">망분리 내부망 (외부 통신 차단 · GVSKB_MODE=offline)</text>
+
+      <rect x="30" y="400" width="215" height="120" rx="10" fill="#fff" stroke="#d9c9b8"/>
+      <text x="137" y="428" font-size="13" font-weight="800" fill="#7a4a1d" text-anchor="middle">반입 (USB 등 매체)</text>
+      <text x="137" y="452" font-size="12" fill="#2c3542" text-anchor="middle">intel-bundle import</text>
+      <text x="137" y="474" font-size="12" fill="#2c3542" text-anchor="middle">파일별 sha256 전수 검증</text>
+      <text x="137" y="496" font-size="12" fill="#2c3542" text-anchor="middle">불일치 시 전체 거부</text>
+
+      <rect x="300" y="400" width="215" height="120" rx="10" fill="#fff" stroke="#d9c9b8"/>
+      <text x="407" y="428" font-size="13" font-weight="800" fill="#7a4a1d" text-anchor="middle">로컬 인텔 캐시</text>
+      <text x="407" y="452" font-size="12" fill="#2c3542" text-anchor="middle">~/.gvskb/cache/*.json</text>
+      <text x="407" y="474" font-size="12" fill="#2c3542" text-anchor="middle">로드 때마다 sha256 재검증</text>
+      <text x="407" y="496" font-size="12" fill="#2c3542" text-anchor="middle">30일 초과 시 판정 보류 승격</text>
+
+      <rect x="570" y="400" width="420" height="120" rx="10" fill="#fff" stroke="#16324f" stroke-width="2"/>
+      <text x="780" y="428" font-size="13" font-weight="800" fill="#16324f" text-anchor="middle">검사·판정·리포트 (gvskb scan --check-deps)</text>
+      <text x="780" y="452" font-size="12" fill="#2c3542" text-anchor="middle">악성 패키지 판정 · KEV 신호 + EPSS/CVSS 병기</text>
+      <text x="780" y="474" font-size="12" fill="#2c3542" text-anchor="middle">리포트에 캐시 기준일 자동 표기</text>
+      <text x="780" y="496" font-size="12" fill="#2c3542" text-anchor="middle">판정 불가(unknown)는 '안전'이 아니라 검토 필요</text>
+
+      <g stroke="#b08d68" stroke-width="2" fill="none" marker-end="url(#ar2)">
+        <path d="M245 460 L296 460"/>
+        <path d="M515 460 L566 460"/>
+      </g>
+      <!-- 외부망 PC → 반입 (점선, 매체 이동) -->
+      <path d="M890 152 C890 330 137 330 137 396" stroke="#1a7f4b" stroke-width="2" stroke-dasharray="6 4" fill="none" marker-end="url(#ar3)"/>
+      <text x="560" y="332" font-size="12" fill="#1a7f4b" font-weight="700" text-anchor="middle">매체 이동(USB) — 네트워크 아님</text>
+
+      <defs>
+        <marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8a93a3"/></marker>
+        <marker id="ar2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b08d68"/></marker>
+        <marker id="ar3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#1a7f4b"/></marker>
+      </defs>
+    </svg>
+  </div>
+  <p class="b">핵심 원칙 두 가지입니다. <b>① 데이터와 지식을 분리해 배포</b> — 판정에 쓰는
+  <b>데이터(캐시)</b>는 매일 자동 배포되지만, 검사 <b>룰(지식)</b>은 사람이 검토·승인해야
+  집행됩니다. <b>② 자동 소싱은 하되 자동 집행은 하지 않음</b> — 자동화는 신선도를,
+  사람 게이트는 오탐·오차단 방지를 책임집니다.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="s2">
+  <h2><span class="no">02</span>무엇을 수집하나 — 피드 4종</h2>
+  <table>
+    <tr><th style="width:150px">피드</th><th>내용</th><th style="width:290px">검사에서의 용도</th></tr>
+    <tr><td class="k">OSV.dev 악성 피드</td><td>오픈소스 생태계의 <b>악성 패키지</b>(MAL-) 권고. 기본 PyPI, 옵션으로 npm(<code>GVSKB_OSV_INCLUDE_NPM=1</code>)</td><td>패키지 <b>악성 여부 판정</b>의 1차 근거</td></tr>
+    <tr><td class="k">CISA KEV</td><td>미국 CISA가 <b>실제 악용을 확인</b>한 취약점 카탈로그</td><td>패키지명이 벤더·제품과 일치할 때 <b>보조 경고 신호</b> + 초안 룰 자동 생성</td></tr>
+    <tr><td class="k">NVD</td><td>최근 CVE의 상세·<b>CVSS 3.1 점수</b></td><td>KEV 신호에 <b>심각도 점수 병기</b></td></tr>
+    <tr><td class="k">FIRST EPSS</td><td>CVE별 <b>악용 관측 확률</b>(0~1)·백분위</td><td>KEV 신호에 <b>악용 가능성 병기</b> — 패치 우선순위 근거</td></tr>
+  </table>
+  <div class="box good"><h4>외부로 나가는 데이터</h4>
+    <p>수집은 전부 <b>공개 데이터 수신</b>이며, 온라인 검사 시 외부로 전송되는 것은
+    <b>패키지명·버전·생태계</b>(OSV 조회)뿐입니다. <b>소스코드는 어떤 경우에도 전송되지
+    않습니다.</b> 오프라인 모드에서는 외부 통신 자체가 차단됩니다.</p></div>
+</section>
+
+<!-- ================================================================ -->
+<section id="s3">
+  <h2><span class="no">03</span>매일 무슨 일이 일어나나 — 자동 파이프라인</h2>
+  <p class="b">저장소의 <code>.github/workflows/update-intel.yml</code>이 매일
+  <b>03:00(KST)</b>에 실행됩니다. 실패해도 기존 캐시·번들은 그대로 유지됩니다
+  (마지막 성공본이 남음).</p>
+  <pre><span class="c"># 매일 03:00 KST — GitHub Actions (외부망에서만 실행)</span>
+① 수집    gvskb update-intel --all --promote   <span class="c">· 4개 피드 재수집 → 캐시 생성</span>
+
+<span class="g">산출물 1 — 반입 번들 (데이터 배포)</span>
+② 번들    gvskb intel-bundle export            <span class="c">· 캐시 전체 + manifest(파일별 sha256)</span>
+③ 게시    릴리스 intel-latest 업로드            <span class="c">· 고정 URL + sha256 사이드카, 아티팩트 30일</span>
+
+<span class="y">산출물 2 — 초안 룰 PR (지식 배포 · 사람 게이트)</span>
+④ 승격    신규 KEV → rules/intel-proposed/     <span class="c">· status: proposed 초안 룰 생성</span>
+⑤ 검토요청 Pull Request (커밋 SHA 핀 액션)      <span class="c">· 라벨 needs-review — 자동 병합 없음</span>
+⑥ 게이트   proposed 룰은 승인 전 집행 금지        <span class="c">· 사람이 status: approved 로 바꿔야 발화</span></pre>
+  <h3>산출물 내려받기 주소 (고정)</h3>
+  <table>
+    <tr><th style="width:210px">파일</th><th>주소</th></tr>
+    <tr><td class="k">반입 번들</td><td><code>github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip</code></td></tr>
+    <tr><td class="k">무결성 확인용 해시</td><td><code>…/intel-latest/gvskb-intel-bundle.zip.sha256</code></td></tr>
+  </table>
+  <p class="note">고정 태그(intel-latest)를 쓰므로 매일 같은 주소에서 최신본을 받습니다.
+  갱신 시각·수록 소스는 릴리스 노트에 자동 기록됩니다.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="s4">
+  <h2><span class="no">04</span>갱신된 데이터는 어디에 쓰이나 — 활용 5지점</h2>
+  <table>
+    <tr><th style="width:230px">활용 지점</th><th>동작</th></tr>
+    <tr><td class="k">① 패키지 악성 판정</td><td>의존성 검사(<code>scan --check-deps</code>·<code>check_package</code>)가 osv-malicious 캐시를 조회해 판정. <b>온라인 모드는 캐시 대신 OSV.dev를 실시간 조회</b>합니다(캐시는 망분리 전용 판정 근거).</td></tr>
+    <tr><td class="k">② 우선순위 점수 병기</td><td>KEV 등재 취약점 신호에 <b>EPSS 악용확률·백분위</b> + <b>CVSS 3.1 점수·심각도</b>를 자동 병기 — 보안팀이 별도 조회 없이 "무엇부터 패치할지"를 정할 수 있습니다.</td></tr>
+    <tr><td class="k">③ 리포트 기준일 표기</td><td>오프라인 검사 리포트 배너에 <b>피드별 캐시 기준일</b>이 자동 표기됩니다 — "며칠 데이터 기준의 판정인지"를 문서가 스스로 밝힙니다.</td></tr>
+    <tr><td class="k">④ 초안 룰 → 지식 검색</td><td>KEV 초안 룰은 <code>search_rules</code>·<code>get_rule</code>로 조회 가능한 <b>자문 정보</b>로 노출됩니다(빈 패턴 — 코드 매칭용이 아니라 SBOM·자산 점검 지침). 보안팀 승인(approved) 후에만 집행 대상이 됩니다.</td></tr>
+    <tr><td class="k">⑤ 환경 진단</td><td><code>gvskb doctor --offline</code>·MCP <code>server_status</code>가 캐시 존재·건수·경과일을 보여줍니다 — 반입 담당자가 갱신 필요 여부를 즉시 확인.</td></tr>
+  </table>
+
+  <h3>판정 결과의 의미 (의존성 검사)</h3>
+  <table>
+    <tr><th style="width:190px">판정</th><th>의미</th><th style="width:190px">처리</th></tr>
+    <tr><td><span class="badge red">malicious</span></td><td>캐시(또는 OSV 실시간)에 악성으로 등재된 패키지</td><td>즉시 제거·차단</td></tr>
+    <tr><td><span class="badge">checked_clean</span></td><td>신선한 캐시 기준 이상 없음</td><td>통과</td></tr>
+    <tr><td><span class="badge amber">checked_stale</span></td><td>캐시가 30일 초과 — '이상 없음'을 확정할 수 없음</td><td>번들 재반입 후 재검사</td></tr>
+    <tr><td><span class="badge gray">unknown</span></td><td>캐시 없음·해당 생태계 미수록 — <b>검사되지 않음</b></td><td>'안전' 아님 — 검토 필요(exit≠0)</td></tr>
+  </table>
+  <div class="box warn"><h4>정직성 원칙</h4>
+    <p>이 도구는 "판정 불가"를 절대 "안전"으로 바꿔 말하지 않습니다. 캐시가 없거나,
+    오래됐거나, 해당 생태계를 안 담았으면 그 사실이 판정·리포트·종료코드에 그대로
+    드러납니다.</p></div>
+</section>
+
+<!-- ================================================================ -->
+<section id="s5">
+  <h2><span class="no">05</span>어떻게 믿을 수 있나 — 7겹 검증 장치</h2>
+  <table>
+    <tr><th style="width:60px">#</th><th style="width:250px">장치</th><th>차단하는 위협</th></tr>
+    <tr><td>1</td><td class="k">게시 sha256 사이드카</td><td>다운로드 과정의 손상·변조 — 외부망 PC에서 <code>sha256sum -c</code>로 대조</td></tr>
+    <tr><td>2</td><td class="k">번들 manifest 전수 검증</td><td>USB 이동 중 변조 — 반입 시 파일별 sha256 재계산, <b>하나라도 불일치면 전체 거부</b>(부분 반입 금지)</td></tr>
+    <tr><td>3</td><td class="k">캐시 로드 시 재검증</td><td>반입 후 디스크에서의 변조 — 읽을 때마다 envelope sha256 재확인, 불일치 캐시는 자동 무시</td></tr>
+    <tr><td>4</td><td class="k">신선도 30일 정책</td><td>묵은 캐시의 거짓 안심 — 초과 시 '이상 없음'을 <b>판정 보류로 승격</b>(악성 발견은 오래돼도 유효)</td></tr>
+    <tr><td>5</td><td class="k">생태계 커버리지 기록</td><td>PyPI만 담은 캐시로 npm 패키지를 '깨끗함' 판정하는 오류 — 미수록 생태계는 판정 불가 처리</td></tr>
+    <tr><td>6</td><td class="k">룰 status 게이트</td><td>자동 생성 룰의 무검토 집행 — proposed는 승인 전 발화 금지, deprecated는 영구 금지</td></tr>
+    <tr><td>7</td><td class="k">감사로그(옵트인)</td><td>이력 부재 — 인텔 갱신·번들 반입·검사·차단이 월별 JSONL로 기록(원본 코드·개인정보 미저장)</td></tr>
+  </table>
+  <div class="box good"><h4>실행으로 검증됨</h4>
+    <p>위 장치들은 문서상 주장이 아니라 <b>자동화 테스트 471개</b>(악성 판정·변조 거부·
+    신선도 승격·커버리지·게이트 시나리오 포함)로 상시 검증되며, 저장소에서
+    <code>pytest -q</code>로 누구나 재현할 수 있습니다.</p></div>
+</section>
+
+<!-- ================================================================ -->
+<section id="s6">
+  <h2><span class="no">06</span>운영 방법 — 역할·주기·절차</h2>
+
+  <h3>역할 분담</h3>
+  <table>
+    <tr><th style="width:210px">역할</th><th>하는 일</th></tr>
+    <tr><td class="k">담당 공무원(사용 부서)</td><td>코드 검사 실행, 리포트 확인, 보안팀 제출. 인텔 운영에 관여할 필요 없음.</td></tr>
+    <tr><td class="k">반입 담당(전산·보안)</td><td>주기적으로 번들 다운로드 → 해시 확인 → 반입(<code>intel-bundle import</code>) → <code>doctor --offline</code> 확인.</td></tr>
+    <tr><td class="k">보안팀</td><td>리포트 검토·배포 승인, 예외(.gvskb-exceptions.yaml) 승인, proposed 초안 룰 검토·승격.</td></tr>
+  </table>
+
+  <h3>망분리 기관 반입 절차 (권장 주기: 주 1회 이상)</h3>
+  <pre><span class="c"># 1) 외부망 PC — 다운로드 + 무결성 확인</span>
+curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip
+curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip.sha256
+sha256sum -c gvskb-intel-bundle.zip.sha256          <span class="c"># "OK" 확인 후 USB 복사</span>
+
+<span class="c"># 2) 망분리 PC — 전수 검증 반입 + 상태 확인</span>
+gvskb intel-bundle import gvskb-intel-bundle.zip     <span class="c"># sha256 불일치 시 전체 거부</span>
+gvskb doctor --offline                               <span class="c"># 캐시 존재·건수·경과일 점검</span>
+
+<span class="c"># 3) 평소처럼 검사 — 갱신된 캐시가 자동으로 판정에 사용됨</span>
+gvskb scan ./내프로젝트 --check-deps --format html</pre>
+  <p class="note">주기를 놓쳐도 위험하지 않습니다 — 30일이 지나면 도구가 스스로 '이상 없음'
+  판정을 보류로 승격하고 리포트에 기준일을 표기하므로, <b>오래된 데이터가 최신처럼 보이는
+  일이 없습니다.</b> 온라인 기관은 반입 절차가 아예 불필요합니다(실시간 조회).</p>
+
+  <h3>자주 묻는 질문</h3>
+  <table>
+    <tr><th style="width:330px">질문</th><th>답</th></tr>
+    <tr><td class="k">갱신을 오래 안 하면 검사가 멈추나?</td><td>아니요. 코드 정적 분석(216룰)은 캐시와 무관하게 동작합니다. 의존성 검사만 <code>checked_stale</code>(검토 필요)로 강등됩니다.</td></tr>
+    <tr><td class="k">번들이 변조되면?</td><td>반입 단계에서 파일별 sha256 불일치로 <b>전체 거부</b>되고, 설령 반입 후 변조돼도 로드 시 재검증으로 해당 캐시가 무시됩니다.</td></tr>
+    <tr><td class="k">새 KEV 취약점이 바로 검사에 반영되나?</td><td>데이터(캐시)로는 즉시 반영됩니다(KEV 신호·EPSS 병기). <b>룰</b>로는 보안 담당자가 초안 PR을 검토·승인한 뒤에만 집행됩니다.</td></tr>
+    <tr><td class="k">GitHub Actions가 실패한 날은?</td><td>릴리스에는 마지막 성공본이 그대로 남아 있어 반입에 지장이 없습니다. 신선도는 번들 안의 수집 시각 기준으로 판정됩니다.</td></tr>
+  </table>
+</section>
+
+<footer>
+  vibecode-checker · 실시간 위협 인텔 운영·활용 구조 — 자체 완결형 문서(외부 로딩 없음) ·
+  근거 코드: <code>.github/workflows/update-intel.yml</code> · <code>src/gvskb/intel/</code> ·
+  <code>src/gvskb/tools/check_package.py</code>
+</footer>
+
+</div>
+</body>
+</html>
