@@ -184,11 +184,19 @@ class ExternalConnection(BaseModel):
     건수(finding_count)·CI 게이팅에는 영향을 주지 않습니다.
     """
 
-    kind: Literal["api", "package"]
-    target: str = Field(..., description="외부 호스트(api 호출) 또는 패키지명(플러그인)")
+    kind: Literal["api", "package", "resource"]
+    target: str = Field(..., description="외부 호스트(api/resource) 또는 패키지명(플러그인)")
     category: str = Field(
         default="other",
-        description="ai | analytics | error | payment | messaging | library | other",
+        description="ai | analytics | error | payment | messaging | library | cdn | other",
+    )
+    airgap_impact: Literal["breaks", "egress"] | None = Field(
+        default=None,
+        description=(
+            "폐쇄망(망분리) 배포 시 영향 — breaks: 외부 리소스(CDN 등) 로딩 실패로 "
+            "화면·기능 파손 / egress: 외부로 데이터 전송 시도(차단되거나 정책 위반 소지) / "
+            "None: 로컬 동작(영향 없음/미상)"
+        ),
     )
     model: str | None = Field(default=None, description="AI 호출의 모델명(리터럴). 변수면 None")
     version: str | None = Field(default=None, description="패키지 버전 또는 API path 버전")

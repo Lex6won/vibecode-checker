@@ -222,9 +222,29 @@ _CATEGORY_LABEL_KO = {
     "error": "에러추적",
     "payment": "결제",
     "messaging": "메시지",
+    "cdn": "CDN/정적",
     "library": "라이브러리",
     "other": "기타",
 }
+
+
+def _airgap_note(res: list, egress_count: int) -> str:
+    """폐쇄망(망분리) 영향 안내문 — 리소스/전송 지점이 있을 때만 표시."""
+    parts: list[str] = []
+    if res:
+        parts.append(
+            f"외부 리소스 {len(res)}건은 인터넷 없이 **로딩되지 않아 화면·기능이 "
+            "조용히 깨집니다** — 내부 사본(사내 미러)으로 교체하거나 제거하세요"
+        )
+    if egress_count:
+        parts.append(
+            f"외부 API·SDK {egress_count}건은 차단되어 기능이 멈추거나, 통제되지 "
+            "않은 회선에서는 **정책 위반 전송**이 될 수 있습니다"
+        )
+    if not parts:
+        return ""
+    tail = " 외부 스크립트를 유지해야 한다면 변조 방지를 위해 SRI(integrity) 적용을 권장합니다." if res else ""
+    return "**폐쇄망(망분리) 배포 시 확인** — " + ". ".join(parts) + "." + tail
 
 
 def _external_stats(report: ScanReport) -> tuple[int, int, int, int]:
@@ -1257,10 +1277,13 @@ def render_html(
     )
     if report.external_surface:  # (A) 외부 연결 현황을 최상단 요약에 노출
         n_api, n_pkg, gukoe, ext_warn = _external_stats(report)
+        n_res = sum(1 for c in report.external_surface if c.kind == "resource")
         sub = f"국외 {gukoe}" + (f"·⚠{ext_warn}" if ext_warn else "")
+        if n_res:
+            sub += f"·폐쇄망영향 {n_res}"
         p.append(
             f'<div class="stat"><div class="num" style="color:'
-            f'{"#c0392b" if ext_warn else "#1f2937"}">{n_api + n_pkg}</div>'
+            f'{"#c0392b" if ext_warn else "#1f2937"}">{n_api + n_pkg + n_res}</div>'
             f'<div class="lab">외부 연결 ({sub})</div></div>'
         )
     # (B) 의존성 취약 패키지·승인 예외 수치 — 별도 배너 대신 요약 카드로 표기.
@@ -1558,7 +1581,9 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
     """외부 연결 인벤토리 섹션(HTML) — 접기형. ⚠가 있으면 기본 펼침(절충)."""
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
+    res = [c for c in report.external_surface if c.kind == "resource"]
     n_api, n_pkg, gukoe, warn = _external_stats(report)
+    egress = sum(1 for c in report.external_surface if c.airgap_impact == "egress")
     head_extra = ""
     if gukoe or warn:
         bits = []
@@ -1567,16 +1592,25 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
         if warn:
             bits.append(f"⚠개인정보 {warn}")
         head_extra = f' · <span style="color:#c0392b">{" · ".join(bits)}</span>'
+    res_head = f" · 외부 리소스 {len(res)}" if res else ""
     out: list[str] = [
         f'<details class="sec inv"{" open" if warn else ""}>'
-        f"<summary>외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{head_extra}</summary>"
+        f"<summary>외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{res_head}{head_extra}</summary>"
         '<div class="secbody">',
         '<div class="invnote">⚠ <b>사용 금지가 아닙니다.</b> 외부로 데이터를 보낼 수 있는 지점 '
         '목록입니다. <span class="hl">⚠ 개인정보 인접</span>·<span class="hl">국외 전송</span>을 '
         "먼저 확인하세요.</div>",
     ]
+    airgap = _airgap_note(res, egress)
+    if airgap:
+        airgap_html = _esc(airgap).replace("**", "")
+        out.append(
+            '<div class="invnote" style="border-left:4px solid #b7791f;background:#fffdf5">'
+            f"{airgap_html}</div>"
+        )
+    circ = iter("①②③④")
     if api:
-        out.append('<div class="subh">① 외부 API 호출 (검토 필요 먼저)</div>')
+        out.append(f'<div class="subh">{next(circ)} 외부 API 호출 (검토 필요 먼저)</div>')
         out.append(
             "<table><tr><th>대상(호스트)</th><th>종류</th><th>모델</th><th>위치</th>"
             "<th>이용 정보(요약)</th><th>국외이전(운영주체)</th><th>검토</th></tr>"
@@ -1603,8 +1637,23 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
                 f'<br><span class="oper">{_esc(oper)}</span></td><td>{rev}</td></tr>'
             )
         out.append("</table>")
+    if res:
+        out.append(f'<div class="subh">{next(circ)} 외부 리소스 로딩 (CDN 등) — 폐쇄망에서 동작 불가</div>')
+        out.append(
+            "<table><tr><th>대상(호스트)</th><th>위치</th><th>내용</th>"
+            "<th>운영주체</th><th>폐쇄망 영향</th></tr>"
+        )
+        for c in res:
+            loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
+            out.append(
+                f"<tr><td>{_esc(c.target)}</td><td>{_esc(loc)}</td>"
+                f"<td>{_esc(c.data_summary)}</td>"
+                f"<td>{_esc(c.operator or '미상 — 직접 확인')}</td>"
+                '<td><span class="rev warn">로딩 실패 — 화면·기능 파손</span></td></tr>'
+            )
+        out.append("</table>")
     if pkg:
-        out.append('<div class="subh">② 설치된 외부 플러그인 · 라이브러리</div>')
+        out.append(f'<div class="subh">{next(circ)} 설치된 외부 플러그인 · 라이브러리</div>')
         out.append(
             "<table><tr><th>플러그인/라이브러리</th><th>버전</th><th>종류</th>"
             "<th>전송 대상(운영주체)</th><th>이용 정보(요약)</th></tr>"
@@ -1887,16 +1936,24 @@ def _render_external_surface_md(report: ScanReport) -> list[str]:
     """외부 연결 인벤토리 섹션(Markdown). MD는 접기가 없으므로 표로 펼쳐 출력."""
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
+    res = [c for c in report.external_surface if c.kind == "resource"]
     n_api, n_pkg, gukoe, warn = _external_stats(report)
+    egress = sum(1 for c in report.external_surface if c.airgap_impact == "egress")
     out: list[str] = ["## 외부 연결 인벤토리 (보안팀 검토용)", ""]
+    res_bit = f" · 외부 리소스 {len(res)}" if res else ""
     out.append(
         f"> ⚠ **사용 금지가 아닙니다.** 외부로 데이터를 보낼 수 있는 지점 목록입니다 "
-        f"(API {n_api} · 플러그인 {n_pkg} · 국외 {gukoe} · ⚠개인정보 {warn}). "
+        f"(API {n_api} · 플러그인 {n_pkg}{res_bit} · 국외 {gukoe} · ⚠개인정보 {warn}). "
         "⚠ 개인정보 인접·국외 전송을 먼저 확인하세요."
     )
     out.append("")
+    airgap = _airgap_note(res, egress)
+    if airgap:
+        out.append(f"> {airgap}")
+        out.append("")
+    circ = iter("①②③④")
     if api:
-        out.append("### ① 외부 API 호출 (검토 필요 먼저)")
+        out.append(f"### {next(circ)} 외부 API 호출 (검토 필요 먼저)")
         out.append("")
         out.append("| 대상(호스트) | 종류 | 모델 | 위치 | 이용 정보 | 국외이전(운영주체) | 검토 |")
         out.append("|---|---|---|---|---|---|---|")
@@ -1909,8 +1966,20 @@ def _render_external_surface_md(report: ScanReport) -> list[str]:
                 f"`{loc}` | {c.data_summary} | {oper} | {mark} |"
             )
         out.append("")
+    if res:
+        out.append(f"### {next(circ)} 외부 리소스 로딩 (CDN 등) — 폐쇄망에서 동작 불가")
+        out.append("")
+        out.append("| 대상(호스트) | 위치 | 내용 | 운영주체 | 폐쇄망 영향 |")
+        out.append("|---|---|---|---|---|")
+        for c in res:
+            loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
+            out.append(
+                f"| `{c.target}` | `{loc}` | {c.data_summary} | "
+                f"{c.operator or '미상(직접 확인)'} | 로딩 실패 — 화면·기능 파손 |"
+            )
+        out.append("")
     if pkg:
-        out.append("### ② 설치된 외부 플러그인 · 라이브러리")
+        out.append(f"### {next(circ)} 설치된 외부 플러그인 · 라이브러리")
         out.append("")
         out.append("| 플러그인/라이브러리 | 버전 | 종류 | 전송 대상(운영주체) | 이용 정보 |")
         out.append("|---|---|---|---|---|")

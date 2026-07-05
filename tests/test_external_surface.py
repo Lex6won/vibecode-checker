@@ -223,3 +223,95 @@ def test_report_renders_operator_and_extra_call_sites(tmp_path: Path) -> None:
         assert "OpenAI(미국)" in out          # 운영주체·국가
         assert "외 1곳" in out                 # 첫 지점 + 추가 호출 수
         assert "학습 이용·보존" in out          # 체크리스트 문구
+
+
+# ---------------------------------------------------------------------------
+# 외부 정적 리소스(CDN) — 폐쇄망(망분리) 영향 표시
+# ---------------------------------------------------------------------------
+
+_CDN_HTML = (
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=X">\n'
+    '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>\n'
+    '<script src="/static/local.js"></script>\n'
+    '<a href="https://www.example.com/docs">docs</a>\n'
+)
+
+
+def _res(report):
+    return [c for c in report.external_surface if c.kind == "resource"]
+
+
+def test_cdn_script_and_link_detected_as_resource_breaks() -> None:
+    r = scan_code(_CDN_HTML, filename="index.html", language="html")
+    targets = {c.target for c in _res(r)}
+    assert "cdn.jsdelivr.net" in targets
+    assert "fonts.googleapis.com" in targets
+    for c in _res(r):
+        assert c.airgap_impact == "breaks"
+        assert c.category == "cdn"
+    jsd = next(c for c in _res(r) if c.target == "cdn.jsdelivr.net")
+    assert jsd.operator == "jsDelivr(국외)"      # 카탈로그 운영주체
+    assert jsd.region == "국외"
+
+
+def test_anchor_href_is_not_a_resource() -> None:
+    """<a href>는 이동 링크 — 리소스 로딩(화면 파손 신호)이 아니다."""
+    r = scan_code(_CDN_HTML, filename="index.html", language="html")
+    assert "www.example.com" not in {c.target for c in _res(r)}
+
+
+def test_local_and_internal_resources_not_flagged() -> None:
+    code = (
+        '<script src="/static/app.js"></script>\n'
+        '<script src="https://192.168.0.10/lib.js"></script>\n'
+        '<link href="./style.css" rel="stylesheet">\n'
+    )
+    r = scan_code(code, filename="index.html", language="html")
+    assert _res(r) == []
+
+
+def test_css_import_and_esm_import_detected() -> None:
+    css = '@import url("https://fonts.googleapis.com/css2?family=Y");\n'
+    js = 'import confetti from "https://esm.sh/canvas-confetti";\n'
+    assert _res(scan_code(css, filename="a.css", language="css"))
+    assert _res(scan_code(js, filename="a.js", language="javascript"))
+
+
+def test_resource_line_not_double_counted_as_api() -> None:
+    """script src 줄의 호스트가 api로 중복 계상되면 안 된다."""
+    r = scan_code(_CDN_HTML, filename="index.html", language="html")
+    api_targets = {c.target for c in r.external_surface if c.kind == "api"}
+    assert "cdn.jsdelivr.net" not in api_targets
+    assert "fonts.googleapis.com" not in api_targets
+
+
+def test_api_calls_marked_as_egress() -> None:
+    code = 'requests.post("https://api.openai.com/v1/chat/completions")\n'
+    r = scan_code(code, filename="app.py", language="python")
+    api = [c for c in r.external_surface if c.kind == "api"]
+    assert api and api[0].airgap_impact == "egress"
+
+
+def test_report_renders_airgap_callout_and_resource_table() -> None:
+    r = scan_code(_CDN_HTML, filename="index.html", language="html")
+    md = render_markdown(r)
+    html = render_html(r)
+    for out in (md, html):
+        assert "폐쇄망(망분리) 배포 시 확인" in out
+        assert "로딩 실패" in out
+        assert "SRI(integrity)" in out
+        assert "외부 리소스 로딩 (CDN 등)" in out
+
+
+def test_no_airgap_callout_without_external_points() -> None:
+    r = scan_code("x = 1\n", filename="app.py", language="python")
+    assert "폐쇄망(망분리) 배포 시 확인" not in render_markdown(r)
+
+
+def test_external_connection_backcompat_without_airgap_field() -> None:
+    """구버전 JSON(airgap_impact 없음)도 그대로 파싱된다."""
+    from gvskb.schema import ExternalConnection
+    c = ExternalConnection.model_validate(
+        {"kind": "api", "target": "api.openai.com"}
+    )
+    assert c.airgap_impact is None

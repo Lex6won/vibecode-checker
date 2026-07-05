@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+### 폐쇄망(망분리) 영향 표시 (Added)
+- **외부 리소스(CDN) 인벤토리** — `<script src>`·`<link href>`·`@import`·
+  `url()`·ESM `import`로 로딩되는 외부 정적 리소스(jsDelivr·unpkg·cdnjs·
+  Google Fonts·Tailwind CDN 등)를 `kind="resource"`로 탐지. 주석·문서 링크나
+  `<a href>` 이동 링크는 잡지 않음(로딩 문맥 게이팅), 로컬·내부망 경로 제외.
+- **폐쇄망 영향 필드**(`airgap_impact`) — 리소스는 `breaks`(인터넷 없이 로딩
+  실패 → 화면·기능 파손), 외부 API·전송 SDK는 `egress`(차단되거나 정책 위반
+  전송 소지)로 분류. 리포트 외부 연결 섹션에 **"폐쇄망 배포 시 확인" 콜아웃 +
+  전용 표**(위치·운영주체·영향)로 표시하고, 유지 시 SRI(integrity) 적용 권고.
+- 같은 줄의 호스트가 api로 중복 계상되지 않도록 리소스 문맥 줄은 API 추출에서
+  제외. 테스트 478 → 487.
+
 ### 인텔 초안 룰 수명주기 자동화 (Added)
 - **최근 등재 필터** — KEV→proposed 승격이 기본 **최근 90일 등재분만** 대상
   (`GVSKB_KEV_PROMOTE_SINCE_DAYS`, 0=전체 백필). 2002년부터의 카탈로그 전체
