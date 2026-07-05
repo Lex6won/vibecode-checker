@@ -90,6 +90,89 @@ _PACKAGE_CATALOG: dict[str, tuple[str, str, str | None]] = {
     "stripe": ("payment", "결제: 카드·결제 정보를 Stripe로 전송", "Stripe(미국)"),
 }
 
+# ---------------------------------------------------------------------------
+# 외부 정적 리소스(CDN) — 폐쇄망(망분리) 배포 시 이 로딩은 반드시 실패한다.
+# 화면·기능이 조용히 깨지거나, 통제되지 않은 회선에서는 외부 요청 자체가 정책
+# 위반이 될 수 있으므로 인벤토리에 별도 종류(resource)로 표시한다.
+# ---------------------------------------------------------------------------
+_CDN_CATALOG: tuple[tuple[str, str, str | None], ...] = (
+    # (host needle, 리소스 요약, 운영주체)
+    ("cdn.jsdelivr.net", "JS/CSS 라이브러리(CDN)", "jsDelivr(국외)"),
+    ("unpkg.com", "npm 패키지 번들(CDN)", "unpkg/Cloudflare(미국)"),
+    ("cdnjs.cloudflare.com", "JS/CSS 라이브러리(CDN)", "Cloudflare(미국)"),
+    ("fonts.googleapis.com", "웹폰트 CSS", "Google(미국)"),
+    ("fonts.gstatic.com", "웹폰트 파일", "Google(미국)"),
+    ("ajax.googleapis.com", "JS 라이브러리(CDN)", "Google(미국)"),
+    ("code.jquery.com", "jQuery(CDN)", "jQuery/StackPath(미국)"),
+    ("bootstrapcdn.com", "Bootstrap(CDN)", "jsDelivr/StackPath(국외)"),
+    ("cdn.tailwindcss.com", "Tailwind 런타임(CDN)", "Tailwind Labs(미국)"),
+    ("esm.sh", "ESM 모듈(CDN)", "esm.sh(국외)"),
+    ("cdn.skypack.dev", "ESM 모듈(CDN)", "Skypack(미국)"),
+    ("fontawesome.com", "아이콘 폰트(CDN)", "Fonticons(미국)"),
+)
+
+# 리소스 로딩 문맥 — 단순 URL 언급(주석·문서 링크)은 잡지 않도록, 실제 로딩
+# 구문(src=/​<link href=/@import/url()/ESM import/importScripts)일 때만 매칭.
+_RESOURCE_CTX = re.compile(
+    r"""(?:\bsrc\s*=\s*["']?https?://
+      |@import\s+(?:url\(\s*)?["']?https?://
+      |\burl\(\s*["']?https?://
+      |\bimport\s+[^;\n]{0,120}?\bfrom\s+["']https?://
+      |\bimportScripts\(\s*["']https?://
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+# <link href="https://..."> — href는 <link>(스타일시트·폰트 로딩)일 때만.
+# <a href>는 리소스 로딩이 아니라 이동 링크라 화면 파손 신호가 아니다.
+_LINK_HREF_CTX = re.compile(r"<link\b[^>]*\bhref\s*=\s*[\"']?https?://", re.IGNORECASE)
+
+
+def _lookup_cdn(host: str) -> tuple[str, str | None]:
+    low = host.lower()
+    for needle, summary, operator in _CDN_CATALOG:
+        if needle in low:
+            return summary, operator
+    return "외부 정적 리소스(JS/CSS/폰트 등) — 내용 확인 필요", None
+
+
+def extract_static_resources(code: str, filename: str = "<memory>") -> list[ExternalConnection]:
+    """외부 정적 리소스 로딩(CDN 등) 지점을 인벤토리로 추출.
+
+    폐쇄망 표시: 이 항목들은 인터넷 없이 **로딩 자체가 실패**하므로
+    airgap_impact="breaks" 로 표시된다 — 내부 사본/사내 미러로 교체 대상.
+    """
+    lines = code.splitlines()
+    agg: dict[str, dict] = {}
+    for idx, line in enumerate(lines, start=1):
+        if not (_RESOURCE_CTX.search(line) or _LINK_HREF_CTX.search(line)):
+            continue
+        for m in _URL_RE.finditer(line):
+            host = m.group(1)
+            if _INTERNAL_HOST.match(host):
+                continue
+            a = agg.setdefault(host, {"idx": idx, "count": 0})
+            a["idx"] = min(a["idx"], idx)
+            a["count"] += 1
+
+    out: list[ExternalConnection] = []
+    for host, a in agg.items():
+        summary, operator = _lookup_cdn(host)
+        out.append(ExternalConnection(
+            kind="resource",
+            target=host,
+            category="cdn",
+            location=f"{filename}:{a['idx']}",
+            data_summary=summary,
+            # 카탈로그 등재 CDN은 전부 국외 사업자 — 미등재 호스트는 미상(직접 확인).
+            region="국외" if operator else None,
+            operator=operator,
+            call_count=a["count"],
+            review_level="info",
+            airgap_impact="breaks",
+        ))
+    return out
+
+
 # PII 인접 신호 — 같은 줄에 이 토큰들이 보이면 개인정보 전송 가능으로 표시(warn).
 _PII_SIGNAL = re.compile(
     r"주민|rrn|전화|휴대폰|phone|이메일|email|민원|카드|계좌|account|여권|passport"
@@ -140,6 +223,10 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
     agg: dict[str, dict] = {}  # 호스트(파일 단위) → 병합 누적값
 
     for idx, line in enumerate(lines, start=1):
+        # 리소스 로딩 구문(src=/​<link href=/@import/ESM import)은 extract_static_resources
+        # 가 kind="resource"로 담당한다 — 같은 호스트가 api로 중복 계상되지 않게 건너뜀.
+        if _RESOURCE_CTX.search(line) or _LINK_HREF_CTX.search(line):
+            continue
         hosts_on_line: list[tuple[str, str | None]] = []  # (host, api_version)
         for m in _URL_RE.finditer(line):
             host = m.group(1)
@@ -184,6 +271,9 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
             call_count=a["count"],
             pii_adjacent=a["pii"],
             review_level="warn" if a["pii"] else "info",
+            # 폐쇄망 표시: 외부 API 호출은 데이터 전송 시도 — 차단되어 기능이
+            # 멈추거나, 통제되지 않은 회선에서는 정책 위반 전송이 될 수 있다.
+            airgap_impact="egress",
         ))
     return out
 
@@ -214,6 +304,8 @@ def inventory_packages(packages: list[dict], source: str = "manifest") -> list[E
             operator=operator,
             pii_adjacent=False,
             review_level="info",
+            # 외부 전송 SDK(운영주체 특정)만 egress — 로컬 라이브러리는 영향 없음.
+            airgap_impact="egress" if operator else None,
         ))
     return out
 
@@ -226,8 +318,8 @@ def dedupe_connections(conns: list[ExternalConnection]) -> list[ExternalConnecti
     best: dict[tuple, ExternalConnection] = {}
     for c in conns:
         best.setdefault((c.kind, c.target, c.location, c.model), c)
-    _kind_order = {"api": 0, "package": 1}
-    _cat_order = {"ai": 0, "payment": 1, "analytics": 2, "messaging": 3, "error": 4, "other": 5, "library": 6}
+    _kind_order = {"api": 0, "resource": 1, "package": 2}
+    _cat_order = {"ai": 0, "payment": 1, "analytics": 2, "messaging": 3, "error": 4, "cdn": 5, "other": 6, "library": 7}
 
     def key(c: ExternalConnection) -> tuple:
         return (

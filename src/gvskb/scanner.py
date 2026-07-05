@@ -24,6 +24,7 @@ from .scanners.js_taint import JsTaintScanner
 from .scanners.external_surface import (
     dedupe_connections,
     extract_api_connections,
+    extract_static_resources,
     inventory_packages,
 )
 from .scanners.regex_scanner import (
@@ -168,7 +169,9 @@ def scan_code(
         # 인메모리 조각도 "이 파일을 검사함"으로 기록 — 발견 0이 "검사 안 됨"이
         # 아니라 "위험 없음"으로 올바르게 결론나게 한다.
         scanned_files=[filename],
-        external_surface=dedupe_connections(extract_api_connections(code, filename)),
+        external_surface=dedupe_connections(
+            extract_api_connections(code, filename) + extract_static_resources(code, filename)
+        ),
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),
     )
@@ -435,6 +438,7 @@ def scan_path(
         scanned.append(rel)
         # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
         external.extend(extract_api_connections(text, rel))
+        external.extend(extract_static_resources(text, rel))
         if f.name.lower() == "package.json":
             external.extend(
                 inventory_packages(parse_manifest_packages(text, "npm"), rel)
