@@ -13,7 +13,13 @@ Security principles (consistent with the public-sector policy):
 from __future__ import annotations
 
 from .cache import CACHE_VERSION, CacheEntry, IntelCache, default_cache_dir
-from .promote import DEFAULT_PROPOSED_DIR, PromoteResult, promote_kev_to_rules, render_kev_rule
+from .promote import (
+    DEFAULT_PROPOSED_DIR,
+    PromoteResult,
+    promote_kev_to_rules,
+    prune_expired_proposed,
+    render_kev_rule,
+)
 from .update import IntelUpdateError, IntelUpdateResult, update_source, update_sources
 
 __all__ = [
@@ -24,6 +30,7 @@ __all__ = [
     "DEFAULT_PROPOSED_DIR",
     "PromoteResult",
     "promote_kev_to_rules",
+    "prune_expired_proposed",
     "render_kev_rule",
     "IntelUpdateError",
     "IntelUpdateResult",

@@ -1,0 +1,38 @@
+name: intel-digest
+
+# 매월 1일, 대기 중인 proposed 초안 룰을 요약한 다이제스트 이슈를 만든다.
+# 유지관리자는 이슈 하나만 읽고 "우선 검토 후보"의 승격 여부만 판단하면 된다
+# — 카드를 하나하나 볼 필요가 없도록 하는 사람-부담 최소화 장치.
+
+on:
+  schedule:
+    # 00:00 UTC on the 1st = 매월 1일 09:00 KST
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build digest
+        run: python scripts/intel_digest.py rules/intel-proposed > digest.md
+
+      - name: Create digest issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="[intel] 초안 룰 월간 다이제스트 $(date -u +%Y-%m)"
+          gh issue create --title "$TITLE" --body-file digest.md \
+            --label intel --repo "$GITHUB_REPOSITORY"
