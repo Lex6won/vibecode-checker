@@ -198,6 +198,16 @@ class _Visitor(ast.NodeVisitor):
 
 _SQL_EXEC_METHODS = {"execute", "executemany", "executescript"}
 
+# LLM SDK call sinks (OpenAI/Anthropic/Gemini/…). Matched on the trailing
+# attribute chain so ``db.create``/``User.objects.create`` never qualify — only
+# the LLM-specific shapes do. A dynamically-built prompt string reaching one of
+# these calls is prompt-injection risk (OWASP LLM01) → GOV-LLM-PROMPT-INJECTION-001.
+_LLM_SINK_RE = re.compile(
+    r"(?:chat\.completions\.create|completions\.create|responses\.create"
+    r"|messages\.create|ChatCompletion\.create|generate_content"
+    r"|\.chat|\.complete)$"
+)
+
 
 def _fstring_is_dynamic(node: ast.JoinedStr) -> bool:
     """An f-string whose interpolated field is not itself a constant."""
@@ -284,6 +294,43 @@ def _sink_calls(stmt: ast.stmt) -> list[ast.Call]:
     return calls
 
 
+def _llm_sink_calls(stmt: ast.stmt) -> list[ast.Call]:
+    """LLM SDK calls (``…chat.completions.create``, ``…messages.create``,
+    ``…generate_content`` …) in this statement's own expression."""
+    roots: list[ast.AST] = []
+    if isinstance(stmt, ast.Expr):
+        roots.append(stmt.value)
+    elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return)):
+        if getattr(stmt, "value", None) is not None:
+            roots.append(stmt.value)
+    calls: list[ast.Call] = []
+    for root in roots:
+        for n in ast.walk(root):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                chain = _attr_chain(n.func)
+                if chain and _LLM_SINK_RE.search(chain):
+                    calls.append(n)
+    return calls
+
+
+def _call_passes_dynamic_prompt(call: ast.Call, tainted: set[str]) -> bool:
+    """Does any *argument* of this LLM call carry a dynamically-built string —
+    a tainted variable or an inline literal+variable concat / dynamic f-string?
+
+    Only args/keywords are inspected (never the ``.func`` chain), so the SDK
+    object names themselves can't be mistaken for tainted data. A bare untrusted
+    variable passed as data (``content=user_input``) is *not* flagged — only the
+    concat-into-instructions shape is (that is the injection signal)."""
+    roots: list[ast.AST] = list(call.args) + [kw.value for kw in call.keywords]
+    for root in roots:
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and node.id in tainted:
+                return True
+            if isinstance(node, (ast.BinOp, ast.JoinedStr)) and _expr_builds_dynamic_sql(node, tainted):
+                return True
+    return False
+
+
 def _process_scope(
     stmts: list[ast.stmt],
     tainted: set[str],
@@ -307,6 +354,16 @@ def _process_scope(
             if _is_ignored(src, "GOV-SQL-INJECTION-001"):
                 continue
             hits.append(("GOV-SQL-INJECTION-001", line_no, redact_evidence(src)))
+        # 1b) LLM prompt-injection sinks: a dynamically-built prompt string
+        #     reaching an LLM SDK call (OWASP LLM01).
+        for call in _llm_sink_calls(stmt):
+            if not _call_passes_dynamic_prompt(call, tainted):
+                continue
+            line_no = call.lineno
+            src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
+            if _is_ignored(src, "GOV-LLM-PROMPT-INJECTION-001"):
+                continue
+            hits.append(("GOV-LLM-PROMPT-INJECTION-001", line_no, redact_evidence(src)))
         # 2) recurse into compound bodies with the same (flow-insensitive) taint.
         for body in _sub_statement_bodies(stmt):
             _process_scope(body, tainted, hits, source_lines)
@@ -325,8 +382,12 @@ def _process_scope(
                 tainted.add(stmt.target.id)
 
 
-def _scan_sql_taint(tree: ast.AST, source_lines: list[str]) -> list[tuple[str, int, str]]:
-    """Return ``(rule_id, line_no, evidence)`` for tainted SQL sinks."""
+def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str, int, str]]:
+    """Return ``(rule_id, line_no, evidence)`` for tainted SQL and LLM-prompt sinks.
+
+    A single scope walk feeds both flows: the same dynamically-built-string taint
+    that catches multi-line SQL injection also catches a prompt assembled by
+    concatenation that reaches an LLM SDK call (prompt injection)."""
     hits: list[tuple[str, int, str]] = []
     _process_scope(getattr(tree, "body", []), set(), hits, source_lines)
     return hits
@@ -364,8 +425,8 @@ class PythonAstScanner(ScannerAdapter):
         visitor = _Visitor(code.splitlines(), _collect_import_aliases(tree))
         visitor.visit(tree)
 
-        # Precise call-site hits + multi-line SQL taint hits share one pipeline.
-        all_hits = visitor.hits + _scan_sql_taint(tree, visitor.source_lines)
+        # Precise call-site hits + multi-line taint hits (SQL + LLM) share one pipeline.
+        all_hits = visitor.hits + _scan_taint_flows(tree, visitor.source_lines)
 
         findings: list[Finding] = []
         for rule_id, line_no, evidence in all_hits:
@@ -385,5 +446,5 @@ def supported_rule_ids() -> Iterable[str]:
     """Rule IDs this adapter can emit. Useful for status_for_mcp."""
     return (
         "KISA-PY-INPUT-02", "KISA-PY-INPUT-05", "KISA-PY-SEC-04", "KISA-PY-CODE-03",
-        "GOV-SQL-INJECTION-001",
+        "GOV-SQL-INJECTION-001", "GOV-LLM-PROMPT-INJECTION-001",
     )

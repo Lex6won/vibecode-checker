@@ -3,6 +3,18 @@
 이 프로젝트의 주요 변경 사항을 기록합니다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/)를 따르고,
 버전은 [유의적 버전(SemVer)](https://semver.org/lang/ko/)을 따릅니다.
 
+## [0.2.1] - 2026-07-05
+
+### 탐지 (Added)
+- **LLM 프롬프트 인젝션 탐지**(`GOV-LLM-PROMPT-INJECTION-001`, OWASP LLM01 · 국정원
+  AI 가이드 T08) — Python AST taint를 확장해, 문자열 결합(`+`)·f-string으로 **동적
+  조립된 프롬프트 변수가 실제 LLM SDK 호출**(OpenAI `chat.completions.create`·
+  Anthropic `messages.create`·Gemini `generate_content` 등)에 도달하면 발화합니다.
+  SQL taint와 같은 스코프 추적을 재사용하며, **입력을 데이터로만 전달**하거나(역할
+  분리 `messages`) 상수 프롬프트·비-LLM `.create()`(ORM)는 발화하지 않아 오탐 0을
+  유지합니다. 독립 벤치마크 LLM 카테고리 **0/1 → 1/1**, 종합 recall **96.7% → 100%**
+  (30/30), 오탐 0. 테스트 455 → 467.
+
 ## [0.2.0] - 2026-07-04
 
 공공기관 실사용 워크플로("공무원 검사 → 보안팀 붙임 제출 → 보안성 검토 → 운영 배포")를
