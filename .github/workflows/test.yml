@@ -3,6 +3,9 @@ name: test
 on:
   push:
   pull_request:
+  # update-intel이 GITHUB_TOKEN으로 만든 PR은 pull_request 트리거가 돌지 않는다
+  # (GitHub 재귀 방지) — 그 경우 워크플로가 이 트리거로 CI를 직접 호출한다.
+  workflow_dispatch:
 
 jobs:
   pytest:
