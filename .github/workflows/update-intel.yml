@@ -51,6 +51,60 @@ jobs:
             gvskb update-intel --source "$SRC" --promote --json | tee intel-result.json
           fi
 
+      # ------------------------------------------------------------------
+      # 산출물 1: 검증 가능한 인텔 번들(고정 URL) — 캐시가 러너에서 휘발되지
+      # 않고 사용자에게 도달하게 하는 단계. 망분리 기관은 외부망 PC에서 이
+      # 번들을 받아 sha256 확인 → USB 반입 → `gvskb intel-bundle import` 하면
+      # 매일 갱신된 캐시를 그대로 쓸 수 있다.
+      # ------------------------------------------------------------------
+      - name: Export verified intel bundle
+        id: bundle
+        if: steps.refresh.outcome == 'success'
+        env:
+          GVSKB_CACHE_DIR: ${{ github.workspace }}/.gvskb-cache
+        run: |
+          gvskb intel-bundle export gvskb-intel-bundle.zip
+          sha256sum gvskb-intel-bundle.zip > gvskb-intel-bundle.zip.sha256
+          cat gvskb-intel-bundle.zip.sha256
+
+      - name: Upload bundle artifact (traceability)
+        if: steps.bundle.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gvskb-intel-bundle-${{ github.run_id }}
+          path: |
+            gvskb-intel-bundle.zip
+            gvskb-intel-bundle.zip.sha256
+          retention-days: 30
+
+      - name: Publish bundle to rolling release (intel-latest)
+        if: steps.bundle.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 고정 태그 intel-latest — 다운로드 URL이 매일 동일하게 유지된다:
+          #   releases/download/intel-latest/gvskb-intel-bundle.zip
+          # --latest=false: 코드 릴리스의 'Latest' 자리를 차지하지 않는다.
+          if ! gh release view intel-latest >/dev/null 2>&1; then
+            gh release create intel-latest \
+              --title "일일 위협 인텔 번들 (자동 갱신)" \
+              --notes "placeholder" --latest=false
+          fi
+          gh release upload intel-latest \
+            gvskb-intel-bundle.zip gvskb-intel-bundle.zip.sha256 --clobber
+          gh release edit intel-latest --notes "$(printf '%s\n' \
+            "매일 03:00 KST 자동 갱신되는 위협 인텔 반입 번들입니다." \
+            "" \
+            "- 갱신 시각(UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "- 소스: OSV malicious · CISA KEV · NVD recent · FIRST EPSS" \
+            "- 검증: zip 내부 manifest.json(파일별 sha256) + 게시 sha256 사이드카" \
+            "" \
+            "망분리 반입: 외부망 PC에서 다운로드 → sha256 확인 → USB 이동 →" \
+            "\`gvskb intel-bundle import gvskb-intel-bundle.zip\` → \`gvskb doctor --offline\`")"
+
+      # ------------------------------------------------------------------
+      # 산출물 2: KEV → proposed 룰 PR (사람 검토 게이트)
+      # ------------------------------------------------------------------
       - name: Detect changes in proposed rules
         id: detect
         run: |

@@ -383,6 +383,38 @@ def test_scan_mode_offline_banner_with_freshness() -> None:
         assert "안전" in out  # "미갱신 항목을 '안전'으로 간주하지 마세요"
 
 
+def test_offline_scan_populates_intel_freshness(tmp_path, monkeypatch) -> None:
+    """실제 오프라인 스캔이 캐시 fetched_at을 리포트 기준일로 자동 표기해야 한다.
+
+    이전에는 intel_freshness를 채우는 코드가 없어 배너에 기준일이 늘 빠졌다 —
+    보안팀이 '며칠 캐시 기준 판정인지'를 리포트만으로 알 수 있어야 한다.
+    """
+    from gvskb.intel.cache import IntelCache
+    from gvskb.scanner import scan_code
+
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    IntelCache().save("cisa-kev", "https://example/test", [], ecosystems=None)
+
+    report = scan_code("import os\n", filename="a.py", language="python")
+    assert report.scan_mode == "offline"
+    assert report.intel_freshness is not None
+    assert "cisa-kev" in report.intel_freshness
+    # 날짜(YYYY-MM-DD)만 — 리포트 배너 가독성
+    assert len(report.intel_freshness["cisa-kev"]) == 10
+    md = render_markdown(report)
+    assert report.intel_freshness["cisa-kev"] in md  # 배너에 기준일 노출
+
+
+def test_online_scan_leaves_intel_freshness_none(monkeypatch) -> None:
+    """온라인 모드는 실시간 조회이므로 기준일을 표기하지 않는다."""
+    from gvskb.scanner import scan_code
+
+    monkeypatch.delenv("GVSKB_MODE", raising=False)
+    report = scan_code("import os\n", filename="a.py", language="python")
+    assert report.intel_freshness is None
+
+
 def test_scan_report_new_fields_optional_backcompat() -> None:
     # 구버전 JSON(신규 필드 없음)도 그대로 파싱된다 — render_report MCP 역호환.
     r = _report_with_findings()

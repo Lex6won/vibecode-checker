@@ -75,6 +75,28 @@ def _current_scan_mode() -> str | None:
     return "offline" if os.environ.get("GVSKB_MODE", "").lower() == "offline" else None
 
 
+def _intel_freshness() -> dict | None:
+    """오프라인 모드에서 리포트에 실릴 인텔 캐시 기준일(source_id → 날짜).
+
+    보안팀이 "몇 월 며칠 캐시 기준의 판정인지"를 리포트만 보고 알 수 있어야
+    반입 주기를 판단할 수 있다. 온라인 모드는 실시간 조회이므로 None.
+    로드 실패는 스캔을 막지 않는다 — 기준일 표기만 생략된다.
+    """
+    if _current_scan_mode() != "offline":
+        return None
+    try:
+        from .intel.cache import IntelCache
+        cache = IntelCache()
+        fresh: dict[str, str] = {}
+        for sid in cache.list_sources():
+            entry = cache.load(sid)  # sha256 재검증 포함 — 변조 캐시는 표기하지 않음
+            if entry is not None and entry.fetched_at:
+                fresh[sid] = entry.fetched_at[:10]  # 날짜만 — 리포트 가독성
+        return fresh or None
+    except Exception:  # noqa: BLE001 — 표기 실패가 검사를 막으면 안 된다
+        return None
+
+
 def _highest(findings: Iterable[Finding]) -> Severity | None:
     highest: Severity | None = None
     for finding in findings:
@@ -148,6 +170,7 @@ def scan_code(
         scanned_files=[filename],
         external_surface=dedupe_connections(extract_api_connections(code, filename)),
         scan_mode=_current_scan_mode(),
+        intel_freshness=_intel_freshness(),
     )
 
 
@@ -314,6 +337,7 @@ def scan_path(
             scanned_files=[],
             skipped_files=[SkippedFile(path=str(root), reason="path does not exist")],
             scan_mode=_current_scan_mode(),
+            intel_freshness=_intel_freshness(),
         )
 
     files_to_scan: list[Path] = []
@@ -448,6 +472,7 @@ def scan_path(
         skipped_files=skipped,
         external_surface=dedupe_connections(external),
         scan_mode=_current_scan_mode(),
+        intel_freshness=_intel_freshness(),
         suppression_summary=suppression_summary,
     )
     # 감사로그(옵트인, GVSKB_AUDIT_DIR) — 공공 점검 이력 증빙. 실패해도 스캔은 계속.

@@ -117,6 +117,41 @@ def _osv_advisories_for(items: list[dict], name: str, ecosystem_label: str) -> l
     return hits
 
 
+def _enrich_with_epss_nvd(kev_signals: list[dict], cache: "IntelCache") -> list[str]:
+    """KEV 신호에 EPSS 악용확률·NVD CVSS를 CVE 기준으로 병기한다.
+
+    매일 수집되는 epss-recent/nvd-recent 캐시를 판정 화면에 실제로 활용하는
+    지점이다 — 보안팀이 "악용 가능성이 얼마나 되는 취약점인지"를 조회 없이
+    보고서에서 바로 읽고 우선순위를 정할 수 있다. 캐시가 없으면 조용히 생략.
+    Returns the list of cache source_ids actually used.
+    """
+    if not kev_signals:
+        return []
+    used: list[str] = []
+    epss_entry = cache.load("epss-recent")
+    nvd_entry = cache.load("nvd-recent")
+    epss_by_cve = {i.get("cve"): i for i in (epss_entry.items if epss_entry else [])}
+    nvd_by_cve = {i.get("id"): i for i in (nvd_entry.items if nvd_entry else [])}
+    hit_epss = hit_nvd = False
+    for sig in kev_signals:
+        cve = sig.get("cveID")
+        e = epss_by_cve.get(cve)
+        if e:
+            hit_epss = True
+            sig["epss_score"] = e.get("epss")            # 30일 내 악용 관측 확률(0~1)
+            sig["epss_percentile"] = e.get("percentile")
+        n = nvd_by_cve.get(cve)
+        if n:
+            hit_nvd = True
+            sig["cvss31_base_score"] = n.get("cvss31_base_score")
+            sig["cvss31_severity"] = n.get("cvss31_severity")
+    if hit_epss:
+        used.append("epss-recent")
+    if hit_nvd:
+        used.append("nvd-recent")
+    return used
+
+
 def _kev_signals_for(items: list[dict], name: str) -> list[dict]:
     """Return KEV entries whose vendorProject/product name matches the package.
 
@@ -188,6 +223,8 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
         if kev_entry.is_stale():
             stale_sources.append("cisa-kev")
         kev_signals = _kev_signals_for(kev_entry.items, name)
+        # KEV 매칭이 있으면 EPSS 악용확률·NVD CVSS를 병기해 우선순위 근거 제공.
+        cache_sources_used.extend(_enrich_with_epss_nvd(kev_signals, cache))
 
     # 생태계 커버리지 — 악성 판정을 '깨끗함'으로 내리려면 osv-malicious 캐시가
     # *이 생태계를 실제로 담고 있어야* 한다. v1 캐시(ecosystems 미기록)는 당시

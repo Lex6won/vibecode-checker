@@ -13,7 +13,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
 ![Tests](https://img.shields.io/badge/tests-467_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
-![룰](https://img.shields.io/badge/보안_룰-215개-orange.svg)
+![룰](https://img.shields.io/badge/보안_룰-216개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
 
 </div>
@@ -318,16 +318,35 @@ gvskb check-package reqeusts --ecosystem pypi    # 오타 패키지(typosquat) �
 <details>
 <summary><b>인터넷 없는 망분리 환경에서 쓰기</b></summary>
 
+**방법 A — 매일 자동 생성되는 공식 번들 내려받기 (권장, 가장 쉬움)**
+
+GitHub Actions가 **매일 03:00(KST)** 최신 위협 인텔(OSV 악성 피드·CISA KEV·NVD·EPSS)을
+수집해 검증 가능한 반입 번들을 고정 URL로 게시합니다:
+
+```bash
+# (외부망 PC) 매일 갱신되는 번들 + sha256 을 내려받아 해시를 확인합니다
+#   https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest
+curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip
+curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip.sha256
+sha256sum -c gvskb-intel-bundle.zip.sha256      # OK 확인 후 USB로 이동
+```
+
+**방법 B — 직접 수집해 번들 만들기**
+
 ```bash
 # (외부망 PC) 보안 피드 캐시를 받아 검증 가능한 반입 번들로 만듭니다
 gvskb update-intel --all                       # npm 패키지도 쓰면: GVSKB_OSV_INCLUDE_NPM=1
-gvskb intel-bundle export intel-반입.zip        # 캐시 + sha256 manifest 를 zip 하나로
+gvskb intel-bundle export gvskb-intel-bundle.zip   # 캐시 + sha256 manifest 를 zip 하나로
+```
 
-# (매체 반입) intel-반입.zip 을 USB로 옮깁니다
+**반입·사용 (A·B 공통)**
+
+```bash
+# (매체 반입) gvskb-intel-bundle.zip 을 USB로 옮깁니다
 
 # (망분리 PC) 무결성 전수 검증 후 반입하고, 외부 호출 없이 로컬 룰·캐시로만 검사
 #   캐시 위치: %USERPROFILE%\.gvskb\cache  (환경변수 GVSKB_CACHE_DIR로 변경 가능)
-gvskb intel-bundle import intel-반입.zip         # sha256 불일치면 전체 거부
+gvskb intel-bundle import gvskb-intel-bundle.zip   # sha256 불일치면 전체 거부
 $env:GVSKB_MODE = "offline"      # PowerShell
 gvskb doctor --offline           # 인텔 캐시 존재·신선도까지 점검됩니다
 gvskb scan ./my-project --check-deps
@@ -335,7 +354,9 @@ gvskb scan ./my-project --check-deps
 정적 분석 룰은 **외부 통신 없이 그대로 동작**합니다. 반입한 캐시는 로드 시
 **sha256 무결성을 재검증**하고(변조·손상 시 자동 무시), 기본 **30일**
 (`GVSKB_INTEL_MAX_AGE_DAYS`로 조정)이 지나면 '이상 없음'을 **판정 보류로 승격**해
-오래된 캐시가 최신처럼 보이지 않게 합니다.
+오래된 캐시가 최신처럼 보이지 않게 합니다. 오프라인 검사 리포트에는 **어느 날짜
+캐시 기준의 판정인지**(피드별 기준일)가 자동 표기되고, KEV 등재 취약점에는
+**EPSS 악용확률·CVSS 점수**가 병기되어 보안팀이 우선순위를 바로 정할 수 있습니다.
 
 > 🧾 **점검 이력(감사로그)** — `GVSKB_AUDIT_DIR` 환경변수를 설정하면 스캔·차단·예외
 > 승인·인텔 갱신 이력이 월별 JSONL로 append 기록됩니다. 원본 코드·개인정보는 저장하지
@@ -442,7 +463,14 @@ repos:
 | **OWASP** | LLM Top 10 · Agentic Top 10 · AI Testing Guide |
 | **실시간 취약점 피드** | OSV.dev · CISA KEV · NVD · FIRST EPSS |
 
-> 총 **215개 룰** (자동 탐지 95 + 지식·참조 120). 모든 룰은 Markdown 한 장으로 정의돼 누구나 읽고 검토·확장할 수 있습니다.
+> 총 **216개 룰** (자동 탐지 96 + 지식·참조 120). 모든 룰은 Markdown 한 장으로 정의돼 누구나 읽고 검토·확장할 수 있습니다.
+
+**실시간 피드는 매일 자동으로 갱신·배포됩니다** — GitHub Actions가 매일 03:00(KST)
+4개 피드를 수집해 ① 망분리 반입용 **검증 번들을 [`intel-latest` 릴리스](https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest)로 게시**하고,
+② 새 CISA KEV 취약점을 **proposed 초안 룰 PR**로 올립니다(사람이 검토·승인해야
+집행됨 — 자동화는 소싱까지, 판정 반영은 사람의 결정). 갱신된 데이터는 패키지
+검사의 악성 판정, KEV 신호의 **EPSS 악용확률·CVSS 병기**, 리포트의 **캐시 기준일
+표기**에 실제로 사용됩니다.
 
 ---
 
