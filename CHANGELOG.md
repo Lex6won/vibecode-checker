@@ -17,6 +17,7 @@
 - **EPSS·NVD 점수 병기** — 매일 수집만 되고 판정에 쓰이지 않던 epss-recent·
   nvd-recent 캐시를 활용: KEV 등재 취약점 신호에 **EPSS 악용확률(0~1)·백분위**와
   **CVSS 3.1 점수·심각도**를 병기해 보안팀 우선순위 판단 근거 제공.
+  테스트 467 → 471.
 
 ### 탐지 (Added)
 - **LLM 프롬프트 인젝션 탐지**(`GOV-LLM-PROMPT-INJECTION-001`, OWASP LLM01 · 국정원

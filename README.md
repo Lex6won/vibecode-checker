@@ -11,7 +11,7 @@
 
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-467_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-471_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-216개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -104,6 +104,7 @@
 | [안내자료 (공무원용)](docs/안내자료_공무원용.html) | 사용 부서 공무원 | 효과·사용법·작동 체계도·결과 대응 요령 (발표 슬라이드형) |
 | [기술 설명서 (전문가용)](docs/기술설명_전문가용.html) | 보안팀·개발자 | 아키텍처·탐지 엔진·룰 체계·검증·한계 (11개 장) |
 | [인텔 운영·활용 구조](docs/인텔_운영활용구조.html) | 보안팀·운영 담당 | 일일 자동 갱신 파이프라인, 망분리 반입 절차, 7겹 검증 장치 |
+| [향후 운영 계획](docs/운영계획.html) | 유지관리자·보안팀 | 최신성·점검 품질 유지 — 주기별 캘린더, R&R, 품질 원칙, 체크리스트 |
 
 ---
 
@@ -508,7 +509,7 @@ JavaScript      ███████████████░░░░░   7
 |---|---|---|
 | **독립 코퍼스 탐지율** | **recall 100%** (30/30) · 오탐 0 | `eval_corpus/` 30 시드, 결정론 |
 | 자체검증 매크로 P/R/F1 | 100% | 룰 내장 예제 — *의도-구현 일치* 측정 |
-| 테스트 | 467개 통과 | 유닛·통합·룰 메타 |
+| 테스트 | 471개 통과 | 유닛·통합·룰 메타 |
 | 경계 프로브(난독·별칭) | 4/9 탐지 | 한계 측정 — 미탐이 정상 |
 
 재현: `GVSKB_MODE=offline PYTHONPATH=src python scripts/run_benchmark.py`

@@ -1,6 +1,6 @@
 [project]
 name = "vibecode-checker"
-version = "0.2.0"
+version = "0.2.1"
 description = "Public-sector vibe-coding security knowledge base and MCP guardrail"
 readme = "README.md"
 license = { text = "MIT" }

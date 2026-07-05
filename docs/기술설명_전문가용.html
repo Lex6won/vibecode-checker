@@ -96,7 +96,7 @@
       <div class="trust">
         <div class="t"><b>216 / 96</b><span>총 룰 / 실행형 룰</span></div>
         <div class="t"><b>100% · 0</b><span>독립 벤치마크 recall / 오탐(30 시드)</span></div>
-        <div class="t"><b>467</b><span>자동화 테스트 통과</span></div>
+        <div class="t"><b>471</b><span>자동화 테스트 통과</span></div>
         <div class="t"><b>MIT</b><span>오픈소스 · 룰=Markdown</span></div>
       </div>
     </header>
@@ -348,7 +348,7 @@ examples:                        <span class="c"># 회귀 테스트로 자동 �
       <h2><span class="no">09</span>검증 · 재현성</h2>
       <p class="b">품질은 3층으로 보증되며 모두 결정론적으로 재현 가능합니다.</p>
       <ul class="b">
-        <li><b>자동화 테스트 467개</b> — 유닛·통합·룰 메타 테스트(<code>pytest -q</code>). LLM taint 회귀 11건 포함.</li>
+        <li><b>자동화 테스트 471개</b> — 유닛·통합·룰 메타 테스트(<code>pytest -q</code>). LLM taint 회귀 11건·인텔 활용(기준일·EPSS 병기) 회귀 4건 포함.</li>
         <li><b>룰 예제 회귀</b> — 실행형 95룰 중 73룰이 positive/negative 예제 보유, 정밀화 시 오탐 회귀 방지.</li>
         <li><b>독립 코퍼스 벤치마크</b> — 룰 내장 예제와 분리된 외부 코퍼스로 측정. 재현: <code>GVSKB_MODE=offline PYTHONPATH=src python scripts/run_benchmark.py</code></li>
       </ul>
