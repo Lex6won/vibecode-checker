@@ -33,13 +33,15 @@
 **아래는 실제로 생성되는 HTML 보고서 화면입니다.** 검사 결과를 파일로 저장하면 텍스트(`.md`)와 함께 이 HTML 보고서가 자동으로 만들어지고, 인쇄하면 그대로 PDF 결재 문서로 쓸 수 있습니다.
 
 <p align="center">
-  <!-- 절대 URL 사용 — 상대경로는 raw.githubusercontent.com 직결이라 기관망(raw 차단·camo 허용)에서 깨진다. 절대 URL은 GitHub이 camo 프록시로 서빙. -->
-  <img src="https://raw.githubusercontent.com/Lex6won/vibecode-checker/main/docs/assets/report-summary.png" alt="vibecode-checker 보고서 — 요약층(공무원): 배포 승인/미승인 결론·핵심 숫자·조치 가이드" width="620"/>
+  <!-- jsDelivr 경유 — 기관망 다수가 raw.githubusercontent.com은 차단하고 camo 프록시는
+       허용한다. GitHub은 자사 raw 주소는 camo로 감싸지 않지만 외부 도메인(jsDelivr)은
+       감싸므로, 열람자는 camo만 접촉하고 이미지가 기관망에서도 보인다. -->
+  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/report-summary.png" alt="vibecode-checker 보고서 — 요약층(공무원): 배포 승인/미승인 결론·핵심 숫자·조치 가이드" width="620"/>
   <br/><sub><b>① 요약층 (공무원)</b> — 배포 승인/미승인 결론 박스 → 핵심 숫자 → 조치 가이드(3단계)</sub>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Lex6won/vibecode-checker/main/docs/assets/report-detail.png" alt="vibecode-checker 보고서 — 상세층(보안팀): 보안 분야별 접힘 카드·개인정보 콜아웃·의존성/예외" width="620"/>
+  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/report-detail.png" alt="vibecode-checker 보고서 — 상세층(보안팀): 보안 분야별 접힘 카드·개인정보 콜아웃·의존성/예외" width="620"/>
   <br/><sub><b>② 상세층 (보안팀)</b> — 보안 분야별로 묶어 접힘, 펼치면 위치·취약점·대응·근거. 개인정보·의존성·승인 예외도 함께</sub>
 </p>
 
