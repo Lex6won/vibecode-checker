@@ -5,9 +5,10 @@ import os
 import sys
 from importlib import resources
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from .loader import load_all_rules
 from .report import render_html as render_html_impl
@@ -66,18 +67,28 @@ mcp = FastMCP(
 
 @mcp.tool()
 def search_rules(
-    query: str,
-    scenario: str | None = None,
-    language: str | None = None,
-    severity_min: Literal["low", "medium", "high", "critical"] | None = None,
-    limit: int = 5,
-    status: Literal["approved", "proposed", "stale", "deprecated"] | None = None,
-    approved_only: bool = False,
+    query: Annotated[str, Field(description="검색어(한국어·영어 키워드, 룰 제목·본문·태그 대상). 예: 'SQL 삽입', 'hardcoded secret'")],
+    scenario: Annotated[str | None, Field(description="시나리오 태그로 필터. 값: web-app | data-pipeline | llm-integration | agent")] = None,
+    language: Annotated[str | None, Field(description="프로그래밍 언어로 필터 (예: python, javascript)")] = None,
+    severity_min: Annotated[
+        Literal["low", "medium", "high", "critical"] | None,
+        Field(description="이 심각도 이상만 반환"),
+    ] = None,
+    limit: Annotated[int, Field(description="최대 반환 건수 (기본 5)")] = 5,
+    status: Annotated[
+        Literal["approved", "proposed", "stale", "deprecated"] | None,
+        Field(description="룰 상태로 필터. proposed=실시간 인텔이 자동 생성한 검토 대기 룰"),
+    ] = None,
+    approved_only: Annotated[bool, Field(description="True면 승인(approved)된 룰만 — 자동 생성 proposed 룰 제외")] = False,
 ) -> dict:
-    """Search baseline and realtime security guidance rules.
+    """보안 가이드 룰(기준선 + 실시간 인텔)을 키워드로 검색합니다.
 
-    Set ``approved_only=True`` to exclude auto-generated proposed rules from
-    real-time intel feeds. Use ``status="proposed"`` to inspect pending rules.
+    특정 취약점 유형의 근거 규정·안전한 대안이 궁금할 때, 또는 스캔 결과의
+    rule_id 외에 관련 룰을 더 찾고 싶을 때 사용하세요. 코드 검사가 목적이면
+    이 도구가 아니라 scan_code / scan_path 를 씁니다.
+
+    로컬에 적재된 룰만 조회하며 네트워크 호출이 없습니다. 반환되는 results의
+    각 항목에는 rule_id가 있어 get_rule 로 전문을 조회할 수 있습니다.
     """
     results = simple_search(
         RULES,
@@ -105,8 +116,15 @@ def search_rules(
 
 
 @mcp.tool()
-def get_rule(rule_id: str) -> dict:
-    """Return a rule by ID."""
+def get_rule(
+    rule_id: Annotated[str, Field(description="룰 ID (예: NIS-AI-M01, OWASP-LLM-2025-01). finding.rule_id 또는 search_rules 결과에서 얻음")],
+) -> dict:
+    """룰 ID로 보안 룰 전문(근거 출처·탐지 기준·안전한 수정 예시 포함)을 조회합니다.
+
+    스캔 결과의 finding.rule_id 나 search_rules 결과의 rule_id 로 "왜 이게
+    걸렸는지" 근거 규정과 상세 설명이 필요할 때 사용하세요. 네트워크 호출이
+    없으며, 없는 ID면 {"error": "rule not found"} 를 반환합니다.
+    """
     for rule in RULES:
         if rule.id == rule_id:
             return {
@@ -118,11 +136,20 @@ def get_rule(rule_id: str) -> dict:
 
 @mcp.tool()
 def scan_code(
-    code: str,
-    filename: str = "<memory>",
-    language: str | None = None,
-    scenario: str | None = None,
-    profile: str = "public-default-strict",
+    code: Annotated[str, Field(description="검사할 소스 코드 전문(파일이 아닌 텍스트). 파일·폴더는 scan_path 사용")],
+    filename: Annotated[str, Field(description="표시용 파일명. 확장자로 언어를 추정하므로 알면 넣기 (예: app.py)")] = "<memory>",
+    language: Annotated[str | None, Field(description="언어 강제 지정 (예: python, javascript). 미지정 시 확장자·내용으로 추정")] = None,
+    scenario: Annotated[
+        str | None,
+        Field(description="용도 힌트 — 해당 시나리오 룰을 우선 적용. 값: web-app | data-pipeline | llm-integration | agent"),
+    ] = None,
+    profile: Annotated[
+        str,
+        Field(
+            description="정책 프로파일 ID. 값: public-default-strict(기본·엄격) | "
+            "civil-complaint-chatbot | internal-db-query | web-civil-service"
+        ),
+    ] = "public-default-strict",
 ) -> dict:
     """코드 조각을 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
 
@@ -147,8 +174,19 @@ def scan_code(
 
 
 @mcp.tool()
-def detect_secrets_and_pii(code: str, filename: str = "<memory>") -> dict:
-    """Detect secrets, Korean personal information, and internal network values."""
+def detect_secrets_and_pii(
+    code: Annotated[str, Field(description="검사할 소스 코드 또는 설정 파일 텍스트")],
+    filename: Annotated[str, Field(description="표시용 파일명 (예: config.py, .env)")] = "<memory>",
+) -> dict:
+    """시크릿(API 키·비밀번호·토큰)과 한국형 개인정보(주민등록번호·전화번호 등),
+    내부망 주소만 집중 탐지합니다.
+
+    "이 코드에 키/개인정보 들어있어?"처럼 유출 항목만 빠르게 확인할 때 쓰는
+    부분 집합 검사입니다. SQL 삽입·위험 명령 등 전체 보안 점검이 목적이면
+    scan_code / scan_path 를 쓰세요(이 탐지를 포함합니다).
+
+    코드를 외부로 보내지 않으며, 탐지된 값은 마스킹된 짧은 증거로만 반환합니다.
+    """
     report = detect_secrets_and_pii_impl(code, filename=filename)
     record_scan(report, "detect_secrets_and_pii")
     return report.model_dump(mode="json")
@@ -156,22 +194,38 @@ def detect_secrets_and_pii(code: str, filename: str = "<memory>") -> dict:
 
 @mcp.tool()
 async def check_package(
-    name: str,
-    ecosystem: Literal["pypi", "npm"] = "pypi",
+    name: Annotated[str, Field(description="패키지 이름 (예: requests, express). 버전 표기 없이 이름만")],
+    ecosystem: Annotated[Literal["pypi", "npm"], Field(description="패키지 저장소: pypi(Python) | npm(Node.js)")] = "pypi",
 ) -> dict:
-    """Check a package against OSV.dev before installing an AI-suggested dependency."""
+    """단일 패키지의 알려진 취약점·악성 여부를 설치 전에 확인합니다.
+
+    AI가 제안한 패키지를 pip/npm install 하기 전, 또는 이름이 수상한(오타
+    스쿼팅 의심) 패키지를 확인할 때 사용하세요. 매니페스트 전체를 검사하려면
+    scan_dependencies 를 씁니다.
+
+    네트워크: 온라인이면 OSV.dev API에 패키지명·생태계만 전송합니다(코드 미전송).
+    GVSKB_MODE=offline(망분리)이면 외부 호출 없이 로컬 인텔 캐시로 대체하며,
+    캐시가 비어 있으면 판정 불가를 반환합니다 — 판정 불가는 '안전'이 아닙니다.
+    """
     return await check_package_impl(name=name, ecosystem=ecosystem)
 
 
 @mcp.tool()
 async def scan_dependencies(
-    manifest_text: str,
-    ecosystem: Literal["pypi", "npm"] = "pypi",
-    limit: int = 20,
+    manifest_text: Annotated[
+        str,
+        Field(description="의존성 매니페스트 파일의 원문 텍스트 — requirements.txt(pypi) 또는 package.json(npm). 락파일 불가"),
+    ],
+    ecosystem: Annotated[Literal["pypi", "npm"], Field(description="매니페스트 종류: pypi(requirements.txt) | npm(package.json)")] = "pypi",
+    limit: Annotated[int, Field(description="검사할 최대 패키지 수 (기본 20). 초과분은 결과에 미검사로 표시")] = 20,
 ) -> dict:
-    """Parse a dependency manifest and check packages with OSV.dev.
+    """의존성 매니페스트를 파싱해 각 패키지의 취약점·악성 여부를 일괄 검사합니다.
 
-    Only package names and versions are sent to OSV.dev. Source code is not sent.
+    scan_path 결과에서 requirements.txt·package.json 이 '검사 제외'로 표시되면
+    이 도구로 이어서 검사하세요.
+
+    네트워크: 온라인이면 OSV.dev에 패키지명·버전만 전송합니다(소스 코드 미전송).
+    GVSKB_MODE=offline(망분리)이면 외부 호출 없이 로컬 인텔 캐시로 대체합니다.
 
     락파일(poetry.lock·yarn.lock 등)은 파싱하지 못하므로 verdict="unparsed"로
     정직하게 거절합니다 — 원본 매니페스트(requirements.txt·package.json)를 주세요.
@@ -182,17 +236,35 @@ async def scan_dependencies(
 
 
 @mcp.tool()
-def suggest_fix(rule_id: str, unsafe_code: str | None = None) -> dict:
-    """Return a public-officer-friendly safe-fix recommendation for a finding."""
+def suggest_fix(
+    rule_id: Annotated[str, Field(description="스캔 결과 finding.rule_id 값 (예: NIS-AI-M01)")],
+    unsafe_code: Annotated[str | None, Field(description="문제가 된 코드 조각(선택). 넣으면 마스킹된 미리보기가 함께 반환됨")] = None,
+) -> dict:
+    """발견 사항(finding)에 대한 공무원 친화적 안전 수정 방향을 반환합니다.
+
+    스캔 결과의 특정 finding을 "어떻게 고치죠?"라고 물을 때 rule_id로 호출하세요.
+    쉬운 제목(plain_title), 안전한 수정 방향(safe_fix), 자동 수정 가능
+    여부(can_auto_fix)를 돌려줍니다. 네트워크 호출이 없으며, 자동 수정은 diff
+    미리보기 후 담당자 확인을 거쳐 적용해야 합니다.
+    """
     return suggest_fix_impl(rule_id=rule_id, unsafe_code=unsafe_code)
 
 
 @mcp.tool()
 def scan_path(
-    path: str,
-    scenario: str | None = None,
-    profile: str = "public-default-strict",
-    max_files: int = 500,
+    path: Annotated[str, Field(description="검사할 로컬 파일 또는 폴더의 절대·상대 경로. 원격 URL 불가(먼저 clone)")],
+    scenario: Annotated[
+        str | None,
+        Field(description="용도 힌트 — 해당 시나리오 룰을 우선 적용. 값: web-app | data-pipeline | llm-integration | agent"),
+    ] = None,
+    profile: Annotated[
+        str,
+        Field(
+            description="정책 프로파일 ID. 값: public-default-strict(기본·엄격) | "
+            "civil-complaint-chatbot | internal-db-query | web-civil-service"
+        ),
+    ] = "public-default-strict",
+    max_files: Annotated[int, Field(description="최대 검사 파일 수 (기본 500). 초과분은 skipped_files에 사유와 함께 기록")] = 500,
 ) -> dict:
     """파일 또는 폴더를 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
 
@@ -215,8 +287,18 @@ def scan_path(
 
 @mcp.tool()
 def render_report(
-    report: dict,
-    format: Literal["markdown", "html", "both", "sarif"] = "markdown",
+    report: Annotated[
+        dict,
+        Field(
+            description="scan_code / scan_path 가 반환한 ScanReport JSON 을 그대로 전달 "
+            "(필수 키: target, summary, findings — 직접 조립하지 말 것). "
+            "scan_dependencies 결과가 있으면 dependency_audit 키에 넣어 병합 가능"
+        ),
+    ],
+    format: Annotated[
+        Literal["markdown", "html", "both", "sarif"],
+        Field(description="markdown(기본) | html(자체 포함 단일 파일) | both | sarif(CI 연동용 SARIF 2.1.0)"),
+    ] = "markdown",
 ) -> dict:
     """ScanReport(scan_code / scan_path 결과)를 한국어 보고서로 렌더링합니다.
 
@@ -252,7 +334,12 @@ def render_report(
 
 @mcp.tool()
 def list_loaded_rules() -> dict:
-    """List loaded guidance rules for debugging and audit."""
+    """현재 서버에 적재된 전체 보안 룰 목록(ID·제목·심각도·계층)을 반환합니다.
+
+    디버깅·감사용입니다: 룰이 몇 개 적재됐는지, 특정 룰이 포함됐는지 확인할 때
+    쓰세요. 룰 내용 검색은 search_rules, 전문 조회는 get_rule 이 적합합니다.
+    네트워크 호출이 없습니다.
+    """
     return {
         "count": len(RULES),
         "rules": [
