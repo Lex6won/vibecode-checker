@@ -19,6 +19,117 @@ from gvskb.schema import AuditEvent
 # ---------------------------------------------------------------------------
 
 
+def _rows(audit_dir: Path) -> list[dict]:
+    out: list[dict] = []
+    for p in sorted(audit_dir.glob("audit-*.jsonl")):
+        out += [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line]
+    return out
+
+
+def _check(name: str, verdict: str, *, version: str = "1.0.0", checked: bool = True) -> dict:
+    return {
+        "name": name, "version": version, "ecosystem": "pypi",
+        "verdict": verdict, "checked": checked,
+    }
+
+
+def test_package_check_is_recorded_even_when_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """단건 조회는 '이상 없음'도 남긴다 — 사람이 직접 물어본 허용 판정이다.
+
+    실측 공백: record_scan 이 ScanReport 를 전제로 해 패키지 계열 도구에는
+    감사 기록이 아예 없었다. "언제 무엇을 허용·차단했는가"가 공공기관 감사
+    대상인데 허용 기록이 없으면 답할 수 없다.
+    """
+    from gvskb.audit import record_package_check
+
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setenv("GVSKB_AUDIT_DIR", str(audit_dir))
+    record_package_check(
+        [_check("requests", "checked_clean", version="2.31.0")],
+        tool="check_package", caller="cli:manual", scope="single",
+    )
+    rows = _rows(audit_dir)
+    assert len(rows) == 1
+    ev = AuditEvent(**rows[0])
+    assert ev.event_type == "package_check"
+    assert ev.package == "pkg:pypi/requests@2.31.0"
+    assert ev.verdict == "checked_clean"
+    assert ev.checked is True
+    assert ev.caller == "cli:manual"
+
+
+def test_bulk_check_records_summary_plus_actionable_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대량 검사는 집계 1건 + 조치 필요한 것만 — 정상 통과로 로그를 덮지 않는다.
+
+    락파일까지 들어오면 한 번에 수백~수천 건이다. 전부 남기면 감사로그가
+    정상 통과 기록으로 뒤덮여 정작 봐야 할 줄이 묻힌다.
+    """
+    from gvskb.audit import record_package_check
+
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setenv("GVSKB_AUDIT_DIR", str(audit_dir))
+    checks = [
+        _check("clean-a", "checked_clean"),
+        _check("clean-b", "checked_clean"),
+        _check("ghost", "not_found", checked=False),
+        _check("holdme", "cooldown_hold"),
+    ]
+    record_package_check(
+        checks, tool="scan_dependencies", scope="manifest",
+        summary={"verdict": "review_required", "ecosystem": "pypi",
+                 "checked_count": 3, "unchecked_count": 1,
+                 "not_found_count": 1, "hold_count": 1},
+    )
+    rows = _rows(audit_dir)
+    kinds = [r["event_type"] for r in rows]
+    assert kinds.count("package_check_batch") == 1
+    assert kinds.count("package_check") == 2          # not_found + cooldown_hold 만
+    pkgs = {r["package"] for r in rows if r["event_type"] == "package_check"}
+    assert pkgs == {"pkg:pypi/ghost@1.0.0", "pkg:pypi/holdme@1.0.0"}
+    batch = next(r for r in rows if r["event_type"] == "package_check_batch")
+    assert batch["verdict"] == "review_required"
+    assert "total=4" in batch["redacted_evidence"]
+
+
+def test_mcp_check_package_actually_writes_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """배선 확인 — 함수만 있고 호출부가 없으면 감사 공백은 그대로다.
+
+    오프라인 모드로 고정해 네트워크 없이 종단 경로를 탄다.
+    """
+    import asyncio
+
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setenv("GVSKB_AUDIT_DIR", str(audit_dir))
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path / "cache"))
+    from gvskb.server import check_package
+
+    asyncio.run(check_package(name="requests", ecosystem="pypi", version="2.31.0",
+                              caller="harness:auto"))
+    rows = [r for r in _rows(audit_dir) if r["event_type"] == "package_check"]
+    assert rows, "check_package 호출이 감사로그에 남지 않았다"
+    assert rows[0]["package"] == "pkg:pypi/requests@2.31.0"
+    assert rows[0]["caller"] == "harness:auto"
+    # 캐시가 비어 판정 불가여도 기록은 남아야 한다 — '판정 못 함'도 감사 대상이다.
+    assert rows[0]["checked"] is False
+
+
+def test_package_check_not_recorded_without_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gvskb.audit import record_package_check
+
+    monkeypatch.delenv("GVSKB_AUDIT_DIR", raising=False)
+    record_package_check([_check("requests", "checked_clean")], tool="check_package")
+    assert not list(tmp_path.glob("**/audit-*.jsonl"))
+
+
 def test_audit_disabled_without_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GVSKB_AUDIT_DIR", raising=False)
     src = tmp_path / "p"

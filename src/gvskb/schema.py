@@ -299,7 +299,12 @@ class AuditEvent(BaseModel):
     audit trail itself does not become a new exfiltration target.
     """
 
-    event_type: Literal["scan", "block", "warn", "approve_bypass", "reload_rules", "update_intel"]
+    event_type: Literal[
+        "scan", "block", "warn", "approve_bypass", "reload_rules", "update_intel",
+        # 패키지 판정 — "언제 무엇을 허용·차단했는가"가 공공기관 감사 대상이다.
+        # scan 계열 이벤트는 ScanReport 를 전제로 해 패키지 판정을 담지 못한다.
+        "package_check", "package_check_batch",
+    ]
     timestamp: str  # ISO-8601
     tool: str
     profile: str = ""
@@ -314,8 +319,19 @@ class AuditEvent(BaseModel):
         default="",
         description=(
             "호출 주체 식별자(예: 'harness:auto', 'registry:manual', 'cli'). "
-            "레지스트리 request_type(AUTO/MANUAL) 구분의 근거 — 호출자가 자율 신고한 값."
+            "레지스트리 request_type(AUTO/MANUAL) 구분의 근거 — 호출자가 자율 신고한 값. "
+            "개인 식별자(이름·이메일·사번·PC명·IP)를 넣지 말 것 — 감사에 필요한 것은 "
+            "'무엇이 호출했는가'이지 '누가'가 아니다."
         ),
+    )
+    # ── package_check 계열 전용 ───────────────────────────────────────────
+    # 패키지명·버전은 해시하지 않고 그대로 남긴다. 이 값들은 비밀이 아니고,
+    # "무엇을 허용·차단했는가"가 이 이벤트의 존재 이유이기 때문이다.
+    package: str = Field(default="", description="pkg:pypi/requests@2.31.0 형태의 패키지 식별자")
+    verdict: str = Field(default="", description="패키지 판정(PackageCheckResult.verdict) 또는 집계 판정")
+    checked: bool | None = Field(
+        default=None,
+        description="취약점 검사가 실제 수행됐는가. False 는 '안전'이 아니라 '판정 못 함'",
     )
 
 
