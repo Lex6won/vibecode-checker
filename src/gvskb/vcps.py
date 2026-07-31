@@ -103,4 +103,10 @@ def license_verdict(license_str: str | None) -> str:
         return "allowed"
     if s_low.startswith(("gpl", "agpl", "sspl", "bsl")):
         return "review_required"
+    # PolyForm 계열은 SPDX 식별자(하이픈)와 서술형("PolyForm Noncommercial
+    # License 1.0.0", 공백)이 함께 쓰인다 — 목록의 접두 일치로는 서술형이
+    # 걸리지 않으므로 계열 전체를 여기서 받는다. 어느 변형이든 상업·재배포
+    # 조건이 붙어 있어 검토 대상인 것은 같다.
+    if s_low.startswith("polyform"):
+        return "review_required"
     return "unknown"

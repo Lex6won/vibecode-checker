@@ -25,6 +25,14 @@ detection:
     # 사실상 나타나지 않으므로 미탐 위험은 무시할 수 있다.
     - '(?i)(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))[^"'']{8,}["'']'
     - 'sk-[A-Za-z0-9_-]{20,}'
+    # sk_<벤더>_<본문> 형태 — Stripe(sk_live_·sk_test_), 기관 발급 키 등.
+    # `sk_` 만으로는 잡지 않는다: 하이픈과 달리 언더스코어는 식별자에 흔해
+    # sk_some_long_variable_name 같은 정상 코드가 오탐이 된다. 그래서
+    #   ① 벤더 구절(sk_xxx_)을 요구하고
+    #   ② 본문에 숫자나 대문자가 최소 1개 있을 것을 요구한다(전부 소문자면
+    #      키가 아니라 식별자일 가능성이 높다. 32자 난수 키가 숫자·대문자를
+    #      하나도 안 가질 확률은 무시할 수준).
+    - 'sk_[A-Za-z0-9]{2,}_(?=[A-Za-z0-9]*[0-9A-Z])[A-Za-z0-9]{16,}'
     - 'AKIA[0-9A-Z]{16}'
   category: secret-scanning
   why_it_matters: 키가 저장소나 LLM 프롬프트에 노출되면 행정시스템, 클라우드, 외부 API가 탈취될 수 있습니다.
@@ -43,12 +51,20 @@ examples:
     - 'OPENAI_API_KEY = "sk-proj-aaabbbcccdddeeefffggghhhiiijjj"'
     - 'password = "supersecretvalue123"'
     - 'token = "AKIAABCDEFGHIJKLMNOP"'
+    # 변수명 없이 값만 인자로 넘기는 형태 — 변수명 기반 패턴이 놓치는 자리
+    - 'client = RegistryClient(base_url, "sk_ggtrust_Ab3xK9mQ2pR7sT1uV5wY8zC4dE6fG0hJ")'
+    # 실제 벤더 접두사(sk_live_·sk_test_ 등)는 예시에도 쓰지 않는다 — GitHub
+    # 푸시 보호가 이 파일을 실제 유출로 판단해 푸시를 거부한다(실측). 형태만
+    # 같으면 패턴 검증에는 충분하다.
+    - 'client = VendorSDK(api_key="sk_vendor_Ab3xK9mQ2pR7sT1uV5wY8zC4")'
   negative:
     - "pi = 3.14"
     - 'greeting = "hello world"'
     - "api_key = 'YOUR_KEY_HERE'"
     - 'api_key = "<your-api-key>"'
     - 'password = "XXXXXXXXXXXX"'
+    # 언더스코어 식별자는 키가 아니다 — 벤더 구절이 있어도 본문이 전부 소문자면 제외
+    - "sk_model_pipeline_transformer = build()"
 ---
 
 ## 무엇이 위험한가
