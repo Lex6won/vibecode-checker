@@ -201,6 +201,71 @@ def test_unknown_host_operator_is_none() -> None:
     assert conns[0].operator is None
 
 
+def test_installer_download_hosts_are_classified_not_unclassified() -> None:
+    """실측(응소ON): 온프레미스 설치 스크립트의 배포처가 전부 '미분류'로 남았다.
+
+    운영 중 전송이 아니라 설치 자재 다운로드이므로 국외이전 검토 대상은 아니지만,
+    폐쇄망에서는 곧 '설치 불가' 지점이라 무엇을 반입해야 하는지 드러나야 한다.
+    """
+    for host in ("nginx.org", "nginx.com", "nssm.cc", "slproweb.com",
+                 "www.python.org", "github.com"):
+        conns = extract_api_connections(f'curl https://{host}/download', "app.py")
+        assert conns, f"{host} 를 잡지 못했다"
+        c = conns[0]
+        assert c.category == "infra", f"{host} 가 {c.category} 로 분류됐다"
+        assert c.operator, f"{host} 의 운영주체가 비어 있다"
+
+
+def test_doc_context_does_not_erase_known_host_warning() -> None:
+    """문맥 표시가 카탈로그의 구체적 경고를 덮어쓰면 안 된다.
+
+    실측(응소ON): 설치 가이드가 `Invoke-RestMethod https://api.ipify.org` 실행을
+    안내하는데, 통짜 문구가 이를 '다운로드 주소'로 덮어써 '서버 공인 IP 노출'
+    경고가 보고서에서 사라졌다 — 문서라는 이유로 위험을 지운 셈이다.
+    """
+    conns = extract_api_connections(
+        "<code>Invoke-RestMethod https://api.ipify.org</code>",
+        "deploy/서버설치가이드.html",
+    )
+    c = conns[0]
+    assert "운영 중 전송 아님" in c.data_summary       # 문맥은 남기고
+    assert "공인 IP" in c.data_summary                 # 경고는 지우지 않는다
+    assert "다운로드 주소" not in c.data_summary
+
+
+def test_doc_context_generic_text_only_when_host_unknown() -> None:
+    """아는 게 없을 때만 통짜 문구를 쓴다(원래 노이즈 억제 의도는 유지)."""
+    conns = extract_api_connections(
+        "curl https://vendor-unknown-xyz.example/setup.zip", "deploy/install.bat"
+    )
+    assert conns[0].data_summary == "설치·안내 문서의 다운로드 주소(운영 중 전송 아님)"
+
+
+def test_google_hosts_do_not_shadow_googleapis_entries() -> None:
+    """부분 문자열 매칭이라 카탈로그 **순서**가 판정을 바꾼다 — 회귀 방지."""
+    maps_api = extract_api_connections('requests.get("https://maps.googleapis.com/x")', "a.py")
+    assert maps_api[0].data_summary.startswith("지도·좌표 요청")
+    fonts = extract_api_connections('requests.get("https://fonts.googleapis.com/css")', "a.py")
+    assert fonts[0].category == "cdn"
+    gh_api = extract_api_connections('requests.get("https://api.github.com/repos/x")', "a.py")
+    assert gh_api[0].data_summary == "저장소·릴리스 조회"
+
+
+def test_google_maps_link_names_the_coordinate_risk() -> None:
+    """실측(응소ON): 신고 좌표가 `maps?q={lat},{lon}` 로 외부에 실려 나갔다.
+
+    _lookup_host 는 호스트만 보므로 용도를 단정할 수 없다 — 단정하는 대신
+    확인 지점(경로)을 지목해야 검토자가 무엇을 볼지 안다.
+    """
+    conns = extract_api_connections(
+        'link = f"https://www.google.com/maps?q={lat},{lon}"', "app.py"
+    )
+    c = conns[0]
+    assert c.category == "platform"
+    assert c.operator == "Google(미국)"
+    assert "경로 확인 필요" in c.data_summary
+
+
 def test_package_operator_from_catalog() -> None:
     pkgs = inventory_packages(
         [{"name": "openai", "version": "1.2.0"}, {"name": "flask", "version": "2.0"}],

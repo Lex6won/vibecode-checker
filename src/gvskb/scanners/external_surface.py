@@ -60,6 +60,17 @@ _HOST_CATALOG: tuple[tuple[str, str, str, str | None, str | None], ...] = (
     ("registry.npmjs.org", "infra", "패키지 다운로드(설치 시)", "국외", "npm/GitHub(미국)"),
     ("pypi.org", "infra", "패키지 다운로드(설치 시)", "국외", "PyPI/PSF(미국)"),
     ("api.github.com", "infra", "저장소·릴리스 조회", "국외", "GitHub(미국)"),
+    # ── 설치 자재 배포처 ──────────────────────────────────────────────
+    # 공공기관 온프레미스 구축 스크립트에 반복해서 등장한다(실측: 응소ON).
+    # 운영 중 데이터 전송이 아니라 **설치 시 다운로드**이므로 국외이전 검토
+    # 대상이 아니다. 다만 폐쇄망에서는 이 주소들이 곧 '설치 불가' 지점이므로
+    # 미분류로 흘려보내지 않고 무엇을 반입해야 하는지 드러낸다.
+    ("nginx.org", "infra", "웹서버 설치본 다운로드(개인정보 전송 아님)", "국외", "F5/NGINX(미국)"),
+    ("nginx.com", "infra", "웹서버 벤더 사이트(개인정보 전송 아님)", "국외", "F5/NGINX(미국)"),
+    ("nssm.cc", "infra", "윈도우 서비스 등록 도구 다운로드(개인정보 전송 아님)", "국외", "NSSM(국제)"),
+    ("slproweb.com", "infra", "Windows OpenSSL 빌드 다운로드(개인정보 전송 아님)", "국외", "Shining Light Productions(미국)"),
+    ("python.org", "infra", "Python 설치본 다운로드(개인정보 전송 아님)", "국외", "Python Software Foundation(미국)"),
+    ("github.com", "infra", "저장소·릴리스 다운로드(개인정보 전송 아님)", "국외", "GitHub(미국)"),
     # ── CDN·정적 리소스 (폐쇄망에서 화면이 깨지는 축) ──
     ("cdn.jsdelivr.net", "cdn", "정적 파일 로딩(JS·CSS)", "국외", "jsDelivr(국제)"),
     ("unpkg.com", "cdn", "정적 파일 로딩(npm 패키지)", "국외", "Cloudflare/unpkg(미국)"),
@@ -77,6 +88,14 @@ _HOST_CATALOG: tuple[tuple[str, str, str, str | None, str | None], ...] = (
     ("openapi.naver.com", "platform", "검색·번역 등 요청 텍스트", "국내", "네이버(한국)"),
     ("dapi.kakao.com", "platform", "지도·검색 요청(좌표·검색어)", "국내", "카카오(한국)"),
     ("maps.googleapis.com", "platform", "지도·좌표 요청", "국외", "Google(미국)"),
+    # google.com 계열은 **경로마다 성격이 다르다**(/maps 는 좌표, /recaptcha 는
+    # 방문자 IP·토큰). _lookup_host 는 호스트만 보므로 용도를 단정하지 않고
+    # 확인 지점을 지목한다. 실측(응소ON): 신고 좌표가 `maps?q={lat},{lon}` 링크로
+    # 엑셀·화면에 실려 나갔다 — 위치는 재난 업무에서 개인정보성이 있다.
+    # 반드시 googleapis 계열 뒤에 둔다(부분 문자열 매칭이라 순서가 판정을 바꾼다).
+    ("maps.google.com", "platform", "지도 링크(좌표가 URL 에 실릴 수 있음)", "국외", "Google(미국)"),
+    ("www.google.com", "platform", "구글 서비스 요청·링크 — 경로 확인 필요(/maps=좌표, /recaptcha=방문자 IP)", "국외", "Google(미국)"),
+    ("google.com", "platform", "구글 서비스 요청·링크 — 경로 확인 필요", "국외", "Google(미국)"),
 )
 
 # 카탈로그에 없을 때의 **접미사·형태 기반 추정** — 완전 미분류를 줄인다.
@@ -337,8 +356,17 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
             summary += " · ⚠ 개인정보 인접"
         ctx = _file_context(filename)
         if ctx == "doc-or-installer":
-            # 설치 안내·스크립트의 다운로드 주소 — 운영 중 전송이 아니다.
-            summary = "설치·안내 문서의 다운로드 주소(운영 중 전송 아님)"
+            # 설치 안내·스크립트에 등장하는 주소 — 운영 중 전송이 아니다.
+            #
+            # 단, **카탈로그가 아는 호스트의 구체적 경고를 지우면 안 된다.**
+            # 실측(응소ON): 설치 가이드가 `Invoke-RestMethod https://api.ipify.org`
+            # 실행을 안내하는데, 통짜 문구가 이를 "다운로드 주소"로 덮어써
+            # '서버 공인 IP가 외부로 노출됨' 경고가 보고서에서 사라졌다.
+            # 문맥은 덧붙이고, 아는 게 없을 때만 통짜 문구를 쓴다.
+            if cat == "unclassified":
+                summary = "설치·안내 문서의 다운로드 주소(운영 중 전송 아님)"
+            else:
+                summary = f"설치·안내 문서에 등장(운영 중 전송 아님) · {summary}"
         out.append(ExternalConnection(
             kind="api",
             target=host,
