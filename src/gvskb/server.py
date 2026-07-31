@@ -52,10 +52,11 @@ mcp = FastMCP(
         "표시되면 scan_dependencies 로 패키지를 따로 검사하고, 그 결과를 scan 결과 JSON의 "
         "dependency_audit 필드에 넣은 뒤 render_report 를 호출하세요(보고서에 의존성 섹션이 "
         "함께 들어갑니다).\n"
-        "3) render_report 로 한국어 보고서를 만들어 사용자에게 보여주고, **save_report 로 "
-        "파일로 저장**하세요(저장하지 않으면 보고서가 대화창에만 남고 사라집니다). "
-        "기본 저장 위치는 <검사한 경로>/.check-reports/ 이며, 저장 후 경로를 사용자에게 "
-        "알려 주세요 — HTML 을 인쇄하면 그대로 PDF 결재 문서가 됩니다.\n"
+        "3) render_report 로 한국어 보고서를 만들어 사용자에게 보여줍니다. 이 도구는 "
+        "**파일 저장까지 함께** 하므로(<검사한 경로>/.check-reports/), 반환값의 saved "
+        "경로를 사용자에게 그대로 알려 주세요. **에이전트가 보고서를 별도 파일로 다시 "
+        "저장하지 마세요** — 임의 위치·이름으로 만들면 기관의 점검 이력이 흩어집니다. "
+        "HTML 을 인쇄하면 그대로 PDF 결재 문서가 됩니다.\n"
         "4) 발견 사항은 결과 JSON의 decision/severity 기준으로 '차단(block) → 치명·높음 → "
         "자동 수정 가능 → 나머지 경고' 순서로 정리하고, 각 항목의 safe_fix 를 그 순서대로 "
         "사용자에게 제안하세요.\n\n"
@@ -328,15 +329,32 @@ def render_report(
         Literal["markdown", "html", "both", "sarif"],
         Field(description="markdown(기본) | html(자체 포함 단일 파일) | both | sarif(CI 연동용 SARIF 2.1.0)"),
     ] = "markdown",
+    save: Annotated[
+        bool,
+        Field(description="파일로도 저장할지(기본 True). False 면 문자열만 반환합니다"),
+    ] = True,
+    output_dir: Annotated[
+        str | None,
+        Field(description="저장 폴더 지정(선택). 미지정 시 <검사한 경로>/.check-reports/"),
+    ] = None,
 ) -> dict:
-    """ScanReport(scan_code / scan_path 결과)를 한국어 보고서로 렌더링합니다.
+    """ScanReport(scan_code / scan_path 결과)를 한국어 보고서로 만들고 **파일로 저장**합니다.
 
-    사람이 읽고 결재·보고에 쓸 문서가 필요할 때 사용하세요.
+    ⚠️ **중요 — 반환된 내용을 별도 파일로 다시 저장하지 마세요.**
+    이 도구가 이미 표준 위치에 저장했습니다. 반환값의 ``saved`` 에 담긴 경로를
+    사용자에게 그대로 알려 주세요. 에이전트가 임의 위치·이름으로 다시 저장하면
+    조직의 점검 이력이 흩어져 나중에 찾을 수 없습니다.
+
+    저장 규약: ``<검사한 경로>/.check-reports/YYYY-MM-DD_HHMM_보안점검.{html,md,json}``
+    (기관 공용 폴더로 모으려면 환경변수 ``GVSKB_REPORT_DIR`` 을 설정합니다)
+
+    형식:
     - format="markdown": Markdown 본문(기본)
     - format="html": 자체 포함 단일 HTML(외부 CDN·JS 없음, 인쇄→PDF·이메일 가능)
     - format="both": Markdown + HTML 모두
     - format="sarif": SARIF 2.1.0 (CI·보안도구 연동, GitHub code scanning 업로드)
 
+    저장이 필요 없으면 ``save=False`` 로 문자열만 받습니다(파이프 연결 등).
     출력은 자체 완결적이라 비전공 이해관계자 공유나 내부 승인 기록 첨부에 적합합니다.
     """
     try:
@@ -358,6 +376,21 @@ def render_report(
     if format == "sarif":
         from .report import render_sarif
         out["sarif"] = render_sarif(parsed)
+
+    # 기본으로 **파일까지 저장**한다. 문자열만 돌려주면 에이전트가 각자 자기
+    # 방식으로 저장해(임의 폴더·임의 파일명) 조직의 점검 이력이 흩어진다.
+    # 실측: 같은 MCP 를 쓰는 다른 에이전트가 규약과 다른 위치에 보고서를 만들었다.
+    if save:
+        saved = save_report(report=report, output_dir=output_dir)
+        if "error" in saved:
+            out["save_error"] = saved
+        else:
+            out["saved"] = saved["saved"]
+            out["directory"] = saved["directory"]
+            out["note"] = (
+                "보고서를 아래 경로에 저장했습니다 — **별도 파일로 다시 저장하지 마세요.** "
+                "사용자에게 이 경로를 그대로 알려 주세요."
+            )
     return out
 
 
@@ -534,7 +567,9 @@ def security_review_prompt(target: str = "") -> str:
         "scan_path, 메모리의 코드면 scan_code 를 호출한다. GVSKB_MODE=offline이면 URL은 "
         "거부하고 폴더 반입을 안내한다.\n"
         "2) 의존성 매니페스트가 '검사 제외'로 나오면 scan_dependencies 로 패키지도 검사한다.\n"
-        "3) render_report 를 format='both' 로 호출해 한국어 Markdown + HTML 보고서를 만든다.\n"
+        "3) render_report 를 format='both' 로 호출해 한국어 Markdown + HTML 보고서를 만든다. "
+        "이 도구가 표준 위치(.check-reports/)에 저장까지 하므로, 반환된 saved 경로를 "
+        "사용자에게 알려 주고 **별도로 파일을 다시 만들지 않는다**.\n"
         "4) 발견 사항을 '차단(block) → 치명·높음 → 자동 수정 가능 → 나머지 경고' 순서로 "
         "정리하고, 각 항목의 safe_fix(안전한 수정 방향)를 그 순서대로 제안한다.\n"
         "주의: 검사된 파일이 0개면 '안전'이 아니라 경로·확장자를 확인하라는 뜻이고, "

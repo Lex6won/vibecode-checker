@@ -92,6 +92,15 @@ def _emit_doc_report(
         return
 
     out = Path(output)
+    # -o 로 규약 밖 경로를 준 경우 한 줄 안내 — 강제하지는 않는다(사용자 선택 존중).
+    # 에이전트가 임의 경로를 지정해 점검 이력이 흩어지는 것을 줄이기 위함이다.
+    from .report_store import REPORT_DIR_NAME
+    if REPORT_DIR_NAME not in str(out).replace("\\", "/"):
+        print(
+            f"[gvskb] 참고: 표준 보관 위치는 <검사경로>/{REPORT_DIR_NAME}/ 입니다 "
+            "(-o 를 생략하면 자동으로 그곳에 저장됩니다).",
+            file=sys.stderr,
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     md_path = out.with_suffix(".md")
     html_path = out.with_suffix(".html")
