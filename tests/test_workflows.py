@@ -86,6 +86,31 @@ def test_rule_pr_failure_does_not_fail_the_job() -> None:
     assert automerge[0].get("continue-on-error") is True
 
 
+def test_lint_rule_set_is_pinned() -> None:
+    """린터 규칙 집합을 명시해야 한다 — 기본값은 버전마다 바뀐다.
+
+    실측: ruff 0.16 이 기본 규칙을 확대해 **코드 변경 없이** CI 가 139건 실패했다
+    (로컬 0.15 는 통과 → CI 만 깨지는 상태). 규칙은 의도적으로 선택해야 한다.
+    """
+    import tomllib
+
+    pyproject = WORKFLOW_DIR.parent.parent / "pyproject.toml"
+    cfg = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    select = ((cfg.get("tool") or {}).get("ruff") or {}).get("lint", {}).get("select")
+    assert select, "pyproject 에 [tool.ruff.lint] select 가 없다 — 기본값 변경에 취약하다"
+
+
+def test_dev_tools_have_upper_bounds() -> None:
+    """린터·테스트 러너는 상한을 둔다(기본 동작 변경이 CI 를 깨뜨린 실측 사례)."""
+    import tomllib
+
+    pyproject = WORKFLOW_DIR.parent.parent / "pyproject.toml"
+    cfg = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    dev = (cfg["project"].get("optional-dependencies") or {}).get("dev", [])
+    for spec in dev:
+        assert "<" in spec, f"{spec} 에 상한이 없다 — 상위 버전 변경에 무방비다"
+
+
 def test_test_workflow_has_packaging_job() -> None:
     """구버전 사본이 현재 코드를 가리는 사고를 CI 가 잡아야 한다."""
     wf = _load("test.yml")
