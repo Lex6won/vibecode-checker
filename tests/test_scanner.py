@@ -30,6 +30,48 @@ def test_detect_secrets_and_pii_redacts_evidence():
     assert "***REDACTED***" in joined or "******" in joined
 
 
+# ── sk_ 계열 키(언더스코어) ──────────────────────────────────────────────
+# 실측 구멍: 패턴이 `sk-`(하이픈)만 보고 있어 `sk_ggtrust_…`·`sk_live_…` 형식
+# 키를 탐지도 마스킹도 하지 못했다. 특히 마스킹 누락은 토큰이 보고서·오류
+# 메시지에 그대로 찍힌다는 뜻이라 탐지 누락보다 직접적인 유출이다.
+_SK_UNDERSCORE_KEY = "sk_ggtrust_Ab3xK9mQ2pR7sT1uV5wY8zC4dE6fG0hJ"
+
+
+def test_underscore_sk_key_is_masked_even_without_a_variable_name():
+    """값만 인자로 넘겨도 마스킹돼야 한다 — 변수명 기반 규칙이 놓치는 자리."""
+    from gvskb.scanners.regex_scanner import redact_evidence
+
+    out = redact_evidence(f'client = RegistryClient(base_url, "{_SK_UNDERSCORE_KEY}")')
+    assert _SK_UNDERSCORE_KEY not in out
+    assert "REDACTED" in out
+
+
+def test_underscore_sk_key_is_masked_in_free_text():
+    """오류 메시지처럼 따옴표 밖에 있는 토큰도 가려야 한다."""
+    from gvskb.scanners.regex_scanner import redact_evidence
+
+    out = redact_evidence(f"error: token {_SK_UNDERSCORE_KEY} rejected by registry")
+    assert _SK_UNDERSCORE_KEY not in out
+
+
+def test_underscore_sk_key_is_detected_as_a_finding():
+    report = detect_secrets_and_pii(
+        f'client = RegistryClient(base_url, "{_SK_UNDERSCORE_KEY}")\n',
+        filename="registry_client.py",
+    )
+    assert report.summary.finding_count >= 1
+    assert _SK_UNDERSCORE_KEY not in "\n".join(f.evidence for f in report.findings)
+
+
+def test_snake_case_identifier_is_not_mistaken_for_a_key():
+    """`sk_` 는 하이픈과 달리 식별자에 흔하다 — 전부 소문자면 키로 보지 않는다."""
+    report = detect_secrets_and_pii(
+        "sk_model_pipeline_transformer = build()\n",
+        filename="model.py",
+    )
+    assert report.summary.finding_count == 0
+
+
 def test_scan_code_detects_llm_output_handling():
     report = scan_code(
         "model_output = llm.invoke(prompt)\n"

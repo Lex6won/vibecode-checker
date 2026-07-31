@@ -35,3 +35,11 @@ license_review_required:
   - AGPL-3.0
   - BSL-1.1
   - SSPL-1.0
+  # 비상업 계열 — 공공기관 자체 사용은 대개 허용되나 용역사·위탁 경로에서
+  # 조건이 갈린다. 허용목록('공공 활용 제약 적음')에 넣으면 그 제약이 보이지
+  # 않으므로 검토 대상으로 둔다. 이 도구 자신의 라이선스이기도 하다 —
+  # 자기 라이선스에만 관대한 목록은 기준을 무너뜨린다.
+  - PolyForm-Noncommercial-1.0.0
+  - PolyForm-Internal-Use-1.0.0
+  - PolyForm-Small-Business-1.0.0
+  - Elastic-2.0

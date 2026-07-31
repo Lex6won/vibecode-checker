@@ -299,7 +299,11 @@ def redact_evidence(text: str) -> str:
     """Mask Korean PII, secrets, AWS/sk-* keys, and credential-shaped strings."""
     text = re.sub(r"\b(\d{6})-?([1-4])\d{6}\b", r"\1-\2******", text)
     text = re.sub(r"\b(01[016789])-?\d{3,4}-?(\d{4})\b", r"\1-****-\2", text)
-    text = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "sk-***REDACTED***", text)
+    # 탐지 룰보다 **일부러 느슨하게** 잡는다. 여기서 못 가리면 토큰이 보고서·
+    # 로그·오류 메시지에 그대로 찍히지만, 넓게 가려서 생기는 손해는 증거 문자열이
+    # 조금 덜 읽히는 것뿐이다. 비대칭이 명백하므로 과잉 마스킹 쪽을 택한다.
+    # (실측: sk- 만 가려서 sk_ggtrust_… 형식 기관 API 키가 무방비였다.)
+    text = re.sub(r"sk([-_])[A-Za-z0-9_-]{8,}", r"sk\1***REDACTED***", text)
     text = re.sub(r"AKIA[0-9A-Z]{16}", "AKIA***REDACTED***", text)
     text = re.sub(
         r"(?i)((api[_-]?key|secret|password|passwd|token)\s*[:=]\s*[\"'])[^\"']+([\"'])",

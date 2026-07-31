@@ -197,6 +197,20 @@ def test_license_allowlist() -> None:
     assert license_verdict("BSD-3-Clause") == "allowed"
 
 
+def test_noncommercial_licenses_require_review_not_unknown() -> None:
+    """비상업 계열은 '미확인'이 아니라 '검토 필요'다.
+
+    공공기관 자체 사용은 대개 허용되나 용역사·위탁 경로에서 조건이 갈린다.
+    unknown 으로 두면 그 조건이 화면에서 사라진다. SPDX 식별자(하이픈)와
+    서술형(공백) 둘 다 같은 판정이어야 한다 — 실측으로 서술형이 목록의
+    접두 일치를 빠져나갔다.
+    """
+    assert license_verdict("PolyForm-Noncommercial-1.0.0") == "review_required"
+    assert license_verdict("PolyForm Noncommercial License 1.0.0") == "review_required"
+    assert license_verdict("PolyForm-Small-Business-1.0.0") == "review_required"
+    assert license_verdict("Elastic-2.0") == "review_required"
+
+
 def test_license_review_required_for_copyleft() -> None:
     assert license_verdict("GPL-3.0") == "review_required"
     assert license_verdict("AGPL-3.0-only") == "review_required"
