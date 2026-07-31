@@ -81,8 +81,8 @@
     <h1>vibecode-checker 검증 이력 — 상용 도구 비교 및 개선 트래킹</h1>
     <p>실제 공공 프로젝트를 상용 도구와 나란히 점검하고, 발견된 결함을 고쳐 나가는 누적 기록입니다.</p>
     <div class="meta">
-      <span>문서 v3.0</span><span>2026-07-31</span><span>엔진 v0.3.0</span>
-      <span>테스트 605건 통과</span><span>라운드 4회 완료</span><span>오탐 68% → 0%</span>
+      <span>문서 v4.0</span><span>2026-07-31</span><span>엔진 v0.3.0</span>
+      <span>테스트 632건 통과</span><span>라운드 5회 완료</span><span>오탐 68% → 0%</span>
     </div>
   </div>
 </header>
@@ -489,6 +489,67 @@ app_20260607.py  → BOM 있음 → 동일
         <b>동일 해시 파일 묶어 표시</b>하면 가독성 향상</td><td>낮음</td></tr>
   </table>
 
+  <h2>라운드 5 — 재설치 안전성 및 잔여 개선</h2>
+  <p>코덱스 2차 교차 점검과 라운드4에서 남긴 개선 여지를 함께 처리했습니다.</p>
+
+  <h3>코덱스 지적 검증</h3>
+  <table>
+    <tr><th>지적</th><th>검증 결과</th><th>판정</th></tr>
+    <tr><td><b>구버전이 현재 소스를 가림</b><br><code>pip install -e .</code> 반복만으로는 위험</td>
+        <td>사실. site-packages 의 <b>물리 디렉터리</b>가 editable 경로보다 먼저 잡힘.
+        코덱스의 uninstall→재설치로 해소됨(0.3.0 정상 로드)</td>
+        <td><span class="tag t-ok">사실 · 근본 수정</span></td></tr>
+    <tr><td>설치/패키징 smoke test 필요</td><td>사실. CI 에 없었음</td><td><span class="tag t-ok">사실</span></td></tr>
+    <tr><td><code>.secret_key</code> 등 비밀 파일명 탐지 누락</td>
+        <td><b>절반 정정</b> — <code>.secret_key</code>·<code>password.txt</code>·<code>id_rsa</code>·<code>credentials.*</code> 는
+        <b>이미 스캔됨</b>(파일명 규칙), <code>.env</code>·<code>.key</code>·<code>.pem</code>·<code>.crt</code> 는 확장자로 커버.
+        진짜 공백은 <b>내용 룰 부재</b>(64자 hex 값이 어떤 룰에도 안 걸림)</td>
+        <td><span class="tag t-mid">부분 사실</span></td></tr>
+    <tr><td>중복 finding 을 파일 해시로 묶기</td><td>사실(라운드4 자체 관찰과 일치)</td><td><span class="tag t-ok">사실</span></td></tr>
+  </table>
+
+  <h3>조치 내역</h3>
+  <table>
+    <tr><th>#</th><th>조치</th><th>내용</th></tr>
+    <tr><td>1</td><td><b>재설치 안전성(근본)</b></td>
+        <td><code>install_problem()</code>/<code>warn_if_install_broken()</code> — 버전 불일치·가리는 사본 감지 +
+        <b>해결 명령까지 안내</b>. CLI·MCP <b>기동 시 경고</b> 출력.
+        <b>CI 패키징 잡 신설</b>: 일반 설치 → 저장소 밖 진입점 import → editable 재설치 → 사본·버전 불일치 시 실패</td></tr>
+    <tr><td>2</td><td><b>비밀 파일 내용 탐지</b></td>
+        <td><code>GOV-SECRET-KEYFILE-001</code>(높음) 신설 — 파일명+내용을 함께 봐야 해서 <code>scan_path</code> 가 직접 발행.
+        안내문만 있는 <code>password.txt</code> 는 잡지 않음(실측 오탐 방지)</td></tr>
+    <tr><td>3</td><td><b>복제 파일 표시</b></td>
+        <td>내용 해시로 묶어 "동일 자산이므로 <b>조치는 모든 사본에 함께</b>" 안내</td></tr>
+    <tr><td>4</td><td><b>외부연결 맥락 구분</b></td>
+        <td>설치 문서·bat 의 다운로드 주소를 <code>문서·설치</code>로 분리해 국외이전 검토에서 제외.
+        <b>단 HTML 은 경로로 갈림</b> — Flask 템플릿은 브라우저가 실제 로딩하는 <b>런타임</b>이라
+        폐쇄망 경고 유지, 애매하면 런타임으로 판단(과소 판정 방지)</td></tr>
+  </table>
+
+  <div class="box warn">
+    <b>과잉 교정을 잡은 사례</b>
+    4번 최초 구현에서 <code>.html</code> 전체를 문서로 처리해 <code>templates/base.html</code> 의 CDN 로딩이
+    "운영 중 전송 아님"으로 분류됐습니다. 이는 <b>폐쇄망에서 화면이 깨지는 실제 위험을 숨기는</b> 오류라,
+    경로 기반 판정으로 바로잡았습니다.
+  </div>
+
+  <h3>최종 결과 (응소ON)</h3>
+  <table>
+    <tr><th>지표</th><th>라운드4</th><th>라운드5</th></tr>
+    <tr><td>발견</td><td>15</td><td><b>16</b> (비밀 파일 내용 1건 추가)</td></tr>
+    <tr><td>차단</td><td>2</td><td>2</td></tr>
+    <tr><td>취약 패키지</td><td>1</td><td><b>3</b> (설치 흔적 포함)</td></tr>
+    <tr><td>판정 근거</td><td>확인 8 / 패턴 7</td><td>확인 8 / <b>유력 1</b> / 패턴 7</td></tr>
+    <tr><td>복제 파일 안내</td><td>없음</td><td><b>2종 2곳 중복 표시</b></td></tr>
+    <tr><td>문서·설치 링크 분리</td><td>없음</td><td><b>11건 분리</b>(국외이전 검토 제외)</td></tr>
+  </table>
+  <div class="box ok">
+    <b>새로 잡은 진짜 위험</b>
+    <span class="path">disaster-response/.secret_key</span> — Flask 세션 서명키 64자 hex 평문 저장.
+    <code>.gitignore</code> 에 등록돼 있어 위험도는 제한적이나,
+    <b>배포본·AI 도구 전달 시 유출 경로</b>가 되므로 보관 방식 확인 대상입니다.
+  </div>
+
   <h2>라운드 기록 (누적)</h2>
   <table>
     <tr><th>라운드</th><th>일자</th><th>대상</th><th>비교 도구</th><th>주요 성과</th></tr>
@@ -502,6 +563,9 @@ app_20260607.py  → BOM 있음 → 동일
     <tr><td>4</td><td>2026-07-31</td><td>응소ON 재점검</td><td>코드 스패로우</td>
         <td><b>오탐 0 달성</b>(초기 68% → 0%). 재점검 중 <b>보고서 자기 참조 결함 발견·수정</b>.
         실제 조치 필요 위험 3종 중 상용툴 1종 vs gvskb 3종 탐지. 테스트 603→605</td></tr>
+    <tr><td>5</td><td>2026-07-31</td><td>재설치 안전성</td><td>코덱스 2차</td>
+        <td><b>구버전 가림 근본 수정</b>(기동 경고 + CI 패키징 잡). 비밀 파일 내용 탐지 신설로
+        <code>.secret_key</code> 발견. 복제 파일 표시, 문서·설치 링크 분리(과잉 교정 1건 자체 발견·수정). 테스트 605→632</td></tr>
   </table>
 
   <h2>이 문서 갱신 방법</h2>
