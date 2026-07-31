@@ -66,6 +66,24 @@ def reload_rules() -> int:
     return _reload_runtime_rules()
 
 
+def _provenance() -> dict:
+    """분석 출처 각인 — 모든 ScanReport 에 엔진 버전·생성 시각(UTC)을 박는다.
+
+    레지스트리·감사로그가 "어떤 엔진이 언제 판단했나"를 재현 가능하게 만드는
+    최소 단위다. import 실패가 스캔을 막지 않도록 방어적으로 감싼다.
+    """
+    try:
+        from gvskb import __version__
+        ver: str | None = __version__
+    except Exception:  # pragma: no cover - defensive
+        ver = None
+    from datetime import datetime, timezone
+    return {
+        "engine_version": ver,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
 def _current_scan_mode() -> str | None:
     """Honest mode marker for the report — set only in offline (air-gapped) mode.
 
@@ -121,6 +139,26 @@ def _summary(findings: list[Finding]) -> ScanSummary:
     )
 
 
+# AST 엔진이 파일을 성공적으로 파싱했다면, 같은 주제를 다루는 **줄 단위 regex
+# 결과는 버린다**. regex 는 삽입 값의 출처(사용자 입력 vs 개발자 상수)를 알 수
+# 없어 상수 기반 SQL 조립을 치명 위험으로 잘못 올렸고(실측 오탐), AST 는 그
+# 구분을 한다. 파싱 실패 시에만 regex 가 예비 수단으로 남는다.
+_AST_OWNED_RULE_IDS = frozenset({
+    "GOV-SQL-INJECTION-001",
+    "GOV-SQL-DDL-DYNAMIC-001",
+    "GOV-LLM-PROMPT-INJECTION-001",
+})
+
+
+def _drop_regex_when_ast_owns(findings: list[Finding], ast_parsed: bool) -> list[Finding]:
+    if not ast_parsed:
+        return findings
+    return [
+        f for f in findings
+        if not (f.engine == "regex" and f.rule_id in _AST_OWNED_RULE_IDS)
+    ]
+
+
 def _dedupe(findings: list[Finding]) -> list[Finding]:
     """Keep the most precise engine's finding for each (rule_id, file, line)."""
     best: dict[tuple[str, str, int], Finding] = {}
@@ -153,6 +191,8 @@ def scan_code(
             profile=profile,
             categories=categories,
         ))
+    from .scanners.ast_scanner import python_ast_parsed
+    raw = _drop_regex_when_ast_owns(raw, python_ast_parsed(code, filename, language))
     findings = _dedupe(raw)
 
     # Apply scenario-bound policy: decision overrides + severity_min filter.
@@ -174,12 +214,14 @@ def scan_code(
         ),
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),
+        **_provenance(),
     )
 
 
 def scan_file(path: str | Path, *, language: str | None = None, scenario: str | None = None) -> ScanReport:
     p = Path(path)
-    return scan_code(p.read_text(encoding="utf-8"), filename=str(p), language=language, scenario=scenario)
+    # utf-8-sig — BOM 제거(그대로 두면 AST 파싱이 실패한다).
+    return scan_code(p.read_text(encoding="utf-8-sig"), filename=str(p), language=language, scenario=scenario)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +245,27 @@ DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".vue", ".svelte",
     ".tf", ".tfvars",
     ".dockerfile",
+    # 자격증명·키 자재 — 실측에서 SSL **개인키**(*_key.pem)가 소스에 있는데
+    # 확장자 목록에 없어 '검사조차 되지 않았다'. 확장자만으로도 위험 신호이며,
+    # 내용(PEM 헤더)까지 보면 개인키 노출을 확정할 수 있다.
+    ".pem", ".key", ".crt", ".cer", ".der", ".p12", ".pfx", ".jks", ".keystore",
+    ".ppk", ".asc", ".gpg", ".kdbx",
 })
+
+# 파일 **이름**만으로 비밀 취급해야 하는 것들(확장자가 .txt 여도 검사한다).
+# `.txt` 전면 스캔은 로그·문서까지 끌어들여 노이즈가 크므로 이름으로 선별한다.
+_SECRET_FILENAME_RE = re.compile(
+    r"(?:^|[._-])(?:password|passwd|pwd|secret|secrets|credential|credentials|"
+    r"apikey|api[_-]?key|token|privatekey|private[_-]?key|id_rsa|id_dsa|id_ecdsa|id_ed25519)"
+    r"(?:[._-]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_secret_filename(name: str) -> bool:
+    """이름만으로 비밀 자재로 봐야 하는 파일인가(password.txt, id_rsa 등)."""
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return bool(_SECRET_FILENAME_RE.search(name) or _SECRET_FILENAME_RE.search(stem))
 
 # 의존성 매니페스트/락파일 — regex 스캔으로는 취약 버전이 잡히지 않으므로
 # SCA(check-package / scan_dependencies)로 보내야 한다. 디렉터리 스캔 중
@@ -321,8 +383,13 @@ def scan_path(
     profile: str = "public-default-strict",
     max_files: int = DEFAULT_MAX_FILES,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    caller: str = "",
 ) -> ScanReport:
-    """Scan a file or directory tree on disk."""
+    """Scan a file or directory tree on disk.
+
+    ``caller`` 는 호출 주체 자율 신고 값(예: 'harness:auto') — 감사로그의
+    caller 필드로 전달돼 레지스트리 request_type(AUTO/MANUAL) 구분 근거가 된다.
+    """
     root = Path(path)
     inc = frozenset(e.lower() for e in (include_exts or DEFAULT_INCLUDE_EXTS))
     exc = frozenset(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
@@ -341,6 +408,7 @@ def scan_path(
             skipped_files=[SkippedFile(path=str(root), reason="path does not exist")],
             scan_mode=_current_scan_mode(),
             intel_freshness=_intel_freshness(),
+            **_provenance(),
         )
 
     files_to_scan: list[Path] = []
@@ -383,7 +451,18 @@ def scan_path(
                     if name.lower() == "requirements.txt":
                         manifest_files.append((p, "pypi"))
                     continue
-                if p.suffix.lower() not in inc and name.lower() not in {"dockerfile", "makefile"}:
+                if (
+                    p.suffix.lower() not in inc
+                    and name.lower() not in {"dockerfile", "makefile"}
+                    and not _is_secret_filename(name)
+                ):
+                    # **조용히 버리지 않는다** — 검사 대상이 아닌 파일도 기록해야
+                    # "검사했는데 깨끗함"과 "아예 안 봤음"이 구분된다. 실측에서
+                    # ssl/ 디렉터리의 개인키가 스캔·제외 어디에도 없이 사라졌다.
+                    skipped.append(SkippedFile(
+                        path=_rel(p, root, is_dir),
+                        reason=f"검사 대상 확장자 아님({p.suffix or '확장자 없음'}) — 검사되지 않았습니다",
+                    ))
                     continue
                 # 압축/번들 산출물(해시 파일명 · *.min.*)은 원본이 아니므로 스킵.
                 # single-line 초장문(내용 기준)은 아래에서 텍스트 확인 후 거른다.
@@ -422,7 +501,11 @@ def scan_path(
             skipped.append(SkippedFile(path=rel, reason="binary content (NUL detected)"))
             continue
         try:
-            text = f.read_text(encoding="utf-8")
+            # utf-8-sig: BOM 을 **제거하고** 읽는다. utf-8 로 읽으면 BOM 이
+            # U+FEFF 문자로 남아 `ast.parse` 가 SyntaxError 를 내고, AST 정밀
+            # 엔진이 조용히 꺼진 채 regex 로만 검사된다(실측: Windows·한글
+            # 환경에서 흔한 BOM 파일 2개에서 SQL 테인트 분석이 통째로 누락).
+            text = f.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             try:
                 text = f.read_text(encoding="cp949")
@@ -446,7 +529,7 @@ def scan_path(
 
     for mpath, eco in manifest_files:
         try:
-            mtext = mpath.read_text(encoding="utf-8")
+            mtext = mpath.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             continue
         external.extend(
@@ -478,10 +561,11 @@ def scan_path(
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),
         suppression_summary=suppression_summary,
+        **_provenance(),
     )
     # 감사로그(옵트인, GVSKB_AUDIT_DIR) — 공공 점검 이력 증빙. 실패해도 스캔은 계속.
     from .audit import record_scan
-    record_scan(report, "scan_path")
+    record_scan(report, "scan_path", caller=caller)
     return report
 
 

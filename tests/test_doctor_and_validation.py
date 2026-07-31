@@ -146,9 +146,15 @@ def test_doctor_intel_cache_warns_when_offline_and_missing(monkeypatch, tmp_path
     from gvskb.diagnostics import check_intel_cache
 
     results = check_intel_cache()
-    assert len(results) == 2  # osv-malicious · cisa-kev
-    assert all(r["status"] == "warn" for r in results)
-    assert any("update-intel" in r.get("note", "") for r in results)
+    cache_checks = [r for r in results if r["name"].startswith("Intel cache:")]
+    assert len(cache_checks) == 2  # osv-malicious · cisa-kev
+    assert all(r["status"] == "warn" for r in cache_checks)
+    assert any("update-intel" in r.get("note", "") for r in cache_checks)
+    # 자동 당김 진단도 함께 나온다 — 오프라인인데 배포 폴더가 없으면 경고.
+    autopull = [r for r in results if r["name"] == "Intel auto-update"]
+    assert len(autopull) == 1
+    assert autopull[0]["status"] == "warn"
+    assert "GVSKB_INTEL_DIR" in autopull[0].get("note", "")
 
 
 def test_doctor_intel_cache_ok_when_fresh(monkeypatch, tmp_path):

@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vibecode-checker 운영 구조 통합 안내</title>
+<style>
+  /* 자체완결(외부 CDN·폰트·스크립트 없음) — 망분리 PC에서도 그대로 열립니다. */
+  :root{
+    --navy:#0f2c52; --blue:#2563eb; --blue-l:#eff6ff; --ink:#111827; --gray:#5b6470;
+    --line:#e2e6ec; --bg:#f5f7fa; --card:#ffffff;
+    --red:#dc2626; --red-l:#fef2f2; --green:#16a34a; --green-l:#ecfdf5;
+    --amber:#b45309; --amber-l:#fffbeb; --purple:#7c3aed; --purple-l:#f5f3ff;
+    --font:"Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;
+    --mono:"D2Coding","Consolas","Courier New",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font);background:var(--bg);color:var(--ink);line-height:1.75;
+       font-size:15px;-webkit-text-size-adjust:100%}
+
+  /* ── 상단 헤더 ── */
+  header{background:linear-gradient(135deg,var(--navy),#1e3a5f);color:#fff;padding:38px 28px 30px}
+  .hwrap{max-width:1080px;margin:0 auto}
+  header h1{font-size:27px;font-weight:800;letter-spacing:-.5px;margin-bottom:8px}
+  header p{opacity:.9;font-size:15px}
+  .meta{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+  .meta span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);
+             padding:4px 11px;border-radius:99px;font-size:12.5px}
+
+  /* ── 역할 선택 탭 ── */
+  nav{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:2px solid var(--line);
+      box-shadow:0 2px 8px rgba(0,0,0,.05)}
+  .nwrap{max-width:1080px;margin:0 auto;display:flex;flex-wrap:wrap}
+  nav button{flex:1;min-width:150px;padding:15px 10px;border:0;background:none;cursor:pointer;
+             font-family:inherit;font-size:14.5px;font-weight:700;color:var(--gray);
+             border-bottom:3px solid transparent;transition:.15s}
+  nav button:hover{background:var(--blue-l);color:var(--navy)}
+  nav button.on{color:var(--blue);border-bottom-color:var(--blue);background:var(--blue-l)}
+  nav button small{display:block;font-weight:500;font-size:11.5px;opacity:.75;margin-top:2px}
+
+  /* ── 본문 ── */
+  main{max-width:1080px;margin:0 auto;padding:30px 24px 80px}
+  section.panel{display:none}
+  section.panel.on{display:block;animation:fade .3s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  h2{font-size:22px;font-weight:800;color:var(--navy);margin:34px 0 14px;
+     padding-bottom:9px;border-bottom:2px solid var(--line)}
+  h2:first-child{margin-top:6px}
+  h3{font-size:17px;font-weight:700;color:var(--navy);margin:26px 0 10px}
+  h4{font-size:15px;font-weight:700;margin:18px 0 7px}
+  p{margin:9px 0}
+  ul,ol{margin:9px 0 9px 22px}
+  li{margin:5px 0}
+  code{font-family:var(--mono);background:#eef1f5;padding:1px 6px;border-radius:4px;
+       font-size:13px;color:#b91c1c;word-break:break-all}
+  pre{background:#0f1729;color:#e2e8f0;padding:15px 17px;border-radius:9px;overflow-x:auto;
+      margin:12px 0;font-family:var(--mono);font-size:13px;line-height:1.65}
+  pre code{background:none;color:inherit;padding:0}
+  a{color:var(--blue)}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:11px;
+        padding:20px 22px;margin:15px 0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .box{border-left:4px solid var(--blue);background:var(--blue-l);padding:14px 18px;
+       border-radius:0 8px 8px 0;margin:14px 0}
+  .box.warn{border-color:var(--amber);background:var(--amber-l)}
+  .box.danger{border-color:var(--red);background:var(--red-l)}
+  .box.ok{border-color:var(--green);background:var(--green-l)}
+  .box b{display:block;margin-bottom:4px}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;
+        background:var(--card);border-radius:9px;overflow:hidden;
+        box-shadow:0 1px 3px rgba(0,0,0,.05);display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:#eef2f7;font-weight:700;color:var(--navy);white-space:nowrap}
+  tbody tr:nth-child(even){background:#fafbfc}
+
+  .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;
+       font-weight:700;white-space:nowrap}
+  .t-done{background:var(--green-l);color:var(--green);border:1px solid #bbf7d0}
+  .t-todo{background:var(--amber-l);color:var(--amber);border:1px solid #fde68a}
+  .t-none{background:var(--red-l);color:var(--red);border:1px solid #fecaca}
+  .t-info{background:var(--purple-l);color:var(--purple);border:1px solid #ddd6fe}
+
+  .grid{display:grid;gap:14px;margin:15px 0}
+  .grid.c2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .grid.c3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .who{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--blue);
+       border-radius:9px;padding:16px 18px}
+  .who h4{margin:0 0 8px;color:var(--navy)}
+  .who ul{margin-left:18px;font-size:14px}
+
+  .flow{background:#0f1729;color:#cbd5e1;padding:20px;border-radius:10px;overflow-x:auto;
+        font-family:var(--mono);font-size:12.5px;line-height:1.9;white-space:pre;margin:14px 0}
+
+  .path{font-family:var(--mono);font-size:12.5px;color:#0f766e;background:#f0fdfa;
+        padding:2px 7px;border-radius:4px;border:1px solid #99f6e4;word-break:break-all}
+
+  footer{max-width:1080px;margin:0 auto;padding:24px;border-top:1px solid var(--line);
+         color:var(--gray);font-size:13px}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:16px 0}
+  .toc b{color:var(--navy)}
+  .toc ol{margin:8px 0 0 20px;font-size:14px}
+
+  @media print{
+    nav{display:none} section.panel{display:block!important} body{background:#fff}
+    header{background:var(--navy)!important;-webkit-print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hwrap">
+    <h1>vibecode-checker 운영 구조 통합 안내</h1>
+    <p>AI로 만든 공공업무 코드를 배포 전에 점검하는 한국형 보안 게이트 — 무엇이 어떻게 돌아가고, 누가 무엇을 하는지 한 곳에 정리했습니다.</p>
+    <div class="meta">
+      <span>문서 버전 1.0</span>
+      <span>기준일 2026-07-31</span>
+      <span>엔진 v0.3.0</span>
+      <span>테스트 544건 통과</span>
+      <span>이슈 정리될 때마다 갱신</span>
+    </div>
+  </div>
+</header>
+
+<nav>
+  <div class="nwrap">
+    <button class="on" data-p="p1">① 한눈에 보기<small>전체 그림·용어</small></button>
+    <button data-p="p2">② 공무원용<small>설치·사용법</small></button>
+    <button data-p="p3">③ 보안담당자용<small>운영·배포·거버넌스</small></button>
+    <button data-p="p4">④ 개발·구조<small>파일 위치·수정 방법</small></button>
+    <button data-p="p5">⑤ 할 일·변경이력<small>남은 과제</small></button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ══════════════════ ① 한눈에 보기 ══════════════════ -->
+<section class="panel on" id="p1">
+  <h2>이 도구는 무엇인가</h2>
+  <p><b>vibecode-checker</b>(내부 이름 <code>gvskb</code>)는 공무원이 AI 코딩 도구로 만든 코드에 숨은
+  <b>개인정보 노출·API 키·SQL 삽입·위험한 명령 실행·취약 패키지·AI 프롬프트 위험</b>을 찾아
+  <b>한국어 보고서</b>로 알려주는 도구입니다. 코드를 외부로 보내지 않고 내 PC에서 검사합니다.</p>
+
+  <div class="box ok">
+    <b>핵심 원칙 세 가지</b>
+    ① 코드는 PC를 떠나지 않는다 &nbsp;·&nbsp; ② 판정 불가는 '안전'이 아니다 &nbsp;·&nbsp; ③ 공식 보안적합성 검토를 대체하지 않는다
+  </div>
+
+  <h2>전체 그림 — 4개의 구성요소</h2>
+  <div class="flow">┌─────────────────────────────────────────────────────────────────────┐
+│  공무원 PC                                                          │
+│                                                                     │
+│   AI 코딩 도구 ──▶ ❶ 하네스 ──▶ ❷ gvskb MCP (이 프로젝트)            │
+│   (Claude Code·      (설치 허용/       · 코드 검사(룰 216개)          │
+│    Cursor·Codex)      차단 집행)       · 패키지 검사(실재·취약·쿨다운) │
+│                                        · 한국어 보고서 생성           │
+│                                              ▲                      │
+│                                              │ 파일로 받음(자동)      │
+└──────────────────────────────────────────────┼──────────────────────┘
+                                               │
+        ┌──────────────────────────────────────┴───────────────────────┐
+        │                                                              │
+   ❸ 위협 인텔 번들                                    ❹ 신뢰 레지스트리 (개발 중)
+   · 매일 03:00 자동 생성                              · 기관이 심사한 확정 판정
+   · OSV 악성·CISA KEV·NVD·EPSS                        · 허용/예외 목록  ✅ 받을 준비 완료
+   · GitHub 고정 URL + sha256                          · 차단 목록      ⏳ 규격 설계 예정
+   ✅ 지금 운영 중                                      · 내부망 구축 예정</div>
+
+  <h3>용어 정리 (헷갈리기 쉬운 것들)</h3>
+  <table>
+    <tr><th>용어</th><th>한 줄 설명</th><th>이 문서에서의 위치</th></tr>
+    <tr><td><b>MCP</b></td><td>AI가 외부 도구를 호출하는 표준 통신 규격. 그 자체는 아무 판단도 하지 않음</td><td>연결 방식</td></tr>
+    <tr><td><b>gvskb MCP</b></td><td><b>이 프로젝트.</b> 실제로 코드·패키지를 검사하는 엔진</td><td>❷</td></tr>
+    <tr><td><b>하네스</b></td><td>공무원이 AI로 코딩할 때 쓰는 실행 환경. 설치를 실제로 허용/차단하는 곳</td><td>❶</td></tr>
+    <tr><td><b>신뢰 레지스트리</b></td><td>기관이 심사한 패키지 판정을 보관·서비스하는 웹 플랫폼 (별도 프로젝트)</td><td>❹</td></tr>
+    <tr><td><b>인텔 캐시</b></td><td>악성 패키지·실제 악용 취약점 목록을 담은 로컬 데이터. 주기 갱신 필요</td><td>❸</td></tr>
+    <tr><td><b>망분리</b></td><td>인터넷망과 내부업무망이 분리된 환경. 파일 반입 절차로만 데이터 이동</td><td>③번 탭</td></tr>
+  </table>
+
+  <h2>역할 분담 — 누가 무엇을 결정하나</h2>
+  <div class="grid c3">
+    <div class="who"><h4>gvskb MCP</h4><p style="font-size:13.5px;color:var(--gray)">"사실과 의견"</p>
+      <ul><li>검사하고 근거를 제시</li><li>기록을 남기지 않음(무상태)</li><li>차단을 강제하지 않음</li></ul></div>
+    <div class="who"><h4>레지스트리 + 사람</h4><p style="font-size:13.5px;color:var(--gray)">"기억과 결정"</p>
+      <ul><li>최종 허용/차단 심사</li><li>판정 이력 보관</li><li>감사 추적</li></ul></div>
+    <div class="who"><h4>하네스</h4><p style="font-size:13.5px;color:var(--gray)">"집행"</p>
+      <ul><li>실제 설치 허용/차단</li><li>조회 우선 → 없으면 검사</li><li>사용자 승인 게이트</li></ul></div>
+  </div>
+  <div class="box">
+    <b>왜 이렇게 나누나</b>
+    gvskb가 기록·결정까지 하면 망분리 환경에서 못 쓰고, 감사 추적도 흩어집니다.
+    <b>gvskb는 파일만 읽고 판단만 제시</b>하기에 어떤 망에서도 동일하게 동작합니다.
+  </div>
+</section>
+
+<!-- ══════════════════ ② 공무원용 ══════════════════ -->
+<section class="panel" id="p2">
+  <h2>공무원용 — 이것만 알면 됩니다</h2>
+  <div class="box ok">
+    <b>결론부터</b>
+    설치는 <b>AI 에이전트에게 시키면 되고</b>, 최신 위협 정보 갱신은 <b>이제 자동</b>입니다.
+    평소엔 "이 폴더 보안 검사 해줘"라고 말만 하면 됩니다.
+  </div>
+
+  <h3>1. 설치 — AI에게 시키기</h3>
+  <p>Claude Code·Cursor·Codex 같은 <b>코딩 에이전트를 쓰고 있다면</b>, 채팅창에 이렇게 말하세요:</p>
+  <pre><code>https://github.com/Lex6won/vibecode-checker 를 설치하고 내 MCP 설정에 등록해줘</code></pre>
+  <p>에이전트가 설치 → 설정 파일 수정 → 확인까지 대신 해줍니다. 설정 파일을 고칠 때
+  <b>변경 내용 승인을 물어보면 확인 후 승인</b>하시면 됩니다.</p>
+  <div class="box warn">
+    <b>주의 — 채팅 전용 앱은 설치를 못 합니다</b>
+    Claude Desktop·ChatGPT 데스크톱은 보안상 내 PC에서 명령을 실행할 권한이 없습니다.
+    설치를 대신해 줄 수 있는 것은 <b>코딩 에이전트</b>뿐입니다.
+  </div>
+
+  <h3>2. 사용 — 그냥 말하면 됩니다</h3>
+  <table>
+    <tr><th>이렇게 말하면</th><th>이런 일이 일어납니다</th></tr>
+    <tr><td>"이 폴더 보안 점검해줘"</td><td>폴더 전체를 검사하고 한국어 보고서 생성</td></tr>
+    <tr><td>"이 코드 안전한지 확인해줘"</td><td>붙여넣은 코드 조각 검사</td></tr>
+    <tr><td>"이 패키지 설치해도 돼?"</td><td>실재 여부·취약점·발행 경과일 확인</td></tr>
+    <tr><td>"보안 점검 보고서 만들어줘"</td><td>인쇄해서 결재에 쓸 수 있는 HTML 보고서</td></tr>
+  </table>
+  <p>터미널이 익숙하면 명령 한 줄도 됩니다: <code>gvskb scan ./내프로젝트 --check-deps</code></p>
+
+  <h3>3. 결과를 읽는 법 — 이것만 기억하세요</h3>
+  <table>
+    <tr><th>표시</th><th>뜻</th><th>무엇을 해야 하나</th></tr>
+    <tr><td><span class="tag t-none">저장소에 없음</span></td><td><b>AI가 지어낸 가짜 패키지</b>일 가능성이 높음</td><td><b>설치하지 마세요.</b> 공식 문서에서 정확한 이름 확인</td></tr>
+    <tr><td><span class="tag t-none">악성 의심</span></td><td>알려진 악성 패키지</td><td>절대 설치 금지, 보안담당자 보고</td></tr>
+    <tr><td><span class="tag t-todo">취약점 N건</span></td><td>알려진 보안 결함 존재</td><td>조치된 최신 버전으로 올리기</td></tr>
+    <tr><td><span class="tag t-todo">발행 직후 — 대기 권고</span></td><td>너무 최근에 나온 버전</td><td>며칠 기다렸다 설치 (아래 설명)</td></tr>
+    <tr><td><span class="tag t-info">판정 불가</span></td><td>검사를 못 했음</td><td><b>'안전'이 아닙니다.</b> 인터넷 연결 확인 후 재검사</td></tr>
+    <tr><td><span class="tag t-done">이상 없음</span></td><td>검사 시점 기준 문제 없음</td><td>사용 가능 (단, 공식 검토를 대체하진 않음)</td></tr>
+  </table>
+
+  <div class="box warn">
+    <b>왜 "발행 직후"는 기다려야 하나요?</b>
+    해커가 유명 패키지 계정을 탈취해 악성 버전을 올리는 사고가 최근 크게 늘었습니다.
+    이런 오염 버전은 대부분 <b>몇 시간~며칠 안에 발각·삭제</b>됩니다.
+    즉 <b>며칠만 기다렸다 설치하면 통째로 피할 수 있습니다.</b> 이것이 가장 효과 좋은 예방책입니다.
+    <br><br>기본 대기 기준: 개인PC 일회성 <b>3일</b> · 개인PC 반복 사용 <b>7일</b> · 내부서버 공용 <b>14일</b>
+  </div>
+
+  <h3>4. 보고서는 어디에 저장되나요</h3>
+  <div class="box ok">
+    <b>검사한 프로젝트 폴더 안에 자동 저장됩니다</b>
+    <span class="path">내프로젝트\.check-reports\2026-07-31_1530_보안점검.html</span>
+    <br><br>
+    검사할 때마다 <b>날짜·시각 이름으로 쌓이므로</b> 조치 전후를 비교할 수 있고,
+    <b>HTML 파일을 열어 인쇄하면 그대로 PDF 결재 문서</b>가 됩니다.
+    같은 이름의 <code>.md</code>(텍스트)와 <code>.json</code>(원본 데이터)도 함께 만들어집니다.
+  </div>
+  <ul>
+    <li>AI 에이전트에게 시킬 때는 <b>"보고서 저장해줘"</b>라고 하면 이 위치에 저장하고 경로를 알려줍니다.</li>
+    <li>터미널에서는 <code>gvskb scan ./내프로젝트</code> 만 실행하면 자동 저장됩니다(경로 지정 불필요).</li>
+    <li>깃 저장소를 쓴다면 <code>.gitignore</code> 에 <code>.check-reports/</code> 한 줄을 추가하세요.</li>
+  </ul>
+
+  <h3>5. 최신 정보 갱신 — 신경 쓰지 않아도 됩니다</h3>
+  <p>악성 패키지 목록은 매일 갱신되는데, <b>이제 gvskb가 알아서 받아옵니다</b>(하루 1회 자동 확인).
+  뭔가 이상하면 아래 명령으로 상태를 볼 수 있습니다:</p>
+  <pre><code>gvskb intel-sync --status     # 최신인지 확인
+gvskb intel-sync              # 지금 바로 갱신
+gvskb doctor                  # 전체 환경 진단</code></pre>
+
+  <div class="box danger">
+    <b>이 도구가 하지 않는 것</b>
+    이 점검은 <b>공식 보안적합성 검토를 대체하지 않습니다.</b>
+    특히 <b>대민 서비스·개인정보 처리 시스템은 바이브 코딩 결과물을 그대로 올리면 안 되고</b>,
+    정식 정보화사업 절차로 이관해야 합니다.
+  </div>
+</section>
+
+<!-- ══════════════════ ③ 보안담당자용 ══════════════════ -->
+<section class="panel" id="p3">
+  <h2>보안담당자용 — 운영·배포·거버넌스</h2>
+
+  <h3>1. 이 도구가 조직에 주는 것</h3>
+  <table>
+    <tr><th>기능</th><th>상태</th><th>설명</th></tr>
+    <tr><td>한국 기준 매핑</td><td><span class="tag t-done">완료</span></td><td>KISA 시큐어코딩·행안부·국정원 AI 기준을 룰 출처에 명시 — 지적의 근거 규정이 나옴</td></tr>
+    <tr><td>LLM·에이전트 보안</td><td><span class="tag t-done">완료</span></td><td>OWASP LLM/Agentic 기준 45+ 룰 — 국내 도구 중 희소</td></tr>
+    <tr><td>보고서 2층 구조</td><td><span class="tag t-done">완료</span></td><td>공무원용 요약(승인/미승인) + 보안팀용 상세, 인쇄→PDF 결재</td></tr>
+    <tr><td>CI 게이트</td><td><span class="tag t-done">완료</span></td><td>SARIF 출력, <code>--fail-on block</code> 종료코드로 배포 차단</td></tr>
+    <tr><td>감사로그</td><td><span class="tag t-done">완료</span></td><td>append-only JSONL. 원본 코드·개인정보 미저장(해시·마스킹만)</td></tr>
+    <tr><td>승인 예외 관리</td><td><span class="tag t-done">완료</span></td><td>사유·승인자·만료일 필수, 만료 시 자동 무효, 리포트에서 숨기지 않음</td></tr>
+    <tr><td>중앙 예외 배포</td><td><span class="tag t-done">준비완료</span></td><td>레지스트리 확정 판정을 폴더 배포로 전체 PC 일괄 적용</td></tr>
+    <tr><td>기관 차단 목록</td><td><span class="tag t-none">미설계</span></td><td>레지스트리 완성 후 인텔 캐시 소스로 추가 예정</td></tr>
+  </table>
+
+  <h3>2. 위협 인텔 갱신 체계 (2026-07-31 개선)</h3>
+  <div class="flow">[중앙 — 이미 자동]                        [사용자 PC — 신규: 자동 당김]
+GitHub Actions 매일 03:00 KST             gvskb 서버 기동 시 (하루 1회)
+  → OSV 악성 · CISA KEV · NVD · EPSS         ① GVSKB_INTEL_DIR  (공유폴더)  ← 망분리 1순위
+  → 번들 zip + sha256                        ② GVSKB_INTEL_URL  (기관 서버)  ← 레지스트리 완성 시
+  → intel-latest 고정 URL 게시               ③ 기본값 (공개 GitHub 릴리스)
+                                             ↓
+                                          sha256 전수 검증 → 통과해야만 반영
+                                          실패해도 검사는 계속(낡음 정직 표시)</div>
+
+  <div class="box ok">
+    <b>담당자가 얻는 것</b>
+    사용자에게 "갱신하세요"라고 공지할 필요가 없어졌습니다.
+    <b>망분리에서도</b> 담당자가 공유폴더에 번들 파일을 놓기만 하면 전 직원 PC가 다음 검사부터 자동 반영합니다.
+  </div>
+
+  <h3>3. 망분리 환경 운영 절차</h3>
+  <h4>초기 구축 (1회)</h4>
+  <ol>
+    <li>인터넷망 PC에서 번들 다운로드: <span class="path">github.com/Lex6won/vibecode-checker/releases/tag/intel-latest</span></li>
+    <li>게시된 sha256 값과 파일 해시 대조</li>
+    <li>승인된 반입 절차로 내부망 공유폴더에 배치 (예: <span class="path">\\파일서버\gvskb\</span>)</li>
+    <li>각 PC 환경변수 설정 (아래 표) — 배포 스크립트나 그룹정책으로 일괄 적용 권장</li>
+  </ol>
+  <h4>정기 운영 (주 1회 권장)</h4>
+  <ol>
+    <li>인터넷망에서 새 번들 다운로드 + 해시 확인</li>
+    <li>공유폴더의 기존 파일 교체</li>
+    <li><b>끝.</b> 각 PC는 다음 검사 때 자동 반영합니다 (사용자 조작 0회)</li>
+  </ol>
+
+  <h3>4. 환경변수 — 기관 배포 설정</h3>
+  <table>
+    <tr><th>변수</th><th>값 예시</th><th>용도</th></tr>
+    <tr><td><code>GVSKB_MODE</code></td><td><code>offline</code></td><td>망분리 모드 — 외부 통신 일절 금지</td></tr>
+    <tr><td><code>GVSKB_INTEL_DIR</code></td><td><code>\\파일서버\gvskb</code></td><td><b>번들 배포 폴더</b> — 자동 반입 1순위</td></tr>
+    <tr><td><code>GVSKB_INTEL_URL</code></td><td><code>https://내부서버/bundle.zip</code></td><td>기관 레지스트리 엔드포인트 (완성 후)</td></tr>
+    <tr><td><code>GVSKB_AUTO_UPDATE</code></td><td><code>off</code></td><td>자동 갱신 끄기 (갱신 시점을 통제하고 싶을 때)</td></tr>
+    <tr><td><code>GVSKB_EXCEPTIONS_DIR</code></td><td><code>\\파일서버\gvskb-예외</code></td><td>기관 확정 예외 판정 배포 폴더</td></tr>
+    <tr><td><code>GVSKB_VCPS_RULES</code></td><td><code>\\파일서버\기관정책.yaml</code></td><td>기관 정책팩 (쿨다운 일수·라이선스 허용목록)</td></tr>
+    <tr><td><code>GVSKB_AUDIT_DIR</code></td><td><code>\\파일서버\감사로그</code></td><td>감사로그 중앙 수집</td></tr>
+    <tr><td><code>GVSKB_REPORT_DIR</code></td><td><code>\\파일서버\점검보고서</code></td><td><b>보고서 공용 저장 폴더</b> — 조직 전체 점검 이력을 한곳에서 관리(미설정 시 각 프로젝트의 <code>.check-reports/</code>)</td></tr>
+    <tr><td><code>GVSKB_INTEL_MAX_AGE_DAYS</code></td><td><code>30</code></td><td>캐시 신선도 기준 (초과 시 '검토 필요'로 강등)</td></tr>
+    <tr><td><code>GVSKB_RULES_DIR</code></td><td><code>\\파일서버\룰</code></td><td>룰 중앙 관리 (버전 통일)</td></tr>
+  </table>
+
+  <h3>5. 기관 정책팩 — 쿨다운·라이선스 기준 조정</h3>
+  <p>기관이 자체 기준을 쓰려면 아래 형식의 YAML을 만들어 <code>GVSKB_VCPS_RULES</code>로 지정합니다.
+  기본값은 <span class="path">config/vcps-rules.yaml</span>에 있습니다.</p>
+  <pre><code>environments:
+  E0: { label: "개인PC 일회성",   cooldown_days: 3 }
+  E1: { label: "개인PC 반복도구", cooldown_days: 7 }
+  E2: { label: "내부서버 공용",   cooldown_days: 14 }
+default_env: E1
+license_allowlist: [MIT, Apache-2.0, BSD-3-Clause, ISC, MPL-2.0]
+license_review_required: [GPL-3.0, AGPL-3.0, SSPL-1.0]</code></pre>
+  <div class="box">
+    <b>E3(대민·개인정보)가 없는 이유</b>
+    의도적으로 없습니다. 대민 서비스·개인정보 처리는 <b>바이브 코딩 대상이 아니며</b>,
+    정식 정보화사업 절차로 이관해야 한다는 정책을 코드로 표현한 것입니다.
+  </div>
+
+  <h3>6. 승인 예외(bypass) 관리 규율</h3>
+  <p>위험을 수용하고 게이트를 통과시키려면 <span class="path">.gvskb-exceptions.yaml</span>을 씁니다.</p>
+  <pre><code>exceptions:
+  - rule_id: GOV-FLASK-DEBUG-001
+    file: app.py
+    reason: 내부 개발서버 전용 스크립트 — 외부 노출 없음
+    approved_by: 김보안(정보보안담당관)
+    expires: 2026-12-31</code></pre>
+  <ul>
+    <li><b>사유·승인자·만료일이 전부 없으면 무효</b> (방치 방지)</li>
+    <li>예외 적용된 발견도 <b>보고서에서 사라지지 않음</b> — "무엇이 왜 면제됐나"가 항상 보임</li>
+    <li>만료되면 자동 무효화되어 다시 게이트를 막음</li>
+    <li>중앙 배포 시 <code>GVSKB_EXCEPTIONS_DIR</code>에 두면 전체 PC 일괄 적용 (출처가 보고서에 표시됨)</li>
+  </ul>
+  <div class="box danger">
+    <b>중앙 배포 시 필수 보안 요건</b>
+    예외 파일은 사실상 <b>게이트 통과권</b>입니다. 다운로드 방식으로 운영하는 순간
+    <b>sha256·서명 검증이 반드시 필요</b>합니다. (레지스트리 배포 설계 시 확정 예정 — ⑤번 탭 참조)
+  </div>
+
+  <h3>7. 알아두어야 할 한계</h3>
+  <table>
+    <tr><th>한계</th><th>내용</th><th>대응</th></tr>
+    <tr><td>검사 언어 범위</td><td>Python·JavaScript 중심. <b>Java 전용 스캐너 없음</b></td><td>공무원 바이브코딩 산출물 범위로 한정 운영</td></tr>
+    <tr><td>룰 수 표기</td><td>전체 290 중 <b>실제 집행 룰은 96개</b> (나머지는 지식층)</td><td>대외 자료에 집행/지식 구분 명시</td></tr>
+    <tr><td>검사하지 않는 축</td><td>유지보수 건강도·행동 기반 탐지(설치 스크립트 실행 내용)</td><td>사람 검토 필요. 향후 과제</td></tr>
+    <tr><td>패키지 미개봉</td><td>패키지 내용물을 열지 않음(이름·버전만 조회)</td><td>PyPI 설치 스크립트는 판정 불가(npm은 메타데이터로 탐지)</td></tr>
+    <tr><td>탐지 트레이드오프</td><td>오탐 0 원칙 → 일부 미탐 감수</td><td>상용 도구 비교 시 "미탐"이 아닌 "설계 선택"으로 분류</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════ ④ 개발·구조 ══════════════════ -->
+<section class="panel" id="p4">
+  <h2>개발·구조 — 파일 위치와 수정 방법</h2>
+  <div class="toc"><b>이 탭의 구성</b>
+    <ol><li>프로젝트 위치와 실행 방법</li><li>파일 지도 — 무엇을 고치려면 어디를 여나</li>
+    <li>주요 개념의 구현 위치</li><li>작업 절차 (테스트·커밋)</li><li>자동화 파이프라인</li></ol></div>
+
+  <h3>1. 프로젝트 위치·실행</h3>
+  <table>
+    <tr><th>항목</th><th>값</th></tr>
+    <tr><td>로컬 경로</td><td><span class="path">C:\Users\first\vibecode-checker</span></td></tr>
+    <tr><td>원격</td><td><span class="path">github.com/Lex6won/vibecode-checker</span> (MIT)</td></tr>
+    <tr><td>실행</td><td><code>PYTHONPATH=src ~/miniconda3/python.exe -m gvskb.cli ...</code></td></tr>
+    <tr><td>테스트</td><td><code>PYTHONPATH=src python -m pytest -q</code> (현재 544건)</td></tr>
+    <tr><td>린트</td><td><code>python -m ruff check src/gvskb/ tests/</code></td></tr>
+    <tr><td>버전 원천</td><td><span class="path">src/gvskb/__init__.py</span>의 <code>__version__</code> — pyproject가 동적 참조</td></tr>
+  </table>
+  <div class="box warn">
+    <b>환경 함정</b> 시스템 <code>python</code>은 Windows Store 스텁(가짜)입니다.
+    반드시 <code>~/miniconda3/python.exe</code>를 직접 호출하세요.
+  </div>
+
+  <h3>2. 파일 지도 — 무엇을 고치려면 어디를 여나</h3>
+  <table>
+    <tr><th>하고 싶은 일</th><th>고칠 파일</th><th>참고</th></tr>
+    <tr><td><b>보안 룰 추가·수정</b></td><td><span class="path">rules/*/[룰ID].md</span></td><td>frontmatter에 출처·심각도·언어. <code>gvskb validate-rules</code>로 검증</td></tr>
+    <tr><td><b>MCP 도구 추가·설명 변경</b></td><td><span class="path">src/gvskb/server.py</span></td><td>파라미터는 <code>Annotated[..., Field(description=)]</code> 필수</td></tr>
+    <tr><td><b>패키지 검사 로직</b></td><td><span class="path">src/gvskb/tools/check_package.py</span></td><td>판정 사다리·KEV 대조·쿨다운 평가</td></tr>
+    <tr><td><b>패키지 메타데이터 수집</b></td><td><span class="path">src/gvskb/tools/package_metadata.py</span></td><td>PyPI/npm 실재·발행일·라이선스·설치스크립트</td></tr>
+    <tr><td><b>인텔 자동 갱신</b></td><td><span class="path">src/gvskb/intel/autopull.py</span></td><td>신선도·스로틀·소스 계층</td></tr>
+    <tr><td><b>정책 기준(쿨다운·라이선스)</b></td><td><span class="path">config/vcps-rules.yaml</span> + <span class="path">src/gvskb/vcps.py</span></td><td>VCPS 지침의 기계 규칙 사본</td></tr>
+    <tr><td><b>보고서 모양</b></td><td><span class="path">src/gvskb/report.py</span></td><td>Markdown·HTML·SARIF 렌더러</td></tr>
+    <tr><td><b>결과 데이터 구조</b></td><td><span class="path">src/gvskb/schema.py</span></td><td>ScanReport·PackageCheckResult·AuditEvent</td></tr>
+    <tr><td><b>CLI 명령</b></td><td><span class="path">src/gvskb/cli.py</span></td><td>서브커맨드 정의는 <code>build_parser()</code></td></tr>
+    <tr><td><b>코드 스캔 엔진</b></td><td><span class="path">src/gvskb/scanners/</span></td><td>regex·AST(Python)·js_taint·external_surface·semgrep</td></tr>
+    <tr><td><b>예외 처리 규율</b></td><td><span class="path">src/gvskb/suppressions.py</span></td><td>로컬+중앙 병합, 만료 자동 무효</td></tr>
+    <tr><td><b>감사로그</b></td><td><span class="path">src/gvskb/audit.py</span></td><td>해시 중심 — 원본·PII 절대 미저장</td></tr>
+    <tr><td><b>환경 진단</b></td><td><span class="path">src/gvskb/diagnostics.py</span></td><td><code>doctor</code>와 <code>server_status</code> 공통 백엔드</td></tr>
+    <tr><td><b>정책 프로파일</b></td><td><span class="path">policies/*.yaml</span></td><td>4종: public-default-strict 등</td></tr>
+  </table>
+
+  <h3>3. 주요 개념의 구현 위치</h3>
+  <h4>패키지 판정 사다리 (우선순위 순)</h4>
+  <table>
+    <tr><th>판정</th><th>뜻</th><th>심각도</th></tr>
+    <tr><td><code>malicious</code></td><td>악성 advisory 존재</td><td>high (차단)</td></tr>
+    <tr><td><code>not_found</code></td><td><b>공식 저장소에 없음</b> — 슬롭스쿼팅 의심</td><td>high (차단)</td></tr>
+    <tr><td><code>vulnerable</code></td><td>알려진 취약점. KEV 일치 또는 High/Critical이면 차단급</td><td>high/medium</td></tr>
+    <tr><td><code>cooldown_hold</code></td><td>발행 직후 — 위험 확정이 아닌 <b>대기 권고</b></td><td>medium</td></tr>
+    <tr><td><code>checked_stale</code></td><td>낡은 캐시 기준의 '이상 없음'</td><td>검토 필요</td></tr>
+    <tr><td><code>checked_clean</code></td><td>검사 시점 기준 이상 없음</td><td>info</td></tr>
+    <tr><td><code>unknown</code> / <code>error</code></td><td>판정 불가 — <b>'안전'이 아님</b></td><td>검토 필요</td></tr>
+  </table>
+  <h4>인텔 소스 우선순위 (autopull.py)</h4>
+  <ol>
+    <li><code>GVSKB_INTEL_DIR</code> 폴더의 최신 zip — 망분리 1순위</li>
+    <li><code>GVSKB_INTEL_URL</code> — 기관 레지스트리 엔드포인트</li>
+    <li><code>DEFAULT_BUNDLE_URL</code> — 공개 GitHub 릴리스</li>
+  </ol>
+  <p>오프라인 모드에서는 1번만 시도합니다(외부 통신 금지 원칙). 어느 경로든
+  <b>번들 manifest sha256 전수 검증 + 로드 시 envelope 재검증</b>을 통과해야만 반영됩니다.</p>
+
+  <h3>4. 작업 절차</h3>
+  <pre><code># 1) 수정 후 반드시 전체 테스트
+PYTHONPATH=src ~/miniconda3/python.exe -m pytest -q
+
+# 2) 린트
+~/miniconda3/python.exe -m ruff check src/gvskb/ tests/
+
+# 3) 실동작 확인 (예: 가짜 패키지가 차단되는지)
+PYTHONPATH=src python -m gvskb.cli check-package 가짜패키지명 --ecosystem pypi
+
+# 4) 커밋 (푸시는 명시적 요청 시에만)
+git add -A && git commit -m "..."</code></pre>
+  <div class="box">
+    <b>테스트 작성 원칙</b> 네트워크에 의존하지 않게 <code>monkeypatch</code>로 고정합니다.
+    특히 <b>온라인 폴백이 실제 GitHub을 호출</b>하므로, 폴더 소스 테스트는
+    <code>GVSKB_MODE=offline</code>을 설정하거나 <code>_pull_from_url</code>을 모의해야 합니다.
+  </div>
+
+  <h3>5. 자동화 파이프라인 (GitHub Actions)</h3>
+  <table>
+    <tr><th>워크플로</th><th>주기</th><th>하는 일</th></tr>
+    <tr><td><span class="path">.github/workflows/update-intel.yml</span></td><td>매일 03:00 KST</td>
+        <td>OSV·KEV·NVD·EPSS 수집 → <b>번들 게시</b>(intel-latest) + KEV→proposed 룰 PR 자동 병합</td></tr>
+    <tr><td><span class="path">.github/workflows/test.yml</span></td><td>PR·푸시</td><td>pytest 전체 실행</td></tr>
+    <tr><td><span class="path">.github/workflows/intel-digest.yml</span></td><td>매월 1일</td><td>검토 후보 다이제스트 이슈 생성</td></tr>
+  </table>
+  <div class="box warn">
+    <b>중요</b> 이 파이프라인은 <b>GitHub 클라우드에서만</b> 돌고 로컬을 갱신하지 않습니다.
+    로컬 룰 갱신은 <code>git pull</code>, 로컬 인텔 갱신은 자동 당김(또는 <code>gvskb intel-sync</code>)입니다.
+  </div>
+</section>
+
+<!-- ══════════════════ ⑤ 할 일·변경이력 ══════════════════ -->
+<section class="panel" id="p5">
+  <h2>남은 과제와 담당</h2>
+
+  <h3>1. gvskb MCP (이 프로젝트)</h3>
+  <table>
+    <tr><th>과제</th><th>상태</th><th>내용</th></tr>
+    <tr><td>번들 규격 확정</td><td><span class="tag t-todo">다음</span></td>
+        <td><b>레지스트리 팀에 줄 "배포 계약서".</b> 인텔 + 예외 + 차단목록 슬롯 정의. 레지스트리 완성 전에 확정 가능</td></tr>
+    <tr><td>기관 차단 목록 반입</td><td><span class="tag t-none">미설계</span></td>
+        <td>인텔 캐시 신규 소스(<code>org-blocklist</code>)로 추가 — 기존 캐시 인프라 재사용</td></tr>
+    <tr><td>번들 서명 검증</td><td><span class="tag t-none">미설계</span></td>
+        <td>다기관 배포 시 필수. 특히 예외 파일(게이트 통과권)에 필수</td></tr>
+    <tr><td>설치 마법사(<code>gvskb setup</code>)</td><td><span class="tag t-todo">설계완료</span></td>
+        <td>읽기 전용(스니펫 출력만) + <span class="path">llms-install.md</span> — 파일 쓰기는 에이전트 승인 게이트에 위임</td></tr>
+    <tr><td>탐지력 프로파일 표시</td><td><span class="tag t-todo">제안</span></td>
+        <td>보고서 첫머리에 집행 룰 수·semgrep 가동·인텔 기준일 박제 (기관 간 결과 비교 전제)</td></tr>
+    <tr><td>비동기 job 패턴</td><td><span class="tag t-info">후순위</span></td><td>벌크·전체 감사용. 단건은 동기 유지</td></tr>
+    <tr><td>행동 기반 탐지</td><td><span class="tag t-info">장기</span></td><td>Socket.dev 방법론 참고 — 라이선스 조사 선행 필요</td></tr>
+  </table>
+
+  <h3>2. 신뢰 레지스트리 (별도 프로젝트)</h3>
+  <table>
+    <tr><th>과제</th><th>내용</th></tr>
+    <tr><td><b>파일 배포 기능</b></td><td>API와 별개로 <b>번들 export</b> 필수 — 망 경계를 넘는 유일한 방법</td></tr>
+    <tr><td>판정 어휘 매핑</td><td>ALLOW/CONDITIONAL/HOLD/BLOCK ↔ gvskb 판정 사다리 대응표 확정</td></tr>
+    <tr><td>스캔 결과 저장</td><td>엔진 버전·인텔 스냅샷 필드 포함 (재현성 확보)</td></tr>
+    <tr><td>request_type 기록</td><td>gvskb의 <code>caller</code> 값을 AUTO/MANUAL로 매핑</td></tr>
+  </table>
+
+  <h3>3. 하네스 (vibe_harness)</h3>
+  <ul>
+    <li>조회 우선(registry-mcp) → 없으면 검사(gvskb) 순서 구현</li>
+    <li>최종 설치 허용/차단 집행 — gvskb·레지스트리는 "의견"만 제공</li>
+    <li>호출 시 <code>caller</code> 파라미터로 자기 신원 신고</li>
+    <li>도구 설명 무결성 확인 (Tool Poisoning 방어 — 클라이언트 책임)</li>
+  </ul>
+
+  <h3>4. 망 구성별 사용 가능 범위</h3>
+  <table>
+    <tr><th>사용자</th><th>위협 인텔</th><th>기관 확정 판정</th><th>결론</th></tr>
+    <tr><td>경기도 내부망</td><td>공유폴더 자동 반입</td><td>내부 레지스트리 직접</td><td>완전 사용</td></tr>
+    <tr><td>경기도 인터넷망</td><td>GitHub 자동</td><td>반입 절차로 파일 배포 필요</td><td>조건부</td></tr>
+    <tr><td>타 기관·오픈소스 사용자</td><td>GitHub 자동</td><td>대상 아님(내부 정책이므로)</td><td><b>정상 사용</b></td></tr>
+  </table>
+  <div class="box ok">
+    <b>설계 원칙 — 이 한 줄만 지키면 됩니다</b>
+    <b>"레지스트리는 API가 아니라 파일을 배포한다."</b>
+    파일은 승인 절차로 망을 건널 수 있지만 API는 건널 수 없습니다.
+    이 원칙을 지키면 외부 오픈소스 사용자는 기관 파일이 없어도 정상 동작하고,
+    망이 몇 개로 갈려도 동일한 메커니즘으로 연결됩니다.
+  </div>
+
+  <h2>변경 이력</h2>
+  <table>
+    <tr><th>일자</th><th>버전</th><th>내용</th></tr>
+    <tr><td>2026-07-31</td><td>엔진 v0.3.0<br>문서 v1.0</td><td>
+      <b>① 실재 확인</b> — 존재하지 않는 패키지가 '깨끗함'으로 보이던 역효과 제거(차단으로 전환)<br>
+      <b>② 쿨다운</b> — 발행 경과일 기반 HOLD 판정, E등급별 기준일(3/7/14일)<br>
+      <b>③ 메타데이터</b> — 라이선스·설치 스크립트·deprecated 탐지<br>
+      <b>④ 결과 스키마 통일</b> — PackageCheckResult 모델(온/오프라인 동일 키)<br>
+      <b>⑤ 버전 SSOT</b> — 0.1.0 오보고 버그 수정 + 엔진버전·시각 각인<br>
+      <b>⑥ caller 파라미터</b> — 감사로그 호출자 구분<br>
+      <b>⑦ CVSS·KEV</b> — max_cve 세분화, CVE alias 교차 대조<br>
+      <b>⑧ 정책 로더</b> — vcps-rules.yaml + 기관 정책팩 오버라이드<br>
+      <b>⑨ 중앙 예외 오버레이</b> — GVSKB_EXCEPTIONS_DIR 병합(레지스트리 연동 준비)<br>
+      <b>⑩ 인텔 자동 당김</b> — 기동 시 자동 갱신, 소스 계층화(폴더→URL→기본)<br>
+      <span style="color:var(--gray)">테스트 487 → 544건</span>
+    </td></tr>
+    <tr><td>2026-07-31</td><td>—</td><td>MCP 도구 스키마 문서 보강 — 전 파라미터 설명 추가(외부 디렉터리 노출 개선)</td></tr>
+  </table>
+
+  <div class="box">
+    <b>이 문서 갱신 방법</b>
+    파일 위치: <span class="path">docs/운영구조_통합안내.html</span><br>
+    이슈가 정리되거나 구조가 바뀔 때마다 해당 탭 내용과 위 변경 이력을 함께 갱신합니다.
+    헤더의 <b>문서 버전·기준일·엔진 버전·테스트 수</b>도 같이 고쳐주세요.
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <p><b>vibecode-checker</b> · MIT License · <span class="path">github.com/Lex6won/vibecode-checker</span></p>
+  <p style="margin-top:6px">이 도구는 보안 보조 가드레일이며 공식 보안적합성 검토를 대체하지 않습니다.
+  기관 운영 반영 전 정보보안 담당 부서의 정책과 최신 법령·지침을 함께 확인하세요.</p>
+</footer>
+
+<script>
+  // 탭 전환 — 외부 라이브러리 없이 동작(망분리 PC 대응)
+  var btns = document.querySelectorAll('nav button');
+  var panels = document.querySelectorAll('section.panel');
+  btns.forEach(function(b){
+    b.addEventListener('click', function(){
+      btns.forEach(function(x){ x.classList.remove('on'); });
+      panels.forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      document.getElementById(b.dataset.p).classList.add('on');
+      window.scrollTo({top:0, behavior:'smooth'});
+    });
+  });
+</script>
+</body>
+</html>

@@ -56,10 +56,12 @@ def _append(events: list[AuditEvent]) -> None:
         print(f"[gvskb] ⚠ audit log write failed: {exc}", file=sys.stderr)
 
 
-def record_scan(report: ScanReport, tool: str) -> None:
+def record_scan(report: ScanReport, tool: str, caller: str = "") -> None:
     """스캔 1회를 감사로그에 남긴다: scan 이벤트 1건 + 발견별 block/warn 이벤트.
 
     allow 판정 발견은 기록하지 않는다(이벤트 타입에 없음 — 조치 대상이 아님).
+    caller 는 호출 주체 자율 신고 값(예: 'harness:auto') — 레지스트리의
+    request_type(AUTO/MANUAL) 구분 근거가 된다.
     """
     if audit_dir() is None:
         return
@@ -68,6 +70,7 @@ def record_scan(report: ScanReport, tool: str) -> None:
         event_type="scan",
         timestamp=ts,
         tool=tool,
+        caller=caller,
         profile=report.profile,
         target_hash=_hash(report.target, len(report.scanned_files), report.summary.finding_count),
     )]
@@ -85,6 +88,7 @@ def record_scan(report: ScanReport, tool: str) -> None:
             event_type=event_type,
             timestamp=ts,
             tool=tool,
+            caller=caller,
             profile=report.profile,
             rule_id=f.rule_id,
             decision=f.decision,

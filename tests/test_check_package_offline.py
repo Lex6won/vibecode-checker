@@ -231,7 +231,7 @@ def test_audit_manifest_vulnerable_package_is_not_ok(monkeypatch) -> None:
     import asyncio
     import gvskb.tools.check_package as cp
 
-    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0):
+    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0, **kwargs):
         return {
             "name": name, "version": version, "ecosystem": ecosystem,
             "checked": True, "is_malicious_package": False,

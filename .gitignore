@@ -24,3 +24,6 @@ Origine Document_md/origine_pdf/
 
 # Benchmark run outputs (코퍼스/manifest는 커밋, 실행 산출물은 제외)
 eval_corpus/results/
+
+# 점검 보고서(gvskb scan 자동 저장) — 저장소에 커밋하지 않는다
+.check-reports/

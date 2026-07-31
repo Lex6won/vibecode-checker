@@ -19,8 +19,19 @@ review_due: 2026-11-30
 detection:
   patterns:
     - '\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b'
+  # 맥락 제외 — 실제 내부 주소가 아니라 **사용자 안내용 예시**인 줄은 취소한다.
+  # 실측 오탐: `set /p ip="Enter server IP (e.g. 192.168.1.100): "` (설치 스크립트의 입력 안내)
+  exclude_patterns:
+    - '(?i)\b(?:e\.?g\.?|예시|예\)|보기|for example|sample|샘플|placeholder|형식|format)\b'
+    - '(?i)(?:입력\s*(?:하세요|해주세요|예)|enter\s+.*\bip\b|type\s+.*\bip\b|usage\s*:)'
+    - '(?i)0\.0\.0\.0|<[^>]*ip[^>]*>|\{\{?\s*ip\s*\}?\}|xxx\.xxx'
+  flags: [IGNORECASE]
   category: public-sector-internal
-  why_it_matters: 내부망 주소가 외부 저장소나 AI 도구로 나가면 공격자가 내부 구조를 추정할 수 있습니다.
+  why_it_matters: >-
+    내부망 주소가 외부 저장소나 AI 도구로 나가면 공격자가 내부 구조를 추정할 수
+    있습니다. 다만 **안내 문구의 예시 IP**(예: "Enter server IP (e.g. 192.168.1.100)")
+    는 실제 주소가 아니므로 제외합니다 — 이 구분이 없으면 설치 스크립트가
+    전부 차단 대상으로 잡힙니다.
   public_sector_impact:
     - 내부망 구조 노출
     - 침투 경로 단서 제공

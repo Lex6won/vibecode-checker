@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vibecode-checker 검증 이력 — 상용 도구 비교 및 개선 트래킹</title>
+<style>
+  /* 자체완결(외부 CDN·폰트·스크립트 없음) — 망분리 PC에서도 그대로 열립니다. */
+  :root{
+    --navy:#0f2c52; --blue:#2563eb; --blue-l:#eff6ff; --ink:#111827; --gray:#5b6470;
+    --line:#e2e6ec; --bg:#f5f7fa; --card:#fff;
+    --red:#dc2626; --red-l:#fef2f2; --green:#16a34a; --green-l:#ecfdf5;
+    --amber:#b45309; --amber-l:#fffbeb; --purple:#7c3aed; --purple-l:#f5f3ff;
+    --font:"Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;
+    --mono:"D2Coding","Consolas","Courier New",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font);background:var(--bg);color:var(--ink);line-height:1.75;font-size:15px}
+  header{background:linear-gradient(135deg,var(--navy),#1e3a5f);color:#fff;padding:36px 24px 28px}
+  .wrap{max-width:1120px;margin:0 auto}
+  header h1{font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:8px}
+  header p{opacity:.9}
+  .meta{margin-top:15px;display:flex;flex-wrap:wrap;gap:8px}
+  .meta span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);
+             padding:4px 11px;border-radius:99px;font-size:12.5px}
+  nav{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:2px solid var(--line);
+      box-shadow:0 2px 8px rgba(0,0,0,.05)}
+  .nwrap{max-width:1120px;margin:0 auto;display:flex;flex-wrap:wrap}
+  nav button{flex:1;min-width:140px;padding:14px 8px;border:0;background:none;cursor:pointer;
+             font-family:inherit;font-size:14px;font-weight:700;color:var(--gray);
+             border-bottom:3px solid transparent;transition:.15s}
+  nav button:hover{background:var(--blue-l);color:var(--navy)}
+  nav button.on{color:var(--blue);border-bottom-color:var(--blue);background:var(--blue-l)}
+  nav button small{display:block;font-weight:500;font-size:11.5px;opacity:.75;margin-top:2px}
+  main{max-width:1120px;margin:0 auto;padding:28px 22px 80px}
+  section.panel{display:none} section.panel.on{display:block;animation:fade .3s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h2{font-size:21px;font-weight:800;color:var(--navy);margin:32px 0 13px;padding-bottom:9px;border-bottom:2px solid var(--line)}
+  h2:first-child{margin-top:4px}
+  h3{font-size:16.5px;font-weight:700;color:var(--navy);margin:24px 0 9px}
+  h4{font-size:14.5px;font-weight:700;margin:16px 0 6px}
+  p{margin:9px 0} ul,ol{margin:9px 0 9px 22px} li{margin:5px 0}
+  code{font-family:var(--mono);background:#eef1f5;padding:1px 6px;border-radius:4px;font-size:12.8px;color:#b91c1c;word-break:break-all}
+  pre{background:#0f1729;color:#e2e8f0;padding:14px 16px;border-radius:9px;overflow-x:auto;margin:12px 0;
+      font-family:var(--mono);font-size:12.6px;line-height:1.7}
+  pre code{background:none;color:inherit;padding:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .box{border-left:4px solid var(--blue);background:var(--blue-l);padding:13px 17px;border-radius:0 8px 8px 0;margin:13px 0}
+  .box.warn{border-color:var(--amber);background:var(--amber-l)}
+  .box.danger{border-color:var(--red);background:var(--red-l)}
+  .box.ok{border-color:var(--green);background:var(--green-l)}
+  .box b{display:block;margin-bottom:4px}
+  table{width:100%;border-collapse:collapse;margin:13px 0;font-size:13.8px;background:var(--card);
+        border-radius:9px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05);display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#eef2f7;font-weight:700;color:var(--navy);white-space:nowrap}
+  tbody tr:nth-child(even){background:#fafbfc}
+  .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:700;white-space:nowrap}
+  .t-ok{background:var(--green-l);color:var(--green);border:1px solid #bbf7d0}
+  .t-fp{background:var(--red-l);color:var(--red);border:1px solid #fecaca}
+  .t-mid{background:var(--amber-l);color:var(--amber);border:1px solid #fde68a}
+  .t-info{background:var(--purple-l);color:var(--purple);border:1px solid #ddd6fe}
+  .path{font-family:var(--mono);font-size:12.4px;color:#0f766e;background:#f0fdfa;padding:2px 7px;
+        border-radius:4px;border:1px solid #99f6e4;word-break:break-all}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:15px 0}
+  .kpi div{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--blue);
+           border-radius:9px;padding:14px;text-align:center}
+  .kpi .n{font-size:26px;font-weight:800;color:var(--navy);line-height:1.2}
+  .kpi .l{font-size:12.5px;color:var(--gray);margin-top:4px}
+  .kpi .d{font-size:12px;font-weight:700;margin-top:3px}
+  .down{color:var(--green)} .keep{color:var(--gray)}
+  footer{max-width:1120px;margin:0 auto;padding:22px;border-top:1px solid var(--line);color:var(--gray);font-size:13px}
+  @media print{nav{display:none} section.panel{display:block!important} body{background:#fff}
+    header{background:var(--navy)!important;-webkit-print-color-adjust:exact}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>vibecode-checker 검증 이력 — 상용 도구 비교 및 개선 트래킹</h1>
+    <p>실제 공공 프로젝트를 상용 도구와 나란히 점검하고, 발견된 결함을 고쳐 나가는 누적 기록입니다.</p>
+    <div class="meta">
+      <span>문서 v2.1</span><span>2026-07-31</span><span>엔진 v0.3.0</span>
+      <span>테스트 603건 통과</span><span>라운드 3회 완료</span><span>백로그 11건 조치완료</span>
+    </div>
+  </div>
+</header>
+
+<nav>
+  <div class="nwrap">
+    <button class="on" data-p="p1">① 요약<small>핵심 결론</small></button>
+    <button data-p="p2">② 라운드1<small>상용툴 비교</small></button>
+    <button data-p="p3">③ 조치 내역<small>수정·효과</small></button>
+    <button data-p="p4">④ 라운드2<small>코덱스 교차점검</small></button>
+    <button data-p="p5">⑤ 백로그<small>남은 과제</small></button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ① 요약 -->
+<section class="panel on" id="p1">
+  <h2>핵심 결론</h2>
+  <div class="box ok">
+    <b>한 줄 요약</b>
+    상용 도구(코드 스패로우)는 <b>넓지만 시끄럽고</b>, gvskb는 <b>좁고 조용하지만 단정을 잘못했습니다.</b>
+    이 시스템의 진짜 위험(기본 관리자 비밀번호, pillow 취약점)은 gvskb가 더 잘 짚었습니다.
+  </div>
+
+  <h3>라운드 1 조치 효과 (응소ON 실측)</h3>
+  <div class="kpi">
+    <div><div class="n">22 → 9</div><div class="l">발견 총계</div><div class="d down">−59%</div></div>
+    <div><div class="n">8 → 2</div><div class="l">critical</div><div class="d down">−75%</div></div>
+    <div><div class="n">9 → 2</div><div class="l">block 판정</div><div class="d down">−78%</div></div>
+    <div><div class="n">7 → 7</div><div class="l">진짜 위험</div><div class="d keep">손실 없음</div></div>
+  </div>
+
+  <h3>양쪽 도구의 성적표 (검증 기반)</h3>
+  <table>
+    <tr><th>항목</th><th>gvskb</th><th>코드 스패로우</th></tr>
+    <tr><td>노이즈 제어</td><td><span class="tag t-ok">우수</span> 벤더 자동 제외</td><td><span class="tag t-fp">부족</span> 남의 코드 227건</td></tr>
+    <tr><td>앱 코드 정확도</td><td><span class="tag t-mid">FP 68%</span> → 조치 후 개선</td><td><span class="tag t-fp">6건 전부 오탐</span></td></tr>
+    <tr><td>실제 위험 포착</td><td><span class="tag t-ok">admin1234 발견</span></td><td><span class="tag t-fp">미탐</span></td></tr>
+    <tr><td>SCA 범위</td><td><span class="tag t-mid">매니페스트만</span></td><td><span class="tag t-ok">설치 전 패키지+라이선스</span></td></tr>
+    <tr><td>언어 범위</td><td>Python·JS·설정</td><td><span class="tag t-ok">C/C++·Java 포함</span></td></tr>
+    <tr><td>결과 가독성</td><td><span class="tag t-ok">한국어·조치방법·결재용</span></td><td>367쪽 PDF, 요약 부실</td></tr>
+    <tr><td>속도·비용</td><td><span class="tag t-ok">40초·무료</span></td><td>3분·유료</td></tr>
+  </table>
+
+  <h3>라운드 2 최종 효과 (전체 재스캔)</h3>
+  <table>
+    <tr><th>지표</th><th>라운드1 전</th><th>라운드1 후</th><th>라운드2 후</th></tr>
+    <tr><td>검사 파일</td><td>88</td><td>88</td><td><b>125</b> (비밀 파일 포함)</td></tr>
+    <tr><td>제외 기록</td><td>3</td><td>3</td><td><b>148</b> (침묵 제거)</td></tr>
+    <tr><td>critical</td><td>8 <span class="tag t-fp">전부 오탐</span></td><td>2</td><td><b>2</b> <span class="tag t-ok">전부 진짜(개인키)</span></td></tr>
+    <tr><td>SQL 오탐</td><td>8</td><td>2</td><td><b>0</b></td></tr>
+    <tr><td>루프·IP 오탐</td><td>7</td><td>0</td><td><b>0</b></td></tr>
+    <tr><td>의존성 검사 범위</td><td>10개</td><td>10개</td><td><b>22개</b> (전이 의존성)</td></tr>
+    <tr><td>테스트</td><td>487</td><td>547</td><td><b>572</b></td></tr>
+  </table>
+  <div class="box ok">
+    <b>질적 변화</b>
+    critical 8건이 <b>전부 오탐</b>이던 상태에서, <b>critical 2건이 전부 진짜(SSL 개인키 노출)</b>인 상태로 바뀌었습니다.
+    보고서 요약층도 <b>"판정 근거: 확인됨 8건 · 패턴 일치만 7건"</b>으로 근거 강도를 함께 보여줍니다.
+  </div>
+
+  <h3>라운드 2에서 해결한 3대 결함</h3>
+  <div class="box ok">
+    <b>① BOM 파일이 AST 분석을 통째로 건너뛰던 문제 (자체 발견 → 해결)</b>
+    BOM으로 시작하는 Python 파일은 <code>ast.parse</code>가 실패해 <b>정밀 엔진이 조용히 꺼졌습니다.</b>
+    이 프로젝트의 가장 큰 두 파일(138KB·136KB)이 해당돼 라운드1 수정이 무력화됐습니다.
+    → <code>utf-8-sig</code> 로 읽도록 수정, SQL 오탐 잔존 2건 해소.
+  </div>
+  <div class="box ok">
+    <b>② 인증서·개인키 파일 미검사 (코덱스 ① → 해결)</b>
+    실제 SSL 개인키가 소스에 있는데 스캔·제외 어디에도 없었습니다.
+    → 확장자 11종 + 파일명 선별 추가. <b>개인키=치명(차단), 인증서=낮음</b>으로 분리해 과잉 경보도 방지.
+  </div>
+  <div class="box ok">
+    <b>③ 구버전 설치본이 현재 소스를 가림 (코덱스 ③ → 해결)</b>
+    site-packages에 gvskb 0.1.0이 남아 MCP 등록 시 구버전이 로드될 수 있었습니다.
+    → doctor 가 <b>버전 불일치 + sys.path 상의 가리는 사본</b>을 탐지하고 재설치를 안내합니다.
+  </div>
+</section>
+
+<!-- ② 라운드1 -->
+<section class="panel" id="p2">
+  <h2>라운드 1 — 응소ON vs 코드 스패로우 (2026-07-31)</h2>
+
+  <h3>점검 대상</h3>
+  <table>
+    <tr><th>항목</th><th>값</th></tr>
+    <tr><td>소스</td><td><span class="path">C:\Users\first\Downloads\응소ON</span> (시흥시 재난 응소 관리, Flask)</td></tr>
+    <tr><td>앱 자체 코드</td><td>Python 10개(app.py 138KB 포함) + 템플릿 38개</td></tr>
+    <tr><td>상용 보고서</td><td>응소ON코드 스패로우 분석보고서.pdf (367쪽, 2026-07-24)</td></tr>
+  </table>
+
+  <h3>1. 스캔 범위 — 결과 차이의 근원</h3>
+  <table>
+    <tr><th></th><th>gvskb</th><th>코드 스패로우</th></tr>
+    <tr><td>검사 파일</td><td>88개 (앱 코드만)</td><td>전체 (venv·휠·설치프로그램 포함)</td></tr>
+    <tr><td>총 이슈</td><td>22 + 의존성</td><td><b>273</b></td></tr>
+    <tr><td>소요</td><td>약 40초</td><td>3분 10초</td></tr>
+  </table>
+  <p><b>스패로우 273건의 실제 분포</b>(216건 구조화 분석):</p>
+  <table>
+    <tr><th>위치</th><th>건수</th><th>성격</th></tr>
+    <tr><td>파이썬 라이브러리(.venv)</td><td>62</td><td>남의 코드 — Pillow C소스 등</td></tr>
+    <tr><td>오프라인 설치용 휠</td><td>55</td><td>남의 코드</td></tr>
+    <tr><td>외부 설치프로그램(nssm C++)</td><td>44</td><td>남의 코드 — gui.cpp·io.cpp</td></tr>
+    <tr><td>프론트 라이브러리(min.js)</td><td>8</td><td>남의 코드(압축본)</td></tr>
+    <tr><td>앱 자체 코드</td><td>47</td><td>이 중 <b>41건이 requirements.txt 의존성</b></td></tr>
+  </table>
+  <div class="box"><b>즉</b> 개발자가 고칠 수 있는 앱 코드 이슈는 <b>6건</b>, 나머지는 의존성(SCA) + 벤더 노이즈입니다.</div>
+
+  <h3>2. 앱 코드 정확도 — 양쪽 다 부진</h3>
+  <h4>스패로우 6건 → 6건 전부 오탐</h4>
+  <table>
+    <tr><th>위치</th><th>도구 주장</th><th>실제 코드</th><th>판정</th></tr>
+    <tr><td>app.py:638·657·1242</td><td>신뢰되지 않은 URL 자동접속</td><td><code>redirect(url_for('응소완료', ...))</code></td><td><span class="tag t-fp">오탐</span> 내부 엔드포인트</td></tr>
+    <tr><td>app.py:809</td><td>하드코드된 중요 정보(높음)</td><td><code>pw = ''</code></td><td><span class="tag t-fp">오탐</span> 빈 문자열</td></tr>
+    <tr><td>app.py:892</td><td>하드코드된 중요 정보(높음)</td><td><code>error = '비밀번호가 올바르지 않습니다.'</code></td><td><span class="tag t-fp">오탐</span> 안내 메시지</td></tr>
+    <tr><td>make_test_data.py:9</td><td>부적절한 난수(높음)</td><td><code>import random</code> (테스트 데이터용)</td><td><span class="tag t-mid">맥락 오탐</span></td></tr>
+  </table>
+
+  <h4>gvskb 22건 → 7건 진짜, 15건 오탐 (FP율 68%)</h4>
+  <table>
+    <tr><th>발견</th><th>건수</th><th>판정</th><th>근거</th></tr>
+    <tr><td><b>주석 내 관리자 계정</b>(database.py:213)</td><td>1</td><td><span class="tag t-ok">진짜 · 최대 위험</span></td><td><code># 기본 관리자 계정 (아이디: admin / 비번: admin1234)</code> + 실제 그 계정 생성</td></tr>
+    <tr><td>안전하지 않은 쿠키(app.py:54)</td><td>1</td><td><span class="tag t-ok">진짜</span></td><td><code>SESSION_COOKIE_SECURE=False</code></td></tr>
+    <tr><td>자원 해제 누락</td><td>5</td><td><span class="tag t-ok">진짜(품질)</span></td><td>with문 미사용</td></tr>
+    <tr><td>SQL 삽입(critical)</td><td>8</td><td><span class="tag t-fp">전부 오탐</span></td><td>개발자 상수 기반 f-string(ALTER TABLE·PRAGMA·WHERE 조립)</td></tr>
+    <tr><td>무한 반복문</td><td>6</td><td><span class="tag t-fp">오탐</span></td><td>의도된 백업 데몬(sleep), break/return 있는 루프</td></tr>
+    <tr><td>내부망 IP</td><td>1</td><td><span class="tag t-fp">오탐</span></td><td>안내문의 예시 IP</td></tr>
+  </table>
+
+  <h3>3. 의존성(SCA) — 양쪽 일치, 이 프로젝트의 진짜 위험</h3>
+  <table>
+    <tr><th></th><th>gvskb</th><th>스패로우</th></tr>
+    <tr><td>판정</td><td><b>blocked</b></td><td>취약한 컴포넌트 130건(매우 높음)</td></tr>
+    <tr><td>핵심</td><td>pillow 12.2.0 → 취약점 26건, 최고 HIGH</td><td>pillow 12.2.0(150회 언급), CVE 21종</td></tr>
+  </table>
+  <div class="box warn"><b>독립적으로 같은 결론</b>
+    실제 advisory 확인: OS 명령어 삽입(WindowsViewer), 힙 오버플로우(Image.paste/crop).
+    <b>응소ON의 1순위 조치는 pillow 업그레이드입니다.</b></div>
+
+  <h3>4. 각자만 찾은 것</h3>
+  <table>
+    <tr><th>우리만 찾음 (스패로우 미탐)</th><th>스패로우만 찾음 (우리 미탐)</th></tr>
+    <tr>
+      <td>🔴 <b>기본 관리자 계정 admin/admin1234</b><br>세션 쿠키 secure=False<br>앱 코드 자원 누수 5건</td>
+      <td>nssm C++ 44건, Pillow C소스 (남의 코드라 실무 가치 낮음)<br><b>단, C/C++ 분석 능력 자체는 우리에게 없음</b><br>라이선스 식별(MIT·BSD-3-Clause)</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ③ 조치 -->
+<section class="panel" id="p3">
+  <h2>라운드 1 조치 — 수정 내역 (반영 완료)</h2>
+
+  <h3>P0 — SQL 삽입 오탐 제거</h3>
+  <table>
+    <tr><th>조치</th><th>내용</th><th>파일</th></tr>
+    <tr><td>상수 바인딩 추론 신설</td><td>리터럴 리스트 순회 변수·리터럴 컨테이너·고정점 승격으로 "개발자 상수" 판별</td><td><span class="path">src/gvskb/scanners/py_const.py</span> (신규)</td></tr>
+    <tr><td>DDL/PRAGMA 분리 룰</td><td>ALTER·CREATE·PRAGMA는 파라미터 바인딩이 <b>문법적으로 불가</b> → 별도 룰(medium/warn)</td><td><span class="path">rules/scanner-builtin/GOV-SQL-DDL-DYNAMIC-001.md</span> (신규)</td></tr>
+    <tr><td>메시지 톤 수정</td><td>"사용자 입력이 들어갑니다"(단정) → "문자열로 조립합니다 — 사용자 입력이 닿으면 위험"</td><td><span class="path">rules/scanner-builtin/GOV-SQL-INJECTION-001.md</span></td></tr>
+    <tr><td>regex→AST 우선</td><td>Python 파싱 성공 시 같은 주제의 regex 결과 폐기(regex는 값 출처를 모름)</td><td><span class="path">src/gvskb/scanner.py</span></td></tr>
+    <tr><td>전용 엔진 룰 허용</td><td>patterns 비운 룰을 AST 전용으로 컴파일</td><td><span class="path">src/gvskb/scanners/regex_scanner.py</span></td></tr>
+  </table>
+  <p><b>검증</b>: 격리 케이스에서 오탐 4/4 제거, 진짜 위험 6/6 유지</p>
+
+  <h3>P1 — 무한 반복문 정밀화</h3>
+  <ul>
+    <li><code>while True:</code> regex 패턴 제거 → <b>AST가 본문을 보고 판정</b></li>
+    <li>탈출 경로(<code>break</code>/<code>return</code>/<code>raise</code>) 또는 대기(<code>sleep</code>/<code>wait</code>/<code>poll</code>)가 있으면 제외</li>
+    <li>중첩 루프의 break는 바깥 while을 끝내지 못하므로 세지 않음</li>
+    <li><b>검증</b>: 오탐 3/3 제거, 진짜 busy-loop 2/2 유지</li>
+  </ul>
+
+  <h3>P1 — 내부망 IP 맥락 인식</h3>
+  <ul>
+    <li><b><code>exclude_patterns</code> 메커니즘 신설</b> — 같은 줄에 예시·플레이스홀더 문구가 있으면 발견 취소(<b>모든 룰에서 재사용 가능</b>)</li>
+    <li><b>검증</b>: 오탐 3/3 제거, 실제 하드코딩 2/2 유지</li>
+  </ul>
+
+  <h3>수정 효과 — 응소ON 재스캔 실측</h3>
+  <div class="kpi">
+    <div><div class="n">22 → 9</div><div class="l">발견 총계</div><div class="d down">−59%</div></div>
+    <div><div class="n">8 → 2</div><div class="l">critical</div><div class="d down">−75%</div></div>
+    <div><div class="n">9 → 2</div><div class="l">block</div><div class="d down">−78%</div></div>
+    <div><div class="n">547</div><div class="l">테스트 통과</div><div class="d keep">전건</div></div>
+  </div>
+  <div class="box warn"><b>주의</b> 남은 critical 2건(app.py:2112, app_20260607.py:2082)은
+  <b>BOM 결함</b> 때문에 AST 수정이 적용되지 않은 것으로 확인됐습니다(④번 탭 참조).</div>
+
+  <h3>진행 중 (미완)</h3>
+  <table>
+    <tr><th>항목</th><th>상태</th><th>비고</th></tr>
+    <tr><td>P2 SCA 범위 확대</td><td><span class="tag t-mid">모듈만 생성</span></td><td><span class="path">src/gvskb/tools/installed_packages.py</span> — dist-info/wheel/node_modules 수집기. CLI·MCP 배선 남음</td></tr>
+    <tr><td>P2 confidence 표기</td><td><span class="tag t-info">미착수</span></td><td>판정 근거 강도(테인트 확인 vs 패턴 일치)</td></tr>
+  </table>
+</section>
+
+<!-- ④ 라운드2 -->
+<section class="panel" id="p4">
+  <h2>라운드 2 — 코덱스 교차 점검 결과 평가 (2026-07-31)</h2>
+  <p>코덱스가 별도로 gvskb를 점검한 결과를 <b>원본에서 재검증</b>했습니다.</p>
+
+  <h3>검증 결과 요약</h3>
+  <table>
+    <tr><th>#</th><th>코덱스 지적</th><th>검증 방법·결과</th><th>판정</th></tr>
+    <tr><td>1</td><td>.pem·password.txt·인증서/개인키 미탐</td><td><code>ssl/</code> 스캔 → 스캔 0·제외 0·발견 0</td><td><span class="tag t-ok">사실 · 최우선</span></td></tr>
+    <tr><td>2</td><td>스캔 제외 파일이 조용히 무시됨</td><td>위와 동일 — skipped_files에도 없음</td><td><span class="tag t-ok">사실</span></td></tr>
+    <tr><td>3</td><td>구버전 설치본이 현재 소스를 가림</td><td>site-packages에 gvskb 0.1.0, <code>python -m gvskb.cli</code> 실패</td><td><span class="tag t-ok">사실</span></td></tr>
+    <tr><td>4</td><td>SQL 삽입 과탐</td><td>라운드 1과 동일 진단</td><td><span class="tag t-ok">사실 · 수정 완료</span></td></tr>
+    <tr><td>5</td><td>SCA/라이선스 범위(wheel·venv·min.js)</td><td>스패로우 비교와 동일 결론</td><td><span class="tag t-mid">사실 · 모듈 생성</span></td></tr>
+    <tr><td>6</td><td>C/C++ 분석력 약함</td><td>사실이나 <b>선언된 범위 밖</b></td><td><span class="tag t-info">범위 문제</span></td></tr>
+  </table>
+  <div class="box"><b>평가</b> 코덱스 지적 6건 중 5건이 사실이며, 그중 <b>①②③은 라운드 1 비교에서 놓친 새로운 결함</b>입니다.
+  특히 ①은 보안 도구로서 치명적입니다.</div>
+
+  <h3>① 비밀 파일 미탐 — 상세</h3>
+  <pre><code>대상: 응소ON/disaster-response/ssl/
+실제 파일: STAR.siheung.go.kr_key.pem (개인키)
+          STAR.siheung.go.kr_crt.pem
+          password.txt
+          Nginx.pdf
+gvskb 결과: 스캔 0건 · 제외 기록 0건 · 발견 0건
+            ← 4개 파일이 전부 '없는 것처럼' 처리됨</code></pre>
+  <p><b>원인</b>: <code>DEFAULT_INCLUDE_EXTS</code>에 <code>.pem</code>·<code>.key</code>·<code>.crt</code>가 없고, 대상 외 확장자는 <code>skipped_files</code>에도 남기지 않음.</p>
+  <div class="box danger"><b>영향</b> "검사했는데 깨끗함"과 "아예 안 봤음"이 구분되지 않습니다 —
+  우리 도구의 핵심 원칙("판정 불가는 안전이 아니다")이 <b>파일 단위에서 깨집니다.</b></div>
+
+  <h3>③ 설치본 가림 — 상세</h3>
+  <pre><code>site-packages/gvskb/__init__.py → 버전 0.1.0 (구버전)
+python -m gvskb.cli version     → No module named gvskb.cli</code></pre>
+  <p><b>영향</b>: MCP 등록 시 <b>구버전이 로드</b>될 수 있습니다. 사용자는 최신 룰·수정이 적용됐다고 믿지만 실제로는 아닙니다.</p>
+
+  <h3>🆕 라운드 2 자체 발견 — BOM 결함</h3>
+  <div class="box danger">
+    <b>증상</b> BOM(U+FEFF)으로 시작하는 Python 파일은 <b>AST 분석이 통째로 건너뛰어집니다.</b>
+  </div>
+  <pre><code>app.py           → BOM 있음 → ast.parse 실패 (invalid non-printable character U+FEFF)
+app_20260607.py  → BOM 있음 → 동일
+결과: AST 정밀 판정(SQL 테인트·무한루프)이 적용되지 않고 regex로만 검사됨</code></pre>
+  <table>
+    <tr><th>항목</th><th>내용</th></tr>
+    <tr><td>원인</td><td><code>scanner.py</code>가 <code>encoding="utf-8"</code>로 읽어 BOM이 문자로 남음 (<code>utf-8-sig</code>면 정상)</td></tr>
+    <tr><td>영향 범위</td><td><b>Windows·한글 환경에서 매우 흔함.</b> 이 프로젝트의 가장 큰 두 파일(138KB·136KB)이 해당</td></tr>
+    <tr><td>결과</td><td>남은 critical 2건의 직접 원인 — <b>P0 수정이 정작 대상 파일에 적용되지 않음</b></td></tr>
+    <tr><td>예상 수정</td><td><code>read_text(encoding="utf-8-sig")</code> 1줄 + 회귀 테스트</td></tr>
+  </table>
+  <div class="box warn"><b>왜 위험한가</b> 이 결함은 <b>"조용한 성능 저하"</b>라 가장 위험한 유형입니다.
+  도구는 정상 동작한 것처럼 보이지만 정밀 엔진이 꺼집니다.</div>
+</section>
+
+<!-- ⑤ 백로그 -->
+<section class="panel" id="p5">
+  <h2>백로그 처리 현황</h2>
+  <table>
+    <tr><th>항목</th><th>근거</th><th>상태</th></tr>
+    <tr><td>BOM 파일 AST 우회 수정</td><td>자체 발견</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>비밀/인증서 파일 탐지</td><td>코덱스 ①</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>미검사 파일 skipped_files 기록</td><td>코덱스 ②</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>설치본 정합성 검증</td><td>코덱스 ③</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>SCA 범위 확대(설치 흔적)</td><td>스패로우 격차 · 코덱스 ⑤</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>confidence(판정 근거 강도) 표기</td><td>신뢰 붕괴 방지</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>라이선스 결과 리포트 노출</td><td>스패로우 격차</td><td><span class="tag t-ok">완료(R2)</span></td></tr>
+    <tr><td>상용 도구 결과 import → 자동 diff</td><td>코덱스 ⑥</td><td><span class="tag t-info">범위 제외</span></td></tr>
+    <tr><td>C/C++·Java 분석</td><td>스패로우 격차</td><td><span class="tag t-info">정책상 대상 아님</span></td></tr>
+  </table>
+
+  <h3>라운드 2 조치 상세</h3>
+  <table>
+    <tr><th>#</th><th>조치</th><th>내용</th></tr>
+    <tr><td>1</td><td>BOM 우회 수정</td><td>파일 읽기를 <code>utf-8-sig</code> 로 변경(3개 경로)</td></tr>
+    <tr><td>2</td><td>비밀·인증서 탐지</td><td>확장자 11종 + <b>파일명 선별</b>(password*·id_rsa·secret*). 개인키 룰 보강(PGP·PuTTY 포괄, 언어 필터 제거), 인증서는 <b>공개 자재라 별도 low 룰</b>로 분리</td></tr>
+    <tr><td>3</td><td>침묵 제거</td><td>검사 대상 아닌 파일도 사유와 함께 기록</td></tr>
+    <tr><td>4</td><td>설치본 검증</td><td>버전 대조 + <b>sys.path 가리는 사본 탐지</b> + import 스모크 테스트</td></tr>
+    <tr><td>5</td><td>SCA 확대</td><td>dist-info·whl·node_modules 수집. CLI <code>--include-installed</code>, MCP <code>scan_installed_packages</code> 신설. PEP 503 정규화로 중복 제거</td></tr>
+    <tr><td>6</td><td>라이선스 노출</td><td>의존성 표에 라이선스 컬럼, 검토 필요 시 ⚠ 표시</td></tr>
+    <tr><td>7</td><td>근거 강도</td><td><code>confidence</code> 신설(confirmed/likely/pattern-only). 요약층 분포 + 발견별 표기. <b>룰이 스스로 선언 가능</b>(PEM 헤더처럼 패턴이 곧 확증인 경우)</td></tr>
+  </table>
+
+  <h3>범위 제외 사유</h3>
+  <div class="box">
+    <b>상용툴 diff (코덱스 ⑥)</b>
+    "결함 수정"이 아니라 신규 제품 기능이고, PDF 파싱은 도구·버전마다 레이아웃이 달라 유지보수 부담이 큽니다
+    (이번 스패로우 PDF도 공백이 NUL 로 추출됨). 필요해지면 <b>SARIF/CSV 한정</b>으로 재검토합니다.
+  </div>
+  <div class="box ok">
+    <b>C/C++·Java (정책으로 확정)</b>
+    <b>하네스가 개발 언어를 JavaScript·Python 으로 제한</b>합니다. 따라서 이 축의 부재는 결함이 아니라
+    <b>설계된 범위</b>이며, 패키지 검사도 npm·PyPI 두 생태계만 지원하는 것이 정합합니다.
+    상용 도구 비교 시 이 차이는 "미탐"이 아니라 <b>"범위 외"</b>로 분류합니다.
+  </div>
+
+  <h3>다음 라운드에서 볼 것</h3>
+  <ul>
+    <li>남은 <code>pattern-only</code> 7건(KISA 룰 계열)의 정밀화 여지 — AST 이관 가치 검토</li>
+    <li>응소ON 조치 결과 재점검(pillow 업그레이드 · 개인키 폐기 · admin 비밀번호 변경)</li>
+  </ul>
+
+  <h2>라운드 3 — 보고서 사용성 개선</h2>
+  <p>실제 보고서 화면을 보고 발견한 사용성 결함 4건을 조치했습니다.</p>
+  <table>
+    <tr><th>#</th><th>문제</th><th>조치</th></tr>
+    <tr><td>1</td><td><b>보고서가 어디에도 저장되지 않음</b><br>CLI는 <code>-o</code> 필수, MCP는 문자열만 반환 →
+        공무원이 MCP로 쓰면 대화창에만 남고 사라짐</td>
+        <td><b>저장 규약 신설</b>: <code>&lt;프로젝트&gt;/.check-reports/YYYY-MM-DD_HHMM_보안점검.{html,md,json}</code><br>
+        CLI는 <code>-o</code> 없어도 자동 저장(<code>--stdout</code>으로 해제), MCP <code>save_report</code> 도구 신설.
+        <code>GVSKB_REPORT_DIR</code>로 기관 공용 폴더 지정 가능</td></tr>
+    <tr><td>2</td><td><b>외부 호스트가 전부 "기타"</b><br>카탈로그 25개 밖은 모두 미분류.
+        <code>cdn.jsdelivr.net</code>(CDN)조차 기타</td>
+        <td>라벨 <code>기타</code>→<b><code>미분류</code></b>(정직한 표기). 카탈로그 <b>25→53개</b> 확충
+        (인프라·CDN·국내 공공API·플랫폼). <b>접미사 추정 폴백</b> 추가 — 추정은 국가·주체를 단정하지 않음</td></tr>
+    <tr><td>3</td><td><b>이용 정보 칸이 세로로 찌그러짐</b><br>컬럼 폭 미지정으로 긴 파일 경로가 공간 독점</td>
+        <td>컬럼 폭 명시(이용 정보 <b>30%</b>로 최대), 대부분 비어 있던 <b>모델 컬럼 삭제</b>(이용 정보에 통합),
+        긴 경로 줄바꿈 허용</td></tr>
+    <tr><td>4</td><td><b>제외 파일 148건이 한 줄로 뭉개짐</b><br>+ 확장자마다 그룹이 쪼개짐</td>
+        <td>사유별 분류 표시 + "<b>검사되지 않았다는 뜻</b>" 경고.
+        집계를 그룹 함수로 통일해 <code>.pdf</code>·<code>.png</code>가 한 줄로 합쳐짐</td></tr>
+  </table>
+
+  <h3>효과 (응소ON 재검증)</h3>
+  <pre><code>- 검사 제외: 148건 (검사 대상 확장자 아님 145 · 빌드 산출물 2 · 의존성 매니페스트 1)
+- 판정 근거: 확인됨 8건 · 패턴 일치만 7건 — 값의 출처를 직접 확인하세요
+
+| 대상(호스트)         | 종류     | 위치              | 이용 정보                | 국외이전(운영주체)    | 검토 |
+| cdn.jsdelivr.net     | CDN/정적 | app.py:306 외 2곳 | 정적 파일 로딩(JS·CSS)   | 국외 — jsDelivr(국제) | 참고 |
+| fonts.googleapis.com | CDN/정적 | app.py:307        | 웹폰트 로딩(방문자 IP 전달) | 국외 — Google(미국)  | 참고 |</code></pre>
+  <div class="box ok">
+    <b>보고서 저장 위치</b>
+    <span class="path">C:\Users\first\Downloads\응소ON\.check-reports\2026-07-31_2043_보안점검.{md,html}</span><br>
+    이제 검사할 때마다 <b>프로젝트 폴더 옆에 날짜·시각 이름으로 자동 저장</b>되며,
+    HTML을 인쇄하면 그대로 PDF 결재 문서가 됩니다.
+  </div>
+
+  <h2>라운드 기록 (누적)</h2>
+  <table>
+    <tr><th>라운드</th><th>일자</th><th>대상</th><th>비교 도구</th><th>주요 성과</th></tr>
+    <tr><td>1</td><td>2026-07-31</td><td>응소ON</td><td>코드 스패로우</td>
+        <td>오탐 22→9(−59%), critical 8→2. SQL·루프·IP 룰 3종 정밀화. <code>exclude_patterns</code> 메커니즘 신설</td></tr>
+    <tr><td>2</td><td>2026-07-31</td><td>vibecode-checker 자체</td><td>코덱스</td>
+        <td>코덱스 지적 5건 사실 확인 + <b>BOM 결함 자체 발견</b>. 백로그 <b>7건 전부 조치</b>: 개인키 탐지·침묵 제거·설치본 검증·SCA 2배 확대·라이선스 노출·근거 강도 표기. 테스트 547→572</td></tr>
+    <tr><td>3</td><td>2026-07-31</td><td>보고서 사용성</td><td>실사용 화면 검토</td>
+        <td><b>보고서 저장 규약 신설</b>(<code>.check-reports/</code>) — 그전에는 보고서가 저장되지 않았음.
+        외부 호스트 분류(기타→미분류, 카탈로그 2배), 표 가독성, 제외 사유 분류. 테스트 572→603</td></tr>
+  </table>
+
+  <h2>이 문서 갱신 방법</h2>
+  <ol>
+    <li>새 라운드가 끝나면 「라운드 기록」에 한 줄 추가하고, 상세 탭을 ②·④ 형식으로 덧붙입니다.</li>
+    <li>조치가 완료되면 「백로그」에서 제거하고 ③번 탭에 수정 내역을 남깁니다.</li>
+    <li>머리말의 <b>문서 버전·일자·엔진 버전·테스트 수</b>를 함께 고칩니다.</li>
+    <li>Markdown 판(<span class="path">docs/검증이력_상용툴비교.md</span>)도 같은 내용으로 갱신합니다.</li>
+  </ol>
+  <div class="box ok">
+    <b>기록 원칙</b>
+    도구의 주장이 아니라 <b>원본 소스에서 확인한 사실</b>만 판정으로 남깁니다.
+    우리 도구의 오탐도 상용 도구의 오탐과 <b>같은 기준</b>으로 기록합니다 — 자기 도구에 관대한 기록은 개선을 멈추게 합니다.
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <p><b>vibecode-checker</b> · MIT License · <span class="path">github.com/Lex6won/vibecode-checker</span></p>
+  <p style="margin-top:6px">이 도구는 보안 보조 가드레일이며 공식 보안적합성 검토를 대체하지 않습니다.</p>
+</footer>
+
+<script>
+  var btns = document.querySelectorAll('nav button');
+  var panels = document.querySelectorAll('section.panel');
+  btns.forEach(function(b){
+    b.addEventListener('click', function(){
+      btns.forEach(function(x){ x.classList.remove('on'); });
+      panels.forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      document.getElementById(b.dataset.p).classList.add('on');
+      window.scrollTo({top:0, behavior:'smooth'});
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,6 +1,8 @@
 [project]
 name = "vibecode-checker"
-version = "0.2.1"
+# 버전은 src/gvskb/__init__.py 의 __version__ 이 단일 원천 — hatch 가 동적으로 읽는다.
+# (pyproject 정적 버전과 코드 버전이 어긋나 server_status 가 오보고하던 문제의 재발 방지)
+dynamic = ["version"]
 description = "Public-sector vibe-coding security knowledge base and MCP guardrail"
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,6 +43,9 @@ Issues = "https://github.com/Lex6won/vibecode-checker/issues"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/gvskb/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gvskb"]
