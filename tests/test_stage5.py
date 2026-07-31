@@ -81,15 +81,22 @@ def test_doctor_unknown_mode_warns(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_package_returns_offline_marker_without_network(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """check_package must not reach OSV when GVSKB_MODE=offline."""
+    """check_package must not reach OSV when GVSKB_MODE=offline.
+
+    캐시 디렉터리를 빈 tmp_path 로 격리한다 — 개발 PC 의 실제 캐시
+    (``gvskb intel-sync`` 로 채워짐)가 있으면 결과가 달라져 테스트가
+    환경에 의존하게 된다.
+    """
     monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
 
     import asyncio
     result = asyncio.run(check_package_impl(name="anything", ecosystem="pypi"))
     assert result["offline"] is True
-    assert result["checked"] is False
+    assert result["checked"] is False       # 캐시 없음 → 판정 불가('안전' 아님)
+    assert result["verdict"] == "unknown"
     assert "heuristics" in result
 
 

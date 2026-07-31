@@ -18,11 +18,14 @@ related_baseline: [MOIS-49-TIME-02]
 verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
-  # 라인 단위 regex로는 무한 루프 정밀 검출이 어렵습니다. 여기서는 가장
-  # 흔한 위험 신호 — 종료 조건이 입력에 의존하는 while/recursion 패턴 — 만
-  # 표시하고 사람 검토로 처리합니다.
+  # `while True:` 패턴은 **regex 에서 제거**했습니다. 줄 단위 regex 는 본문을
+  # 보지 못해 정상 코드까지 전부 잡았습니다(실측 오탐 6/6):
+  #   · while True: work(); time.sleep(3600)   → 의도된 상주 스케줄러
+  #   · while True: c = token(); if ok: break  → 재시도 후 탈출
+  # 이제 python-ast 엔진이 **탈출 경로(break/return/raise)도 없고 대기(sleep)도
+  # 없는 busy-loop** 만 보고합니다. 아래 두 패턴은 본문 분석이 필요 없으므로
+  # regex 로 남깁니다.
   patterns:
-    - "while\\s+True\\s*:\\s*$"
     - "while\\s+request\\.[a-zA-Z_]+"
     - "sys\\.setrecursionlimit\\s*\\(\\s*(?:10\\d{3,}|\\d{6,})"
   category: kisa-secure-coding

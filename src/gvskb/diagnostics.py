@@ -42,10 +42,120 @@ def _check(name: str, status: Status, value: str | int | None = None, note: str 
 
 
 def _package_version() -> str:
+    """실행 중인 코드의 버전(gvskb.__version__) — 설치 메타데이터가 아니라 코드가 원천.
+
+    과거 importlib.metadata 는 '예전에 pip 로 설치된 배포판'의 버전을 돌려줘,
+    repo 체크아웃(PYTHONPATH=src)으로 실행 중일 때 실제 코드와 다른 버전을
+    보고했다(감사 추적 오염). 실행 코드에 박힌 __version__ 을 우선한다.
+    """
     try:
-        return metadata.version(PKG_NAME)
+        from gvskb import __version__
+        return __version__
+    except Exception:  # pragma: no cover - defensive
+        try:
+            return metadata.version(PKG_NAME)
+        except metadata.PackageNotFoundError:
+            return "unknown (editable install or not installed)"
+
+
+def check_install_consistency() -> list[CheckResult]:
+    """실행 중인 코드와 설치본이 같은가 — "구버전이 현재 소스를 가리는" 사고 방지.
+
+    실측 사고: site-packages 에 남은 구버전(0.1.0)이 개발 중인 소스를 가려
+    ``python -m gvskb.cli`` 가 깨지고, MCP 에 등록하면 **구버전 룰로 검사**하게
+    된다. 사용자는 최신 수정이 적용됐다고 믿는데 실제로는 아니므로, 조용한
+    실패 중에서도 위험한 축에 든다.
+
+    세 가지를 대조한다:
+    1. 실행 코드의 ``__version__`` (= 진실)
+    2. 설치 메타데이터 버전 (pip 가 아는 값)
+    3. import 되는 모듈 경로가 site-packages 인지 소스 체크아웃인지
+    """
+    results: list[CheckResult] = []
+    try:
+        from gvskb import __version__ as code_version
+    except Exception as exc:  # pragma: no cover - defensive
+        return [_check("Install consistency", _ERROR, "import 실패", note=str(exc))]
+
+    try:
+        dist_version = metadata.version(PKG_NAME)
     except metadata.PackageNotFoundError:
-        return "unknown (editable install or not installed)"
+        dist_version = ""
+
+    module_path = _gvskb_path()
+    from_site_packages = "site-packages" in module_path.replace("\\", "/")
+
+    if dist_version and dist_version != code_version:
+        results.append(_check(
+            "Install consistency", _WARN, f"코드 {code_version} ≠ 설치본 {dist_version}",
+            note=(
+                "설치된 배포판과 실행 코드의 버전이 다릅니다. site-packages 의 구버전이 "
+                "현재 소스를 가릴 수 있습니다 — `pip install -e .` 로 재설치하거나 "
+                "구버전을 제거하세요(MCP 등록 전 필수)."
+            ),
+        ))
+    else:
+        results.append(_check(
+            "Install consistency", _OK, code_version,
+            note=f"module={module_path} ({'설치본' if from_site_packages else '소스 체크아웃'})",
+        ))
+
+    # sys.path 에 gvskb 사본이 여러 개면, PYTHONPATH 유무에 따라 **다른 버전이
+    # 로드**된다. 지금 실행에서는 소스가 이겨도, MCP 를 PYTHONPATH 없이 등록하면
+    # 구버전이 뜬다 — 사용자는 알아챌 방법이 없으므로 사본 존재 자체를 알린다.
+    copies = _find_gvskb_copies()
+    if len(copies) > 1:
+        versions = {v for _, v in copies}
+        detail = " · ".join(f"{v or '?'} @ {p}" for p, v in copies)
+        results.append(_check(
+            "Shadowing copies", _WARN if len(versions) > 1 else _OK,
+            f"{len(copies)}곳",
+            note=(
+                f"gvskb 사본이 여러 곳에 있습니다: {detail}. "
+                "지금은 앞선 경로가 이기지만, PYTHONPATH 없이 실행(예: MCP 등록)하면 "
+                "다른 버전이 로드될 수 있습니다 — 구버전을 `pip uninstall vibecode-checker` "
+                "후 `pip install -e .` 로 정리하세요."
+                if len(versions) > 1 else f"동일 버전 사본 {len(copies)}곳: {detail}"
+            ),
+        ))
+
+    # CLI 진입점이 실제로 import 되는지(= `python -m gvskb.cli` 가 동작하는지)
+    for mod, label in (("gvskb.cli", "CLI"), ("gvskb.server", "MCP server")):
+        try:
+            import importlib
+            importlib.import_module(mod)
+            results.append(_check(f"Import: {mod}", _OK, "ok"))
+        except Exception as exc:  # noqa: BLE001 — 어떤 실패든 진단으로 보고한다
+            results.append(_check(
+                f"Import: {mod}", _ERROR, "실패",
+                note=f"{label} 진입점을 불러오지 못했습니다: {exc!s} — 재설치가 필요합니다.",
+            ))
+    return results
+
+
+def _find_gvskb_copies() -> list[tuple[str, str | None]]:
+    """sys.path 상의 gvskb 패키지 사본들 — (경로, 버전). import 하지 않고 읽는다."""
+    import re as _re
+
+    found: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    for entry in sys.path:
+        if not entry:
+            continue
+        init = Path(entry) / "gvskb" / "__init__.py"
+        try:
+            if not init.is_file():
+                continue
+            resolved = str(init.parent.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            m = _re.search(r'__version__\s*=\s*["\']([^"\']+)["\']',
+                           init.read_text(encoding="utf-8", errors="replace"))
+            found.append((resolved, m.group(1) if m else None))
+        except OSError:
+            continue
+    return found
 
 
 def _gvskb_path() -> str:
@@ -237,6 +347,24 @@ def check_intel_cache() -> list[CheckResult]:
         if stale:
             note += f" · ⚠ 신선도 기준({intel_max_age_days()}일) 초과 — update-intel 권장"
         results.append(_check(f"Intel cache: {sid}", _WARN if stale else _OK, value, note=note))
+
+    # 자동 당김 설정 — 캐시가 낡았을 때 "왜 자동으로 안 채워지나"를 여기서 답한다.
+    ap = _autopull_status_safe()
+    if ap.get("enabled") is False:
+        results.append(_check(
+            "Intel auto-update", _WARN, "off",
+            note="GVSKB_AUTO_UPDATE=off — 캐시를 수동(`gvskb update-intel`)으로 갱신해야 합니다.",
+        ))
+    elif ap.get("enabled"):
+        src = ap.get("source_dir") or ap.get("source_url") or ""
+        note = f"source={src}"
+        if ap.get("last_attempt_at"):
+            note += f" · 마지막 시도 {ap['last_attempt_at']}({ap.get('last_result', '?')})"
+        status = _OK
+        if offline and not ap.get("source_dir"):
+            status = _WARN
+            note += " · ⚠ 오프라인인데 GVSKB_INTEL_DIR 미설정 — 자동 갱신 경로 없음"
+        results.append(_check("Intel auto-update", status, "on", note=note))
     return results
 
 
@@ -271,6 +399,7 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     checks: list[CheckResult] = []
     checks.extend(check_python())
     checks.extend(check_package())
+    checks.extend(check_install_consistency())
     checks.extend(check_encoding())
     checks.extend(check_mode())
     checks.extend(check_rules(expected_minimum=expected_minimum))
@@ -321,6 +450,15 @@ def format_text_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _autopull_status_safe() -> dict:
+    """자동 당김 상태(네트워크 호출 없음). 실패해도 진단 전체를 막지 않는다."""
+    try:
+        from .intel.autopull import autopull_status
+        return autopull_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"enabled": None, "error": str(exc)}
+
+
 # Lightweight subset for MCP server_status — no network probes, never raises.
 def runtime_status_for_mcp() -> dict:
     rules_dir, src = _resolve_rules_dir()
@@ -337,6 +475,11 @@ def runtime_status_for_mcp() -> dict:
         # 가용성을 한눈에 진단할 수 있도록 노출한다.
         "GVSKB_MODE": mode or "online",
         "offline_mode": mode == "offline",
+        # 중앙 예외 오버레이·VCPS 정책 파일 — 기관 배포(레지스트리 연계) 진단용.
+        "GVSKB_EXCEPTIONS_DIR": os.environ.get("GVSKB_EXCEPTIONS_DIR", ""),
+        "GVSKB_VCPS_RULES": os.environ.get("GVSKB_VCPS_RULES", ""),
+        # 인텔 자동 당김 — 사용자가 수동 갱신을 기억하지 않아도 되게 하는 계층.
+        "intel_autopull": _autopull_status_safe(),
         "encoding": {
             "PYTHONUTF8": os.environ.get("PYTHONUTF8", ""),
             "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", ""),

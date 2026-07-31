@@ -52,8 +52,10 @@ mcp = FastMCP(
         "표시되면 scan_dependencies 로 패키지를 따로 검사하고, 그 결과를 scan 결과 JSON의 "
         "dependency_audit 필드에 넣은 뒤 render_report 를 호출하세요(보고서에 의존성 섹션이 "
         "함께 들어갑니다).\n"
-        "3) render_report 로 한국어 보고서를 만들어 사용자에게 보여줍니다. 사람이 읽을 "
-        "보고서가 필요하면 format='html', 둘 다면 format='both' 를 씁니다.\n"
+        "3) render_report 로 한국어 보고서를 만들어 사용자에게 보여주고, **save_report 로 "
+        "파일로 저장**하세요(저장하지 않으면 보고서가 대화창에만 남고 사라집니다). "
+        "기본 저장 위치는 <검사한 경로>/.check-reports/ 이며, 저장 후 경로를 사용자에게 "
+        "알려 주세요 — HTML 을 인쇄하면 그대로 PDF 결재 문서가 됩니다.\n"
         "4) 발견 사항은 결과 JSON의 decision/severity 기준으로 '차단(block) → 치명·높음 → "
         "자동 수정 가능 → 나머지 경고' 순서로 정리하고, 각 항목의 safe_fix 를 그 순서대로 "
         "사용자에게 제안하세요.\n\n"
@@ -150,6 +152,7 @@ def scan_code(
             "civil-complaint-chatbot | internal-db-query | web-civil-service"
         ),
     ] = "public-default-strict",
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
     """코드 조각을 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
 
@@ -169,7 +172,7 @@ def scan_code(
         scenario=scenario,
         profile=profile,
     )
-    record_scan(report, "scan_code")  # 감사로그(옵트인) — scan_path는 스캐너가 직접 기록
+    record_scan(report, "scan_code", caller=caller or "")  # 감사로그(옵트인) — scan_path는 스캐너가 직접 기록
     return report.model_dump(mode="json")
 
 
@@ -196,18 +199,33 @@ def detect_secrets_and_pii(
 async def check_package(
     name: Annotated[str, Field(description="패키지 이름 (예: requests, express). 버전 표기 없이 이름만")],
     ecosystem: Annotated[Literal["pypi", "npm"], Field(description="패키지 저장소: pypi(Python) | npm(Node.js)")] = "pypi",
+    version: Annotated[str | None, Field(description="검사할 버전(권장). 미지정 시 전체 버전 이력 기준이라 판정이 보수적")] = None,
+    env_grade: Annotated[
+        Literal["E0", "E1", "E2"] | None,
+        Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(개인PC 일회성, 3일) | "
+              "E1(개인PC 반복도구, 7일, 기본) | E2(내부서버 공용, 14일). "
+              "E3(대민·개인정보)는 바이브코딩 대상이 아니므로 받지 않음"),
+    ] = None,
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto', 'registry:manual'). 감사 구분용")] = None,
 ) -> dict:
-    """단일 패키지의 알려진 취약점·악성 여부를 설치 전에 확인합니다.
+    """단일 패키지의 실재·취약점·악성·발행경과일(쿨다운)을 설치 전에 확인합니다.
 
     AI가 제안한 패키지를 pip/npm install 하기 전, 또는 이름이 수상한(오타
     스쿼팅 의심) 패키지를 확인할 때 사용하세요. 매니페스트 전체를 검사하려면
     scan_dependencies 를 씁니다.
 
-    네트워크: 온라인이면 OSV.dev API에 패키지명·생태계만 전송합니다(코드 미전송).
-    GVSKB_MODE=offline(망분리)이면 외부 호출 없이 로컬 인텔 캐시로 대체하며,
-    캐시가 비어 있으면 판정 불가를 반환합니다 — 판정 불가는 '안전'이 아닙니다.
+    판정(verdict): not_found=저장소에 없음(AI가 지어낸 이름 의심, 차단 권고) |
+    malicious=악성 | vulnerable=알려진 취약점 | cooldown_hold=발행 직후라 대기 권고 |
+    checked_clean=이상 없음 | unknown/error=판정 불가('안전' 아님).
+
+    네트워크: 온라인이면 공식 저장소(pypi.org/registry.npmjs.org)와 OSV.dev에
+    패키지명·버전만 전송합니다(코드 미전송). GVSKB_MODE=offline(망분리)이면 외부
+    호출 없이 로컬 인텔 캐시로 대체하며, 실재·발행일은 '미확인'으로 표시됩니다.
     """
-    return await check_package_impl(name=name, ecosystem=ecosystem)
+    result = await check_package_impl(name=name, ecosystem=ecosystem, version=version, env_grade=env_grade)
+    if caller:
+        result["caller"] = caller
+    return result
 
 
 @mcp.tool()
@@ -218,21 +236,30 @@ async def scan_dependencies(
     ],
     ecosystem: Annotated[Literal["pypi", "npm"], Field(description="매니페스트 종류: pypi(requirements.txt) | npm(package.json)")] = "pypi",
     limit: Annotated[int, Field(description="검사할 최대 패키지 수 (기본 20). 초과분은 결과에 미검사로 표시")] = 20,
+    env_grade: Annotated[
+        Literal["E0", "E1", "E2"] | None,
+        Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(3일) | E1(7일, 기본) | E2(14일)"),
+    ] = None,
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
-    """의존성 매니페스트를 파싱해 각 패키지의 취약점·악성 여부를 일괄 검사합니다.
+    """의존성 매니페스트를 파싱해 각 패키지의 실재·취약점·악성·쿨다운을 일괄 검사합니다.
 
     scan_path 결과에서 requirements.txt·package.json 이 '검사 제외'로 표시되면
     이 도구로 이어서 검사하세요.
 
-    네트워크: 온라인이면 OSV.dev에 패키지명·버전만 전송합니다(소스 코드 미전송).
-    GVSKB_MODE=offline(망분리)이면 외부 호출 없이 로컬 인텔 캐시로 대체합니다.
+    네트워크: 온라인이면 공식 저장소와 OSV.dev에 패키지명·버전만 전송합니다
+    (소스 코드 미전송). GVSKB_MODE=offline(망분리)이면 외부 호출 없이 로컬 인텔
+    캐시로 대체하며, 실재·발행일은 '미확인'으로 표시됩니다.
 
     락파일(poetry.lock·yarn.lock 등)은 파싱하지 못하므로 verdict="unparsed"로
     정직하게 거절합니다 — 원본 매니페스트(requirements.txt·package.json)를 주세요.
     결과를 scan_path 결과 JSON의 ``dependency_audit`` 필드에 넣어 render_report를
     호출하면 사람용 보고서에 '의존성 취약점' 섹션이 함께 렌더됩니다.
     """
-    return await audit_manifest(manifest_text, ecosystem=ecosystem, limit=limit)
+    result = await audit_manifest(manifest_text, ecosystem=ecosystem, limit=limit, env_grade=env_grade)
+    if caller:
+        result["caller"] = caller
+    return result
 
 
 @mcp.tool()
@@ -265,6 +292,7 @@ def scan_path(
         ),
     ] = "public-default-strict",
     max_files: Annotated[int, Field(description="최대 검사 파일 수 (기본 500). 초과분은 skipped_files에 사유와 함께 기록")] = 500,
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
     """파일 또는 폴더를 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
 
@@ -281,6 +309,7 @@ def scan_path(
         scenario=scenario,
         profile=profile,
         max_files=max_files,
+        caller=caller or "",
     )
     return report.model_dump(mode="json")
 
@@ -330,6 +359,131 @@ def render_report(
         from .report import render_sarif
         out["sarif"] = render_sarif(parsed)
     return out
+
+
+@mcp.tool()
+def save_report(
+    report: Annotated[
+        dict,
+        Field(description="scan_code / scan_path 가 반환한 ScanReport JSON 그대로 (직접 조립 금지)"),
+    ],
+    output_dir: Annotated[
+        str | None,
+        Field(description="저장 폴더 지정(선택). 미지정 시 <검사한 경로>/.check-reports/ 에 저장"),
+    ] = None,
+) -> dict:
+    """점검 보고서를 **파일로 저장**하고 저장 경로를 알려줍니다.
+
+    render_report 는 본문 문자열만 돌려주므로, 그대로 두면 보고서가 대화창에만
+    남고 사라집니다. 결재·보고에 첨부하려면 이 도구로 저장하세요.
+
+    저장 규약: ``<검사한 프로젝트>/.check-reports/YYYY-MM-DD_HHMM_보안점검.{html,md,json}``
+    - HTML: 인쇄하면 그대로 PDF 결재 문서가 됩니다(외부 CDN 없음)
+    - MD: 텍스트 편집·재가공용
+    - JSON: 재검사·이력 비교용 원본 데이터
+    기관 공용 폴더로 모으려면 환경변수 ``GVSKB_REPORT_DIR`` 을 설정하세요.
+    """
+    import json as _json
+
+    from .report_store import ensure_writable, gitignore_hint, resolve_report_path
+
+    try:
+        parsed = ScanReport.model_validate(report)
+    except Exception as exc:
+        return {"error": "invalid ScanReport", "detail": str(exc)}
+
+    explicit = None
+    if output_dir:
+        from .report_store import default_report_basename
+        explicit = str(Path(output_dir) / default_report_basename(parsed.target))
+    base, fallback_note = ensure_writable(resolve_report_path(parsed.target, explicit=explicit))
+
+    written: dict[str, str] = {}
+    try:
+        md_path = base.with_suffix(".md")
+        html_path = base.with_suffix(".html")
+        json_path = base.with_suffix(".json")
+        md_path.write_text(render_markdown_impl(parsed), encoding="utf-8")
+        html_path.write_text(render_html_impl(parsed), encoding="utf-8")
+        json_path.write_text(
+            _json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        written = {"markdown": str(md_path), "html": str(html_path), "json": str(json_path)}
+    except OSError as exc:
+        return {"error": "저장 실패", "detail": str(exc), "attempted": str(base)}
+
+    return {
+        "saved": written,
+        "directory": str(base.parent),
+        "finding_count": parsed.summary.finding_count,
+        "blocked": parsed.summary.blocked,
+        "note": fallback_note or gitignore_hint(),
+        "next": "HTML 파일을 열어 인쇄하면 그대로 PDF 결재 문서로 쓸 수 있습니다.",
+    }
+
+
+@mcp.tool()
+async def scan_installed_packages(
+    path: Annotated[str, Field(description="프로젝트 폴더 경로. 하위의 .venv·*.whl·node_modules 설치 흔적을 훑습니다")],
+    env_grade: Annotated[
+        Literal["E0", "E1", "E2"] | None,
+        Field(description="실행환경 등급 — 쿨다운 기준일: E0(3일) | E1(7일, 기본) | E2(14일)"),
+    ] = None,
+    limit: Annotated[int, Field(description="검사할 최대 패키지 수 (기본 100)")] = 100,
+) -> dict:
+    """**실제로 설치된** 패키지까지 훑어 취약점·라이선스를 검사합니다.
+
+    scan_dependencies 는 requirements.txt·package.json 에 **적힌 것**만 봅니다.
+    그런데 취약점은 대개 그 파일에 없는 **전이 의존성**에 있습니다. 이 도구는
+    폴더 안의 설치 흔적을 직접 읽어 그 격차를 메웁니다:
+
+    - `.venv`/site-packages 의 `*.dist-info/METADATA` (이름·버전·라이선스)
+    - 오프라인 반입용 `*.whl` 파일명
+    - `node_modules/*/package.json`
+
+    패키지를 임포트·실행하지 않고 **메타데이터 텍스트만** 읽습니다. 네트워크는
+    취약점 조회에만 쓰이며 패키지명·버전만 전송합니다(GVSKB_MODE=offline 이면
+    로컬 인텔 캐시 사용). 라이선스 정보는 설치 메타데이터에서만 얻을 수 있어
+    이 도구에서만 함께 반환됩니다.
+    """
+    from .tools.installed_packages import collect_installed_packages, to_requirements_text
+
+    inv = collect_installed_packages(path, limit=limit)
+    if inv.get("error"):
+        return {"error": inv["error"], "path": path}
+
+    audits = []
+    for eco, pkgs in (("pypi", inv["pypi"]), ("npm", inv["npm"])):
+        if not pkgs:
+            continue
+        audit = await audit_manifest(
+            to_requirements_text(pkgs), ecosystem=eco,
+            limit=len(pkgs), env_grade=env_grade,
+        )
+        audit["manifest"] = f"<설치된 패키지: {eco}>"
+        audit["source"] = "installed-inventory"
+        lic_by_name = {str(p.get("name", "")).lower(): p.get("license") for p in pkgs}
+        for c in audit.get("checks", []):
+            lic = lic_by_name.get(str(c.get("name", "")).lower())
+            if lic:
+                meta = c.get("registry_metadata")
+                if isinstance(meta, dict) and not meta.get("license"):
+                    meta["license"] = lic
+                    c["license_source"] = "installed-metadata"
+        audits.append(audit)
+
+    return {
+        "path": path,
+        "stats": inv["stats"],
+        "audits": audits,
+        "disclaimer": (
+            "설치 흔적(dist-info·whl·node_modules)에서 읽은 목록입니다. "
+            "패키지를 실행하지 않았으며, 취약점 조회에는 이름·버전만 전송됩니다. "
+            "이 결과를 scan_path 결과의 dependency_audit 에 넣어 render_report 하면 "
+            "보고서에 의존성 섹션으로 포함됩니다."
+        ),
+    }
 
 
 @mcp.tool()
@@ -389,7 +543,28 @@ def security_review_prompt(target: str = "") -> str:
     )
 
 
+def _start_background_autopull() -> None:
+    """서버 기동 시 인텔 캐시를 백그라운드로 점검·갱신한다.
+
+    사용자가 `gvskb update-intel` 을 기억해 실행하지 않아도 최신 위협 인텔로
+    검사하게 만드는 지점이다. 데몬 스레드로 돌려 서버 기동을 지연시키지 않고,
+    실패해도 조용히 넘어간다(검사는 낡은 캐시로 계속되며 결과에 정직히 표시됨).
+    GVSKB_AUTO_UPDATE=off 로 끌 수 있다.
+    """
+    import threading
+
+    def _run() -> None:
+        try:
+            from .intel.autopull import maybe_auto_update
+            maybe_auto_update()
+        except Exception as exc:  # noqa: BLE001 — 갱신 실패가 서버를 죽이면 안 된다
+            print(f"[gvskb] ⚠ 인텔 자동 갱신 중 오류(무시하고 계속): {exc}", file=sys.stderr)
+
+    threading.Thread(target=_run, name="gvskb-autopull", daemon=True).start()
+
+
 def main() -> None:
+    _start_background_autopull()
     mcp.run()
 
 

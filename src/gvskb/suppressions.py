@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import date
@@ -34,6 +35,15 @@ import yaml
 from .schema import Finding
 
 EXCEPTIONS_FILENAME = ".gvskb-exceptions.yaml"
+
+# 중앙(기관) 예외 오버레이 디렉터리 — 레지스트리·보안실이 확정한 예외 판정을
+# 내부 배포 지점에서 내려받아 이 디렉터리에 두면, 프로젝트 로컬 예외와 병합돼
+# 모든 스캔에 적용된다. 형식은 프로젝트 예외 파일과 동일(사유·승인자·만료 필수).
+#
+# 준비 단계 주의: 이 디렉터리를 "다운로드 받게" 운영하는 순간 예외 파일은
+# 사실상 게이트 통과권이 된다 — 배포 채널에 sha256·서명 검증을 반드시 얹을 것
+# (레지스트리 확정 후 배포 설계에서 처리. 현재는 로드 메커니즘만 준비).
+EXCEPTIONS_DIR_ENV = "GVSKB_EXCEPTIONS_DIR"
 
 _REQUIRED_FIELDS = ("rule_id", "file", "reason", "approved_by", "expires")
 
@@ -51,18 +61,48 @@ def _norm(path: str) -> str:
     return path.replace("\\", "/").strip("/").lower()
 
 
-def load_exceptions(root: Path) -> list[dict]:
-    """스캔 루트의 예외 파일을 읽는다. 없거나 형식 오류면 빈 목록."""
-    p = root / EXCEPTIONS_FILENAME if root.is_dir() else root.parent / EXCEPTIONS_FILENAME
-    if not p.is_file():
-        return []
+def _read_exceptions_file(p: Path, origin: str) -> list[dict]:
+    """예외 yaml 1개를 읽는다. 각 항목에 출처(_origin)를 표시해 감사 추적을 돕는다."""
     try:
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
         print(f"[gvskb] ⚠ 예외 파일을 읽지 못했습니다({p.name}): {exc}", file=sys.stderr)
         return []
     entries = data.get("exceptions")
-    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    if not isinstance(entries, list):
+        return []
+    return [{**e, "_origin": origin} for e in entries if isinstance(e, dict)]
+
+
+def load_central_exceptions() -> list[dict]:
+    """중앙(기관) 오버레이 디렉터리의 예외를 읽는다 — GVSKB_EXCEPTIONS_DIR.
+
+    디렉터리 안의 *.yaml/*.yml 을 이름순으로 전부 읽는다(레지스트리가 파일
+    단위로 배포·갱신할 수 있게). 미설정이면 빈 목록 — 기존 동작과 동일.
+    """
+    raw = os.environ.get(EXCEPTIONS_DIR_ENV, "").strip()
+    if not raw:
+        return []
+    d = Path(raw)
+    if not d.is_dir():
+        print(f"[gvskb] ⚠ {EXCEPTIONS_DIR_ENV}={raw} — 디렉터리가 없어 중앙 예외를 건너뜁니다.", file=sys.stderr)
+        return []
+    out: list[dict] = []
+    for p in sorted(d.glob("*.yml")) + sorted(d.glob("*.yaml")):
+        out.extend(_read_exceptions_file(p, origin=f"central:{p.name}"))
+    return out
+
+
+def load_exceptions(root: Path) -> list[dict]:
+    """프로젝트 로컬 + 중앙 오버레이 예외를 병합해 반환한다.
+
+    로컬을 먼저 두는 이유: 같은 발견에 둘 다 매칭되면 먼저 매칭된 항목이
+    적용되는데, 프로젝트가 더 구체적 맥락(파일·라인)을 알기 때문이다.
+    어느 쪽이든 사유·승인자·만료가 없으면 무효(집행 규율 동일).
+    """
+    p = root / EXCEPTIONS_FILENAME if root.is_dir() else root.parent / EXCEPTIONS_FILENAME
+    local = _read_exceptions_file(p, origin="project") if p.is_file() else []
+    return local + load_central_exceptions()
 
 
 def _parse_expires(raw: object) -> date | None:
@@ -112,8 +152,10 @@ def apply_suppressions(
             if e.get("line") is not None and int(e["line"]) != f.location.line:
                 continue
             f.suppressed = True
+            origin = e.get("_origin", "project")
+            origin_tag = f" · 출처: {origin}" if origin != "project" else ""
             f.suppress_reason = (
-                f"{e['reason']} (승인: {e['approved_by']} · 만료: {e['_expires'].isoformat()})"
+                f"{e['reason']} (승인: {e['approved_by']} · 만료: {e['_expires'].isoformat()}{origin_tag})"
             )
             result.applied += 1
             break

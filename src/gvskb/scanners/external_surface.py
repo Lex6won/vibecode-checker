@@ -50,6 +50,43 @@ _HOST_CATALOG: tuple[tuple[str, str, str, str | None, str | None], ...] = (
     # 메시징
     ("slack.com", "messaging", "메시지 본문", "국외", "Slack/Salesforce(미국)"),
     ("discord.com", "messaging", "메시지 본문", "국외", "Discord(미국)"),
+    # ── 인프라·운영 (데이터 전송이 거의 없어 '기타'로 뭉뚱그리면 노이즈가 된다) ──
+    ("acme-v02.api.letsencrypt.org", "infra", "인증서 발급 요청(도메인명)", "국외", "Let's Encrypt/ISRG(미국)"),
+    ("letsencrypt.org", "infra", "인증서 발급·검증", "국외", "Let's Encrypt/ISRG(미국)"),
+    ("api.ipify.org", "infra", "**서버의 공인 IP가 외부로 노출됨**", "국외", "ipify(미국)"),
+    ("ifconfig.me", "infra", "**서버의 공인 IP가 외부로 노출됨**", "국외", "ifconfig.me(미국)"),
+    ("checkip.amazonaws.com", "infra", "서버 공인 IP 조회", "국외", "AWS(미국)"),
+    ("ntp.org", "infra", "시각 동기화(전송 데이터 없음)", "국외", "NTP Pool(국제)"),
+    ("registry.npmjs.org", "infra", "패키지 다운로드(설치 시)", "국외", "npm/GitHub(미국)"),
+    ("pypi.org", "infra", "패키지 다운로드(설치 시)", "국외", "PyPI/PSF(미국)"),
+    ("api.github.com", "infra", "저장소·릴리스 조회", "국외", "GitHub(미국)"),
+    # ── CDN·정적 리소스 (폐쇄망에서 화면이 깨지는 축) ──
+    ("cdn.jsdelivr.net", "cdn", "정적 파일 로딩(JS·CSS)", "국외", "jsDelivr(국제)"),
+    ("unpkg.com", "cdn", "정적 파일 로딩(npm 패키지)", "국외", "Cloudflare/unpkg(미국)"),
+    ("cdnjs.cloudflare.com", "cdn", "정적 파일 로딩(라이브러리)", "국외", "Cloudflare(미국)"),
+    ("fonts.googleapis.com", "cdn", "웹폰트 로딩(방문자 IP 전달)", "국외", "Google(미국)"),
+    ("fonts.gstatic.com", "cdn", "웹폰트 파일 로딩", "국외", "Google(미국)"),
+    ("ajax.googleapis.com", "cdn", "정적 파일 로딩(라이브러리)", "국외", "Google(미국)"),
+    ("code.jquery.com", "cdn", "정적 파일 로딩(jQuery)", "국외", "jQuery Foundation(미국)"),
+    ("cdn.tailwindcss.com", "cdn", "정적 파일 로딩(Tailwind)", "국외", "Tailwind Labs(미국)"),
+    # ── 국내 공공·플랫폼 API (공공기관 프로젝트에 실제로 자주 등장) ──
+    ("apis.data.go.kr", "gov-api", "공공데이터 조회(요청 파라미터)", "국내", "공공데이터포털(한국)"),
+    ("api.odcloud.kr", "gov-api", "공공데이터 조회(요청 파라미터)", "국내", "공공데이터포털(한국)"),
+    ("api.vworld.kr", "gov-api", "공간정보 조회(좌표·주소)", "국내", "국토교통부 브이월드(한국)"),
+    ("business.juso.go.kr", "gov-api", "주소 검색(입력 주소)", "국내", "행정안전부 주소기반산업지원(한국)"),
+    ("openapi.naver.com", "platform", "검색·번역 등 요청 텍스트", "국내", "네이버(한국)"),
+    ("dapi.kakao.com", "platform", "지도·검색 요청(좌표·검색어)", "국내", "카카오(한국)"),
+    ("maps.googleapis.com", "platform", "지도·좌표 요청", "국외", "Google(미국)"),
+)
+
+# 카탈로그에 없을 때의 **접미사·형태 기반 추정** — 완전 미분류를 줄인다.
+# (판정 근거가 약하므로 data_summary 에 '추정'을 명시한다.)
+_HOST_HEURISTICS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"(^|\.)cdn\.|(^|\.)cdn[a-z0-9-]*\.|(^|\.)static\.|(^|\.)assets\."),
+     "cdn", "정적 파일 로딩(추정) — 폐쇄망에서 로딩 실패 가능"),
+    (re.compile(r"(^|\.)fonts?\."), "cdn", "웹폰트 로딩(추정)"),
+    (re.compile(r"\.go\.kr$|\.go\.kr[:/]"), "gov-api", "국내 공공 API(추정) — 요청 파라미터 확인 필요"),
+    (re.compile(r"(^|\.)api\.|(^|\.)apis?\."), "api", "외부 API 호출(추정) — 전송 데이터 확인 필요"),
 )
 
 # SDK 호출 패턴 → 매핑 호스트(코드에 URL 리터럴이 없어도 잡는다)
@@ -200,12 +237,19 @@ _APIVER_RE = re.compile(r"/(v\d+\w*)")
 
 
 def _lookup_host(host: str) -> tuple[str, str, str | None, str | None]:
-    """호스트 → (category, data_summary, region, operator). 미등록은 미상."""
+    """호스트 → (category, data_summary, region, operator).
+
+    1) 카탈로그 정확 매칭 → 2) 접미사·형태 추정 → 3) 미분류.
+    추정은 국가·운영주체를 단정하지 않는다(None = 직접 확인 필요).
+    """
     low = host.lower()
     for needle, cat, summary, region, operator in _HOST_CATALOG:
         if needle in low:
             return cat, summary, region, operator
-    return "other", "외부 서비스(미분류) — 전송 데이터 확인 필요", None, None
+    for pattern, cat, summary in _HOST_HEURISTICS:
+        if pattern.search(low):
+            return cat, summary, None, None
+    return "unclassified", "전송 데이터 확인 필요", None, None
 
 
 def _model_on_line(line: str) -> str | None:
@@ -319,7 +363,12 @@ def dedupe_connections(conns: list[ExternalConnection]) -> list[ExternalConnecti
     for c in conns:
         best.setdefault((c.kind, c.target, c.location, c.model), c)
     _kind_order = {"api": 0, "resource": 1, "package": 2}
-    _cat_order = {"ai": 0, "payment": 1, "analytics": 2, "messaging": 3, "error": 4, "cdn": 5, "other": 6, "library": 7}
+    # 검토 우선순위 — 개인정보가 실제로 나갈 가능성이 높은 순.
+    _cat_order = {
+        "ai": 0, "payment": 1, "analytics": 2, "messaging": 3, "error": 4,
+        "platform": 5, "gov-api": 6, "api": 7, "unclassified": 8, "other": 8,
+        "cdn": 9, "infra": 10, "library": 11,
+    }
 
     def key(c: ExternalConnection) -> tuple:
         return (

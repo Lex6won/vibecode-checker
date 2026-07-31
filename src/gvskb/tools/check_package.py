@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
 
 from ..intel.cache import IntelCache
+from ..schema import CooldownCheck, PackageCheckResult, PackageRegistryMetadata
+from ..vcps import cooldown_days_for, license_verdict
+from .package_metadata import fetch_registry_metadata
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 ECOSYSTEM_MAP = {
@@ -175,34 +179,139 @@ def _kev_signals_for(items: list[dict], name: str) -> list[dict]:
     return hits
 
 
+def _engine_version() -> str | None:
+    try:
+        from gvskb import __version__
+        return __version__
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# OSV/GHSA 심각도 표기 정규화 — SafePackageRecord.checks.max_cve 등급 산출용.
+_SEVERITY_NORMALIZE = {
+    "LOW": "LOW", "MODERATE": "MEDIUM", "MEDIUM": "MEDIUM",
+    "HIGH": "HIGH", "CRITICAL": "CRITICAL",
+}
+_SEVERITY_RANK = {"NONE": 0, "UNKNOWN": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4, "CRITICAL": 5}
+
+
+def _max_cve_from_vulns(vulns: list[dict]) -> str:
+    """OSV 취약점 목록 → 최고 심각도 등급(NONE~CRITICAL).
+
+    database_specific.severity(GHSA 계열)와 affected[].ecosystem_specific.severity
+    를 본다. 취약점은 있는데 심각도 표기가 하나도 없으면 'UNKNOWN' — 낮음이
+    아니라 미상이며, 미상은 '안전'이 아니다(C6 판정 시 검토 대상).
+    """
+    if not vulns:
+        return "NONE"
+    best = "UNKNOWN"
+    for v in vulns:
+        candidates: list[str] = []
+        ds = (v.get("database_specific") or {}).get("severity")
+        if ds:
+            candidates.append(str(ds).upper())
+        for aff in v.get("affected") or []:
+            es = (aff.get("ecosystem_specific") or {}).get("severity")
+            if es:
+                candidates.append(str(es).upper())
+        for c in candidates:
+            norm = _SEVERITY_NORMALIZE.get(c)
+            if norm and _SEVERITY_RANK[norm] > _SEVERITY_RANK[best]:
+                best = norm
+    return best
+
+
+def _kev_cve_hits(vulns: list[dict], cache: IntelCache | None = None) -> list[dict]:
+    """취약점의 CVE alias 를 CISA KEV 캐시와 교차 대조 — 실제 악용 중인지 확인.
+
+    vendor/product 이름 매칭(_kev_signals_for)보다 강한 패키지 수준 신호다.
+    온라인 모드에서도 로컬 KEV 캐시가 있으면 활용한다(추가 네트워크 비용 0).
+    캐시가 없으면 빈 목록 — '악용 없음'이 아니라 '대조 못 함'이다.
+    """
+    cache = cache or IntelCache()
+    kev_entry = cache.load("cisa-kev")
+    if kev_entry is None:
+        return []
+    cve_ids: set[str] = set()
+    for v in vulns:
+        vid = str(v.get("id", ""))
+        if vid.startswith("CVE-"):
+            cve_ids.add(vid)
+        for alias in v.get("aliases") or []:
+            if str(alias).startswith("CVE-"):
+                cve_ids.add(str(alias))
+    if not cve_ids:
+        return []
+    hits = []
+    for item in kev_entry.items:
+        if item.get("cveID") in cve_ids:
+            hits.append({
+                "cveID": item.get("cveID"),
+                "vulnerabilityName": item.get("vulnerabilityName"),
+                "dateAdded": item.get("dateAdded"),
+                "match": "cve_alias",  # 이름 매칭보다 강한 확정 신호
+            })
+    return hits
+
+
+def _evaluate_cooldown(
+    meta: PackageRegistryMetadata | None,
+    env_grade: str | None,
+) -> CooldownCheck:
+    """쿨다운(C1) 판정 — 발행일 미상이면 ok=None(판정 불가, '통과' 아님)."""
+    days, grade = cooldown_days_for(env_grade)
+    age = meta.version_age_days if meta is not None else None
+    return CooldownCheck(
+        cooldown_days=days,
+        env_grade=grade,
+        version_age_days=age,
+        ok=None if age is None else age >= days,
+    )
+
+
 def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dict:
-    """Consult the local intel cache and return a check_package-compatible dict."""
+    """Consult the local intel cache and return a unified PackageCheckResult dict.
+
+    오프라인은 실재·발행일·CVE 를 확인할 수 없다 — exists=None, max_cve=UNKNOWN
+    으로 '미확인'을 명시한다. 미확인은 '안전'이 아니다.
+    """
     cache = IntelCache()
     osv_entry = cache.load("osv-malicious")
     kev_entry = cache.load("cisa-kev")
 
+    base = dict(
+        name=name,
+        ecosystem=ecosystem,
+        offline=True,
+        exists=None,  # 오프라인 — 공식 저장소 실재 미확인
+        registry_metadata=None,
+        max_cve="UNKNOWN",  # CVE DB 미보유 — '없음'이 아니라 '미확인'
+        heuristics=_basic_heuristics(name, ecosystem),
+        engine_version=_engine_version(),
+        checked_at=_now_iso(),
+    )
+
     if osv_entry is None and kev_entry is None:
-        return {
-            "name": name,
-            "ecosystem": ecosystem,
-            "checked": False,
-            # 캐시 없는 오프라인은 "통과"가 아니라 "판정 불가"다 — 사용자가
-            # 안전으로 오해하지 않도록 verdict/requires_review를 명시한다.
-            "verdict": "unknown",
-            "requires_review": True,
-            "offline": True,
-            "verdict_severity": "info",
-            "heuristics": _basic_heuristics(name, ecosystem),
-            "cache_sources_used": [],
-            "note": (
+        # 캐시 없는 오프라인은 "통과"가 아니라 "판정 불가"다.
+        return PackageCheckResult(
+            **base,
+            checked=False,
+            verdict="unknown",
+            verdict_severity="info",
+            requires_review=True,
+            note=(
                 "GVSKB_MODE=offline 이며 로컬 인텔 캐시가 비어 있습니다. "
                 "`gvskb update-intel` 을 먼저 실행해 OSV malicious feed와 CISA KEV 캐시를 만든 뒤 다시 검사하세요."
             ),
-            "disclaimer": (
+            disclaimer=(
                 "이 결과는 휴리스틱 보조 신호이며 캐시 기반 검사가 수행되지 않았습니다. "
                 "기관 허용 목록·sigstore/SBOM 정책에 따른 별도 검토가 필요합니다."
             ),
-        }
+        ).model_dump(mode="json")
 
     advisories: list[dict] = []
     cache_sources_used: list[str] = []
@@ -236,67 +345,67 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
     has_malicious = bool(advisories)
     severity = "high" if has_malicious else ("medium" if kev_signals else "info")
 
-    result = {
-        "name": name,
-        "ecosystem": ecosystem,
-        "offline": True,
-        "verdict_severity": severity,
-        "is_malicious_package": has_malicious,
-        "vulnerability_count": len(advisories),
-        "malicious_advisory_count": len(advisories),
-        "advisories": advisories,
-        "kev_signals": kev_signals,
-        "cache_sources_used": cache_sources_used,
-        "cache_freshness": cache_freshness,
-        "cache_ecosystems": covered_ecosystems,
-        "cache_stale_sources": stale_sources,
-        "heuristics": _basic_heuristics(name, ecosystem),
-        "source": "local intel cache (GVSKB_MODE=offline)",
-        "disclaimer": (
+    base.update(
+        verdict_severity=severity,
+        is_malicious_package=has_malicious,
+        vulnerability_count=len(advisories),
+        malicious_advisory_count=len(advisories),
+        advisories=advisories,
+        kev_signals=kev_signals,
+        in_kev=bool(kev_signals),
+        cache_sources_used=cache_sources_used,
+        cache_freshness=cache_freshness,
+        cache_ecosystems=covered_ecosystems,
+        cache_stale_sources=stale_sources,
+        source="local intel cache (GVSKB_MODE=offline)",
+        disclaimer=(
             "오프라인 캐시 기반 검사입니다. 캐시 갱신 시점 이후의 신규 advisory는 반영되지 않습니다. "
             "운영 반영 전 `gvskb update-intel` 최신 실행 시각을 확인하세요."
         ),
-    }
+    )
 
     if has_malicious:
         # 양성 판정(악성 발견)은 캐시가 오래됐어도 유효한 신호다.
-        result.update({"checked": True, "verdict": "malicious", "requires_review": True})
+        note = None
         if stale_sources:
-            result["note"] = f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
-        return result
+            note = f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
+        return PackageCheckResult(
+            **base, checked=True, verdict="malicious", requires_review=True, note=note,
+        ).model_dump(mode="json")
 
     if not osv_covers:
         # 이 생태계의 악성 피드가 캐시에 없다 → '깨끗함'이 아니라 '판정 불가'.
-        result.update({
-            "checked": False,
-            "verdict": "unknown",
-            "requires_review": True,
-            "note": (
+        return PackageCheckResult(
+            **base,
+            checked=False,
+            verdict="unknown",
+            requires_review=True,
+            note=(
                 f"오프라인 캐시가 {ecosystem_label} 생태계를 포함하지 않습니다"
                 f"(캐시 커버리지: {covered_ecosystems or '없음'}). "
                 "외부망에서 `gvskb update-intel --all` 실행 시 npm까지 받으려면 "
                 "GVSKB_OSV_INCLUDE_NPM=1 을 설정한 뒤 캐시를 반입하세요."
             ),
-        })
-        return result
+        ).model_dump(mode="json")
 
     if stale_sources:
         # 신선도 초과 캐시의 '깨끗함'은 확정이 아니다 — 검토 필요로 승격.
         from ..intel.cache import intel_max_age_days
-        result.update({
-            "checked": True,
-            "verdict": "checked_stale",
-            "requires_review": True,
-            "note": (
+        return PackageCheckResult(
+            **base,
+            checked=True,
+            verdict="checked_stale",
+            requires_review=True,
+            note=(
                 f"캐시가 신선도 기준({intel_max_age_days()}일)을 초과했습니다: "
                 f"{', '.join(stale_sources)}. 이 '이상 없음'은 오래된 데이터 기준입니다 — "
                 "외부망에서 `gvskb update-intel` 후 캐시를 다시 반입하세요."
             ),
-        })
-        return result
+        ).model_dump(mode="json")
 
-    result.update({"checked": True, "verdict": "checked_clean", "requires_review": False})
-    return result
+    return PackageCheckResult(
+        **base, checked=True, verdict="checked_clean", requires_review=False,
+    ).model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +455,13 @@ async def audit_manifest(
     manifest_text: str,
     ecosystem: Literal["pypi", "npm"] = "pypi",
     limit: int = 20,
+    env_grade: str | None = None,
 ) -> dict:
     """의존성 매니페스트를 파싱해 패키지별 취약·악성 검사를 수행한다.
 
-    온라인: OSV.dev 조회(패키지명·버전만 전송). 오프라인(GVSKB_MODE=offline):
-    로컬 인텔 캐시 기반 — 판정 불가는 '안전'이 아니라 requires_review로 표시.
+    온라인: 공식 저장소 실재·발행일 확인 + OSV.dev 조회(패키지명·버전만 전송).
+    오프라인(GVSKB_MODE=offline): 로컬 인텔 캐시 기반 — 판정 불가는 '안전'이
+    아니라 requires_review로 표시. env_grade(E0~E2)는 쿨다운 기준일을 결정한다.
     """
     from ..scanner import parse_manifest_packages  # 지연 import — 경량 경로 유지
 
@@ -374,6 +485,7 @@ async def audit_manifest(
                 name=str(package["name"]),
                 version=str(package["version"]) if package.get("version") else None,
                 ecosystem=ecosystem,
+                env_grade=env_grade,
             )
         )
     blocked = any(c.get("is_malicious_package") or c.get("verdict_severity") == "high" for c in checks)
@@ -384,6 +496,8 @@ async def audit_manifest(
     actually_checked = sum(1 for c in checks if c.get("checked", False))
     unchecked = len(checks) - actually_checked
     has_vulns = any(c.get("vulnerability_count") for c in checks)
+    not_found = sum(1 for c in checks if c.get("verdict") == "not_found")
+    hold = sum(1 for c in checks if c.get("verdict") == "cooldown_hold")
     requires_review = blocked or unchecked > 0 or has_vulns or any(c.get("requires_review") for c in checks)
     verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
     return {
@@ -391,11 +505,16 @@ async def audit_manifest(
         "parsed_count": len(packages),
         "checked_count": actually_checked,
         "unchecked_count": unchecked,
+        "not_found_count": not_found,   # 실재하지 않는 패키지(슬롭스쿼팅 의심) 수
+        "hold_count": hold,             # 쿨다운 대기(HOLD) 수 — 위험 확정이 아니라 대기 권고
+        "env_grade": env_grade,
         "blocked": blocked,
         "requires_review": requires_review,
         "verdict": verdict,
         "packages": limited,
         "checks": checks,
+        "engine_version": _engine_version(),
+        "checked_at": _now_iso(),
         "disclaimer": (
             "취약점 API에는 패키지명과 ecosystem만 전송합니다. "
             "unchecked_count>0 이면 일부 패키지가 '판정 불가'(캐시 없는 오프라인·API 실패)이며 '안전'이 아닙니다. "
@@ -404,27 +523,76 @@ async def audit_manifest(
     }
 
 
+_ONLINE_DISCLAIMER = (
+    "이 검사는 OSV.dev·공식 저장소 메타데이터·이름 기반 휴리스틱을 활용한 보조 신호입니다. "
+    "공식 보안 검토, 기관 허용 패키지 정책, lockfile/SBOM 검사를 대체하지 않습니다."
+)
+
+
 async def check_package_impl(
     name: str,
     ecosystem: Literal["pypi", "npm"] = "pypi",
     version: str | None = None,
     timeout: float = 10.0,
+    env_grade: str | None = None,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
-        return {
-            "name": name,
-            "ecosystem": ecosystem,
-            "error": f"unsupported ecosystem: {ecosystem} (allowed: pypi, npm)",
-            "checked": False,
-        }
+        return PackageCheckResult(
+            name=name,
+            ecosystem=ecosystem,
+            checked=False,
+            verdict="error",
+            error=f"unsupported ecosystem: {ecosystem} (allowed: pypi, npm)",
+            engine_version=_engine_version(),
+            checked_at=_now_iso(),
+        ).model_dump(mode="json")
 
     if _is_offline():
         result = _offline_cache_check(name, ecosystem, eco)
         if version is not None:
             result["version"] = version
+        # 오프라인은 발행일을 알 수 없어 쿨다운 판정 불가(ok=None) — '통과' 아님.
+        result["cooldown"] = _evaluate_cooldown(None, env_grade).model_dump(mode="json")
         return result
 
+    # ① 실재 확인 + 메타데이터(발행일·라이선스·설치스크립트) — VCPS C4/C1/C2/LIC.
+    meta = await fetch_registry_metadata(name, ecosystem, version=version, timeout=timeout)
+    heuristics = _basic_heuristics(name, ecosystem)
+
+    base = dict(
+        name=name,
+        version=version,
+        ecosystem=ecosystem,
+        exists=meta.exists,
+        registry_metadata=meta,
+        heuristics=heuristics,
+        engine_version=_engine_version(),
+        checked_at=_now_iso(),
+        disclaimer=_ONLINE_DISCLAIMER,
+    )
+
+    if meta.exists is False:
+        # 존재하지 않는 패키지 — AI 가 지어냈을 가능성(슬롭스쿼팅)이 가장 높은
+        # 신호다. 과거에는 OSV 빈 응답 때문에 "취약점 0건"으로 가장 깨끗해
+        # 보였다(역효과). VCPS-C4-EXISTENCE: BLOCK.
+        squat = heuristics.get("typosquat_warning")
+        return PackageCheckResult(
+            **base,
+            checked=False,  # 취약점 검사 자체가 무의미(대상 부재)
+            verdict="not_found",
+            verdict_severity="high",
+            requires_review=True,
+            source=meta.source,
+            note=(
+                f"'{name}'은(는) 공식 저장소({eco})에 존재하지 않습니다. "
+                "AI가 지어낸 이름(슬롭스쿼팅)일 가능성이 높습니다 — 설치 시도 자체가 위험하며, "
+                "공식 문서에서 정확한 패키지명을 확인하세요."
+                + (f" 참고: {squat}" if squat else "")
+            ),
+        ).model_dump(mode="json")
+
+    # ② OSV 취약점·악성 조회 (C6) — 패키지명·버전만 전송.
     payload: dict = {"package": {"name": name, "ecosystem": eco}}
     if version:
         payload["version"] = version
@@ -435,30 +603,97 @@ async def check_package_impl(
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPError as exc:
-            return {
-                "name": name,
-                "version": version,
-                "ecosystem": ecosystem,
-                "checked": False,
-                "error": f"OSV API failure: {exc!s}",
-                "heuristics": _basic_heuristics(name, ecosystem),
-            }
+            return PackageCheckResult(
+                **base,
+                checked=False,
+                verdict="error",
+                requires_review=True,
+                error=f"OSV API failure: {exc!s}",
+                cooldown=_evaluate_cooldown(meta, env_grade),
+                license_verdict=license_verdict(meta.license) if meta.license else None,
+            ).model_dump(mode="json")
 
     vulns = data.get("vulns", []) or []
     malicious_advisories = [v for v in vulns if str(v.get("id", "")).startswith("MAL-")]
     has_malicious = bool(malicious_advisories)
-    severity = "high" if has_malicious else ("medium" if vulns else "info")
+    max_cve = _max_cve_from_vulns(vulns)
 
-    return {
-        "name": name,
-        "version": version,
-        "ecosystem": ecosystem,
-        "checked": True,
-        "verdict_severity": severity,
-        "is_malicious_package": has_malicious,
-        "vulnerability_count": len(vulns),
-        "malicious_advisory_count": len(malicious_advisories),
-        "advisories": [
+    # ③ CISA KEV 교차 대조 — 실제 악용 중인 취약점이면 심각도와 무관하게 차단급.
+    kev_hits = _kev_cve_hits(vulns) if vulns else []
+    in_kev = bool(kev_hits)
+
+    # ④ 쿨다운(C1)·라이선스(LIC)·설치 스크립트(C2) 판정.
+    cooldown = _evaluate_cooldown(meta, env_grade)
+    lic_verdict = license_verdict(meta.license) if meta.license else None
+
+    notes: list[str] = []
+    if meta.error:
+        notes.append(meta.error)
+    if meta.install_scripts == "present":
+        notes.append(
+            f"설치 스크립트({', '.join(meta.install_script_names)})가 있습니다 — "
+            "보안 점검보다 먼저 실행되므로 `--ignore-scripts` 설치를 권장합니다(VCPS C2)."
+        )
+    if meta.deprecated:
+        notes.append("npm에서 deprecated 로 표시된 패키지입니다 — 유지보수 중단 신호.")
+    if lic_verdict == "review_required":
+        notes.append(
+            f"라이선스({meta.license})는 배포 형태에 따라 제약이 있을 수 있어 검토가 필요합니다"
+            "(내부 운영 도구는 대체로 문제 없음)."
+        )
+    if in_kev:
+        notes.append("이 패키지의 취약점이 CISA KEV(실제 악용 목록)에 있습니다 — 예외 없이 조치하세요.")
+
+    # 판정 사다리: malicious > vulnerable > cooldown_hold > checked_clean.
+    if has_malicious:
+        verdict, severity = "malicious", "high"
+    elif vulns:
+        verdict = "vulnerable"
+        if version is None:
+            # 버전 미지정 조회는 OSV가 *전체 버전 이력*의 취약점을 반환한다 —
+            # 최신 버전은 이미 조치됐을 수 있으므로 차단(high)이 아니라 검토로
+            # 캡핑하고, 버전을 지정한 재검사를 유도한다(과차단 방지).
+            severity = "medium"
+            notes.append(
+                f"버전 미지정 — 이 취약점 {len(vulns)}건은 과거 버전 포함 전체 이력입니다. "
+                "사용할 버전을 지정해 재검사하세요(최신 버전은 조치됐을 수 있음)."
+            )
+        else:
+            severity = "high" if (in_kev or max_cve in ("HIGH", "CRITICAL")) else "medium"
+    elif cooldown.ok is False:
+        # 발행 직후 버전 — 위험이 확인된 게 아니라 '아직 신뢰할 수 없음'(HOLD).
+        verdict, severity = "cooldown_hold", "medium"
+        notes.append(
+            f"버전 발행 후 {cooldown.version_age_days}일밖에 지나지 않았습니다"
+            f"(기준 {cooldown.cooldown_days}일, 등급 {cooldown.env_grade}). "
+            "오염된 신규 버전은 대부분 수 시간~수 일 내 발각·삭제됩니다 — 기다렸다 설치하세요(VCPS C1)."
+        )
+    else:
+        verdict, severity = "checked_clean", "info"
+
+    requires_review = (
+        has_malicious or bool(vulns) or cooldown.ok is False
+        or meta.exists is None            # 실재 미확인(조회 실패)은 검토 대상
+        or meta.install_scripts == "present"
+        or lic_verdict == "review_required"
+        or bool(meta.deprecated)
+    )
+
+    return PackageCheckResult(
+        **base,
+        checked=True,
+        verdict=verdict,
+        verdict_severity=severity,
+        requires_review=requires_review,
+        is_malicious_package=has_malicious,
+        vulnerability_count=len(vulns),
+        malicious_advisory_count=len(malicious_advisories),
+        max_cve=max_cve,
+        in_kev=in_kev,
+        kev_signals=kev_hits,
+        cooldown=cooldown,
+        license_verdict=lic_verdict,
+        advisories=[
             {
                 "id": v.get("id"),
                 "summary": (v.get("summary") or "")[:200],
@@ -466,10 +701,6 @@ async def check_package_impl(
             }
             for v in vulns[:5]
         ],
-        "heuristics": _basic_heuristics(name, ecosystem),
-        "source": "OSV.dev v1/query",
-        "disclaimer": (
-            "이 검사는 OSV.dev와 이름 기반 휴리스틱을 활용한 보조 신호입니다. "
-            "공식 보안 검토, 기관 허용 패키지 정책, lockfile/SBOM 검사를 대체하지 않습니다."
-        ),
-    }
+        source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
+        note=" ".join(notes) if notes else None,
+    ).model_dump(mode="json")

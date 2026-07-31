@@ -1,0 +1,37 @@
+# VCPS(공직자 바이브 코딩 패키지 안전 사용 지침) 기계 규칙 — gvskb 기본값.
+#
+# 원천: VCPS-2026-01 v2.0 6장 rules 블록(발췌). 지침 문서가 단일 원천(SSOT)이며,
+# 이 파일은 gvskb 가 집행에 쓰는 사본이다. 기관은 GVSKB_VCPS_RULES 환경변수로
+# 자체 정책 파일을 지정해 이 기본값을 대체할 수 있다(기관 정책팩).
+#
+# 주의: E3(대민서비스·개인정보 처리)는 바이브 코딩 대상이 아니다 — 이 파일에
+# E3 를 두지 않는 것 자체가 정책이다(정식 정보화사업 절차로 이관).
+schema_version: "1.0"
+doc_id: VCPS-2026-01
+updated: "2026-07-31"
+
+# 실행환경 등급별 쿨다운(발행 후 최소 경과일). VCPS C1 — "최고 효율 방어".
+environments:
+  E0: { label: "개인PC 일회성",   cooldown_days: 3 }
+  E1: { label: "개인PC 반복도구", cooldown_days: 7 }
+  E2: { label: "내부서버 공용",   cooldown_days: 14 }
+
+# 등급 미지정 시 기본 등급 — 바이브 코딩의 전형(개인 PC 반복 도구)을 기본으로.
+default_env: E1
+
+# VCPS-LIC — 라이선스 허용목록(공공 활용 제약 적음)과 검토 필요 목록.
+# 목록 밖(미상 포함)은 'unknown' — 차단이 아니라 표시만 한다.
+license_allowlist:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - MPL-2.0
+  - PSF-2.0
+license_review_required:
+  - GPL-2.0
+  - GPL-3.0
+  - AGPL-3.0
+  - BSL-1.1
+  - SSPL-1.0

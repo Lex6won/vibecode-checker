@@ -194,8 +194,15 @@ def _resolve_rules_dir() -> Path:
 
 def _compile_rule(rule: Rule) -> dict | None:
     detection = rule.detection
-    if detection is None or not detection.patterns:
+    if detection is None:
         return None
+
+    # patterns 를 의도적으로 비운 룰 = **전용 엔진(AST 등)이 발행하는 룰**.
+    # 줄 단위 regex 로는 삽입 값의 출처를 알 수 없어 오탐이 불가피한 주제
+    # (예: DDL 조립)를 AST 판단에만 맡기기 위한 장치다. 컴파일된 패턴이 0개라
+    # regex 매칭에는 절대 걸리지 않지만, lookup_rule 로 조회는 가능해야
+    # 엔진이 Finding 을 만들 수 있다.
+    engine_only = not detection.patterns
 
     flags = 0
     for flag_name in detection.flags:
@@ -207,8 +214,16 @@ def _compile_rule(rule: Rule) -> dict | None:
             compiled.append(re.compile(pattern, flags))
         except re.error as exc:
             print(f"[regex_scanner] invalid regex in {rule.id}: {exc}", file=sys.stderr)
-    if not compiled:
+    if not compiled and not engine_only:
         return None
+
+    # 맥락 제외 패턴 — 같은 줄에 매칭되면 발견을 취소한다(예: 안내문의 예시 IP).
+    excludes: list[re.Pattern[str]] = []
+    for pattern in detection.exclude_patterns:
+        try:
+            excludes.append(re.compile(pattern, flags))
+        except re.error as exc:
+            print(f"[regex_scanner] invalid exclude regex in {rule.id}: {exc}", file=sys.stderr)
 
     return {
         "rule_id": rule.id,
@@ -218,6 +233,8 @@ def _compile_rule(rule: Rule) -> dict | None:
         "decision": rule.decision_default or Decision.warn,
         "category": detection.category or (rule.domains[0] if rule.domains else "uncategorized"),
         "patterns": compiled,
+        "excludes": excludes,
+        "confidence": detection.confidence,
         "languages": {lang.lower() for lang in rule.languages},
         "why": detection.why_it_matters or rule.body[:200].strip(),
         "impact": detection.public_sector_impact,
@@ -293,7 +310,13 @@ def redact_evidence(text: str) -> str:
 
 
 def build_finding(rule: dict, *, filename: str, line_no: int, evidence: str,
-                  engine: str) -> Finding:
+                  engine: str, confidence: str | None = None) -> Finding:
+    # 근거 강도 기본값 — 엔진이 명시하지 않으면 방식으로 추정한다.
+    # regex 는 값의 출처를 알 수 없으므로 항상 pattern-only 다(실측에서 이 구분이
+    # 없어 상수 기반 SQL 조립이 '치명'으로 보고됐다).
+    if confidence is None:
+        # 룰이 스스로 선언한 값이 최우선 — 패턴 자체가 확증인 경우가 있다.
+        confidence = rule.get("confidence") or ("pattern-only" if engine == "regex" else "likely")
     return Finding(
         id=_finding_id(rule["rule_id"], filename, line_no, evidence),
         rule_id=rule["rule_id"],
@@ -310,6 +333,7 @@ def build_finding(rule: dict, *, filename: str, line_no: int, evidence: str,
         references=rule["refs"],
         can_auto_fix=bool(rule.get("auto", False)),
         requires_approval_to_bypass=rule["decision"] == Decision.block,
+        confidence=confidence,
         engine=engine,
     )
 
@@ -357,6 +381,9 @@ class RegexScanner(ScannerAdapter):
                 if rule_langs and eff_lang and eff_lang not in rule_langs:
                     continue
                 if not any(pat.search(line) for pat in rule["patterns"]):
+                    continue
+                # 맥락 제외 — 예시·플레이스홀더 문구가 같은 줄에 있으면 취소.
+                if any(ex.search(line) for ex in rule.get("excludes") or ()):
                     continue
                 evidence = redact_evidence(line)
                 findings.append(build_finding(

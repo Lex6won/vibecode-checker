@@ -51,9 +51,27 @@ class RuleDetection(BaseModel):
 
     patterns: list[str] = Field(
         default_factory=list,
-        description="Regex patterns (Python re syntax). Empty list means rule is reference-only.",
+        description=(
+            "Regex patterns (Python re syntax). Empty list means the rule is emitted by a "
+            "dedicated engine (AST 등) or is reference-only."
+        ),
+    )
+    exclude_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "같은 줄에 이 패턴이 있으면 발견을 취소한다(맥락 오탐 제거). "
+            "예: 안내 문구의 예시 IP('e.g. 192.168.1.100'). patterns 와 같은 flags 를 쓴다."
+        ),
     )
     flags: list[Literal["IGNORECASE", "MULTILINE", "DOTALL"]] = Field(default_factory=list)
+    confidence: Literal["confirmed", "likely", "pattern-only"] | None = Field(
+        default=None,
+        description=(
+            "이 룰이 발행하는 발견의 근거 강도. 미지정이면 엔진이 추정한다"
+            "(regex=pattern-only). 패턴 자체가 확증인 룰(예: PEM 개인키 헤더)은 "
+            "'confirmed' 로 선언해 과소 표기를 막는다."
+        ),
+    )
     category: str | None = Field(
         default=None,
         description="Scanner category for filtering (e.g. privacy-public-sector, secret-scanning).",
@@ -160,6 +178,15 @@ class Finding(BaseModel):
     references: list[str] = Field(default_factory=list)
     can_auto_fix: bool = False
     requires_approval_to_bypass: bool = False
+    confidence: Literal["confirmed", "likely", "pattern-only"] = Field(
+        default="pattern-only",
+        description=(
+            "판정 근거의 강도 — 같은 심각도라도 근거가 다르면 대응이 달라야 한다. "
+            "confirmed=데이터 흐름(테인트)이나 구조 분석으로 확인 · "
+            "likely=구조 분석 기반이나 문맥 확인 권장 · "
+            "pattern-only=문자열 패턴만 일치(값의 출처는 미확인 — 사람 확인 필요)"
+        ),
+    )
     engine: str = Field(
         default="regex",
         description="Detection engine: regex | python-ast | js-taint | semgrep | ...",
@@ -275,6 +302,13 @@ class AuditEvent(BaseModel):
     redacted_evidence: str = ""
     user_role: str = ""
     agency: str = ""
+    caller: str = Field(
+        default="",
+        description=(
+            "호출 주체 식별자(예: 'harness:auto', 'registry:manual', 'cli'). "
+            "레지스트리 request_type(AUTO/MANUAL) 구분의 근거 — 호출자가 자율 신고한 값."
+        ),
+    )
 
 
 class ScanReport(BaseModel):
@@ -295,6 +329,16 @@ class ScanReport(BaseModel):
     scan_mode: str | None = Field(
         default=None,
         description="검사 실행 모드: 'online' | 'offline'(망분리). None이면 리포트에 미표시.",
+    )
+    # 분석 출처 증명(provenance) — "어떤 엔진이 언제 판단했나"를 결과에 각인해
+    # 레지스트리·감사로그가 재현 가능한 근거를 갖게 한다. 구버전 JSON 역호환 위해 None 허용.
+    engine_version: str | None = Field(
+        default=None,
+        description="검사를 수행한 gvskb 버전(gvskb.__version__). 스캐너가 생성 시 주입.",
+    )
+    generated_at: str | None = Field(
+        default=None,
+        description="이 결과가 생성된 시각(UTC ISO-8601). 스캐너가 생성 시 주입.",
     )
     intel_freshness: dict | None = Field(
         default=None,
@@ -319,3 +363,103 @@ class ScanReport(BaseModel):
         "이 결과는 자동 보안 보조 검토입니다. 공공기관 운영 반영 전에는 기관 보안 담당자의 "
         "정책과 최신 법령·지침을 함께 확인해야 합니다."
     )
+
+
+# ---------------------------------------------------------------------------
+# Package check — check_package / scan_dependencies 의 통일 결과 스키마.
+# 온라인(OSV 실조회)과 오프라인(로컬 캐시) 경로가 손조립 dict 로 서로 다른 키를
+# 반환하던 문제를 없애고, 레지스트리(SafePackageRecord.checks)가 파싱 오류 없이
+# 저장할 수 있는 단일 계약을 만든다. 모든 신규 필드는 기본값이 있어 역호환된다.
+# ---------------------------------------------------------------------------
+
+
+class PackageRegistryMetadata(BaseModel):
+    """공식 패키지 저장소(pypi.org·registry.npmjs.org) 메타데이터 스냅샷.
+
+    실재 확인(C4-EXISTENCE)·쿨다운(C1)·라이선스(LIC)·설치 스크립트(C2)의 원천.
+    오프라인이거나 조회 실패면 exists=None — '미확인'이지 '안전'이 아니다.
+    """
+
+    exists: bool | None = Field(
+        default=None,
+        description="공식 저장소 실재 여부. None=미확인(오프라인·조회 실패) — '안전' 아님",
+    )
+    latest_version: str | None = None
+    queried_version: str | None = Field(default=None, description="검사 대상 버전(미지정 시 최신)")
+    version_published_at: str | None = Field(default=None, description="검사 대상 버전의 발행 시각(ISO)")
+    version_age_days: int | None = Field(default=None, description="버전 발행 후 경과일 — 쿨다운 판정 근거")
+    first_published_at: str | None = Field(default=None, description="패키지 최초 발행 시각(ISO) — 신생 탐지 근거")
+    package_age_days: int | None = None
+    license: str | None = None
+    install_scripts: Literal["none", "present", "unknown"] = Field(
+        default="unknown",
+        description="설치 스크립트(preinstall/install/postinstall) 존재 여부. PyPI는 미개봉 검사라 unknown",
+    )
+    install_script_names: list[str] = Field(default_factory=list)
+    deprecated: bool | None = Field(default=None, description="npm deprecated 표시 여부")
+    source: str = Field(default="", description="메타데이터 출처(예: 'pypi.org JSON API')")
+    fetched_at: str | None = Field(default=None, description="조회 시각(UTC ISO)")
+    error: str | None = None
+
+
+class CooldownCheck(BaseModel):
+    """쿨다운(C1) 판정 — '발행 직후 버전은 기다렸다 쓴다'는 VCPS 핵심 통제."""
+
+    cooldown_days: int = Field(description="적용된 대기 기준일(E등급·정책에서 결정)")
+    env_grade: str | None = Field(default=None, description="적용된 실행환경 등급(E0~E2). None=기본값")
+    version_age_days: int | None = None
+    ok: bool | None = Field(
+        default=None,
+        description="True=경과일 충족, False=대기 필요(HOLD), None=발행일 미상으로 판정 불가",
+    )
+
+
+class PackageCheckResult(BaseModel):
+    """check_package 1건의 통일 결과 — 온라인/오프라인 공통.
+
+    verdict 사다리(우선순위순): malicious > not_found > vulnerable > cooldown_hold
+    > checked_stale > checked_clean > unknown > error. '판정 불가(unknown)'는
+    안전이 아니며 requires_review=True 로 명시된다.
+    """
+
+    name: str
+    version: str | None = None
+    ecosystem: str
+    checked: bool = Field(default=False, description="취약점 검사가 실제 수행됐는가(실재확인과 별개)")
+    verdict: Literal[
+        "malicious", "not_found", "vulnerable", "cooldown_hold",
+        "checked_stale", "checked_clean", "unknown", "error",
+    ] = "unknown"
+    verdict_severity: Literal["info", "low", "medium", "high", "critical"] = "info"
+    requires_review: bool = True
+    offline: bool = False
+    # 실재·메타데이터 (VCPS C4/C1/C2/LIC)
+    exists: bool | None = Field(default=None, description="registry_metadata.exists 의 요약 복사본")
+    registry_metadata: PackageRegistryMetadata | None = None
+    cooldown: CooldownCheck | None = None
+    license_verdict: Literal["allowed", "review_required", "unknown"] | None = Field(
+        default=None, description="VCPS 라이선스 허용목록 대조 결과. None=미확인",
+    )
+    # 취약점·악성 (VCPS C6)
+    is_malicious_package: bool = False
+    vulnerability_count: int = 0
+    malicious_advisory_count: int = 0
+    max_cve: Literal["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"] = Field(
+        default="NONE",
+        description="발견된 취약점의 최고 심각도. UNKNOWN=취약점은 있으나 심각도 미상(안전 아님)",
+    )
+    in_kev: bool = Field(default=False, description="CISA KEV(실제 악용 목록) 교차 일치 여부")
+    advisories: list[dict] = Field(default_factory=list)
+    kev_signals: list[dict] = Field(default_factory=list)
+    heuristics: dict = Field(default_factory=dict)
+    # 캐시·출처 증명
+    cache_sources_used: list[str] = Field(default_factory=list)
+    cache_freshness: dict = Field(default_factory=dict)
+    cache_ecosystems: list[str] = Field(default_factory=list)
+    cache_stale_sources: list[str] = Field(default_factory=list)
+    source: str = ""
+    engine_version: str | None = None
+    checked_at: str | None = Field(default=None, description="검사 시각(UTC ISO)")
+    error: str | None = None
+    note: str | None = None
+    disclaimer: str = ""

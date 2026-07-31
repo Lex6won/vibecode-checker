@@ -29,6 +29,85 @@ _SEVERITY_LABEL_KO = {
     Severity.low: "낮음",
 }
 
+# 판정 근거 강도 — 같은 심각도라도 근거가 다르면 대응이 달라야 한다.
+# "치명 8건"만 크게 뜨고 그중 전부가 패턴 일치였다면 신뢰가 무너진다(실측 사례).
+_CONFIDENCE_LABEL_KO = {
+    "confirmed": "확인됨(데이터 흐름 추적)",
+    "likely": "유력함(구조 분석) — 문맥 확인 권장",
+    "pattern-only": "패턴 일치만 — 값의 출처를 직접 확인하세요",
+}
+
+
+def _confidence_label(value: str | None) -> str:
+    return _CONFIDENCE_LABEL_KO.get(value or "pattern-only", "패턴 일치만")
+
+
+def _skip_reason_group(reason: str) -> str:
+    """제외 사유를 사람이 이해할 묶음으로 분류한다."""
+    r = reason or ""
+    if "확장자 아님" in r:
+        return "검사 대상 확장자 아님"
+    if "빌드 산출물" in r:
+        return "빌드 산출물(압축·번들)"
+    if "매니페스트" in r:
+        return "의존성 매니페스트(별도 검사)"
+    if "too large" in r or "크기" in r:
+        return "크기 초과"
+    if "binary" in r or "바이너리" in r:
+        return "바이너리"
+    if "encoding" in r or "인코딩" in r:
+        return "인코딩 불가"
+    if "max_files" in r:
+        return "최대 파일 수 도달"
+    if "read error" in r or "stat error" in r:
+        return "읽기 실패"
+    return "기타"
+
+
+def _skip_breakdown_lines(report: "ScanReport") -> list[str]:
+    """제외 파일 요약 줄(사유별 분류 + 필요한 안내)."""
+    skips = report.skipped_files or []
+    if not skips:
+        return []
+    groups: dict[str, int] = {}
+    for s in skips:
+        g = _skip_reason_group(s.reason or "")
+        groups[g] = groups.get(g, 0) + 1
+    ordered = sorted(groups.items(), key=lambda kv: -kv[1])
+    detail = " · ".join(f"{name} {n}" for name, n in ordered)
+    out = [f"- 검사 제외: **{len(skips)}건** ({detail})"]
+    if groups.get("검사 대상 확장자 아님"):
+        out.append(
+            "  - '검사 대상 확장자 아님'은 **검사되지 않았다는 뜻**입니다 — 위험이 "
+            "없다는 의미가 아닙니다. 필요한 형식이 있으면 담당자에게 문의하세요."
+        )
+    if groups.get("최대 파일 수 도달"):
+        out.append("  - ⚠ 최대 파일 수에 걸려 **일부만 검사**했습니다 — `--max-files` 를 늘려 다시 검사하세요.")
+    return out
+
+
+def _confidence_summary_line(report: "ScanReport") -> str:
+    """요약층 한 줄 — 근거 강도 분포. 억제되지 않은 발견만 센다."""
+    active = [f for f in report.findings if not f.suppressed]
+    if not active:
+        return ""
+    counts: dict[str, int] = {}
+    for f in active:
+        counts[f.confidence] = counts.get(f.confidence, 0) + 1
+    parts = []
+    if counts.get("confirmed"):
+        parts.append(f"확인됨 {counts['confirmed']}건")
+    if counts.get("likely"):
+        parts.append(f"유력함 {counts['likely']}건")
+    if counts.get("pattern-only"):
+        parts.append(f"**패턴 일치만 {counts['pattern-only']}건**")
+    if not parts:
+        return ""
+    tail = ""
+    if counts.get("pattern-only"):
+        tail = " — 패턴 일치 항목은 값의 출처를 직접 확인한 뒤 판단하세요"
+    return f"- 판정 근거: {' · '.join(parts)}{tail}"
+
 # Map a reference fragment to a human-readable guideline group. Order matters —
 # the first matching prefix wins so more specific labels (e.g. "KISA Python")
 # are checked before broader ones (e.g. "KISA").
@@ -224,7 +303,14 @@ _CATEGORY_LABEL_KO = {
     "messaging": "메시지",
     "cdn": "CDN/정적",
     "library": "라이브러리",
-    "other": "기타",
+    "infra": "인프라",
+    "gov-api": "공공 API",
+    "platform": "플랫폼 API",
+    "api": "API(추정)",
+    # "기타"는 카테고리가 아니라 "카탈로그에 없음"이라는 뜻이었다 — 사용자가
+    # 성격을 오해하지 않도록 '미분류'로 정직하게 표기한다.
+    "unclassified": "미분류",
+    "other": "미분류",
 }
 
 
@@ -315,9 +401,13 @@ def _ext_distribution(scanned_files: list[str]) -> Counter[str]:
 
 
 def _short_reason(reason: str) -> str:
-    """생략 사유를 집계용 짧은 라벨로 축약(긴 안내문은 앞부분만)."""
-    r = (reason or "기타").split("—")[0].strip()
-    return r if len(r) <= 30 else r[:29] + "…"
+    """생략 사유를 집계용 라벨로 축약.
+
+    분류는 ``_skip_reason_group`` 에 위임한다 — 예전처럼 사유 문자열을 그대로
+    쓰면 ``확장자 아님(.pdf)``·``(.png)``… 처럼 **확장자마다 그룹이 쪼개져**
+    수십 줄이 되어 요약의 의미가 사라진다.
+    """
+    return _skip_reason_group(reason or "")
 
 
 def _unique_location_count(findings: list[Finding]) -> int:
@@ -672,21 +762,26 @@ def render_markdown(
         )
     else:
         lines.append("- 최고 심각도: **—**")
-    if non_build_skips:
-        lines.append(f"- 생략된 파일 수: {len(non_build_skips)}건 (이유: 크기·바이너리·인코딩 등)")
-    if build_skips:
-        lines.append(f"- 빌드 산출물 제외: {len(build_skips)}건 (압축/번들·빌드 출력 — 원본 아님)")
+    # 제외 파일은 **사유별로** 보여준다 — 수백 건이 한 줄로 뭉뚱그려지면
+    # "무엇이 검사되지 않았는지" 알 수 없어 오히려 불안을 준다.
+    for line in _skip_breakdown_lines(report):
+        lines.append(line)
     # 의존성(패키지)·승인 예외 수치 — 별도 배너 대신 요약 숫자로 정직하게 표기.
     _dep_audits_sum = _dep_audits(report)
     if _dep_audits_sum:
-        _, _dep_unchecked, _dep_vuln, _ = _dep_stats(_dep_audits_sum)
+        _, _dep_unchecked, _dep_vuln, _, _dep_nf = _dep_stats(_dep_audits_sum)
         lines.append(
             f"- 취약 패키지: **{_dep_vuln}건**"
+            + (f" · **미존재(가짜 이름 의심) {_dep_nf}건**" if _dep_nf else "")
             + (f" · 판정 불가 {_dep_unchecked}건" if _dep_unchecked else "")
             + " (아래 '의존성(패키지) 취약점 검사')"
         )
     if suppressed:
         lines.append(f"- 승인된 예외(요약에서 제외): {len(suppressed)}건 (아래 '승인된 예외 내역')")
+    # 판정 근거 분포 — 숫자만 크게 보이고 근거가 약하면 신뢰가 무너진다.
+    conf_line = _confidence_summary_line(report)
+    if conf_line:
+        lines.append(conf_line)
     lines.append("")
 
     if any(summary.by_severity.values()):
@@ -1003,8 +1098,15 @@ h3{font-size:15px;margin:22px 0 8px;color:#111827}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px}
 .chip{padding:5px 12px;border-radius:999px;font-size:13px;font-weight:600;color:#fff}
 .kv{font-size:14px;margin:2px 0}
-table{border-collapse:collapse;width:100%;font-size:13.5px;margin:8px 0}
+table{border-collapse:collapse;width:100%;font-size:13.5px;margin:8px 0;table-layout:auto}
 th,td{border:1px solid #e5e7eb;padding:6px 10px;text-align:left}
+/* 외부 연결 표 — 컬럼 폭을 고정해 '이용 정보'가 찌그러지지 않게 한다.
+   긴 호스트명·파일 경로는 줄바꿈을 허용해 가로 스크롤을 만들지 않는다. */
+.extbl{table-layout:fixed}
+.extbl td{vertical-align:top;word-break:break-word;overflow-wrap:anywhere}
+.extbl td.host{font-family:Consolas,"D2Coding",monospace;font-size:12.5px}
+.extbl td.loc{font-size:12.5px;color:#374151}
+.extbl th{white-space:nowrap}
 th{background:#f3f4f6}
 ol.steps{margin:6px 0 0;padding-left:22px}
 ol.steps li{margin:3px 0}
@@ -1081,6 +1183,8 @@ details.sec .secbody{padding:4px 16px 14px}
 .pill.ai{background:#7c3aed}.pill.analytics{background:#0891b2}.pill.error{background:#475569}
 .pill.payment{background:#b45309}.pill.messaging{background:#0d9488}
 .pill.library{background:#9ca3af}.pill.other{background:#6b7280}
+.pill.infra{background:#64748b}.pill.gov-api{background:#1d4ed8}.pill.platform{background:#0369a1}
+.pill.api{background:#78716c}.pill.unclassified{background:#6b7280}
 tr.w td{background:#fff7ed}
 .go{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700}
 .go.out{background:#fee2e2;color:#b91c1c}.go.in{background:#dcfce7;color:#166534}.go.q{background:#eef2f7;color:#64748b}
@@ -1289,8 +1393,8 @@ def render_html(
     # (B) 의존성 취약 패키지·승인 예외 수치 — 별도 배너 대신 요약 카드로 표기.
     _dep_audits_sum = _dep_audits(report)
     if _dep_audits_sum:
-        _, _dep_unchecked, _dep_vuln, _ = _dep_stats(_dep_audits_sum)
-        sub = f"판정불가 {_dep_unchecked}" if _dep_unchecked else "검사 시점 기준"
+        _, _dep_unchecked, _dep_vuln, _, _dep_nf = _dep_stats(_dep_audits_sum)
+        sub = f"미존재 {_dep_nf}" if _dep_nf else (f"판정불가 {_dep_unchecked}" if _dep_unchecked else "검사 시점 기준")
         p.append(
             f'<div class="stat"><div class="num" style="color:'
             f'{"#c0392b" if _dep_vuln else "#1f2937"}">{_dep_vuln}</div>'
@@ -1396,9 +1500,13 @@ def render_html(
     if report.skipped_files:
         reason_counts = Counter(_short_reason(s.reason) for s in report.skipped_files)
         rs = " · ".join(f"{_esc(r)} {n}건" for r, n in reason_counts.most_common())
+        note = ""
+        if any("확장자 아님" in (s.reason or "") for s in report.skipped_files):
+            note = ("<br><b>'검사 대상 확장자 아님'은 검사되지 않았다는 뜻</b>이며 "
+                    "위험이 없다는 의미가 아닙니다.")
         p.append(
             f"<tr><th>검사 제외</th><td>{len(report.skipped_files)}건 ({rs}) · "
-            "아래 '생략된 파일' 목록 참조</td></tr>"
+            f"아래 '생략된 파일' 목록 참조{note}</td></tr>"
         )
     p.append("</table>")
     p.append(
@@ -1611,8 +1719,15 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
     circ = iter("①②③④")
     if api:
         out.append(f'<div class="subh">{next(circ)} 외부 API 호출 (검토 필요 먼저)</div>')
+        # 컬럼 폭을 명시한다 — 자동 배분은 긴 파일 경로가 공간을 먹고 정작 중요한
+        # '이용 정보'가 세로로 찌그러진다(실측 가독성 문제). 모델은 별도 칸 대신
+        # 이용 정보에 합쳐 칸 수를 줄였다(대부분 '—'라 빈 칸만 차지했음).
         out.append(
-            "<table><tr><th>대상(호스트)</th><th>종류</th><th>모델</th><th>위치</th>"
+            '<table class="extbl">'
+            "<colgroup><col style='width:20%'><col style='width:9%'>"
+            "<col style='width:23%'><col style='width:30%'>"
+            "<col style='width:11%'><col style='width:7%'></colgroup>"
+            "<tr><th>대상(호스트)</th><th>종류</th><th>위치</th>"
             "<th>이용 정보(요약)</th><th>국외이전(운영주체)</th><th>검토</th></tr>"
         )
         for c in api:
@@ -1628,11 +1743,13 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
             loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
             # 운영주체·국가 — 국외이전 검토는 "누구에게, 어느 나라로"가 특정돼야 한다.
             oper = c.operator or "미상 — 직접 확인"
+            # 모델명은 AI 호출에만 있으므로 이용 정보 뒤에 덧붙인다.
+            info = c.data_summary + (f" · 모델 {c.model}" if c.model else "")
             out.append(
-                f"<tr{cls}><td>{_esc(c.target)}</td>"
+                f"<tr{cls}><td class='host'>{_esc(c.target)}</td>"
                 f'<td><span class="pill {_esc(c.category)}">{_esc(_cat_ko(c.category))}</span></td>'
-                f"<td>{_esc(c.model or '—')}</td><td>{_esc(loc)}</td>"
-                f"<td>{_esc(c.data_summary)}</td>"
+                f"<td class='loc'>{_esc(loc)}</td>"
+                f"<td>{_esc(info)}</td>"
                 f'<td><span class="go {rcls}">{_esc(region)}</span>'
                 f'<br><span class="oper">{_esc(oper)}</span></td><td>{rev}</td></tr>'
             )
@@ -1697,7 +1814,8 @@ def _render_rule_group_html(group: dict) -> list[str]:
     )
     out.append(
         f'<div class="row"><span class="tag">{_esc(f.rule_id)}</span>'
-        f'<span class="tag">{_esc(f.category)}</span></div>'
+        f'<span class="tag">{_esc(f.category)}</span>'
+        f'<span class="tag">{_esc(_confidence_label(f.confidence))}</span></div>'
     )
     if f.evidence:
         out.append(
@@ -1814,22 +1932,31 @@ def _dep_audits(report: ScanReport) -> list[dict]:
     return [da]
 
 
-def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool]:
-    """(검사됨, 판정불가, 취약·악성 패키지 수, 차단 여부) 합계."""
+def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool, int]:
+    """(검사됨, 판정불가, 취약·악성 수, 차단 여부, 미존재 수) 합계."""
     checked = sum(int(a.get("checked_count") or 0) for a in audits)
     unchecked = sum(int(a.get("unchecked_count") or 0) for a in audits)
     unchecked += sum(1 for a in audits if a.get("verdict") == "unparsed")  # 파싱 실패도 판정불가
     vuln = 0
+    not_found = 0
     for a in audits:
         for c in a.get("checks") or []:
             if c.get("is_malicious_package") or c.get("vulnerability_count"):
                 vuln += 1
+            if c.get("verdict") == "not_found":
+                not_found += 1
+    # 미존재(슬롭스쿼팅 의심)는 '취약점 검사 불가'로 unchecked 에도 잡히지만,
+    # 성격이 다르므로(설치 시도 자체가 위험) 별도 집계해 배너에 드러낸다.
+    unchecked = max(0, unchecked - not_found)
     blocked = any(a.get("blocked") for a in audits)
-    return checked, unchecked, vuln, blocked
+    return checked, unchecked, vuln, blocked, not_found
 
 
 def _dep_banner_text(audits: list[dict]) -> str:
-    checked, unchecked, vuln, blocked = _dep_stats(audits)
+    checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
+    if not_found:
+        return (f"**의존성 검사 포함** — 저장소에 존재하지 않는 패키지 {not_found}건 발견"
+                "(AI가 지어낸 이름 의심). 설치 전 반드시 이름을 확인하세요.")
     if blocked:
         return (f"**의존성 검사 포함** — 악성·고위험 패키지 발견(취약·악성 {vuln}건). "
                 "아래 '의존성(패키지) 취약점 검사' 섹션을 확인하세요.")
@@ -1843,24 +1970,49 @@ def _dep_banner_text(audits: list[dict]) -> str:
 
 
 def _pkg_verdict_label(check: dict) -> str:
+    if check.get("verdict") == "not_found":
+        return "❌ 저장소에 없음(가짜 이름 의심)"
     if check.get("is_malicious_package"):
         return "악성 의심"
     n = check.get("vulnerability_count") or 0
     if n:
         return f"⚠ 취약점 {n}건"
+    if check.get("verdict") == "cooldown_hold":
+        return "⏸ 발행 직후 — 대기 권고"
     if check.get("checked"):
         return "이상 없음(검사 시점)"
     return "판정 불가"
 
 
+def _pkg_license_label(check: dict) -> str:
+    """라이선스 표시 — 허용목록 대조 결과를 함께 보여준다(검토 필요는 표시)."""
+    lic = (check.get("registry_metadata") or {}).get("license")
+    if not lic:
+        return "—"
+    text = str(lic)[:24]
+    if check.get("license_verdict") == "review_required":
+        return f"⚠ {text}"
+    return text
+
+
 def _pkg_note(check: dict) -> str:
     bits: list[str] = []
     heur = check.get("heuristics") or {}
+    if check.get("verdict") == "not_found":
+        bits.append("AI가 지어낸 이름(슬롭스쿼팅) 가능성 — 공식 문서에서 이름 확인")
     if heur.get("typosquat_warning"):
         bits.append("타이포스쿼팅 의심")
-    if check.get("kev_signals"):
+    if check.get("in_kev") or check.get("kev_signals"):
         bits.append("CISA KEV 신호")
-    if not check.get("checked") and check.get("note"):
+    cd = check.get("cooldown") or {}
+    if cd.get("ok") is False:
+        bits.append(f"발행 {cd.get('version_age_days')}일 경과(기준 {cd.get('cooldown_days')}일)")
+    meta = check.get("registry_metadata") or {}
+    if meta.get("install_scripts") == "present":
+        bits.append("설치 스크립트 있음")
+    if check.get("license_verdict") == "review_required":
+        bits.append(f"라이선스 검토({meta.get('license')})")
+    if not check.get("checked") and check.get("note") and check.get("verdict") != "not_found":
         bits.append("검사 불가 사유 있음")
     return " · ".join(bits)
 
@@ -1869,9 +2021,10 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
     audits = _dep_audits(report)
     if not audits:
         return []
-    checked, unchecked, vuln, blocked = _dep_stats(audits)
+    checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
     out: list[str] = ["## 의존성(패키지) 취약점 검사", ""]
     out.append(f"> 검사 {checked}건 · 판정 불가 {unchecked}건 · 취약·악성 {vuln}건"
+               + (f" · **미존재(가짜 이름 의심) {not_found}건**" if not_found else "")
                + (" · **차단 권고**" if blocked else ""))
     out.append("")
     for a in audits:
@@ -1882,12 +2035,12 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
             out.append(f"> ⚠ {a.get('note', '파싱하지 못했습니다.')} **파싱 0건은 '안전'이 아닙니다.**")
             out.append("")
             continue
-        out.append("| 패키지 | 버전 | 판정 | 비고 |")
-        out.append("|---|---|---|---|")
+        out.append("| 패키지 | 버전 | 라이선스 | 판정 | 비고 |")
+        out.append("|---|---|---|---|---|")
         for c in a.get("checks") or []:
             out.append(
                 f"| `{c.get('name', '?')}` | {c.get('version') or '—'} | "
-                f"{_pkg_verdict_label(c)} | {_pkg_note(c)} |"
+                f"{_pkg_license_label(c)} | {_pkg_verdict_label(c)} | {_pkg_note(c)} |"
             )
         out.append("")
     if unchecked:
@@ -1901,10 +2054,11 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
     audits = _dep_audits(report)
     if not audits:
         return []
-    checked, unchecked, vuln, blocked = _dep_stats(audits)
+    checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
+    nf = f" · 미존재 {not_found}" if not_found else ""
     out: list[str] = [
         '<details class="sec"><summary>의존성(패키지) 취약점 검사 — '
-        f"검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}</summary>"
+        f"검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}{nf}</summary>"
         '<div class="secbody">',
     ]
     for a in audits:
@@ -1915,13 +2069,15 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
             out.append(f'<div class="depwarn">⚠ {_esc(str(a.get("note", "파싱하지 못했습니다.")))} '
                        "<b>파싱 0건은 '안전'이 아닙니다.</b></div>")
             continue
-        out.append("<table><tr><th>패키지</th><th>버전</th><th>판정</th><th>비고</th></tr>")
+        out.append("<table><tr><th>패키지</th><th>버전</th><th>라이선스</th>"
+                   "<th>판정</th><th>비고</th></tr>")
         for c in a.get("checks") or []:
             bad = c.get("is_malicious_package") or c.get("vulnerability_count")
             cls = ' class="w"' if bad else ""
             out.append(
                 f"<tr{cls}><td>{_esc(str(c.get('name', '?')))}</td>"
                 f"<td>{_esc(str(c.get('version') or '—'))}</td>"
+                f"<td>{_esc(_pkg_license_label(c))}</td>"
                 f"<td>{_esc(_pkg_verdict_label(c))}</td><td>{_esc(_pkg_note(c))}</td></tr>"
             )
         out.append("</table>")
@@ -1955,15 +2111,17 @@ def _render_external_surface_md(report: ScanReport) -> list[str]:
     if api:
         out.append(f"### {next(circ)} 외부 API 호출 (검토 필요 먼저)")
         out.append("")
-        out.append("| 대상(호스트) | 종류 | 모델 | 위치 | 이용 정보 | 국외이전(운영주체) | 검토 |")
-        out.append("|---|---|---|---|---|---|---|")
+        # 모델 컬럼은 이용 정보에 통합했다(AI 호출에만 값이 있어 대부분 빈 칸이었음).
+        out.append("| 대상(호스트) | 종류 | 위치 | 이용 정보 | 국외이전(운영주체) | 검토 |")
+        out.append("|---|---|---|---|---|---|")
         for c in api:
             mark = "⚠ 검토" if c.review_level == "warn" else "참고"
             loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
             oper = f"{c.region or '확인'} — {c.operator}" if c.operator else f"{c.region or '확인'} — 미상(직접 확인)"
+            info = c.data_summary + (f" · 모델 {c.model}" if c.model else "")
             out.append(
-                f"| `{c.target}` | {_cat_ko(c.category)} | {c.model or '—'} | "
-                f"`{loc}` | {c.data_summary} | {oper} | {mark} |"
+                f"| `{c.target}` | {_cat_ko(c.category)} | "
+                f"`{loc}` | {info} | {oper} | {mark} |"
             )
         out.append("")
     if res:
@@ -2016,6 +2174,7 @@ def _render_finding_group_md(group: dict) -> list[str]:
     out.append(f"- **위치**: line {_line_list(findings)}")
     out.append(f"- **룰**: `{f.rule_id}`")
     out.append(f"- **카테고리**: {f.category}")
+    out.append(f"- **판정 근거**: {_confidence_label(f.confidence)}")
     if f.evidence:
         out.append(f"- **증거(자동 마스킹됨)**: `{_oneline(f.evidence)}`")
     if f.why_it_matters:

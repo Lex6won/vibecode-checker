@@ -104,12 +104,18 @@ def _emit_doc_report(
     )
 
 
-def _run_dependency_audit(root: Path, report: ScanReport) -> dict | None:
+def _run_dependency_audit(
+    root: Path,
+    report: ScanReport,
+    env_grade: str | None = None,
+    include_installed: bool = False,
+) -> dict | None:
     """스캔 결과에서 매니페스트를 찾아 패키지 취약·악성 검사를 수행한다.
 
     requirements*.txt(pypi)는 스캔에서 제외(skipped)되고 package.json(npm)은
     스캔 대상(scanned)이므로 두 목록을 모두 본다. 락파일은 audit_manifest 가
     'unparsed'로 정직하게 거절하므로 여기서는 원본 매니페스트만 수집한다.
+    env_grade(E0~E2)는 쿨다운 기준일을 결정한다.
     """
     from .tools.check_package import audit_manifest
 
@@ -138,7 +144,7 @@ def _run_dependency_audit(root: Path, report: ScanReport) -> dict | None:
             if p.is_file():
                 manifests.append((p, rel, eco))
 
-    if not manifests:
+    if not manifests and not include_installed:
         print(
             "[gvskb] --check-deps: 검사할 매니페스트(requirements*.txt·package.json)를 찾지 못했습니다.",
             file=sys.stderr,
@@ -149,7 +155,7 @@ def _run_dependency_audit(root: Path, report: ScanReport) -> dict | None:
         out: list[dict] = []
         for p, rel, eco in manifests:
             try:
-                text = p.read_text(encoding="utf-8")
+                text = p.read_text(encoding="utf-8-sig")
             except (OSError, UnicodeDecodeError) as exc:
                 out.append({
                     "ecosystem": eco, "manifest": rel, "verdict": "unparsed",
@@ -158,9 +164,39 @@ def _run_dependency_audit(root: Path, report: ScanReport) -> dict | None:
                     "note": f"파일을 읽지 못했습니다: {exc}",
                 })
                 continue
-            audit = await audit_manifest(text, ecosystem=eco)
+            audit = await audit_manifest(text, ecosystem=eco, env_grade=env_grade)
             audit["manifest"] = rel
             out.append(audit)
+
+        # 설치 흔적(.venv·휠·node_modules)까지 확대 — 매니페스트에 적힌 직접
+        # 의존성만 보면 **전이 의존성의 취약점을 통째로 놓친다**(상용 SCA 대비
+        # 유일한 실질 격차였음). 목록만 읽고 패키지를 실행하지 않는다.
+        if include_installed:
+            from .tools.installed_packages import collect_installed_packages, to_requirements_text
+
+            inv = collect_installed_packages(root)
+            for eco, pkgs in (("pypi", inv["pypi"]), ("npm", inv["npm"])):
+                if not pkgs:
+                    continue
+                text = to_requirements_text(pkgs)
+                audit = await audit_manifest(
+                    text, ecosystem=eco, limit=len(pkgs), env_grade=env_grade,
+                )
+                audit["manifest"] = f"<설치된 패키지: {eco}>"
+                audit["source"] = "installed-inventory"
+                audit["inventory_stats"] = inv["stats"]
+                # 라이선스는 설치 메타데이터에서만 얻을 수 있다 — 검사 결과에 병기.
+                lic_by_name = {
+                    str(p.get("name", "")).lower(): p.get("license") for p in pkgs
+                }
+                for c in audit.get("checks", []):
+                    lic = lic_by_name.get(str(c.get("name", "")).lower())
+                    if lic and not (c.get("registry_metadata") or {}).get("license"):
+                        c.setdefault("registry_metadata", {})
+                        if isinstance(c["registry_metadata"], dict):
+                            c["registry_metadata"]["license"] = lic
+                        c["license_source"] = "installed-metadata"
+                out.append(audit)
         return out
 
     return {"audits": asyncio.run(_gather())}
@@ -204,7 +240,11 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     # 취약·악성 검사를 함께 수행해 리포트에 병합한다 — 보안팀이 "코드+패키지"
     # 위험을 한 문서에서 보게 한다. 전송 데이터는 패키지명·버전뿐이다.
     if getattr(args, "check_deps", False):
-        report.dependency_audit = _run_dependency_audit(target, report)
+        report.dependency_audit = _run_dependency_audit(
+            target, report,
+            env_grade=getattr(args, "env", None),
+            include_installed=getattr(args, "include_installed", False),
+        )
 
     # (#1) 경로는 존재하지만 검사 대상 파일이 0개인 경우(빈 폴더·확장자 불일치)
     # 도 "위험 없음"으로 오해하지 않도록 경고한다.
@@ -236,10 +276,21 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             if not output_text.endswith("\n"):
                 sys.stdout.write("\n")
     else:
+        # -o 를 주지 않아도 **규약 위치에 저장**한다(--stdout 으로만 끈다).
+        # 기존에는 화면에 흘려보내 사라졌고, 결재에 첨부할 파일이 남지 않았다.
+        output = args.output
+        if not output and not getattr(args, "stdout", False):
+            from .report_store import ensure_writable, gitignore_hint, resolve_report_path
+            base, fallback_note = ensure_writable(resolve_report_path(args.path))
+            output = str(base)
+            if fallback_note:
+                print(f"[gvskb] ⚠ {fallback_note}", file=sys.stderr)
+            else:
+                print(f"[gvskb] {gitignore_hint()}", file=sys.stderr)
         _emit_doc_report(
             report,
             fmt=args.format,
-            output=args.output,
+            output=output,
             reproduce_command=_scan_reproduce_command(args),
         )
 
@@ -249,10 +300,14 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 def _cmd_check_package(args: argparse.Namespace) -> int:
     from .tools.check_package import check_package_impl
 
-    result = asyncio.run(check_package_impl(name=args.name, ecosystem=args.ecosystem, version=args.version))
+    result = asyncio.run(check_package_impl(
+        name=args.name, ecosystem=args.ecosystem, version=args.version,
+        env_grade=getattr(args, "env", None),
+    ))
     sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
-    if result.get("is_malicious_package"):
+    if result.get("is_malicious_package") or result.get("verdict") == "not_found":
+        # 미존재(슬롭스쿼팅 의심)는 VCPS-C4-EXISTENCE 기준 차단급이다.
         return EXIT_FINDINGS_BLOCK
     if result.get("vulnerability_count"):
         return EXIT_FINDINGS_WARN
@@ -471,6 +526,42 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
     return EXIT_OK if result.get("ok") else EXIT_FINDINGS_WARN
 
 
+def _cmd_intel_sync(args: argparse.Namespace) -> int:
+    """인텔 캐시 자동 동기화 — 설정된 소스(폴더·URL)에서 번들을 당겨 반입한다."""
+    from .intel.autopull import autopull_status, maybe_auto_update
+
+    if args.status:
+        st = autopull_status()
+        if args.json:
+            sys.stdout.write(json.dumps(st, ensure_ascii=False, indent=2) + "\n")
+        else:
+            print(f"[gvskb] 자동 갱신: {'켜짐' if st['enabled'] else '꺼짐(GVSKB_AUTO_UPDATE=off)'}")
+            print(f"        갱신 필요: {'예' if st['needs_refresh'] else '아니오'} — {st['reason']}")
+            print(f"        소스(폴더): {st['source_dir'] or '<미설정>'}")
+            print(f"        소스(URL) : {st['source_url']}")
+            if st["last_attempt_at"]:
+                print(f"        마지막 시도: {st['last_attempt_at']} ({st['last_result']})")
+        return EXIT_OK
+
+    result = maybe_auto_update(force=args.force, verbose=not args.json)
+    if args.json:
+        sys.stdout.write(json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n")
+    elif result.skipped_reason:
+        print(f"[gvskb] 건너뜀: {result.skipped_reason}")
+    elif result.ok:
+        print(f"[gvskb] 인텔 캐시 갱신 완료 ← {result.source}")
+        print(f"        sources: {', '.join(result.sources_updated or [])}")
+    else:
+        print(f"[gvskb] ✖ {result.error}", file=sys.stderr)
+
+    if result.ok:
+        from .audit import record_update_intel
+        record_update_intel(list(result.sources_updated or []), tool="intel-sync")
+        return EXIT_OK
+    # 건너뜀(이미 최신)은 성공으로 본다 — CI에서 불필요한 실패를 만들지 않는다.
+    return EXIT_OK if result.skipped_reason else EXIT_FINDINGS_WARN
+
+
 def _promote_kev_from_cache(cache, args: argparse.Namespace) -> dict:
     """Convert the cached CISA KEV catalog into proposed-rule MD files."""
     entry = cache.load("cisa-kev")
@@ -566,7 +657,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="출력 형식 (기본: markdown). markdown/html 은 파일 저장(-o) 시 .md·.html 을 함께 생성. "
              "sarif 는 CI·보안도구 연동용 SARIF 2.1.0 (GitHub code scanning 업로드 가능)",
     )
-    scan.add_argument("--output", "-o", help="결과 저장 경로. 미지정 시 stdout")
+    scan.add_argument(
+        "--output", "-o",
+        help="결과 저장 경로(확장자 제외). 미지정 시 <검사경로>/.check-reports/ 에 "
+             "날짜·시각 이름으로 자동 저장합니다. GVSKB_REPORT_DIR 로 기관 공용 폴더 지정 가능",
+    )
+    scan.add_argument(
+        "--stdout", action="store_true",
+        help="파일로 저장하지 않고 화면에만 출력(파이프 연결용)",
+    )
     scan.add_argument("--scenario", help="시나리오 힌트 (예: data-pipeline, llm-integration)")
     scan.add_argument(
         "--profile", default="public-default-strict",
@@ -581,6 +680,16 @@ def build_parser() -> argparse.ArgumentParser:
              "오프라인: 로컬 인텔 캐시. 판정 불가는 '안전'이 아님)",
     )
     scan.add_argument(
+        "--include-installed", action="store_true",
+        help="의존성 검사 범위를 **설치 흔적까지** 확대(.venv의 dist-info·*.whl·node_modules). "
+             "매니페스트에 없는 전이 의존성의 취약점까지 잡습니다. --check-deps 와 함께 사용",
+    )
+    scan.add_argument(
+        "--env", choices=["E0", "E1", "E2"], default=None,
+        help="실행환경 등급 — 쿨다운(발행 후 대기) 기준일 결정: E0=개인PC 일회성(3일), "
+             "E1=개인PC 반복도구(7일, 기본), E2=내부서버 공용(14일). --check-deps 와 함께 사용",
+    )
+    scan.add_argument(
         "--fail-on", choices=["block", "warn", "never"], default="warn",
         help="0이 아닌 종료 코드를 낼 최소 수준 (기본 warn). "
              "CI 게이트에서 block만 차단하고 warn은 통과시키려면 --fail-on block, "
@@ -588,10 +697,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.set_defaults(func=_cmd_scan)
 
-    pkg = sub.add_parser("check-package", help="단일 패키지를 OSV.dev에 조회")
+    pkg = sub.add_parser("check-package", help="단일 패키지의 실재·취약점·악성·쿨다운 검사")
     pkg.add_argument("name", help="패키지 이름")
     pkg.add_argument("--ecosystem", choices=["pypi", "npm"], default="pypi")
-    pkg.add_argument("--version", help="검사할 버전 (선택)")
+    pkg.add_argument("--version", help="검사할 버전 (권장 — 미지정 시 전체 이력 기준의 보수적 판정)")
+    pkg.add_argument(
+        "--env", choices=["E0", "E1", "E2"], default=None,
+        help="실행환경 등급(쿨다운 기준일): E0=3일, E1=7일(기본), E2=14일",
+    )
     pkg.set_defaults(func=_cmd_check_package)
 
     rep = sub.add_parser("report", help="저장된 ScanReport JSON을 Markdown/HTML로 변환")
@@ -676,6 +789,17 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("--cache-dir", help="캐시 디렉토리 오버라이드 (기본: ~/.gvskb/cache)")
     bundle.add_argument("--json", action="store_true", help="JSON 출력")
     bundle.set_defaults(func=_cmd_intel_bundle)
+
+    sync = sub.add_parser(
+        "intel-sync",
+        help="인텔 캐시 자동 동기화 — 설정된 소스(GVSKB_INTEL_DIR 폴더 → GVSKB_INTEL_URL)에서 번들을 당겨 반입",
+    )
+    sync.add_argument("--force", action="store_true",
+                      help="신선도·재시도 간격을 무시하고 즉시 당김")
+    sync.add_argument("--status", action="store_true",
+                      help="당김 없이 현재 설정·필요 여부만 출력")
+    sync.add_argument("--json", action="store_true", help="JSON 출력")
+    sync.set_defaults(func=_cmd_intel_sync)
 
     return p
 
