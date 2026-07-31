@@ -1,4 +1,51 @@
 Required Notice: Copyright (c) 2026 Lex6won (https://github.com/Lex6won/vibecode-checker)
+Required Notice: Licensed under PolyForm Noncommercial License 1.0.0 WITH an Additional Permission for Contractor Use. The additional permission is not part of the PolyForm text and is lost if only the PolyForm URL is passed on. See the LICENSE file at https://github.com/Lex6won/vibecode-checker
+
+---
+
+# Additional Permission — Contractor Use (추가 허가 — 수급사업자 사용)
+
+This additional permission is granted by the licensor. It does not modify,
+replace, or reinterpret the PolyForm Noncommercial License 1.0.0 that follows;
+it only grants rights beyond it.
+
+**Grant.** Notwithstanding the Noncommercial Purposes section below, the
+licensor additionally permits any contractor or subcontractor to use, modify,
+and distribute the software solely for, and for the duration of, performing a
+contract or public procurement for an organization whose own use is a permitted
+purpose under the Noncommercial Organizations section below (for example, a
+government institution). Delivering the software, or a modified version of it,
+to that organization as part of performing the contract is included.
+
+**Limits.** This additional permission does not authorize:
+
+  (a) offering the software, a modified version, or a derivative work as a
+      product or service on the contractor's own account, whether sold,
+      licensed, subscribed, or bundled;
+  (b) any use after the contract ends, other than retaining copies for record
+      keeping and audit;
+  (c) any use for an organization whose own use would not be a permitted
+      purpose under the license below.
+
+**Notice.** Anyone who receives the software under this additional permission
+must pass on this LICENSE file in full. The PolyForm URL alone does not carry
+this permission.
+
+## 한국어 요약 (참고용 — 법적 효력은 위 영문이 우선)
+
+공공기관·교육기관·연구기관 등 라이선스가 허용하는 조직의 **사업을 수행하는
+용역사·수급사업자**는 그 계약 이행 목적에 한해, 계약 기간 동안 이 소프트웨어를
+사용·수정·배포할 수 있습니다. 수정본을 발주기관에 납품하는 것도 포함됩니다.
+
+허용되지 않는 것: ⑴ 용역사가 자기 명의로 이 소프트웨어나 파생물을 제품·서비스로
+판매·구독·번들 제공하는 것, ⑵ 계약 종료 후의 사용(기록 보존·감사 목적 보관 제외),
+⑶ 라이선스가 허용하지 않는 조직을 위한 사용.
+
+이 추가 허가는 아래 PolyForm 본문을 바꾸지 않으며, 라이선서가 별도로 부여하는
+허가입니다. 전달 시 이 LICENSE 파일 전체를 함께 전달해야 하며, PolyForm URL 만
+전달하면 이 허가는 따라가지 않습니다.
+
+---
 
 # PolyForm Noncommercial License 1.0.0
 
