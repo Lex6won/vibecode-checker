@@ -121,6 +121,41 @@ def test_mcp_save_report_rejects_bad_input() -> None:
     assert "error" in save_report(report={"not": "a report"})
 
 
+def test_render_report_saves_by_default(tmp_path: Path, monkeypatch) -> None:
+    """실측 문제: 에이전트가 render_report 의 문자열을 받아 **자기 방식으로**
+    저장해 규약 밖 위치·이름의 보고서가 생겼다(Codex·Claude·Cursor 공통).
+    지시문에 기대지 않고 도구가 직접 저장해야 규약이 지켜진다."""
+    monkeypatch.setenv("GVSKB_REPORT_DIR", str(tmp_path / "out"))
+    from gvskb.server import render_report
+
+    out = render_report(report=_empty_report().model_dump(mode="json"), format="both")
+    assert "saved" in out, "render_report 가 저장하지 않았다"
+    for path in out["saved"].values():
+        assert Path(path).is_file()
+    # 에이전트가 다시 저장하지 않도록 반환값이 분명히 말해야 한다.
+    assert "다시 저장하지 마세요" in out["note"]
+
+
+def test_render_report_save_false_returns_content_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GVSKB_REPORT_DIR", str(tmp_path / "out"))
+    from gvskb.server import render_report
+
+    out = render_report(report=_empty_report().model_dump(mode="json"), save=False)
+    assert "saved" not in out
+    assert out["content"]
+    assert not (tmp_path / "out").exists()
+
+
+def test_render_report_description_warns_against_double_save() -> None:
+    """도구 설명(에이전트가 실제로 읽는 것)에 규약이 들어 있어야 한다 —
+    MCP instructions 만으로는 클라이언트에 따라 무시된다."""
+    from gvskb.server import render_report
+
+    doc = render_report.__doc__ or ""
+    assert "다시 저장하지 마세요" in doc
+    assert ".check-reports" in doc
+
+
 def test_report_dir_is_excluded_from_scanning() -> None:
     """보고서 폴더는 스캔 제외 목록에 있어야 한다 — 두 상수가 어긋나면 자기 참조가 난다."""
     from gvskb.scanner import DEFAULT_EXCLUDE_DIRS
