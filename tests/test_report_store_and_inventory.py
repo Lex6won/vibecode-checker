@@ -121,6 +121,30 @@ def test_mcp_save_report_rejects_bad_input() -> None:
     assert "error" in save_report(report={"not": "a report"})
 
 
+def test_report_dir_is_excluded_from_scanning() -> None:
+    """보고서 폴더는 스캔 제외 목록에 있어야 한다 — 두 상수가 어긋나면 자기 참조가 난다."""
+    from gvskb.scanner import DEFAULT_EXCLUDE_DIRS
+
+    assert REPORT_DIR_NAME in DEFAULT_EXCLUDE_DIRS
+
+
+def test_saved_report_is_not_rescanned(tmp_path: Path, monkeypatch) -> None:
+    """실측 결함: 저장한 보고서에 인용된 증거(PEM 헤더)를 재검사에서 새 위험으로
+    잡아 발견이 계속 증식했다."""
+    monkeypatch.delenv("GVSKB_REPORT_DIR", raising=False)
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    reports = tmp_path / REPORT_DIR_NAME
+    reports.mkdir()
+    (reports / "old.md").write_text(
+        "증거: -----BEGIN PRIVATE KEY-----\n", encoding="utf-8"
+    )
+    from gvskb.scanner import scan_path
+
+    report = scan_path(tmp_path)
+    assert not [f for f in report.findings if REPORT_DIR_NAME in f.location.file]
+    assert not [s for s in report.scanned_files if REPORT_DIR_NAME in s]
+
+
 # ---------------------------------------------------------------------------
 # 2. 외부 연결 분류
 # ---------------------------------------------------------------------------

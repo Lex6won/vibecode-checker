@@ -288,6 +288,10 @@ DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset({
     # 프런트엔드 빌드 출력·툴 캐시 — 모두 *생성물*이라 원본 소스가 아니다.
     # 미니파이드 번들을 스캔하면 룰이 import/토큰 단위로 대량 오탐을 낸다.
     ".next", ".nuxt", ".cache",
+    # 이 도구가 만든 점검 보고서 — 반드시 제외해야 한다. 보고서에는 발견 사항의
+    # **증거 문구가 인용**돼 있어(예: PEM 헤더), 다시 스캔하면 자기가 쓴 글을
+    # 새 위험으로 잡는 자기 참조가 생긴다(실측: 재검사 때마다 발견이 2건씩 증식).
+    ".check-reports",
     ".puppeteer-cache", ".tmp", "tmp", ".turbo", ".parcel-cache",
     ".svelte-kit", ".astro", ".vercel", ".netlify", ".output",
     ".angular", ".docusaurus", "storybook-static",
