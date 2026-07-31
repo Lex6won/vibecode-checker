@@ -81,8 +81,8 @@
     <h1>vibecode-checker 검증 이력 — 상용 도구 비교 및 개선 트래킹</h1>
     <p>실제 공공 프로젝트를 상용 도구와 나란히 점검하고, 발견된 결함을 고쳐 나가는 누적 기록입니다.</p>
     <div class="meta">
-      <span>문서 v2.1</span><span>2026-07-31</span><span>엔진 v0.3.0</span>
-      <span>테스트 603건 통과</span><span>라운드 3회 완료</span><span>백로그 11건 조치완료</span>
+      <span>문서 v3.0</span><span>2026-07-31</span><span>엔진 v0.3.0</span>
+      <span>테스트 605건 통과</span><span>라운드 4회 완료</span><span>오탐 68% → 0%</span>
     </div>
   </div>
 </header>
@@ -417,6 +417,78 @@ app_20260607.py  → BOM 있음 → 동일
     HTML을 인쇄하면 그대로 PDF 결재 문서가 됩니다.
   </div>
 
+  <h2>라운드 4 — 동일 대상 재점검 및 최종 비교</h2>
+  <p>라운드 1~3의 모든 수정을 반영한 뒤 <b>같은 소스(응소ON)를 다시 점검</b>하고 상용 도구와 대조했습니다.</p>
+
+  <div class="box danger">
+    <b>재점검 중 발견한 결함 — 보고서 자기 참조 (즉시 수정)</b>
+    라운드 3에서 만든 보고서 저장 규약이 자기 참조를 일으켰습니다.
+  </div>
+  <pre><code>1차 검사 → .check-reports/보고서.html 저장 (증거로 PEM 헤더 인용)
+2차 검사 → 그 보고서를 다시 스캔 → 개인키·인증서 발견 2건 추가 (15 → 17건)</code></pre>
+  <p>보고서에는 발견 사항의 <b>증거 문구가 그대로 인용</b>되므로, 같은 폴더를 재검사하면 자기가 쓴 글을
+  새 위험으로 잡습니다. <code>.check-reports</code> 를 스캔 제외에 추가하고,
+  <b>저장 규약 상수와 제외 목록의 일치를 테스트로 고정</b>했습니다. 수정 후 재실행해도 125/15로 동일합니다.</p>
+
+  <h3>최종 결과 — 같은 대상, 세 시점 비교</h3>
+  <table>
+    <tr><th>지표</th><th>초기</th><th>라운드2 후</th><th>라운드4(최종)</th></tr>
+    <tr><td>검사 파일</td><td>88</td><td>125</td><td><b>125</b></td></tr>
+    <tr><td>제외 기록</td><td>3</td><td>148</td><td><b>148</b></td></tr>
+    <tr><td>발견</td><td>22</td><td>15</td><td><b>15</b></td></tr>
+    <tr><td><b>오탐</b></td><td><span class="tag t-fp">15건 (68%)</span></td><td>0</td><td><span class="tag t-ok">0건</span></td></tr>
+    <tr><td>critical</td><td>8 <span class="tag t-fp">전부 오탐</span></td><td>2</td><td><b>2</b> <span class="tag t-ok">전부 진짜</span></td></tr>
+    <tr><td>의존성 범위</td><td>10개</td><td>22개</td><td><b>22개</b></td></tr>
+    <tr><td>보고서 저장</td><td>안 됨</td><td>안 됨</td><td><span class="tag t-ok">자동 저장</span></td></tr>
+  </table>
+
+  <h3>최종 발견 15건 — 전수 검증 결과 모두 진짜(오탐 0)</h3>
+  <table>
+    <tr><th>발견</th><th>건수</th><th>심각도</th><th>성격</th></tr>
+    <tr><td><b>SSL 개인키 파일 노출</b></td><td>2</td><td><span class="tag t-fp">치명·차단</span></td>
+        <td><code>STAR.siheung.go.kr_key.pem</code> (2개 경로에 중복 존재)</td></tr>
+    <tr><td>인증서 소스 동봉</td><td>6</td><td>낮음</td><td>인증서 체인 3개 × 2경로 — 만료 관리 대상</td></tr>
+    <tr><td>주석 내 관리자 계정</td><td>1</td><td>보통</td><td><code>admin / admin1234</code></td></tr>
+    <tr><td>세션 쿠키 secure=False</td><td>1</td><td>보통</td><td>nginx가 HTTPS 담당이나 명시 가치 있음</td></tr>
+    <tr><td>자원 해제 누락</td><td>5</td><td>보통</td><td><code>sqlite3.connect()</code> with문 미사용</td></tr>
+  </table>
+
+  <h3>상용 도구(코드 스패로우) 최종 대조</h3>
+  <table>
+    <tr><th>항목</th><th>gvskb (최종)</th><th>코드 스패로우</th></tr>
+    <tr><td>총 발견</td><td>15</td><td>273</td></tr>
+    <tr><td><b>앱 코드 유효 발견</b></td><td><span class="tag t-ok">15건 (오탐 0)</span></td>
+        <td><span class="tag t-fp">0건</span> (앱 코드 6건 전부 오탐)</td></tr>
+    <tr><td>벤더 노이즈</td><td>0 (자동 제외)</td><td>227건</td></tr>
+    <tr><td><b>SSL 개인키 노출</b></td><td><span class="tag t-ok">탐지(차단)</span></td><td><span class="tag t-fp">미탐</span></td></tr>
+    <tr><td>기본 관리자 비밀번호</td><td><span class="tag t-ok">탐지</span></td><td><span class="tag t-fp">미탐</span></td></tr>
+    <tr><td>취약 패키지(pillow)</td><td><span class="tag t-ok">탐지(차단)</span></td><td><span class="tag t-ok">탐지</span></td></tr>
+    <tr><td>C/C++ 분석</td><td><span class="tag t-info">범위 외(정책)</span></td><td>44건</td></tr>
+    <tr><td>소요 · 비용</td><td>약 40초 · 무료(MIT)</td><td>3분 10초 · 유료</td></tr>
+  </table>
+  <div class="box ok">
+    <b>결론</b>
+    이 프로젝트에서 <b>실제로 조치가 필요한 위험 3종</b>(SSL 개인키 · 기본 관리자 비밀번호 · pillow 취약점) 중
+    상용 도구는 <b>1종</b>만, gvskb는 <b>3종 모두</b> 잡았습니다.
+    반면 gvskb는 C/C++를 보지 않으므로 nssm 등 번들 설치프로그램 분석은 불가하며,
+    이는 하네스가 개발 언어를 JS·Python 으로 제한하는 정책과 정합합니다.
+  </div>
+
+  <h3>남은 개선 여지 (다음 라운드 후보)</h3>
+  <table>
+    <tr><th>관찰</th><th>내용</th><th>우선순위</th></tr>
+    <tr><td>외부연결 '미분류' 17행</td>
+        <td>실제로는 <code>nginx.org</code>·<code>nssm.cc</code>·<code>slproweb.com</code>·<code>www.python.org</code> 등
+        <b>설치 안내 문서·bat 스크립트의 다운로드 링크</b>. 런타임 데이터 전송이 아니므로 국외이전 검토 대상이 아님 →
+        <b>'런타임 호출'과 '문서·설치 링크' 구분</b> 필요</td><td>중</td></tr>
+    <tr><td><code>.secret_key</code> 미탐</td>
+        <td>64자 hex 값이 있으나 미탐. 다만 <code>.gitignore</code> 등록 + <b>키를 파일로 분리한 것은 권장 관행</b>이라
+        현재 판단은 타당 — "키 파일 존재"를 정보성으로 알릴지 검토</td><td>낮음</td></tr>
+    <tr><td>인증서 6건 중복</td>
+        <td>두 경로에 같은 파일이 복제돼 발견이 2배로 보임. 도구 문제는 아니나
+        <b>동일 해시 파일 묶어 표시</b>하면 가독성 향상</td><td>낮음</td></tr>
+  </table>
+
   <h2>라운드 기록 (누적)</h2>
   <table>
     <tr><th>라운드</th><th>일자</th><th>대상</th><th>비교 도구</th><th>주요 성과</th></tr>
@@ -427,6 +499,9 @@ app_20260607.py  → BOM 있음 → 동일
     <tr><td>3</td><td>2026-07-31</td><td>보고서 사용성</td><td>실사용 화면 검토</td>
         <td><b>보고서 저장 규약 신설</b>(<code>.check-reports/</code>) — 그전에는 보고서가 저장되지 않았음.
         외부 호스트 분류(기타→미분류, 카탈로그 2배), 표 가독성, 제외 사유 분류. 테스트 572→603</td></tr>
+    <tr><td>4</td><td>2026-07-31</td><td>응소ON 재점검</td><td>코드 스패로우</td>
+        <td><b>오탐 0 달성</b>(초기 68% → 0%). 재점검 중 <b>보고서 자기 참조 결함 발견·수정</b>.
+        실제 조치 필요 위험 3종 중 상용툴 1종 vs gvskb 3종 탐지. 테스트 603→605</td></tr>
   </table>
 
   <h2>이 문서 갱신 방법</h2>
