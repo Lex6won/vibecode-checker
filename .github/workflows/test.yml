@@ -3,8 +3,9 @@ name: test
 on:
   push:
   pull_request:
-  # update-intel이 GITHUB_TOKEN으로 만든 PR은 pull_request 트리거가 돌지 않는다
-  # (GitHub 재귀 방지) — 그 경우 워크플로가 이 트리거로 CI를 직접 호출한다.
+  # 수동 재실행용. 필수 체크를 대신 채우는 용도로는 쓰지 말 것 —
+  # 이 트리거로 만든 체크런은 이름·SHA 가 일치해도 PR 의 필수 체크 게이트를
+  # 통과시키지 못한다(PR #4 가 24일 정체한 원인). update-intel.yml 주석 참조.
   workflow_dispatch:
 
 jobs:

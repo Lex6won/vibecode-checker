@@ -19,10 +19,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # GITHUB_TOKEN 으로 만든 PR 에는 pull_request CI 가 자동 실행되지 않아(재귀 방지)
-  # 필수 체크를 직접 dispatch 한다 — 그러려면 actions: write 가 필요하다.
-  # 이 선언이 없어 6일 연속 HTTP 403 으로 실패했고, KEV 룰 PR 이 24일간 멈췄다.
-  actions: write
 
 jobs:
   refresh:
@@ -132,13 +128,43 @@ jobs:
             echo '```' >> /tmp/pr_body.md
           fi
 
+      # ------------------------------------------------------------------
+      # PR 은 반드시 PAT 로 만든다 — GITHUB_TOKEN 으로 만들면 병합이 영구히 막힌다.
+      #
+      # 실측(PR #4, 2026-07-07 ~ 07-31, 24일 정체): GITHUB_TOKEN 이 만든 PR 에도
+      # pull_request 이벤트 런은 **생성되지만** 전부 `action_required`(사람 승인
+      # 대기)에서 멈춘다. 그 결과 PR head 커밋의 statusCheckRollup 이 null 이 되어
+      # 룰셋은 필수 체크가 "보고되지 않았다"고 판단하고 BLOCKED 을 유지한다.
+      # 이름·SHA·앱ID 가 전부 일치하는 성공 체크를 workflow_dispatch 로 따로
+      # 만들어 붙여도 이 게이트는 통과하지 못한다(그 우회책이 24일간 무력했던
+      # 이유). 승인 대기 런을 사람이 승인하자 즉시 병합됐다.
+      #
+      # → 시크릿 INTEL_PR_TOKEN (fine-grained PAT: contents write,
+      #   pull-requests write) 로 PR 을 만들면 작성자가 실제 계정이 되어
+      #   pull_request CI 가 승인 없이 정상 실행되고 자동 병합이 발동한다.
+      #   자동 병합도 같은 토큰으로 걸어야 main 으로의 push 가 CI 를 트리거한다
+      #   (GITHUB_TOKEN 으로 병합하면 main HEAD 에 CI 가 붙지 않는다).
+      # ------------------------------------------------------------------
+      - name: PR 생성 토큰 확인
+        id: prtoken
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          PR_TOKEN: ${{ secrets.INTEL_PR_TOKEN }}
+        run: |
+          if [ -z "$PR_TOKEN" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::INTEL_PR_TOKEN 시크릿이 없습니다 — 룰 PR 을 만들지 않습니다."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create pull request
         id: cpr
-        if: steps.detect.outputs.changed == 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.prtoken.outputs.available == 'true'
         # SHA 핀 — 태그는 이동할 수 있으므로 공급망 안전을 위해 커밋으로 고정 (= v6)
         uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c  # v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.INTEL_PR_TOKEN }}
           branch: intel/auto-update
           base: main
           delete-branch: true
@@ -163,12 +189,9 @@ jobs:
         continue-on-error: true
         id: automerge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.INTEL_PR_TOKEN }}
         run: |
           gh pr merge --squash --auto "${{ steps.cpr.outputs.pull-request-number }}"
-          # GITHUB_TOKEN으로 만든 PR에는 pull_request CI가 자동 실행되지 않는다
-          # (GitHub 재귀 방지) — 필수 체크(pytest)가 돌도록 직접 호출한다.
-          gh workflow run test.yml --ref intel/auto-update
 
       # ------------------------------------------------------------------
       # 상태 게이트 — "무엇이 진짜 실패인가"를 분명히 한다.
@@ -188,6 +211,8 @@ jobs:
           BUNDLE: ${{ steps.bundle.outcome }}
           AUTOMERGE: ${{ steps.automerge.outcome }}
           PR_NUM: ${{ steps.cpr.outputs.pull-request-number }}
+          CHANGED: ${{ steps.detect.outputs.changed }}
+          PR_TOKEN_OK: ${{ steps.prtoken.outputs.available }}
         run: |
           echo "### 인텔 갱신 결과" >> "$GITHUB_STEP_SUMMARY"
           echo "- 인텔 수집: \`$REFRESH\`" >> "$GITHUB_STEP_SUMMARY"
@@ -203,6 +228,12 @@ jobs:
             echo "::error::번들 배포 실패 — intel-latest 릴리스가 갱신되지 않았습니다."
             echo "> ❌ **번들 배포 실패** — 사용자가 최신 번들을 받을 수 없습니다." >> "$GITHUB_STEP_SUMMARY"
             exit 1
+          fi
+          # 새 룰이 나왔는데 토큰이 없어 PR 자체를 못 만든 경우 — 조용히 넘어가면
+          # "오늘은 새 KEV 가 없었다"와 구분되지 않는다. 반드시 흔적을 남긴다.
+          if [ "$CHANGED" = "true" ] && [ "$PR_TOKEN_OK" != "true" ]; then
+            echo "::warning::INTEL_PR_TOKEN 시크릿 미설정 — 새 proposed 룰이 있으나 PR 을 만들지 못했습니다."
+            echo "> ⚠️ **INTEL_PR_TOKEN 미설정** — 새 룰 카드가 저장소에 반영되지 않습니다(번들은 정상)." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -n "$PR_NUM" ] && [ "$AUTOMERGE" != "success" ]; then
             echo "::warning::룰 PR #$PR_NUM 자동 병합 실패 — 번들은 정상 배포됐습니다. PR 을 확인하세요."
