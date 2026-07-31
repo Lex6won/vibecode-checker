@@ -5,7 +5,7 @@ name = "vibecode-checker"
 dynamic = ["version"]
 description = "Public-sector vibe-coding security knowledge base and MCP guardrail"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 requires-python = ">=3.11"
 authors = [{ name = "Lex6won", email = "firstwon77@gmail.com" }]
 keywords = ["mcp", "security", "vibe-coding", "public-sector", "korean", "llm-security"]
@@ -13,7 +13,10 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
+    # PolyForm Noncommercial 1.0.0 은 OSI 승인 라이선스가 아니므로 대응하는
+    # "License :: OSI Approved ::" 분류자가 없다. 분류자를 비워 두고 license
+    # 필드(SPDX: PolyForm-Noncommercial-1.0.0)와 LICENSE 파일이 원천이 된다.
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
