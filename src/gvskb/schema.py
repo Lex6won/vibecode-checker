@@ -236,6 +236,14 @@ class ExternalConnection(BaseModel):
     )
     call_count: int = Field(default=1, description="같은 파일 내 호출 지점 수(api 전용). location은 첫 지점")
     pii_adjacent: bool = Field(default=False, description="같은 줄/근접에 개인정보 신호")
+    context: Literal["runtime", "doc-or-installer"] = Field(
+        default="runtime",
+        description=(
+            "이 연결이 나온 맥락. runtime=코드가 실제로 호출 · "
+            "doc-or-installer=설치 안내 문서·설치 스크립트의 다운로드 링크. "
+            "후자는 **운영 중 데이터 전송이 아니므로 국외이전 검토 대상이 아니다**."
+        ),
+    )
     review_level: Literal["info", "warn"] = "info"
 
 
@@ -350,6 +358,14 @@ class ScanReport(BaseModel):
             "의존성(패키지) 취약점 검사 결과 — scan_dependencies/audit_manifest 반환값. "
             "단일 audit dict 또는 {'audits': [...]}(여러 매니페스트). None이면 섹션 미표시. "
             "보안팀이 코드+패키지 위험을 한 문서에서 보도록 리포트에 병합된다."
+        ),
+    )
+    duplicate_files: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "내용이 완전히 같은 파일 묶음 — [{'hash': 'ab12…', 'paths': [...]}]. "
+            "같은 인증서·키가 여러 경로에 복사돼 발견이 배수로 보이는 상황을 "
+            "리포트가 '동일 파일 N곳'으로 설명하게 한다."
         ),
     )
     suppression_summary: dict | None = Field(

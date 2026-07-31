@@ -26,3 +26,55 @@ jobs:
         run: ruff check src tests
       - name: Test
         run: pytest -q
+
+  # ── 패키징 스모크 테스트 ─────────────────────────────────────────────
+  # 실측 사고: 먼저 설치된 구버전이 site-packages 에 **물리 디렉터리**로 남아
+  # editable 경로를 가렸고, 사용자는 최신 룰이 적용된 줄 알면서 구버전으로
+  # 검사했다. 이 잡은 그 상황(일반 설치 → editable 재설치)을 그대로 재현해
+  # 버전이 어긋나면 CI 에서 실패시킨다.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 일반 설치 후 진입점 확인
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          cd /tmp   # 저장소 밖에서 실행 — 소스가 아니라 설치본이 잡히는지 본다
+          python -c "import gvskb, sys; print(gvskb.__file__, gvskb.__version__)"
+          python -c "from gvskb.diagnostics import runtime_status_for_mcp; runtime_status_for_mcp()"
+          python -m gvskb.cli version
+          python -m gvskb.cli --help > /dev/null
+          python -c "import gvskb.server"    # MCP 진입점 import 가능해야 한다
+
+      - name: editable 재설치 후 '가리는 사본' 없는지 확인
+        run: |
+          python -m pip install -e .
+          python - <<'PY'
+          import sys
+          from gvskb.diagnostics import install_problem, _find_gvskb_copies
+          copies = _find_gvskb_copies()
+          print("gvskb 사본:", copies)
+          problem = install_problem()
+          if problem:
+              print("::error::설치 정합성 실패 —", problem)
+              sys.exit(1)
+          print("설치 정합성 OK")
+          PY
+
+      - name: 버전 단일 원천 확인 (코드 == 배포 메타데이터)
+        run: |
+          python - <<'PY'
+          import sys
+          from importlib import metadata
+          import gvskb
+          dist = metadata.version("vibecode-checker")
+          if dist != gvskb.__version__:
+              print(f"::error::버전 불일치 — 코드 {gvskb.__version__} != 배포 {dist}")
+              sys.exit(1)
+          print("버전 일치:", dist)
+          PY

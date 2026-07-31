@@ -12,6 +12,7 @@ Rules are still loaded once at import via the regex adapter. ``RULES`` and
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ from .scanners.external_surface import (
 from .scanners.regex_scanner import (
     RULES as RULES,
     RegexScanner,
+    build_finding,
     lookup_rule,
     redact_evidence as _redact_evidence,
     reload_rules as _reload_runtime_rules,
@@ -267,6 +269,33 @@ def _is_secret_filename(name: str) -> bool:
     stem = name.rsplit(".", 1)[0] if "." in name else name
     return bool(_SECRET_FILENAME_RE.search(name) or _SECRET_FILENAME_RE.search(stem))
 
+
+# 비밀 파일에 담긴 "값처럼 보이는 것" — 긴 hex / base64 / 무작위 문자열.
+# 32자 이상만 본다(짧은 값은 설정·식별자일 가능성이 높아 오탐이 된다).
+_SECRET_VALUE_RE = re.compile(
+    r"^[A-Za-z0-9+/=_\-]{32,}$"
+)
+_HEXLIKE_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
+
+
+def _looks_like_secret_material(text: str) -> tuple[bool, str]:
+    """비밀 파일 내용이 '자격증명 값'으로 보이는가 → (판정, 근거 줄).
+
+    파일명이 비밀을 뜻하는데 **내용이 긴 무작위 값 한 덩어리**면 그 값은 대개
+    세션 서명키·API 키다. 주석·안내문만 있는 파일(예: "패스워드 없는 형태의
+    인증서 파일입니다")은 제외해야 하므로 실제 값 형태만 본다.
+    """
+    for raw in text.splitlines()[:40]:      # 앞부분만 — 대용량 파일 방어
+        line = raw.strip().strip("\"'")
+        if not line or line.startswith(("#", "//", ";", "--")):
+            continue
+        # key=value 형태면 값 부분만 본다.
+        if "=" in line and len(line.split("=", 1)[1].strip()) >= 32:
+            line = line.split("=", 1)[1].strip().strip("\"'")
+        if _HEXLIKE_RE.match(line) or _SECRET_VALUE_RE.match(line):
+            return True, raw
+    return False, ""
+
 # 의존성 매니페스트/락파일 — regex 스캔으로는 취약 버전이 잡히지 않으므로
 # SCA(check-package / scan_dependencies)로 보내야 한다. 디렉터리 스캔 중
 # 만나면 스킵하되 그 사실을 안내로 남긴다. (package.json은 .json으로 이미 스캔됨)
@@ -493,6 +522,7 @@ def scan_path(
 
     all_findings: list[Finding] = []
     scanned: list[str] = []
+    content_hashes: dict[str, list[str]] = {}   # 내용 해시 → 같은 내용 파일 경로들
 
     for f in files_to_scan:
         rel = _rel(f, root, is_dir)
@@ -520,8 +550,25 @@ def scan_path(
         if _looks_minified(text):
             skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
             continue
+        # 내용 해시 — 같은 파일이 여러 경로에 복사돼 발견이 배수로 보이는 상황을
+        # 리포트가 "동일 파일 N곳"으로 설명할 수 있게 한다(예: ssl/ 폴더 복제).
+        content_hashes.setdefault(
+            hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), []
+        ).append(rel)
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
         all_findings.extend(report.findings)
+        # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
+        # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
+        if _is_secret_filename(f.name):
+            hit, evidence_line = _looks_like_secret_material(text)
+            if hit:
+                keyfile_rule = lookup_rule("GOV-SECRET-KEYFILE-001")
+                if keyfile_rule is not None:
+                    all_findings.append(build_finding(
+                        keyfile_rule, filename=rel, line_no=1,
+                        evidence=_redact_evidence(evidence_line),
+                        engine="secret-file",
+                    ))
         scanned.append(rel)
         # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
         external.extend(extract_api_connections(text, rel))
@@ -565,6 +612,12 @@ def scan_path(
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),
         suppression_summary=suppression_summary,
+        # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
+        duplicate_files=[
+            {"hash": h[:12], "paths": sorted(paths)}
+            for h, paths in sorted(content_hashes.items())
+            if len(paths) > 1 and any(f.location.file in paths for f in all_findings)
+        ],
         **_provenance(),
     )
     # 감사로그(옵트인, GVSKB_AUDIT_DIR) — 공공 점검 이력 증빙. 실패해도 스캔은 계속.
@@ -579,6 +632,15 @@ def detect_secrets_and_pii(code: str, *, filename: str = "<memory>") -> ScanRepo
         filename=filename,
         categories={"privacy-public-sector", "secret-scanning", "public-sector-internal"},
     )
+
+
+def path_level_rule_ids() -> tuple[str, ...]:
+    """``scan_path`` 가 직접 발행하는 룰 — 파일명·내용을 **함께** 봐야 하는 것들.
+
+    어댑터(regex/AST)가 아니라 경로 순회 단계에서 판정하므로 여기에 선언한다.
+    선언이 없으면 patterns 도 없고 발행 주체도 없는 '침묵하는 룰'이 된다.
+    """
+    return ("GOV-SECRET-KEYFILE-001",)
 
 
 def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict[str, str | None]]:

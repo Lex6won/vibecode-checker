@@ -236,6 +236,39 @@ _GENMODEL_RE = re.compile(r"""GenerativeModel\s*\(\s*["']([\w.\-:]+)["']""")
 _APIVER_RE = re.compile(r"/(v\d+\w*)")
 
 
+# 설치 안내 문서·설치 스크립트 — 여기 등장하는 URL 은 **운영 중 데이터 전송이
+# 아니라 다운로드 링크**다. 국외이전 검토 대상으로 올리면 실측처럼 노이즈가 된다
+# (nginx.org·nssm.cc·python.org 등이 '미분류 외부 전송'으로 잡혔음).
+_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+_INSTALLER_SUFFIXES = (".bat", ".cmd", ".ps1", ".sh", ".bash")
+
+# HTML 은 양쪽 다 가능하다 — Flask 템플릿은 **런타임에 브라우저가 부르는 코드**이고
+# 설치 가이드는 문서다. 경로로 구분하되, 애매하면 **런타임으로 본다**:
+# 런타임을 문서로 잘못 보면 폐쇄망에서 화면이 깨지는 실제 위험을 숨기게 되지만,
+# 문서를 런타임으로 보면 목록에 한 줄 더 나올 뿐이다(과소 판정 방지 우선).
+_RUNTIME_PATH_HINTS = ("/templates/", "/static/", "/views/", "/pages/",
+                       "/components/", "/public/", "/src/")
+_DOC_PATH_HINTS = ("/docs/", "/doc/", "/deploy/", "readme", "guide", "가이드",
+                   "설치", "install", "manual", "매뉴얼", "안내")
+
+
+def _file_context(filename: str) -> str:
+    """이 파일이 '실행되는 코드'인가 '문서·설치 스크립트'인가."""
+    low = filename.lower().replace("\\", "/")
+    name = low.rsplit("/", 1)[-1]
+    if any(name.endswith(sfx) for sfx in _DOC_SUFFIXES):
+        return "doc-or-installer"
+    if any(name.endswith(sfx) for sfx in _INSTALLER_SUFFIXES):
+        return "doc-or-installer"
+    if name.endswith((".html", ".htm")):
+        if any(h in low for h in _RUNTIME_PATH_HINTS):
+            return "runtime"        # 템플릿·정적 페이지 — 브라우저가 실제로 로딩
+        if any(h in low for h in _DOC_PATH_HINTS):
+            return "doc-or-installer"
+        return "runtime"            # 애매하면 런타임(과소 판정 방지)
+    return "runtime"
+
+
 def _lookup_host(host: str) -> tuple[str, str, str | None, str | None]:
     """호스트 → (category, data_summary, region, operator).
 
@@ -302,6 +335,10 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
         cat, summary, region, operator = _lookup_host(host)
         if a["pii"]:
             summary += " · ⚠ 개인정보 인접"
+        ctx = _file_context(filename)
+        if ctx == "doc-or-installer":
+            # 설치 안내·스크립트의 다운로드 주소 — 운영 중 전송이 아니다.
+            summary = "설치·안내 문서의 다운로드 주소(운영 중 전송 아님)"
         out.append(ExternalConnection(
             kind="api",
             target=host,
@@ -314,10 +351,12 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
             operator=operator,
             call_count=a["count"],
             pii_adjacent=a["pii"],
-            review_level="warn" if a["pii"] else "info",
+            review_level="warn" if (a["pii"] and ctx == "runtime") else "info",
+            context=ctx,
             # 폐쇄망 표시: 외부 API 호출은 데이터 전송 시도 — 차단되어 기능이
             # 멈추거나, 통제되지 않은 회선에서는 정책 위반 전송이 될 수 있다.
-            airgap_impact="egress",
+            # 문서·설치 링크는 폐쇄망에서 '설치가 안 된다'는 뜻이라 성격이 다르다.
+            airgap_impact="egress" if ctx == "runtime" else None,
         ))
     return out
 
@@ -373,6 +412,8 @@ def dedupe_connections(conns: list[ExternalConnection]) -> list[ExternalConnecti
     def key(c: ExternalConnection) -> tuple:
         return (
             0 if c.review_level == "warn" else 1,
+            # 실제 실행되는 호출을 먼저 — 문서·설치 링크는 검토 대상이 아니다.
+            0 if c.context == "runtime" else 1,
             _kind_order.get(c.kind, 9),
             0 if c.region == "국외" else 1,
             _cat_order.get(c.category, 9),

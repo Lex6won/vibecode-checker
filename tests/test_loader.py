@@ -31,7 +31,10 @@ def test_reference_seed_rules_present(rules):
 
 # 줄 단위 regex 로는 오탐이 불가피해 **전용 엔진(AST)이 발행**하는 룰.
 # patterns 를 의도적으로 비워 두며, 대신 해당 엔진의 supported_rule_ids 에 등록된다.
-_ENGINE_ONLY_RULE_IDS = {"GOV-SQL-DDL-DYNAMIC-001"}
+_ENGINE_ONLY_RULE_IDS = {
+    "GOV-SQL-DDL-DYNAMIC-001",   # python-ast 가 DDL 접두사를 확인한 뒤 발행
+    "GOV-SECRET-KEYFILE-001",    # scan_path 가 파일명 + 내용을 함께 보고 발행
+}
 
 
 def test_scanner_builtin_rules_present_and_have_detection(rules):
@@ -51,9 +54,10 @@ def test_engine_only_rules_are_claimed_by_an_engine():
 
     선언이 없으면 patterns 도 없고 발행 주체도 없어 **영원히 침묵하는 룰**이 된다.
     """
+    from gvskb.scanner import path_level_rule_ids
     from gvskb.scanners.ast_scanner import supported_rule_ids
 
-    claimed = set(supported_rule_ids())
+    claimed = set(supported_rule_ids()) | set(path_level_rule_ids())
     for rule_id in _ENGINE_ONLY_RULE_IDS:
         assert rule_id in claimed, f"{rule_id} has no patterns and no engine claims it"
 
