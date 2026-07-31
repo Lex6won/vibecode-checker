@@ -86,6 +86,27 @@ def _skip_breakdown_lines(report: "ScanReport") -> list[str]:
     return out
 
 
+def _duplicate_files_line(report: "ScanReport") -> str:
+    """발견이 난 파일이 여러 경로에 복제돼 있으면 한 줄로 알린다.
+
+    같은 인증서·키가 두 폴더에 복사돼 있으면 발견 건수가 그대로 배가 되어
+    "위험이 두 배"처럼 보인다 — 실제로는 **같은 자산이 두 곳에 있는 것**이므로
+    조치도 한 번에 해야 한다(두 곳 모두 제거·교체).
+    """
+    dups = report.duplicate_files or []
+    if not dups:
+        return ""
+    total_extra = sum(len(d.get("paths", [])) - 1 for d in dups)
+    if total_extra <= 0:
+        return ""
+    sample = dups[0].get("paths", [])
+    where = " · ".join(sample[:2]) + (" …" if len(sample) > 2 else "")
+    return (
+        f"- 동일 내용 파일 복제: **{len(dups)}종 {total_extra}곳 중복** (예: {where}) "
+        "— 같은 자산이므로 조치는 **모든 사본에 함께** 적용하세요"
+    )
+
+
 def _confidence_summary_line(report: "ScanReport") -> str:
     """요약층 한 줄 — 근거 강도 분포. 억제되지 않은 발견만 센다."""
     active = [f for f in report.findings if not f.suppressed]
@@ -782,6 +803,9 @@ def render_markdown(
     conf_line = _confidence_summary_line(report)
     if conf_line:
         lines.append(conf_line)
+    dup_line = _duplicate_files_line(report)
+    if dup_line:
+        lines.append(dup_line)
     lines.append("")
 
     if any(summary.by_severity.values()):
@@ -1739,6 +1763,11 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
                 if c.review_level == "warn"
                 else '<span class="rev info">참고</span>'
             )
+            if c.context == "doc-or-installer":
+                # 설치 안내·스크립트의 다운로드 주소 — 운영 중 전송이 아니므로
+                # 국외이전 검토 칸을 비우고 성격을 그대로 밝힌다.
+                rev = '<span class="rev info">문서·설치</span>'
+                region, rcls, oper = "—", "q", "운영 중 전송 아님"
             # 호출 지점 수 — 첫 위치 + "외 N곳"으로 검토 규모를 보여준다.
             loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
             # 운영주체·국가 — 국외이전 검토는 "누구에게, 어느 나라로"가 특정돼야 한다.
@@ -2119,6 +2148,9 @@ def _render_external_surface_md(report: ScanReport) -> list[str]:
             loc = c.location if c.call_count <= 1 else f"{c.location} 외 {c.call_count - 1}곳"
             oper = f"{c.region or '확인'} — {c.operator}" if c.operator else f"{c.region or '확인'} — 미상(직접 확인)"
             info = c.data_summary + (f" · 모델 {c.model}" if c.model else "")
+            if c.context == "doc-or-installer":
+                mark = "문서·설치"
+                oper = "—"          # 운영 중 전송이 아니므로 국외이전 판단 불필요
             out.append(
                 f"| `{c.target}` | {_cat_ko(c.category)} | "
                 f"`{loc}` | {info} | {oper} | {mark} |"

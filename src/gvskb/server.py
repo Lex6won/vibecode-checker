@@ -564,6 +564,14 @@ def _start_background_autopull() -> None:
 
 
 def main() -> None:
+    # 구버전 사본이 현재 코드를 가리면 **구버전 룰로 검사**하게 된다.
+    # MCP 는 사용자가 로그를 잘 보지 않으므로 기동 시 크게 남긴다(server_status
+    # 에도 같은 내용이 노출된다).
+    try:
+        from .diagnostics import warn_if_install_broken
+        warn_if_install_broken()
+    except Exception as exc:  # pragma: no cover - 진단 실패가 서버를 막으면 안 된다
+        print(f"[gvskb] ⚠ 설치 진단 실패(무시하고 계속): {exc}", file=sys.stderr)
     _start_background_autopull()
     mcp.run()
 

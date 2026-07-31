@@ -133,6 +133,60 @@ def check_install_consistency() -> list[CheckResult]:
     return results
 
 
+def install_problem() -> str | None:
+    """설치 상태가 위험하면 사람이 읽을 경고문, 아니면 None.
+
+    왜 필요한가(실측 사고): ``pip install .`` 로 먼저 설치된 구버전이
+    site-packages 에 **물리 디렉터리**로 남아 있으면, 나중에 ``pip install -e .``
+    를 해도 그 디렉터리가 editable 경로보다 먼저 잡힌다. 결과적으로 **최신 룰이
+    적용됐다고 믿으면서 구버전으로 검사**하게 된다 — 조용한 실패 중 가장 위험한
+    유형이라, 발견하면 즉시 크게 알린다.
+    """
+    try:
+        from gvskb import __version__ as code_version
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    copies = _find_gvskb_copies()
+    other = [(p, v) for p, v in copies if v and v != code_version]
+    if other:
+        detail = " · ".join(f"{v} @ {p}" for p, v in other)
+        return (
+            f"gvskb 사본이 여러 버전으로 존재합니다 (실행 중: {code_version} · 다른 사본: {detail}). "
+            "PYTHONPATH 유무에 따라 다른 버전이 로드되어 **구버전 룰로 검사**할 수 있습니다.\n"
+            "        해결: pip uninstall -y vibecode-checker  →  pip install -e .  "
+            "(그래도 남으면 site-packages 의 gvskb 폴더를 직접 지우세요)"
+        )
+
+    try:
+        dist_version = metadata.version(PKG_NAME)
+    except metadata.PackageNotFoundError:
+        return None
+    if dist_version != code_version:
+        return (
+            f"설치 메타데이터({dist_version})와 실행 코드({code_version})의 버전이 다릅니다. "
+            "재설치가 필요합니다: pip uninstall -y vibecode-checker && pip install -e ."
+        )
+    return None
+
+
+def warn_if_install_broken(*, stream=None) -> bool:
+    """설치 문제가 있으면 stderr 에 크게 경고한다. 반환값은 '문제 있음' 여부.
+
+    검사를 막지는 않는다 — 다만 **결과를 믿기 전에 사용자가 반드시 보게** 한다.
+    """
+    problem = install_problem()
+    if not problem:
+        return False
+    out = stream or sys.stderr
+    print(
+        "[gvskb] ⚠⚠ 설치 상태 경고 — 이 결과는 최신 코드가 아닐 수 있습니다\n"
+        f"        {problem}",
+        file=out,
+    )
+    return True
+
+
 def _find_gvskb_copies() -> list[tuple[str, str | None]]:
     """sys.path 상의 gvskb 패키지 사본들 — (경로, 버전). import 하지 않고 읽는다."""
     import re as _re

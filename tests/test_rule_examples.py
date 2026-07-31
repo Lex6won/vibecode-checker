@@ -42,6 +42,11 @@ def _language_for(rule: Rule) -> str | None:
     return rule.languages[0] if rule.languages else None
 
 
+# 파일명 + 내용을 함께 봐야 판정되는 룰 — scan_code(코드 조각)로는 재현 불가.
+# 실제 파일을 만들어 검증하는 테스트가 따로 있다(test_round2_fixes.py).
+_FILE_CONTEXT_RULE_IDS = {"GOV-SECRET-KEYFILE-001"}
+
+
 # ---------------------------------------------------------------------------
 # Per-rule positive / negative checks (parametrized by rule ID)
 # ---------------------------------------------------------------------------
@@ -55,6 +60,10 @@ def test_rule_positive_examples_are_detected(rule: Rule) -> None:
     assert rule.examples is not None
     if not rule.examples.positive:
         pytest.skip(f"{rule.id} has no positive examples")
+    if rule.id in _FILE_CONTEXT_RULE_IDS:
+        # 파일명과 내용을 함께 봐야 판정되는 룰은 코드 조각(scan_code)으로
+        # 재현할 수 없다 — 실제 파일을 만들어 확인하는 별도 테스트가 있다.
+        pytest.skip(f"{rule.id} needs file context (see test_round2_fixes/test_secret_keyfile)")
     lang = _language_for(rule)
     for i, snippet in enumerate(rule.examples.positive):
         report = scan_code(snippet, filename=f"{rule.id}.pos.{i}", language=lang)

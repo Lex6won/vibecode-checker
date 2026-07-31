@@ -817,6 +817,14 @@ def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
+    # 구버전 사본이 현재 코드를 가리는 상태면 결과를 믿기 전에 사용자가 보게 한다.
+    # (doctor 는 자체 진단에 이미 포함하므로 중복 출력하지 않는다)
+    if getattr(args, "command", None) != "doctor":
+        try:
+            from .diagnostics import warn_if_install_broken
+            warn_if_install_broken()
+        except Exception:  # noqa: BLE001 — 진단 실패가 명령 실행을 막으면 안 된다
+            pass
     return args.func(args)
 
 
