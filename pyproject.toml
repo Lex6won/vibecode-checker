@@ -30,7 +30,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.5"]
+# 상한을 둔다 — 린터·테스트 러너의 기본 동작 변경이 CI 를 깨뜨린 실측 사례가 있다
+# (ruff 0.16 의 기본 규칙 확대). 상향은 의도적 결정으로만 한다.
+dev = ["pytest>=8.0,<10", "ruff>=0.5,<1"]
 
 [project.scripts]
 gvskb-server = "gvskb.server:main"
@@ -62,3 +64,15 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
+[tool.ruff.lint]
+# 규칙 집합을 **명시적으로 고정**한다. ruff 의 기본 선택은 버전마다 바뀌는데,
+# 0.16 에서 대폭 확대되면서(BLE001·UP017·I001·DTZ011 …) CI 가 코드 변경 없이
+# 갑자기 139건 실패했다 — 로컬(0.15)은 통과하는데 CI 만 깨지는 상태였다.
+# 여기 적힌 집합이 이 저장소가 실제로 지켜온 기준이며, 새 규칙 도입은
+# 일괄 정리와 함께 의도적으로 하기 위해 별도 결정으로 남긴다.
+#
+# 특히 BLE001(광범위 except)은 이 프로젝트가 **의도적으로** 쓰는 패턴이다:
+# 감사로그·인텔 갱신·진단 실패가 검사 자체를 막으면 안 되므로 넓게 잡고
+# 경고만 남긴다(각 지점에 사유 주석이 있다).
+select = ["E4", "E7", "E9", "F"]
