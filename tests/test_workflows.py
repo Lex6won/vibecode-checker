@@ -1,9 +1,18 @@
 """GitHub Actions 워크플로 정합성 — 실측 장애 기반 회귀 방지.
 
-실측 장애(2026-07-25 ~ 07-30, 6일 연속):
-``gh workflow run`` 호출에 ``actions: write`` 권한이 없어 HTTP 403 으로 실패했고,
-그 결과 KEV 룰 PR 이 **24일간 병합되지 못한 채** 방치됐다. 권한 선언은 코드
-리뷰에서 놓치기 쉬우므로 테스트로 고정한다.
+실측 장애 1 (2026-07-25 ~ 07-30, 6일 연속):
+``gh workflow run`` 호출에 ``actions: write`` 권한이 없어 HTTP 403 으로 실패했다.
+
+실측 장애 2 (2026-07-07 ~ 07-31, PR #4 가 24일간 정체):
+장애 1 을 고쳐 dispatch 가 성공한 뒤에도 PR 은 계속 BLOCKED 이었다. **그
+``gh workflow run`` 우회책 자체가 원인**이었다 — GITHUB_TOKEN 이 만든 PR 은
+pull_request 런이 ``action_required``(승인 대기)에서 멈춰 head 커밋의
+statusCheckRollup 이 null 이 되고, 룰셋은 필수 체크가 "보고되지 않았다"고
+판단한다. 이름·SHA·앱ID 가 일치하는 성공 체크를 dispatch 로 따로 붙여도
+그 게이트는 통과하지 못한다. 해법은 PR 을 PAT 로 만드는 것이다.
+
+두 장애 모두 코드 리뷰에서 놓치기 쉬운 선언(권한·토큰)이 원인이므로 테스트로
+고정한다.
 """
 from __future__ import annotations
 
@@ -53,13 +62,71 @@ def test_workflow_dispatch_requires_actions_write() -> None:
         )
 
 
+def _steps(workflow: dict, job: str = "refresh") -> list[dict]:
+    return workflow["jobs"][job]["steps"]
+
+
 def test_intel_workflow_declares_required_permissions() -> None:
     wf = _load("update-intel.yml")
     perms = wf.get("permissions") or {}
-    # PR 생성·번들 릴리스·체크 dispatch 에 각각 필요하다.
+    # 룰 카드 커밋(contents)·PR 생성과 자동 병합(pull-requests)에 필요하다.
     assert perms.get("contents") == "write"
     assert perms.get("pull-requests") == "write"
-    assert perms.get("actions") == "write"
+    # actions: write 는 `gh workflow run` 우회책 때문에 받았던 권한이다.
+    # 그 우회책이 제거됐으므로 권한도 반납한다(최소 권한). 다시 필요해졌다면
+    # 그건 우회책이 되살아났다는 뜻이니 여기서 멈추고 다시 판단해야 한다.
+    if "gh workflow run" not in _all_run_scripts(wf):
+        assert "actions" not in perms, (
+            "`gh workflow run` 을 쓰지 않는데 actions: write 를 들고 있다 — 불필요한 권한"
+        )
+
+
+def test_intel_pr_is_not_created_with_github_token() -> None:
+    """PR 은 PAT 로 만들어야 한다 — GITHUB_TOKEN 으로 만들면 영구히 병합되지 않는다.
+
+    실측(PR #4, 24일 정체): GITHUB_TOKEN 이 만든 PR 의 pull_request 런은 전부
+    ``action_required`` 에서 멈춰 필수 체크가 "보고되지 않음"으로 남는다.
+    """
+    wf = _load("update-intel.yml")
+    cpr = [s for s in _steps(wf) if "create-pull-request" in str(s.get("uses", ""))]
+    assert cpr, "PR 생성 스텝을 찾지 못했다"
+    token = str((cpr[0].get("with") or {}).get("token", ""))
+    assert "secrets.GITHUB_TOKEN" not in token, (
+        "PR 을 GITHUB_TOKEN 으로 만들면 필수 체크가 승인 대기에 걸려 영구 BLOCKED 된다"
+    )
+    assert "secrets." in token, "PR 생성 토큰이 시크릿으로 지정돼 있지 않다"
+
+    # 자동 병합도 같은 토큰으로 걸어야 한다 — GITHUB_TOKEN 으로 병합하면
+    # main 으로의 push 가 재귀 방지에 걸려 main HEAD 에 CI 가 붙지 않는다.
+    automerge = [s for s in _steps(wf) if s.get("id") == "automerge"]
+    assert automerge, "auto-merge 스텝이 없다"
+    gh_token = str((automerge[0].get("env") or {}).get("GH_TOKEN", ""))
+    assert "secrets.GITHUB_TOKEN" not in gh_token, (
+        "GITHUB_TOKEN 으로 병합하면 main HEAD 에 CI 가 붙지 않는다"
+    )
+
+
+def test_intel_workflow_does_not_fake_required_checks() -> None:
+    """dispatch 로 필수 체크를 대신 채우려 하면 안 된다 — 게이트를 통과하지 못한다."""
+    wf = _load("update-intel.yml")
+    scripts = _all_run_scripts(wf)
+    assert "gh workflow run test.yml" not in scripts, (
+        "workflow_dispatch 로 만든 체크런은 이름·SHA 가 같아도 PR 필수 체크를 "
+        "충족시키지 못한다(PR #4 가 24일 정체한 원인)"
+    )
+
+
+def test_missing_pr_token_is_reported_not_silent() -> None:
+    """토큰이 없어 PR 을 못 만든 상황이 '새 KEV 가 없었다'와 구분돼야 한다.
+
+    구분되지 않으면 조용한 초록불이 된다 — 토큰 만료 시에도 같은 일이 벌어진다.
+    """
+    wf = _load("update-intel.yml")
+    gate = [s for s in _steps(wf) if s.get("if") == "always()" and "run" in s]
+    assert gate, "always() 로 도는 상태 게이트 스텝이 없다"
+    script = gate[-1]["run"]
+    assert "PR_TOKEN_OK" in script, "PR 토큰 부재를 상태 게이트가 판정하지 않는다"
+    assert "::warning::" in script, "토큰 부재가 로그에 흔적을 남기지 않는다"
 
 
 def test_intel_workflow_fails_when_bundle_not_published() -> None:
