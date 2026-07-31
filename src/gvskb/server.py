@@ -20,7 +20,7 @@ from .scanner import (
     suggest_fix as suggest_fix_impl,
 )
 from .schema import ScanReport
-from .audit import record_scan
+from .audit import record_package_check, record_scan
 from .search import simple_search
 from .tools.check_package import audit_manifest, check_package_impl
 
@@ -226,6 +226,7 @@ async def check_package(
     result = await check_package_impl(name=name, ecosystem=ecosystem, version=version, env_grade=env_grade)
     if caller:
         result["caller"] = caller
+    record_package_check([result], tool="check_package", caller=caller or "", scope="single")
     return result
 
 
@@ -260,6 +261,10 @@ async def scan_dependencies(
     result = await audit_manifest(manifest_text, ecosystem=ecosystem, limit=limit, env_grade=env_grade)
     if caller:
         result["caller"] = caller
+    record_package_check(
+        result.get("checks") or [], tool="scan_dependencies", caller=caller or "",
+        scope="manifest", summary=result,
+    )
     return result
 
 
@@ -504,6 +509,10 @@ async def scan_installed_packages(
                 if isinstance(meta, dict) and not meta.get("license"):
                     meta["license"] = lic
                     c["license_source"] = "installed-metadata"
+        record_package_check(
+            audit.get("checks") or [], tool="scan_installed_packages",
+            scope="installed", summary=audit,
+        )
         audits.append(audit)
 
     return {

@@ -99,6 +99,80 @@ def record_scan(report: ScanReport, tool: str, caller: str = "") -> None:
     _append(events)
 
 
+def _purl(check: dict) -> str:
+    """pkg:<eco>/<name>[@<version>] — 레지스트리·SBOM 과 대조 가능한 표준 형태."""
+    eco = str(check.get("ecosystem") or "")
+    name = str(check.get("name") or "")
+    ver = check.get("version")
+    return f"pkg:{eco}/{name}" + (f"@{ver}" if ver else "")
+
+
+# 조치가 필요 없는 판정 — 대량 검사에서 이것까지 줄줄이 남기면 감사로그가
+# 정상 통과 기록으로 뒤덮여 정작 봐야 할 줄이 묻힌다. record_scan 이 allow
+# 판정을 남기지 않는 것과 같은 이유다.
+_NO_ACTION_VERDICTS = frozenset({"checked_clean"})
+
+
+def record_package_check(
+    checks: list[dict],
+    *,
+    tool: str,
+    caller: str = "",
+    scope: str = "single",
+    summary: dict | None = None,
+) -> None:
+    """패키지 판정을 감사로그에 남긴다.
+
+    공공기관 감사에서 "언제 무엇을 허용·차단했는가"는 스캔 결과와 별개의
+    질문이다. 그런데 record_scan 은 ScanReport 를 전제로 해 패키지 판정을
+    담지 못했고, 그 결과 **패키지 계열 도구에는 감사 기록이 아예 없었다.**
+
+    기록 단위는 규모에 따라 나눈다:
+
+    - 단건(``scope="single"``): 판정이 무엇이든 1건 남긴다. 사람이 직접
+      물어본 것이므로 '이상 없음'도 감사 대상이다.
+    - 대량(매니페스트·설치본): 집계 1건 + **조치가 필요한 판정만** 개별 기록.
+      락파일까지 들어오면 한 번에 수백~수천 건이라, 정상 통과를 전부 남기면
+      감사로그가 노이즈가 된다.
+    """
+    if audit_dir() is None or not checks:
+        return
+    ts = _now_iso()
+    events: list[AuditEvent] = []
+
+    if scope != "single":
+        s = summary or {}
+        events.append(AuditEvent(
+            event_type="package_check_batch",
+            timestamp=ts,
+            tool=tool,
+            caller=caller,
+            verdict=str(s.get("verdict") or ""),
+            target_hash=_hash(scope, s.get("ecosystem"), len(checks)),
+            redacted_evidence=(
+                f"scope={scope} total={len(checks)} "
+                f"checked={s.get('checked_count')} unchecked={s.get('unchecked_count')} "
+                f"not_found={s.get('not_found_count')} hold={s.get('hold_count')}"
+            )[:240],
+        ))
+
+    for c in checks:
+        verdict = str(c.get("verdict") or "")
+        if scope != "single" and verdict in _NO_ACTION_VERDICTS:
+            continue
+        events.append(AuditEvent(
+            event_type="package_check",
+            timestamp=ts,
+            tool=tool,
+            caller=caller,
+            package=_purl(c),
+            verdict=verdict,
+            checked=bool(c.get("checked", False)),
+            target_hash=_hash(_purl(c)),
+        ))
+    _append(events)
+
+
 def record_update_intel(source_ids: list[str], *, tool: str = "update-intel") -> None:
     """인텔 캐시 갱신을 감사로그에 남긴다(어떤 피드를 언제 갱신했나)."""
     if audit_dir() is None:
