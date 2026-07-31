@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # GITHUB_TOKEN 으로 만든 PR 에는 pull_request CI 가 자동 실행되지 않아(재귀 방지)
+  # 필수 체크를 직접 dispatch 한다 — 그러려면 actions: write 가 필요하다.
+  # 이 선언이 없어 6일 연속 HTTP 403 으로 실패했고, KEV 룰 PR 이 24일간 멈췄다.
+  actions: write
 
 jobs:
   refresh:
@@ -153,6 +157,11 @@ jobs:
       # 다이제스트 검토로 옮겨진다(1인 운영에서 PR 수동 병합 부담 제거).
       - name: Enable auto-merge (advisory cards only)
         if: steps.cpr.outputs.pull-request-number
+        # 룰 PR 처리 실패가 **번들 배포 성공까지 빨간불로 덮으면 안 된다**.
+        # 사용자가 매일 받는 것은 번들이고, 룰 카드 병합은 하루 늦어도 된다.
+        # 대신 아래 status-gate 가 요약에 남겨 조용히 묻히지 않게 한다.
+        continue-on-error: true
+        id: automerge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -160,3 +169,43 @@ jobs:
           # GITHUB_TOKEN으로 만든 PR에는 pull_request CI가 자동 실행되지 않는다
           # (GitHub 재귀 방지) — 필수 체크(pytest)가 돌도록 직접 호출한다.
           gh workflow run test.yml --ref intel/auto-update
+
+      # ------------------------------------------------------------------
+      # 상태 게이트 — "무엇이 진짜 실패인가"를 분명히 한다.
+      #
+      # 이전 구조의 문제: 인텔 수집 스텝이 continue-on-error 인데 최종 검증이
+      # 없어, **수집이 실패해도 잡이 초록불**로 끝났다("갱신되고 있다"고 믿는데
+      # 실제로는 아닌 상태 — 보안 도구에서 가장 위험한 침묵). 반대로 룰 PR
+      # 처리의 사소한 실패는 잡 전체를 빨간불로 만들어 경고 피로를 낳았다.
+      #
+      # 기준: 사용자가 매일 내려받는 **번들 배포 실패만 빨간불**. 룰 카드
+      # 병합 실패는 요약에 경고로 남긴다.
+      # ------------------------------------------------------------------
+      - name: 상태 게이트 (번들 배포 성공 여부로 판정)
+        if: always()
+        env:
+          REFRESH: ${{ steps.refresh.outcome }}
+          BUNDLE: ${{ steps.bundle.outcome }}
+          AUTOMERGE: ${{ steps.automerge.outcome }}
+          PR_NUM: ${{ steps.cpr.outputs.pull-request-number }}
+        run: |
+          echo "### 인텔 갱신 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 인텔 수집: \`$REFRESH\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 번들 배포: \`${BUNDLE:-skipped}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 룰 PR: \`${AUTOMERGE:-none}\` ${PR_NUM:+(#$PR_NUM)}" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$REFRESH" != "success" ]; then
+            echo "::error::인텔 수집 실패 — 사용자가 받는 위협 데이터가 갱신되지 않았습니다."
+            echo "> ❌ **인텔 수집 실패** — 사용자 캐시가 낡습니다." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$BUNDLE" != "success" ]; then
+            echo "::error::번들 배포 실패 — intel-latest 릴리스가 갱신되지 않았습니다."
+            echo "> ❌ **번들 배포 실패** — 사용자가 최신 번들을 받을 수 없습니다." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ -n "$PR_NUM" ] && [ "$AUTOMERGE" != "success" ]; then
+            echo "::warning::룰 PR #$PR_NUM 자동 병합 실패 — 번들은 정상 배포됐습니다. PR 을 확인하세요."
+            echo "> ⚠️ 룰 PR #$PR_NUM 처리 실패(번들은 정상). 수동 확인 필요." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "> ✅ 번들 배포 완료 — 사용자는 최신 위협 인텔을 받습니다." >> "$GITHUB_STEP_SUMMARY"
