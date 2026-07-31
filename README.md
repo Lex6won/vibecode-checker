@@ -9,7 +9,7 @@
 
 바이브 코딩(AI 코딩 도구로 빠르게 개발)한 결과물에 숨은 **개인정보 노출·API 키·SQL 삽입·위험한 명령 실행·취약 패키지**를, 공무원이 이해할 수 있는 **한국어 리포트**로 알려주는 보안 점검 도구입니다.
 
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
+![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
 ![Tests](https://img.shields.io/badge/tests-487_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
@@ -584,7 +584,15 @@ pytest -q                # 전체 테스트
 
 정부·공공기관 지침(KISA·행안부·국정원), OWASP·NIST·CISA 등 외부 자료는 원문을 복제하지 않고 요약·인용·구조화하여 사용하며 각 출처의 이용 조건을 존중합니다.
 
-**MIT License** — 자유롭게 사용·수정·배포할 수 있습니다. [LICENSE](LICENSE) 참고.
+### 라이선스
+
+**PolyForm Noncommercial License 1.0.0** — 비상업 목적에 한해 자유롭게 사용·수정·배포할 수 있습니다. [LICENSE](LICENSE) 참고.
+
+- **공공기관·교육기관·연구기관·공공안전 기관의 사용은 재원과 무관하게 허용됩니다.** 라이선스가 "government institution" 사용을 명시적으로 비상업 목적으로 규정합니다. 지방자치단체·중앙부처·공공기관이 자체 점검에 쓰는 것은 제약 없이 가능합니다.
+- 개인의 연구·학습·취미 목적 사용도 허용됩니다.
+- **상업적 목적의 사용은 허용되지 않습니다.** 예: 유료 보안 점검 서비스에 포함해 판매하거나, SI·솔루션 제품의 구성요소로 납품하는 경우. 별도 상용 라이선스가 필요하면 문의해 주세요.
+
+> 2026-08-01 이전에 **MIT** 로 배포된 버전에는 이 변경이 소급되지 않습니다. 해당 버전을 MIT 조건으로 받은 이용자의 권리는 그대로 유지됩니다.
 
 ---
 
