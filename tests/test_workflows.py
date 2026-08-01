@@ -125,8 +125,27 @@ def test_missing_pr_token_is_reported_not_silent() -> None:
     gate = [s for s in _steps(wf) if s.get("if") == "always()" and "run" in s]
     assert gate, "always() 로 도는 상태 게이트 스텝이 없다"
     script = gate[-1]["run"]
-    assert "PR_TOKEN_OK" in script, "PR 토큰 부재를 상태 게이트가 판정하지 않는다"
-    assert "::warning::" in script, "토큰 부재가 로그에 흔적을 남기지 않는다"
+    assert "PR_TOKEN_STATE" in script, "PR 토큰 상태를 상태 게이트가 판정하지 않는다"
+    assert "::warning::" in script, "토큰 이상이 로그에 흔적을 남기지 않는다"
+
+
+def test_pr_token_is_checked_on_every_run_not_only_when_rules_change() -> None:
+    """토큰 점검이 '새 룰이 있을 때'에만 돌면 만료를 늦게 발견한다.
+
+    실측(2026-07-31 스케줄 실행): 새 KEV 가 없어 detect 가 changed=false 를 내자
+    토큰 관련 단계가 전부 skipped 됐다. 이 구조면 토큰이 만료돼도 다음에 새 KEV 가
+    나오는 날까지 아무도 모르고, 그날 처음 실패한다. PAT 는 만료가 있으므로
+    언젠가 반드시 오는 상황이다.
+    """
+    wf = _load("update-intel.yml")
+    step = [s for s in _steps(wf) if s.get("id") == "prtoken"]
+    assert step, "prtoken 스텝이 없다"
+    cond = str(step[0].get("if", ""))
+    assert "changed" not in cond, (
+        "토큰 점검이 detect.changed 에 묶여 있다 — 새 룰이 없는 날엔 만료를 발견하지 못한다"
+    )
+    # 존재 여부만 보면 만료된 토큰이 'available' 로 통과한다. 실제 조회까지 해야 한다.
+    assert "gh api" in step[0].get("run", ""), "토큰 유효성(만료·권한)을 실제로 확인하지 않는다"
 
 
 def test_intel_workflow_fails_when_bundle_not_published() -> None:
