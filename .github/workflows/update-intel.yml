@@ -145,17 +145,32 @@ jobs:
       #   자동 병합도 같은 토큰으로 걸어야 main 으로의 push 가 CI 를 트리거한다
       #   (GITHUB_TOKEN 으로 병합하면 main HEAD 에 CI 가 붙지 않는다).
       # ------------------------------------------------------------------
-      - name: PR 생성 토큰 확인
+      # `changed` 와 무관하게 **매번** 돈다.
+      #
+      # 실측(2026-07-31 스케줄 실행): 그날 새 KEV 가 없어 detect 가 changed=false
+      # 를 내자 토큰 관련 단계가 전부 skipped 됐고, PAT 전환이 실제로 동작하는지
+      # 확인할 방법이 없었다. 이 구조라면 **토큰이 만료돼도 다음에 새 KEV 가
+      # 나오는 날까지(수 주 뒤일 수 있다) 아무도 모른다** — 그날 처음 실패한다.
+      # PAT 는 만료가 있으므로 이건 언젠가 반드시 오는 상황이다.
+      #
+      # 그래서 존재 여부만이 아니라 **실제로 쓸 수 있는지**까지 매번 확인한다.
+      # 조회 1회는 비용이 없고, 만료를 하루 안에 드러낸다.
+      - name: PR 생성 토큰 점검(만료 조기 발견)
         id: prtoken
-        if: steps.detect.outputs.changed == 'true'
+        continue-on-error: true
         env:
-          PR_TOKEN: ${{ secrets.INTEL_PR_TOKEN }}
+          GH_TOKEN: ${{ secrets.INTEL_PR_TOKEN }}
         run: |
-          if [ -z "$PR_TOKEN" ]; then
+          if [ -z "$GH_TOKEN" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::INTEL_PR_TOKEN 시크릿이 없습니다 — 룰 PR 을 만들지 않습니다."
+            echo "state=missing" >> "$GITHUB_OUTPUT"
+          elif gh api "repos/${{ github.repository }}" --jq .full_name >/dev/null 2>&1; then
+            echo "available=true"  >> "$GITHUB_OUTPUT"
+            echo "state=ok"        >> "$GITHUB_OUTPUT"
           else
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            # 만료·폐기·권한 축소 — 어느 쪽이든 PR 을 만들지 못한다.
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "state=invalid"   >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create pull request
@@ -212,12 +227,13 @@ jobs:
           AUTOMERGE: ${{ steps.automerge.outcome }}
           PR_NUM: ${{ steps.cpr.outputs.pull-request-number }}
           CHANGED: ${{ steps.detect.outputs.changed }}
-          PR_TOKEN_OK: ${{ steps.prtoken.outputs.available }}
+          PR_TOKEN_STATE: ${{ steps.prtoken.outputs.state }}
         run: |
           echo "### 인텔 갱신 결과" >> "$GITHUB_STEP_SUMMARY"
           echo "- 인텔 수집: \`$REFRESH\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- 번들 배포: \`${BUNDLE:-skipped}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- 룰 PR: \`${AUTOMERGE:-none}\` ${PR_NUM:+(#$PR_NUM)}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PR 토큰: \`${PR_TOKEN_STATE:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$REFRESH" != "success" ]; then
             echo "::error::인텔 수집 실패 — 사용자가 받는 위협 데이터가 갱신되지 않았습니다."
@@ -229,11 +245,20 @@ jobs:
             echo "> ❌ **번들 배포 실패** — 사용자가 최신 번들을 받을 수 없습니다." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          # 새 룰이 나왔는데 토큰이 없어 PR 자체를 못 만든 경우 — 조용히 넘어가면
-          # "오늘은 새 KEV 가 없었다"와 구분되지 않는다. 반드시 흔적을 남긴다.
-          if [ "$CHANGED" = "true" ] && [ "$PR_TOKEN_OK" != "true" ]; then
-            echo "::warning::INTEL_PR_TOKEN 시크릿 미설정 — 새 proposed 룰이 있으나 PR 을 만들지 못했습니다."
-            echo "> ⚠️ **INTEL_PR_TOKEN 미설정** — 새 룰 카드가 저장소에 반영되지 않습니다(번들은 정상)." >> "$GITHUB_STEP_SUMMARY"
+          # 토큰 이상은 **새 룰이 있든 없든** 알린다. 새 룰이 나오는 날에만
+          # 알리면 그날 처음 실패하고, 그때는 이미 반영이 하루 밀린 뒤다.
+          if [ "$PR_TOKEN_STATE" = "missing" ]; then
+            echo "::warning::INTEL_PR_TOKEN 시크릿이 없습니다 — 새 KEV 가 나와도 룰 PR 을 만들지 못합니다."
+            echo "> ⚠️ **INTEL_PR_TOKEN 미설정** — 룰 카드 반영 경로가 끊겨 있습니다(번들은 정상)." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PR_TOKEN_STATE" = "invalid" ]; then
+            echo "::warning::INTEL_PR_TOKEN 으로 저장소를 조회하지 못했습니다 — 만료·폐기·권한 축소를 확인하세요."
+            echo "> ⚠️ **INTEL_PR_TOKEN 무효** — 만료되었거나 권한이 부족합니다(번들은 정상)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # 새 룰이 나왔는데 PR 을 못 만든 경우 — 조용히 넘어가면
+          # "오늘은 새 KEV 가 없었다"와 구분되지 않는다.
+          if [ "$CHANGED" = "true" ] && [ "$PR_TOKEN_STATE" != "ok" ]; then
+            echo "::warning::새 proposed 룰이 있으나 PR 을 만들지 못했습니다(토큰 상태: ${PR_TOKEN_STATE:-unknown})."
+            echo "> ⚠️ 새 룰 카드가 저장소에 반영되지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -n "$PR_NUM" ] && [ "$AUTOMERGE" != "success" ]; then
             echo "::warning::룰 PR #$PR_NUM 자동 병합 실패 — 번들은 정상 배포됐습니다. PR 을 확인하세요."
