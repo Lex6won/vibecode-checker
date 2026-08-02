@@ -869,6 +869,9 @@ def render_markdown(
     # 의존성 결과는 아래 '의존성(패키지) 취약점 검사' 섹션 + 요약 수치로 전달한다.
     # 여기서는 --check-deps 를 안 써서 아예 검사되지 않은 경우만 경고한다.
     dep_audits = _dep_audits(report)
+    if dep_audits and (_reg_banner := _registry_banner(dep_audits)):
+        lines.append(f"> {_reg_banner}")
+        lines.append("")
     if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
         lines.append(f"> {_intel_banner}")
         lines.append("")
@@ -1499,6 +1502,8 @@ def render_html(
         if text:
             p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
     dep_audits = _dep_audits(report)
+    if dep_audits and (_reg_banner := _registry_banner(dep_audits)):
+        p.append(f'<div class="depwarn">{_esc(_reg_banner).replace("**", "")}</div>')
     if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_intel_banner).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
@@ -2021,6 +2026,26 @@ def _intel_cache_banner(audits: list[dict]) -> str | None:
         "`gvskb update-intel`(폐쇄망은 인텔 번들 반입)로 갱신하면 해소됩니다. "
         "**패키지 개별 문제가 아니라 검사 환경의 문제입니다.**"
     )
+
+
+def _registry_banner(audits: list[dict]) -> str | None:
+    """기관 레지스트리 도달 실패 배너 — 매니페스트 전체에 **한 줄만**.
+
+    '물어보지 못했다'가 '승인받았다'처럼 보이면 안 되지만, 그렇다고 패키지마다
+    검토 깃발을 꽂으면 담당자가 그것을 무시하게 된다. 조치는 '레지스트리 복구'
+    한 건이므로 알림도 한 건이다.
+    """
+    from .tools.registry_client import registry_banner
+
+    worst = "ok"
+    for a in audits:
+        s = str(a.get("registry_status") or "")
+        if s == "unauthorized":
+            worst = "unauthorized"
+            break
+        if s == "unreachable":
+            worst = "unreachable"
+    return registry_banner(worst)
 
 
 def _dep_banner_text(audits: list[dict]) -> str:
