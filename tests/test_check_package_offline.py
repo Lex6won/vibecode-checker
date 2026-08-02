@@ -199,22 +199,84 @@ def test_offline_marker_still_set_when_cache_present(offline_with_cache: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_audit_manifest_rejects_lockfiles_as_unparsed() -> None:
-    """락파일을 넘기면 '0건 파싱 → ok'가 아니라 unparsed로 정직하게 거절한다."""
+def test_audit_manifest_parses_lockfiles_including_transitive(
+    offline_with_cache: Path,
+) -> None:
+    """락파일을 받으면 **전이 의존성까지** 검사 범위에 넣는다.
+
+    이전에는 락파일을 정직하게 거절했다(unparsed). 정직했지만 검사가 안 되는
+    건 마찬가지였고, 실무 취약점은 대부분 전이 의존성에 있다.
+    """
     import asyncio
     from gvskb.tools.check_package import audit_manifest
 
-    cases = {
-        "yarn.lock": '# yarn lockfile v1\n"lodash@^4":\n  version "4.17.21"\n',
-        "poetry.lock": '[[package]]\nname = "flask"\nversion = "0.12"\n',
-        "package-lock.json": '{"lockfileVersion": 3, "packages": {}}',
-        "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
-    }
-    for label, text in cases.items():
+    # express 만 직접 의존성이고 accepts 는 전이 의존성이다.
+    text = json.dumps({
+        "lockfileVersion": 1,
+        "dependencies": {
+            "express": {"version": "4.18.2", "dependencies": {"accepts": {"version": "1.3.8"}}},
+        },
+    })
+    r = asyncio.run(audit_manifest(text, ecosystem="npm"))
+    assert r["source_kind"] == "lockfile"
+    assert r["lockfile_format"] == "package-lock.json"
+    assert r["parsed_count"] == 2, "전이 의존성이 빠졌다"
+    assert {p["name"] for p in r["packages"]} == {"express", "accepts"}
+
+
+def test_lockfile_format_overrides_wrong_ecosystem_argument(
+    offline_with_cache: Path,
+) -> None:
+    """파일 형식이 생태계를 확정한다 — 인자가 틀렸으면 파일을 따른다."""
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    text = '[[package]]\nname = "flask"\nversion = "0.12"\n'
+    r = asyncio.run(audit_manifest(text, ecosystem="npm"))  # 일부러 틀린 인자
+    assert r["ecosystem"] == "pypi"
+
+
+def test_lockfile_recognized_but_empty_is_unparsed_not_ok(
+    offline_with_cache: Path,
+) -> None:
+    """형식은 알아봤는데 패키지를 못 읽었으면 '이상 없음'이 아니다."""
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    for text in ('{"lockfileVersion": 3, "packages": {}}', "lockfileVersion: '9.0'\n"):
         r = asyncio.run(audit_manifest(text, ecosystem="npm"))
-        assert r["verdict"] == "unparsed", label
-        assert r["requires_review"] is True, label
-        assert r["parsed_count"] == 0, label
+        assert r["verdict"] == "unparsed", text[:30]
+        assert r["requires_review"] is True
+
+
+def test_truncation_is_reported_loudly_not_silently(offline_with_cache: Path) -> None:
+    """limit 로 잘린 패키지는 '검사되지 않음'이다 — 수치와 검토 대상으로 드러낸다.
+
+    일부만 검사하고 전부 검사한 것처럼 보이면 그게 조용한 초록불이다.
+    """
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    text = json.dumps({
+        "lockfileVersion": 3,
+        "packages": {f"node_modules/p{i}": {"version": "1.0.0"} for i in range(10)},
+    })
+    r = asyncio.run(audit_manifest(text, ecosystem="npm", limit=3))
+    assert r["parsed_count"] == 10
+    assert len(r["checks"]) == 3
+    assert r["truncated_count"] == 7
+    assert r["requires_review"] is True
+    assert "truncated_count=7" in r["disclaimer"]
+
+
+def test_manifest_disclaimer_points_to_lockfile(offline_with_cache: Path) -> None:
+    """매니페스트만 검사했다면 전이 의존성이 빠졌다는 사실을 알려야 한다."""
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+
+    r = asyncio.run(audit_manifest("flask==3.0.0\n", ecosystem="pypi"))
+    assert r["source_kind"] == "manifest"
+    assert "전이 의존성" in r["disclaimer"]
 
 
 def test_audit_manifest_empty_text_is_unparsed_not_ok() -> None:

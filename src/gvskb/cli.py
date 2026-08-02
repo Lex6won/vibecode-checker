@@ -128,30 +128,53 @@ def _run_dependency_audit(
     """
     from .tools.check_package import audit_manifest
 
-    def _classify(name: str) -> str | None:
+    # 락파일은 매니페스트의 **상위 집합**이다(전이 의존성 포함, 버전 고정).
+    # 둘 다 있으면 락파일만 검사한다 — 중복 조회를 피하고 더 정확한 쪽을 쓴다.
+    _LOCK_NAMES = {
+        "poetry.lock": "pypi", "uv.lock": "pypi",
+        "package-lock.json": "npm", "pnpm-lock.yaml": "npm", "yarn.lock": "npm",
+    }
+
+    def _classify(name: str) -> tuple[str, str] | None:
+        """파일명 → (ecosystem, kind). kind: 'lock' | 'manifest'."""
         low = name.lower()
+        if low in _LOCK_NAMES:
+            return _LOCK_NAMES[low], "lock"
         if low.startswith("requirements") and low.endswith(".txt"):
-            return "pypi"
+            return "pypi", "manifest"
         if low == "package.json":
-            return "npm"
+            return "npm", "manifest"
         return None
 
-    manifests: list[tuple[Path, str, str]] = []  # (절대경로, 표시명, ecosystem)
+    found: list[tuple[Path, str, str, str]] = []  # (경로, 표시명, eco, kind)
     if root.is_file():
-        eco = _classify(root.name)
-        if eco:
-            manifests.append((root, root.name, eco))
+        hit = _classify(root.name)
+        if hit:
+            found.append((root, root.name, hit[0], hit[1]))
     else:
         seen: set[str] = set()
         for rel in [s.path for s in report.skipped_files] + list(report.scanned_files):
             name = rel.replace("\\", "/").rsplit("/", 1)[-1]
-            eco = _classify(name)
-            if not eco or rel in seen:
+            hit = _classify(name)
+            if not hit or rel in seen:
                 continue
             seen.add(rel)
             p = root / rel
             if p.is_file():
-                manifests.append((p, rel, eco))
+                found.append((p, rel, hit[0], hit[1]))
+
+    # 같은 디렉터리·같은 생태계에 락파일이 있으면 매니페스트는 건너뛴다.
+    lock_dirs = {
+        (rel.replace("\\", "/").rsplit("/", 1)[0] if "/" in rel.replace("\\", "/") else "", eco)
+        for _, rel, eco, kind in found if kind == "lock"
+    }
+    manifests: list[tuple[Path, str, str]] = []  # (절대경로, 표시명, ecosystem)
+    for p, rel, eco, kind in found:
+        norm = rel.replace("\\", "/")
+        d = norm.rsplit("/", 1)[0] if "/" in norm else ""
+        if kind == "manifest" and (d, eco) in lock_dirs:
+            continue  # 락파일이 이미 상위 집합을 검사한다
+        manifests.append((p, rel, eco))
 
     if not manifests and not include_installed:
         print(
@@ -173,7 +196,8 @@ def _run_dependency_audit(
                     "note": f"파일을 읽지 못했습니다: {exc}",
                 })
                 continue
-            audit = await audit_manifest(text, ecosystem=eco, env_grade=env_grade)
+            # filename 을 넘겨야 락파일 형식을 파일명으로 확정할 수 있다.
+            audit = await audit_manifest(text, ecosystem=eco, env_grade=env_grade, filename=rel)
             audit["manifest"] = rel
             out.append(audit)
 

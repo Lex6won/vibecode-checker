@@ -234,10 +234,12 @@ async def check_package(
 async def scan_dependencies(
     manifest_text: Annotated[
         str,
-        Field(description="의존성 매니페스트 파일의 원문 텍스트 — requirements.txt(pypi) 또는 package.json(npm). 락파일 불가"),
+        Field(description="의존성 매니페스트 또는 **락파일**의 원문 텍스트. "
+                          "매니페스트: requirements.txt·package.json / "
+                          "락파일: package-lock.json·uv.lock·poetry.lock·pnpm-lock.yaml·yarn.lock"),
     ],
-    ecosystem: Annotated[Literal["pypi", "npm"], Field(description="매니페스트 종류: pypi(requirements.txt) | npm(package.json)")] = "pypi",
-    limit: Annotated[int, Field(description="검사할 최대 패키지 수 (기본 20). 초과분은 결과에 미검사로 표시")] = 20,
+    ecosystem: Annotated[Literal["pypi", "npm"], Field(description="pypi | npm. 락파일이면 형식이 생태계를 확정하므로 이 값은 무시됩니다")] = "pypi",
+    limit: Annotated[int | None, Field(description="검사할 최대 패키지 수. 미지정 시 형식에 맞춰 자동(매니페스트 20 · 락파일 500). 초과분은 truncated_count 로 표시")] = None,
     env_grade: Annotated[
         Literal["E0", "E1", "E2"] | None,
         Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(3일) | E1(7일, 기본) | E2(14일)"),
@@ -253,17 +255,25 @@ async def scan_dependencies(
     (소스 코드 미전송). GVSKB_MODE=offline(망분리)이면 외부 호출 없이 로컬 인텔
     캐시로 대체하며, 실재·발행일은 '미확인'으로 표시됩니다.
 
-    락파일(poetry.lock·yarn.lock 등)은 파싱하지 못하므로 verdict="unparsed"로
-    정직하게 거절합니다 — 원본 매니페스트(requirements.txt·package.json)를 주세요.
+    **락파일을 넣으면 전이 의존성까지 검사합니다.** 실무 취약점은 대부분 매니페스트에
+    적히지 않은 전이 의존성에 있으므로, 락파일이 있으면 그쪽을 넣는 편이 정확합니다
+    (버전도 범위가 아니라 고정값이라 판정이 확실해집니다).
+
     결과를 scan_path 결과 JSON의 ``dependency_audit`` 필드에 넣어 render_report를
     호출하면 사람용 보고서에 '의존성 취약점' 섹션이 함께 렌더됩니다.
+
+    ``truncated_count`` > 0 이면 limit 로 잘려 **검사되지 않은** 패키지가 있다는
+    뜻입니다 — '이상 없음'이 아니므로 limit 를 올려 재검사하세요.
     """
     result = await audit_manifest(manifest_text, ecosystem=ecosystem, limit=limit, env_grade=env_grade)
     if caller:
         result["caller"] = caller
     record_package_check(
         result.get("checks") or [], tool="scan_dependencies", caller=caller or "",
-        scope="manifest", summary=result,
+        # 레지스트리 심사 대기열 보호 — 락파일 유래 수백 건이 큐에 그대로 쌓이면
+        # 담당자 일이 늘어 연동 목적과 정반대가 된다(연동합의 §5-C).
+        scope="lockfile" if result.get("source_kind") == "lockfile" else "manifest",
+        summary=result,
     )
     return result
 
