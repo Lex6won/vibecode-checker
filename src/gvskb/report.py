@@ -2041,6 +2041,10 @@ def _dep_banner_text(audits: list[dict]) -> str:
 
 
 def _pkg_verdict_label(check: dict) -> str:
+    # 기관 레지스트리 판정은 이 도구의 관측이 아니라 **기관의 결정**이므로 먼저,
+    # 그리고 출처가 드러나게 표시한다. 단 악성 탐지는 승인보다 위다(원칙 4).
+    if check.get("verdict") == "registry_rejected":
+        return "⛔ 기관 차단(레지스트리)"
     if check.get("verdict") == "not_found":
         return "❌ 저장소에 없음(가짜 이름 의심)"
     if check.get("is_malicious_package"):
@@ -2050,6 +2054,9 @@ def _pkg_verdict_label(check: dict) -> str:
         return f"⚠ 취약점 {n}건"
     if check.get("verdict") == "cooldown_hold":
         return "⏸ 발행 직후 — 대기 권고"
+    if check.get("verdict") == "registry_approved":
+        # checked=False 면 '승인은 받았으나 이번에 대조하지 못함' — 구분해 보여준다.
+        return "✅ 기관 승인(레지스트리)" if check.get("checked") else "✅ 기관 승인 · 대조 못 함"
     if check.get("checked"):
         return "이상 없음(검사 시점)"
     return "판정 불가"

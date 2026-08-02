@@ -339,8 +339,12 @@ def _cmd_check_package(args: argparse.Namespace) -> int:
     ))
     sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
-    if result.get("is_malicious_package") or result.get("verdict") == "not_found":
+    if (
+        result.get("is_malicious_package")
+        or result.get("verdict") in ("not_found", "registry_rejected")
+    ):
         # 미존재(슬롭스쿼팅 의심)는 VCPS-C4-EXISTENCE 기준 차단급이다.
+        # 기관 레지스트리가 명시적으로 차단한 패키지도 CI 를 통과시키면 안 된다.
         return EXIT_FINDINGS_BLOCK
     if result.get("vulnerability_count"):
         return EXIT_FINDINGS_WARN
