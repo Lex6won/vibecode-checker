@@ -738,13 +738,13 @@ async def audit_manifest(
         # 경계값 검사는 남기되 **관측이 아니라 가정**임을 싣는다. `requests>=2.28` 을
         # 2.28 로 판정해 놓고 그것을 '이 프로젝트가 쓰는 버전의 사실'로 다루면,
         # 실제로 2.31.0 이 깔린 프로젝트에 2.28 의 취약점을 보고하게 된다.
+        #
+        # 표시는 값으로만 남기고 문장은 붙이지 않는다 — 조치가 "락파일을 쓰거나
+        # --include-installed 를 켜라" 한 건이므로 알림도 한 건이다(집계는 호출자가
+        # 한다). 패키지마다 같은 문장을 달면 매니페스트 20건짜리에서 같은 안내가
+        # 20번 나오고, 그러면 담당자는 그 사이의 진짜 위험도 함께 넘긴다.
         if package.get("version") and not package.get("version_exact", True):
             result["version_exact"] = False
-            result["note"] = (
-                (result.get("note") or "")
-                + " 이 버전은 매니페스트 제약의 **경계값**이며 실제 설치 버전이 아닐 수 "
-                  "있습니다 — 정확한 판정은 락파일이나 `--include-installed` 로 확인하세요."
-            ).strip()
         return result
 
     # 기관 레지스트리 조회를 **자체 분석과 병렬로** 돌린다. 직렬이면 지연이 둘의
@@ -812,6 +812,8 @@ async def audit_manifest(
     unchecked = len(checks) - actually_checked
     has_vulns = any(c.get("vulnerability_count") for c in checks)
     not_found = sum(1 for c in checks if c.get("verdict") == "not_found")
+    # 경계값 판정 수 — 조치가 하나이므로 여기서 세어 배너 한 줄로 알린다.
+    bounded = sum(1 for c in checks if c.get("version_exact") is False)
     hold = sum(1 for c in checks if c.get("verdict") == "cooldown_hold")
     # 잘린 패키지는 '검사되지 않음'이다 — 이걸 조용히 넘기면 트리의 일부만 보고
     # 전부 본 것처럼 알리게 된다. 검토 대상으로 올리고 수치로도 드러낸다.
@@ -839,6 +841,9 @@ async def audit_manifest(
         "checked_count": actually_checked,
         "unchecked_count": unchecked,
         "not_found_count": not_found,   # 실재하지 않는 패키지(슬롭스쿼팅 의심) 수
+        # 매니페스트 제약의 경계값으로 판정한 수(`requests>=2.28` → 2.28).
+        # 실제 설치 버전이 아닐 수 있다 — 배너 1줄로만 알린다.
+        "bounded_version_count": bounded,
         "hold_count": hold,             # 쿨다운 대기(HOLD) 수 — 위험 확정이 아니라 대기 권고
         "env_grade": env_grade,
         "blocked": blocked,
