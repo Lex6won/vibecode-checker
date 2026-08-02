@@ -706,7 +706,43 @@ async def audit_manifest(
                 env_grade=env_grade,
             )
 
+    # 기관 레지스트리 조회를 **자체 분석과 병렬로** 돌린다. 직렬이면 지연이 둘의
+    # 합이 되어 "조회가 자체 분석보다 느리면 의미 없다"는 전제를 깬다(합의 §6-3).
+    from . import registry_client as _rc
+
+    registry_on, _ = _rc.is_enabled()
+    lookup_task = (
+        asyncio.ensure_future(_rc.lookup_batch(
+            [{"ecosystem": ecosystem, "name": p["name"], "version": p.get("version")}
+             for p in limited],
+            env_grade=env_grade,
+        ))
+        if registry_on else None
+    )
+
     checks = list(await asyncio.gather(*(_one(p) for p in limited)))
+
+    registry_status = "disabled"
+    if lookup_task is not None:
+        decisions = await lookup_task
+        if "__error__" in decisions:
+            registry_status = "unauthorized"
+            checks = [_rc.annotate_status(c, registry_status) for c in checks]
+        elif not decisions and limited:
+            # 조회가 통째로 비었다 — 도달 실패다. **검토로 올리지 않고** 표시만 한다.
+            registry_status = "unreachable"
+            checks = [_rc.annotate_status(c, registry_status) for c in checks]
+        else:
+            registry_status = "ok"
+            merged: list[dict] = []
+            for c in checks:
+                purl = f"pkg:{c.get('ecosystem')}/{c.get('name')}" + (
+                    f"@{c['version']}" if c.get("version") else ""
+                )
+                d = decisions.get(purl)
+                merged.append(apply_registry_decision(c, d) if d else
+                              _rc.annotate_status(c, "ok"))
+            checks = merged
     # critical 을 빠뜨리면 기관이 명시적으로 차단한 패키지(registry_rejected)가
     # 집계에서 통째로 누락된다 — 사다리 최상단이 게이트를 못 지나는 셈이다.
     blocked = any(
@@ -734,6 +770,8 @@ async def audit_manifest(
         "lockfile_format": lock_format,      # 예: package-lock.json (매니페스트면 None)
         "truncated_count": truncated,        # limit 로 잘려 검사되지 않은 수
         "concurrency": _concurrency(),
+        # 도달 실패는 패키지가 아니라 **시스템**의 문제다 — 배너 1개로 알린다.
+        "registry_status": registry_status,
         # 인텔 캐시 상태는 **패키지가 아니라 시스템의 문제**다. 조치는 "번들 반입"
         # 한 번이므로 패키지 수백 건에 같은 깃발을 꽂으면 담당자가 그것을 무시하게
         # 되고, 그러면 그 사이의 진짜 위험도 함께 묻힌다. 집계해서 한 번만 알린다.
