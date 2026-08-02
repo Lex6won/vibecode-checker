@@ -449,9 +449,18 @@ class CooldownCheck(BaseModel):
 class PackageCheckResult(BaseModel):
     """check_package 1건의 통일 결과 — 온라인/오프라인 공통.
 
-    verdict 사다리(우선순위순): malicious > not_found > vulnerable > cooldown_hold
-    > checked_stale > checked_clean > unknown > error. '판정 불가(unknown)'는
-    안전이 아니며 requires_review=True 로 명시된다.
+    verdict 사다리(우선순위순): malicious > registry_rejected > not_found >
+    vulnerable > cooldown_hold > checked_stale > registry_approved >
+    checked_clean > unknown > error. '판정 불가(unknown)'는 안전이 아니며
+    requires_review=True 로 명시된다.
+
+    ``registry_*`` 는 기관 레지스트리(gg-trusted-registry 등)의 **판정**이고
+    나머지는 이 도구의 **관측**이다. 둘을 섞지 않는다:
+
+    - ``registry_rejected`` 가 ``not_found`` 보다 위 — 기관의 명시적 차단이 더 강한 신호
+    - ``registry_approved`` 가 ``checked_clean`` 보다 위 — 사람이 확인한 것이 자동 판정보다 강함
+    - **``malicious`` 는 최상위** — 기관 승인도 로컬 악성 탐지를 덮지 못한다.
+      승인은 시점의 판단이고 위협 정보는 그 뒤에도 갱신되기 때문이다.
     """
 
     name: str
@@ -461,6 +470,8 @@ class PackageCheckResult(BaseModel):
     verdict: Literal[
         "malicious", "not_found", "vulnerable", "cooldown_hold",
         "checked_stale", "checked_clean", "unknown", "error",
+        # 기관 레지스트리 판정 — 이 도구의 관측이 아니라 기관의 결정이다.
+        "registry_approved", "registry_rejected",
     ] = "unknown"
     verdict_severity: Literal["info", "low", "medium", "high", "critical"] = "info"
     requires_review: bool = True
@@ -490,6 +501,20 @@ class PackageCheckResult(BaseModel):
     cache_ecosystems: list[str] = Field(default_factory=list)
     cache_stale_sources: list[str] = Field(default_factory=list)
     source: str = ""
+    # ── 기관 레지스트리 연동(선택) ────────────────────────────────────────
+    # 연동은 GVSKB_REGISTRY_URL 환경변수 옵트인이며, 미설정 시 아래 값들은
+    # 기본값 그대로 남는다(기존 동작과 100% 동일).
+    registry_status: Literal["ok", "unreachable", "unauthorized", "disabled"] = Field(
+        default="disabled",
+        description=(
+            "레지스트리 조회 결과 상태. unreachable 은 '승인받았다'가 아니라 "
+            "'물어보지 못했다' — 두 경우가 화면에서 구분돼야 한다."
+        ),
+    )
+    registry_decision: dict | None = Field(
+        default=None,
+        description="레지스트리 원본 판정(status·max_env·approved_by·expires_at 등). 미조회 시 None",
+    )
     engine_version: str | None = None
     checked_at: str | None = Field(default=None, description="검사 시각(UTC ISO)")
     error: str | None = None

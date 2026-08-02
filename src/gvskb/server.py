@@ -217,7 +217,13 @@ async def check_package(
 
     판정(verdict): not_found=저장소에 없음(AI가 지어낸 이름 의심, 차단 권고) |
     malicious=악성 | vulnerable=알려진 취약점 | cooldown_hold=발행 직후라 대기 권고 |
-    checked_clean=이상 없음 | unknown/error=판정 불가('안전' 아님).
+    checked_clean=이상 없음 | unknown/error=판정 불가('안전' 아님) |
+    registry_rejected=기관 레지스트리가 차단 | registry_approved=기관 레지스트리가 승인.
+
+    registry_* 는 이 도구의 관측이 아니라 **기관의 결정**입니다. 다만 malicious 는
+    승인보다 위입니다 — 승인은 시점의 판단이고 위협 정보는 그 뒤에도 갱신됩니다.
+    registry_approved 인데 checked=false 면 '승인은 받았으나 이번에 로컬 위협
+    정보와 대조하지는 못했다'는 뜻입니다('안전 확인'이 아님).
 
     네트워크: 온라인이면 공식 저장소(pypi.org/registry.npmjs.org)와 OSV.dev에
     패키지명·버전만 전송합니다(코드 미전송). GVSKB_MODE=offline(망분리)이면 외부

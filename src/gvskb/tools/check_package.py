@@ -511,6 +511,119 @@ def _aggregate_intel_cache(checks: list[dict]) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# 기관 레지스트리 판정 반영 (연동합의 §4-1·§4-2)
+#
+# 원칙: **로컬 탐지가 최종 안전망이다.** 기관 승인은 시점의 판단이고 위협 정보는
+# 그 뒤에도 갱신된다. 승인된 버전이 나중에 악성으로 등재되면 승인이 그것을 가려서는
+# 안 된다 — 그러면 만료일까지 초록불이 유지된다(승인 3개월이면 3개월간).
+#
+# 그래서 APPROVED 응답을 받아도 **로컬 인텔 캐시 대조는 반드시 수행**한다.
+# 생략되는 것은 원격 OSV 조회뿐이다.
+# ---------------------------------------------------------------------------
+
+# 캐시가 이만큼 낡으면 '승인 + 대조함'이라고 말할 수 없다. is_stale() 보다 관대한
+# 2차 임계값 — 낡음은 배너로 알리되(시스템 문제), 이 선을 넘으면 개별 검토로 올린다.
+_APPROVAL_STALE_GRACE_DAYS = 30
+
+
+def _cache_age_days(freshness: dict | None) -> int | None:
+    """캐시 기준일 중 **가장 오래된** 것의 경과일. 확인 불가면 None."""
+    if not freshness:
+        return None
+    oldest: int | None = None
+    for raw in freshness.values():
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - ts).days
+        oldest = age if oldest is None else max(oldest, age)
+    return oldest
+
+
+def apply_registry_decision(local: dict, decision: dict) -> dict:
+    """레지스트리 판정 + 로컬 대조 결과 → 최종 판정(연동합의 §4-2 3분기 규칙).
+
+    ``local`` 은 **로컬 인텔 캐시 대조만** 수행한 결과다(원격 OSV 미조회).
+    ``decision`` 은 레지스트리 응답(``status``·``max_env``·``expires_at`` 등).
+
+    순수 함수다 — 네트워크 없이 규칙만 검증할 수 있어야 하기 때문이다.
+    """
+    status = str(decision.get("status") or "").upper()
+    out = dict(local)
+    out["registry_status"] = "ok"
+    out["registry_decision"] = decision
+
+    if status == "REJECTED":
+        # 차단은 더 강한 신호이고 추가 분석이 판정을 뒤집지 않는다 — 즉시 확정.
+        out.update(
+            verdict="registry_rejected",
+            verdict_severity="critical",
+            requires_review=True,
+            note=(
+                "기관 레지스트리가 이 패키지를 **차단**했습니다"
+                + (f" (사유: {decision['rejected_reason']})" if decision.get("rejected_reason") else "")
+                + ". 사용하지 마세요."
+            ),
+        )
+        return out
+
+    if status != "APPROVED":
+        # UNDER_REVIEW · UNKNOWN — 자체 분석으로 진행한다(여기서는 표시만 남긴다).
+        return out
+
+    # ── APPROVED ── 로컬 탐지가 이기는지 먼저 본다(원칙 4).
+    if local.get("is_malicious_package") or local.get("verdict") == "malicious":
+        out["note"] = (
+            "⚠ 기관 레지스트리는 승인했으나 **로컬 위협 정보에서 악성으로 확인**됩니다. "
+            "승인 이후 등재됐을 수 있습니다 — 기관 보안담당자에게 즉시 알리세요. "
+            + (local.get("note") or "")
+        ).strip()
+        return out  # verdict=malicious 유지
+    if local.get("kev_signals"):
+        out["note"] = (
+            "⚠ 기관 승인 패키지이나 CISA KEV(실제 악용) 신호가 있습니다 — 확인이 필요합니다. "
+            + (local.get("note") or "")
+        ).strip()
+        return out
+
+    # ── 캐시 신선도에 따라 갈린다 ──
+    stale = bool(local.get("cache_stale_sources")) or not local.get("cache_sources_used")
+    age = _cache_age_days(local.get("cache_freshness"))
+    over_grace = age is not None and age > _APPROVAL_STALE_GRACE_DAYS
+
+    out.update(
+        verdict="registry_approved",
+        verdict_severity="info",
+        is_malicious_package=False,
+        # 대조를 실제로 했는지를 정직하게 싣는다. False 는 '안전'이 아니라 '판정 못 함'.
+        checked=not stale,
+        # 낡음은 '번들 반입 한 번'으로 풀리는 시스템 문제라 개별 검토로 올리지
+        # 않는다(배너로 알린다). 다만 유예를 넘기면 그때는 판정을 신뢰할 수 없다.
+        requires_review=bool(over_grace) or (stale and age is None),
+    )
+    approver = decision.get("approved_by") or "기관 레지스트리"
+    base = f"{approver}가 승인한 패키지입니다"
+    if decision.get("expires_at"):
+        base += f"(승인 만료 {decision['expires_at']})"
+    if not stale:
+        out["note"] = base + ". 로컬 위협 정보 대조에서도 이상이 없었습니다."
+    elif over_grace:
+        out["note"] = (
+            base + f". 다만 로컬 위협 정보가 {age}일 낡아 대조를 신뢰할 수 없습니다"
+            " — 인텔 번들을 반입한 뒤 재검사하세요."
+        )
+    else:
+        out["note"] = (
+            base + ". 로컬 위협 정보가 낡아 **이번에 대조하지는 못했습니다**"
+            "(checked=false) — 인텔 번들 반입을 권장합니다."
+        )
+    return out
+
+
 # 규모 상수 — 락파일은 매니페스트와 자릿수가 다르다.
 _MANIFEST_DEFAULT_LIMIT = 20     # 직접 의존성만 — 사람이 훑어볼 규모
 _LOCKFILE_DEFAULT_LIMIT = 500    # 전이 의존성 포함 — 트리 전체
@@ -594,7 +707,12 @@ async def audit_manifest(
             )
 
     checks = list(await asyncio.gather(*(_one(p) for p in limited)))
-    blocked = any(c.get("is_malicious_package") or c.get("verdict_severity") == "high" for c in checks)
+    # critical 을 빠뜨리면 기관이 명시적으로 차단한 패키지(registry_rejected)가
+    # 집계에서 통째로 누락된다 — 사다리 최상단이 게이트를 못 지나는 셈이다.
+    blocked = any(
+        c.get("is_malicious_package") or c.get("verdict_severity") in ("high", "critical")
+        for c in checks
+    )
     # 판정 불가(캐시 없는 오프라인·API 실패)를 "안전"으로 오해하지 않도록 실제
     # 검사된 수와 판정 불가 수를 분리하고, 검토 필요 여부를 명시한다.
     # 알려진 취약점(CVE)이 있는 패키지도 'ok'가 아니라 검토 대상이다 — 악성만
