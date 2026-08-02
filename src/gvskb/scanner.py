@@ -300,7 +300,7 @@ def _looks_like_secret_material(text: str) -> tuple[bool, str]:
 # SCA(check-package / scan_dependencies)로 보내야 한다. 디렉터리 스캔 중
 # 만나면 스킵하되 그 사실을 안내로 남긴다. (package.json은 .json으로 이미 스캔됨)
 _DEP_MANIFEST_NAMES: frozenset[str] = frozenset({
-    "requirements.txt", "poetry.lock", "pipfile.lock",
+    "requirements.txt", "poetry.lock", "pipfile.lock", "uv.lock",
     "yarn.lock", "package-lock.json", "pnpm-lock.yaml",
 })
 

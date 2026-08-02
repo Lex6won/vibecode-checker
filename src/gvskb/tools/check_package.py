@@ -9,6 +9,7 @@ points the operator at ``gvskb update-intel``.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import datetime, timezone
@@ -510,43 +511,89 @@ def _aggregate_intel_cache(checks: list[dict]) -> dict:
     }
 
 
+# 규모 상수 — 락파일은 매니페스트와 자릿수가 다르다.
+_MANIFEST_DEFAULT_LIMIT = 20     # 직접 의존성만 — 사람이 훑어볼 규모
+_LOCKFILE_DEFAULT_LIMIT = 500    # 전이 의존성 포함 — 트리 전체
+_MAX_PACKAGES = 2000             # 방어 상한(무한 대기 방지)
+
+
+def _concurrency() -> int:
+    """동시 조회 수. 순차 실행이면 락파일 800건이 곧 800회 왕복이 된다.
+
+    기본 8 은 기관 레지스트리 권고값과 같고, OSV·PyPI 에도 무례하지 않은 수준이다.
+    """
+    try:
+        n = int(os.environ.get("GVSKB_CHECK_CONCURRENCY", "8"))
+    except ValueError:
+        return 8
+    return max(1, min(n, 32))
+
+
 async def audit_manifest(
     manifest_text: str,
     ecosystem: Literal["pypi", "npm"] = "pypi",
-    limit: int = 20,
+    limit: int | None = None,
     env_grade: str | None = None,
+    filename: str = "",
 ) -> dict:
-    """의존성 매니페스트를 파싱해 패키지별 취약·악성 검사를 수행한다.
+    """의존성 매니페스트·**락파일**을 파싱해 패키지별 취약·악성 검사를 수행한다.
 
     온라인: 공식 저장소 실재·발행일 확인 + OSV.dev 조회(패키지명·버전만 전송).
     오프라인(GVSKB_MODE=offline): 로컬 인텔 캐시 기반 — 판정 불가는 '안전'이
     아니라 requires_review로 표시. env_grade(E0~E2)는 쿨다운 기준일을 결정한다.
+
+    락파일을 받으면 **전이 의존성까지** 검사한다. 실무 취약점은 대부분 거기에
+    있고 매니페스트에는 적히지 않는다. 락파일이 생태계를 확정하므로 인자로 받은
+    ``ecosystem`` 보다 파일 쪽을 신뢰한다.
+
+    ``limit`` 을 주지 않으면 형식에 맞춰 정한다(매니페스트 20 · 락파일 500).
+    잘린 경우 ``truncated_count`` 로 **반드시 드러낸다** — 일부만 검사하고
+    전부 검사한 것처럼 보이면 그게 조용한 초록불이다.
     """
     from ..scanner import parse_manifest_packages  # 지연 import — 경량 경로 유지
+    from .lockfiles import parse_lockfile
 
-    lock = _detect_lockfile(manifest_text)
-    if lock:
-        return _unparsed_result(
-            ecosystem,
-            f"락파일 형식({lock})은 이 도구가 파싱하지 못합니다. "
-            "원본 매니페스트(requirements.txt·package.json)를 검사하세요.",
-        )
+    source_kind = "manifest"
+    lock = parse_lockfile(manifest_text, filename)
+    if lock is not None:
+        source_kind = "lockfile"
+        lock_format = lock["format"]
+        if lock["ecosystem"] != ecosystem:
+            # 파일 형식이 생태계를 확정한다 — 인자가 틀렸으면 파일을 따른다.
+            ecosystem = lock["ecosystem"]  # type: ignore[assignment]
+        packages = lock["packages"]
+        if not packages:
+            return _unparsed_result(
+                ecosystem,
+                f"{lock_format} 을(를) 인식했으나 패키지를 읽지 못했습니다"
+                "(형식 손상 가능). 검사되지 않았으므로 '이상 없음'이 아닙니다.",
+            )
+    else:
+        lock_format = None
+        packages = parse_manifest_packages(manifest_text, ecosystem)
+        if not packages:
+            return _unparsed_result(ecosystem, "이 텍스트에서 패키지를 파싱하지 못했습니다. 형식·ecosystem을 확인하세요.")
 
-    packages = parse_manifest_packages(manifest_text, ecosystem)
-    if not packages:
-        return _unparsed_result(ecosystem, "이 텍스트에서 패키지를 파싱하지 못했습니다. 형식·ecosystem을 확인하세요.")
+    effective_limit = limit if limit is not None else (
+        _LOCKFILE_DEFAULT_LIMIT if source_kind == "lockfile" else _MANIFEST_DEFAULT_LIMIT
+    )
+    effective_limit = max(0, min(effective_limit, _MAX_PACKAGES))
+    limited = packages[:effective_limit]
+    truncated = len(packages) - len(limited)
 
-    limited = packages[: max(0, min(limit, 100))]
-    checks = []
-    for package in limited:
-        checks.append(
-            await check_package_impl(
+    # 순차 실행이면 락파일 800건이 곧 800회 왕복이다 — 동시 실행하되 상한을 둔다.
+    sem = asyncio.Semaphore(_concurrency())
+
+    async def _one(package: dict) -> dict:
+        async with sem:
+            return await check_package_impl(
                 name=str(package["name"]),
                 version=str(package["version"]) if package.get("version") else None,
                 ecosystem=ecosystem,
                 env_grade=env_grade,
             )
-        )
+
+    checks = list(await asyncio.gather(*(_one(p) for p in limited)))
     blocked = any(c.get("is_malicious_package") or c.get("verdict_severity") == "high" for c in checks)
     # 판정 불가(캐시 없는 오프라인·API 실패)를 "안전"으로 오해하지 않도록 실제
     # 검사된 수와 판정 불가 수를 분리하고, 검토 필요 여부를 명시한다.
@@ -557,9 +604,18 @@ async def audit_manifest(
     has_vulns = any(c.get("vulnerability_count") for c in checks)
     not_found = sum(1 for c in checks if c.get("verdict") == "not_found")
     hold = sum(1 for c in checks if c.get("verdict") == "cooldown_hold")
-    requires_review = blocked or unchecked > 0 or has_vulns or any(c.get("requires_review") for c in checks)
+    # 잘린 패키지는 '검사되지 않음'이다 — 이걸 조용히 넘기면 트리의 일부만 보고
+    # 전부 본 것처럼 알리게 된다. 검토 대상으로 올리고 수치로도 드러낸다.
+    requires_review = (
+        blocked or unchecked > 0 or has_vulns or truncated > 0
+        or any(c.get("requires_review") for c in checks)
+    )
     verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
     return {
+        "source_kind": source_kind,          # manifest | lockfile
+        "lockfile_format": lock_format,      # 예: package-lock.json (매니페스트면 None)
+        "truncated_count": truncated,        # limit 로 잘려 검사되지 않은 수
+        "concurrency": _concurrency(),
         # 인텔 캐시 상태는 **패키지가 아니라 시스템의 문제**다. 조치는 "번들 반입"
         # 한 번이므로 패키지 수백 건에 같은 깃발을 꽂으면 담당자가 그것을 무시하게
         # 되고, 그러면 그 사이의 진짜 위험도 함께 묻힌다. 집계해서 한 번만 알린다.
@@ -581,7 +637,15 @@ async def audit_manifest(
         "disclaimer": (
             "취약점 API에는 패키지명과 ecosystem만 전송합니다. "
             "unchecked_count>0 이면 일부 패키지가 '판정 불가'(캐시 없는 오프라인·API 실패)이며 '안전'이 아닙니다. "
-            "운영 반영 전 lockfile/SBOM 기준 재검사를 권장합니다."
+            + (
+                f"truncated_count={truncated} — limit 로 잘려 **검사되지 않은** 패키지가 있습니다. "
+                "limit 를 올려 재검사하세요."
+                if truncated else
+                ("전이 의존성을 포함한 락파일 기준 검사입니다."
+                 if source_kind == "lockfile" else
+                 "매니페스트에 적힌 직접 의존성만 검사했습니다 — 전이 의존성은 "
+                 "락파일(package-lock.json·poetry.lock 등)을 넣어야 검사됩니다.")
+            )
         ),
     }
 
