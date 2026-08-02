@@ -391,3 +391,162 @@ def test_kev_signal_without_score_caches_still_works(offline_with_cache: Path) -
     assert "epss_score" not in sig
     assert "cvss31_severity" not in sig
     assert "epss-recent" not in result["cache_sources_used"]
+
+
+# ---------------------------------------------------------------------------
+# 온라인 경로의 KEV 캐시 의존 — 결과가 스스로 밝혀야 한다
+#
+# 실측 결함: 온라인 모드에서도 CISA KEV 교차 대조는 **로컬 캐시**를 쓴다
+# (_kev_cve_hits). 그런데 그 의존을 결과에 전혀 싣지 않아, 캐시가 없거나 6개월
+# 낡아도 `in_kev=false` 가 '악용 없음'처럼 보였다. 함수 주석은 "'악용 없음'이
+# 아니라 '대조 못 함'"이라고 정확히 적어 뒀는데 그 구분이 호출자에게 전달되지
+# 않았다 — 주석에만 있는 안전장치는 안전장치가 아니다.
+# ---------------------------------------------------------------------------
+
+
+def _fake_online_vuln_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """네트워크 없이 온라인 경로를 태운다 — 취약점 1건이 나온 상황."""
+    from gvskb.schema import PackageRegistryMetadata
+
+    async def _meta(name, ecosystem, version=None, timeout=None):
+        return PackageRegistryMetadata(exists=True, source="test-registry")
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"vulns": [{"id": "CVE-2099-0001", "summary": "test", "aliases": []}]}
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class _Client:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> None:
+            return None
+
+        async def post(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr("gvskb.tools.check_package.fetch_registry_metadata", _meta)
+    monkeypatch.setattr("gvskb.tools.check_package.httpx.AsyncClient", _Client)
+
+
+def test_online_result_reports_missing_kev_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """KEV 캐시가 없으면 결과가 '대조 못 함'을 밝혀야 한다."""
+    monkeypatch.delenv("GVSKB_MODE", raising=False)
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))  # 빈 캐시
+    _fake_online_vuln_response(monkeypatch)
+
+    r = asyncio.run(check_package_impl(name="somepkg", ecosystem="pypi", version="1.0.0"))
+    assert r["in_kev"] is False
+    assert r["cache_sources_used"] == []
+    assert "대조 못" in (r["note"] or ""), "in_kev=false 가 '악용 없음'과 구분되지 않는다"
+
+
+def test_online_result_reports_stale_kev_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """낡은 캐시로 판정했으면 기준일과 함께 알려야 한다."""
+    monkeypatch.delenv("GVSKB_MODE", raising=False)
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    _write_cache(tmp_path, "cisa-kev", [{"cveID": "CVE-1999-0001"}],
+                 fetched_at=_days_ago(400))
+    _fake_online_vuln_response(monkeypatch)
+
+    r = asyncio.run(check_package_impl(name="somepkg", ecosystem="pypi", version="1.0.0"))
+    assert r["cache_stale_sources"] == ["cisa-kev"]
+    assert r["cache_freshness"].get("cisa-kev")
+    assert "오래됐" in (r["note"] or "")
+
+
+def test_online_result_records_fresh_kev_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """신선한 캐시를 썼으면 출처로 기록한다 — 무엇을 근거로 판정했는지 남아야 한다."""
+    monkeypatch.delenv("GVSKB_MODE", raising=False)
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    _write_cache(tmp_path, "cisa-kev", [{"cveID": "CVE-1999-0001"}])
+    _fake_online_vuln_response(monkeypatch)
+
+    r = asyncio.run(check_package_impl(name="somepkg", ecosystem="pypi", version="1.0.0"))
+    assert r["cache_sources_used"] == ["cisa-kev"]
+    assert r["cache_stale_sources"] == []
+
+
+# ---------------------------------------------------------------------------
+# 집계와 배너 — 시스템 열화는 시스템 수준으로 한 번만
+# ---------------------------------------------------------------------------
+
+
+def _check(**kw) -> dict:
+    base = {
+        "name": "p", "version": "1.0.0", "ecosystem": "pypi",
+        "vulnerability_count": 0, "cache_sources_used": [],
+        "cache_stale_sources": [], "cache_freshness": {},
+    }
+    base.update(kw)
+    return base
+
+
+def test_intel_cache_aggregate_takes_worst_state() -> None:
+    """일부만 낡았어도 매니페스트 전체는 '낡음'으로 보고해야 한다."""
+    from gvskb.tools.check_package import _aggregate_intel_cache
+
+    agg = _aggregate_intel_cache([
+        _check(cache_sources_used=["cisa-kev"], cache_freshness={"cisa-kev": "2026-07-01"}),
+        _check(cache_sources_used=["cisa-kev"], cache_stale_sources=["cisa-kev"],
+               cache_freshness={"cisa-kev": "2025-01-01"}),
+    ])
+    assert agg["state"] == "stale"
+    assert agg["as_of"]["cisa-kev"] == "2025-01-01", "가장 오래된 기준일을 남겨야 한다"
+
+
+def test_intel_cache_aggregate_flags_missing_when_vulns_uncompared() -> None:
+    """취약점이 있는데 캐시를 못 썼으면 '대조 못 함'이다 — '이상 없음'이 아니다."""
+    from gvskb.tools.check_package import _aggregate_intel_cache
+
+    agg = _aggregate_intel_cache([_check(vulnerability_count=3)])
+    assert agg["state"] == "missing"
+
+
+def test_intel_cache_aggregate_not_used_is_not_a_problem() -> None:
+    """취약점이 0건이면 KEV 대조가 필요 없었던 것 — 경고할 일이 아니다."""
+    from gvskb.tools.check_package import _aggregate_intel_cache
+
+    assert _aggregate_intel_cache([_check()])["state"] == "not_used"
+
+
+def test_report_shows_one_banner_not_one_per_package() -> None:
+    """패키지 200건이 모두 낡은 캐시로 판정돼도 경고는 한 줄이어야 한다.
+
+    같은 사유로 수백 줄이 뜨면 담당자는 그것을 무시하게 되고, 그러면 그 사이의
+    진짜 위험도 함께 묻힌다.
+    """
+    from gvskb.report import _intel_cache_banner
+
+    audits = [{
+        "intel_cache": {"state": "stale", "sources_used": ["cisa-kev"],
+                        "stale_sources": ["cisa-kev"], "as_of": {"cisa-kev": "2025-01-01"}},
+        "checks": [_check(cache_stale_sources=["cisa-kev"]) for _ in range(200)],
+    }]
+    banner = _intel_cache_banner(audits)
+    assert banner is not None
+    assert banner.count("낡") == 1
+    assert "2025-01-01" in banner
+
+
+def test_report_has_no_banner_when_cache_is_fresh() -> None:
+    from gvskb.report import _intel_cache_banner
+
+    assert _intel_cache_banner([{"intel_cache": {"state": "ok"}}]) is None
+    assert _intel_cache_banner([{"intel_cache": {"state": "not_used"}}]) is None

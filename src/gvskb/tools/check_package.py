@@ -225,6 +225,24 @@ def _max_cve_from_vulns(vulns: list[dict]) -> str:
     return best
 
 
+def _kev_cache_state(cache: IntelCache | None = None) -> dict:
+    """KEV 캐시 상태 — 대조 **결과를 해석하려면 반드시 함께 있어야 하는 값**.
+
+    ``in_kev=False`` 는 '악용 목록에 없다'일 수도, '대조하지 못했다'일 수도 있다.
+    상태를 싣지 않으면 두 경우가 화면에서 똑같아 보인다 — 실측으로 온라인 경로가
+    로컬 KEV 캐시에 의존하면서 그 의존을 결과에 전혀 표시하지 않고 있었다.
+    캐시가 6개월 낡아 최근 악용 등재를 모르는 상태에서도 판정은 조용히 나갔다.
+    """
+    cache = cache or IntelCache()
+    entry = cache.load("cisa-kev")
+    if entry is None:
+        return {"state": "missing", "fetched_at": None}
+    return {
+        "state": "stale" if entry.is_stale() else "ok",
+        "fetched_at": entry.fetched_at,
+    }
+
+
 def _kev_cve_hits(vulns: list[dict], cache: IntelCache | None = None) -> list[dict]:
     """취약점의 CVE alias 를 CISA KEV 캐시와 교차 대조 — 실제 악용 중인지 확인.
 
@@ -451,6 +469,47 @@ def _unparsed_result(ecosystem: str, note: str) -> dict:
     }
 
 
+def _aggregate_intel_cache(checks: list[dict]) -> dict:
+    """패키지별 캐시 상태를 매니페스트 1건의 시스템 상태로 집계.
+
+    ``state``: ``ok`` | ``stale`` | ``missing`` | ``not_used``
+
+    - ``stale``  — 낡은 캐시로 판정했다. 그 이후 등재분은 반영되지 않았다.
+    - ``missing`` — 캐시가 없어 대조 자체를 못 했다. '이상 없음'이 아니다.
+    - ``not_used`` — 캐시를 볼 일이 없었다(취약점 0건 등). 문제 아님.
+
+    가장 나쁜 상태가 대표값이 된다 — 일부만 낡았어도 보고서는 낡음을 알려야 한다.
+    """
+    stale: set[str] = set()
+    used: set[str] = set()
+    missing = False
+    dates: dict[str, str] = {}
+    for c in checks:
+        used.update(c.get("cache_sources_used") or [])
+        stale.update(c.get("cache_stale_sources") or [])
+        for k, v in (c.get("cache_freshness") or {}).items():
+            # 여러 패키지가 같은 캐시를 봤다면 가장 오래된 기준일을 남긴다.
+            if v and (k not in dates or str(v) < dates[k]):
+                dates[k] = str(v)
+        # 취약점이 있는데 KEV 캐시를 못 썼다면 대조를 못 한 것이다.
+        if c.get("vulnerability_count") and not (c.get("cache_sources_used") or []):
+            missing = True
+    if stale:
+        state = "stale"
+    elif missing:
+        state = "missing"
+    elif used:
+        state = "ok"
+    else:
+        state = "not_used"
+    return {
+        "state": state,
+        "sources_used": sorted(used),
+        "stale_sources": sorted(stale),
+        "as_of": dates or None,
+    }
+
+
 async def audit_manifest(
     manifest_text: str,
     ecosystem: Literal["pypi", "npm"] = "pypi",
@@ -501,6 +560,10 @@ async def audit_manifest(
     requires_review = blocked or unchecked > 0 or has_vulns or any(c.get("requires_review") for c in checks)
     verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
     return {
+        # 인텔 캐시 상태는 **패키지가 아니라 시스템의 문제**다. 조치는 "번들 반입"
+        # 한 번이므로 패키지 수백 건에 같은 깃발을 꽂으면 담당자가 그것을 무시하게
+        # 되고, 그러면 그 사이의 진짜 위험도 함께 묻힌다. 집계해서 한 번만 알린다.
+        "intel_cache": _aggregate_intel_cache(checks),
         "ecosystem": ecosystem,
         "parsed_count": len(packages),
         "checked_count": actually_checked,
@@ -619,7 +682,14 @@ async def check_package_impl(
     max_cve = _max_cve_from_vulns(vulns)
 
     # ③ CISA KEV 교차 대조 — 실제 악용 중인 취약점이면 심각도와 무관하게 차단급.
-    kev_hits = _kev_cve_hits(vulns) if vulns else []
+    # 온라인 모드에서도 이 대조는 **로컬 캐시**를 쓴다. 그 의존을 결과에 싣지
+    # 않으면 캐시가 없거나 낡아도 in_kev=false 가 '악용 없음'처럼 보인다.
+    kev_hits: list[dict] = []
+    kev_cache = {"state": "not_needed", "fetched_at": None}
+    if vulns:
+        _intel = IntelCache()
+        kev_hits = _kev_cve_hits(vulns, _intel)
+        kev_cache = _kev_cache_state(_intel)
     in_kev = bool(kev_hits)
 
     # ④ 쿨다운(C1)·라이선스(LIC)·설치 스크립트(C2) 판정.
@@ -643,6 +713,17 @@ async def check_package_impl(
         )
     if in_kev:
         notes.append("이 패키지의 취약점이 CISA KEV(실제 악용 목록)에 있습니다 — 예외 없이 조치하세요.")
+    elif kev_cache["state"] == "missing":
+        notes.append(
+            "CISA KEV 캐시가 없어 '실제 악용 중인지' 대조하지 못했습니다 — "
+            "`gvskb update-intel` 후 재검사하세요. 이 결과의 in_kev=false 는 "
+            "'악용 없음'이 아니라 '대조 못 함'입니다."
+        )
+    elif kev_cache["state"] == "stale":
+        notes.append(
+            f"CISA KEV 캐시가 오래됐습니다({str(kev_cache['fetched_at'])[:10]} 기준) — "
+            "그 이후 악용 목록에 오른 취약점은 반영되지 않았습니다."
+        )
 
     # 판정 사다리: malicious > vulnerable > cooldown_hold > checked_clean.
     if has_malicious:
@@ -702,5 +783,12 @@ async def check_package_impl(
             for v in vulns[:5]
         ],
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
+        # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
+        # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.
+        cache_sources_used=["cisa-kev"] if kev_cache["state"] in ("ok", "stale") else [],
+        cache_freshness=(
+            {"cisa-kev": str(kev_cache["fetched_at"])} if kev_cache["fetched_at"] else {}
+        ),
+        cache_stale_sources=["cisa-kev"] if kev_cache["state"] == "stale" else [],
         note=" ".join(notes) if notes else None,
     ).model_dump(mode="json")

@@ -869,6 +869,9 @@ def render_markdown(
     # 의존성 결과는 아래 '의존성(패키지) 취약점 검사' 섹션 + 요약 수치로 전달한다.
     # 여기서는 --check-deps 를 안 써서 아예 검사되지 않은 경우만 경고한다.
     dep_audits = _dep_audits(report)
+    if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
+        lines.append(f"> {_intel_banner}")
+        lines.append("")
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
     ]
@@ -1496,6 +1499,8 @@ def render_html(
         if text:
             p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
     dep_audits = _dep_audits(report)
+    if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
+        p.append(f'<div class="depwarn">{_esc(_intel_banner).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
     if not dep_audits and manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
@@ -1979,6 +1984,43 @@ def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool, int]:
     unchecked = max(0, unchecked - not_found)
     blocked = any(a.get("blocked") for a in audits)
     return checked, unchecked, vuln, blocked, not_found
+
+
+def _intel_cache_banner(audits: list[dict]) -> str | None:
+    """인텔 캐시 열화 배너 — 매니페스트 전체에 **한 줄만**.
+
+    조치가 "번들 반입 한 번"인 시스템 문제이므로 패키지별로 알리지 않는다.
+    수백 건에 같은 깃발을 꽂으면 담당자는 그것을 무시하게 되고, 그러면 그 사이의
+    진짜 위험도 함께 묻힌다. 조치 단위가 다르면 알림 단위도 달라야 한다.
+    """
+    worst = "ok"
+    dates: dict[str, str] = {}
+    for a in audits:
+        ic = a.get("intel_cache") or {}
+        state = str(ic.get("state") or "")
+        if state == "stale":
+            worst = "stale"
+        elif state == "missing" and worst != "stale":
+            worst = "missing"
+        for k, v in (ic.get("as_of") or {}).items():
+            if v and (k not in dates or str(v) < dates[k]):
+                dates[k] = str(v)
+    if worst == "ok":
+        return None
+    as_of = " · ".join(f"{k} {v[:10]}" for k, v in sorted(dates.items()))
+    if worst == "missing":
+        return (
+            "⚠️ **위협 인텔 캐시 없음** — 취약점이 발견된 패키지를 CISA KEV"
+            "(실제 악용 목록)와 **대조하지 못했습니다**. 보고서의 `in_kev` 표시는 "
+            "'악용 없음'이 아니라 '대조 못 함'입니다. "
+            "`gvskb update-intel`(폐쇄망은 인텔 번들 반입) 후 재검사하세요."
+        )
+    return (
+        f"⚠️ **위협 인텔 캐시가 낡았습니다**{f' (기준일 {as_of})' if as_of else ''} — "
+        "그 이후 악용 목록에 오른 취약점은 이 결과에 반영되지 않았습니다. "
+        "`gvskb update-intel`(폐쇄망은 인텔 번들 반입)로 갱신하면 해소됩니다. "
+        "**패키지 개별 문제가 아니라 검사 환경의 문제입니다.**"
+    )
 
 
 def _dep_banner_text(audits: list[dict]) -> str:
