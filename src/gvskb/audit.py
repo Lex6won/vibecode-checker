@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,94 @@ def audit_dir() -> Path | None:
     """감사로그 디렉터리. GVSKB_AUDIT_DIR 미설정이면 None(비활성)."""
     raw = os.environ.get("GVSKB_AUDIT_DIR", "").strip()
     return Path(raw) if raw else None
+
+
+# ---------------------------------------------------------------------------
+# caller 검증 — 개인 식별자가 감사 기록에 스며드는 것을 막는다
+# ---------------------------------------------------------------------------
+#
+# 규칙은 연동합의 §3: ``<출처>:<모드>[:부서코드]`` (예 ``harness:auto``).
+# 이 규칙을 제안한 것은 우리인데 정작 우리 쪽에 검증이 없었다 — caller 는
+# 레지스트리 봉투뿐 아니라 **우리 감사로그에도 그대로 들어가므로**, 호출자가
+# 사번·PC명·이메일을 넣으면 기관 감사 기록이 오염된다.
+#
+# 구조 검사만으로 현실적인 개인 식별자는 대부분 걸린다 — 이메일에는 ``@`` 와
+# ``.`` 가, IP 에는 ``.`` 가, PC명·사번에는 ``:`` 가 없다.
+_CALLER_BASE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}:[a-z][a-z0-9_-]{0,15}$")
+
+# 부서코드는 **코드**이지 이름이 아니다. 숫자만 허용하면 ``cli:manual:홍길동``
+# 같은 값이 걸린다. 영숫자 부서코드를 쓰는 기관에서는 이 슬롯만 조용히 아니라
+# **경고와 함께** 떨어지고 앞의 ``<출처>:<모드>`` 는 살아남는다 — 규칙을 모르는
+# 값 하나 때문에 감사 귀속 전체를 버리는 것이 더 큰 손실이기 때문이다.
+_CALLER_DEPT_RE = re.compile(r"^[0-9]{1,16}$")
+
+# 형식을 못 맞춘 값의 대체값. 빈 문자열로 두면 '신고하지 않음'과 구분되지 않아
+# 규칙 위반이 감사 기록에서 사라진다.
+CALLER_INVALID = "unknown:invalid"
+
+
+def normalize_caller(raw: str) -> tuple[str, str]:
+    """(기록할 caller, 문제 코드). 문제 없으면 코드는 ``""``.
+
+    **순수 함수이며 원본 값을 절대 반환·출력하지 않는다** — 거부한 값을 경고에
+    실어 내보내면 막으려던 개인 식별자를 stderr 와 로그로 다시 흘리게 된다.
+
+    문제 코드: ``malformed``(형식 불일치 — 전량 대체) ·
+    ``dept_dropped``(부서코드만 규칙 위반 — 그 슬롯만 제거).
+    """
+    value = (raw or "").strip()
+    if not value:
+        return "", ""  # 미신고는 위반이 아니다 — 기존 기본값 그대로
+    parts = value.split(":")
+    if len(parts) == 3:
+        base = ":".join(parts[:2])
+        if _CALLER_BASE_RE.match(base):
+            if _CALLER_DEPT_RE.match(parts[2]):
+                return value, ""
+            return base, "dept_dropped"
+        return CALLER_INVALID, "malformed"
+    if len(parts) == 2 and _CALLER_BASE_RE.match(value):
+        return value, ""
+    return CALLER_INVALID, "malformed"
+
+
+_CALLER_WARNED: set[str] = set()
+
+_CALLER_WARNINGS = {
+    "malformed": (
+        "[gvskb] ⚠ caller 값이 형식(<출처>:<모드>[:부서코드])에 맞지 않아 "
+        f"'{CALLER_INVALID}' 로 기록합니다. 개인 식별자(이름·사번·PC명·이메일·IP)는 "
+        "감사 기록에 넣지 마세요 — 필요한 것은 '무엇이 호출했는가'입니다."
+    ),
+    "dept_dropped": (
+        "[gvskb] ⚠ caller 의 부서코드가 숫자가 아니어서 제거하고 기록합니다"
+        "(<출처>:<모드> 는 유지). 부서코드 자리에 이름·사번을 넣지 마세요."
+    ),
+}
+
+
+def _warn_caller(code: str) -> None:
+    """같은 위반은 프로세스당 한 번만 알린다.
+
+    락파일 800건을 검사하면 같은 caller 로 이벤트가 수백 건 생긴다. 줄마다
+    경고하면 담당자가 경고를 무시하게 되고, 그러면 그 사이의 진짜 위험도 함께
+    묻힌다 — 조치 단위가 '호출자 설정 수정' 한 건이므로 알림도 한 건이다.
+    """
+    if not code or code in _CALLER_WARNED:
+        return
+    _CALLER_WARNED.add(code)
+    print(_CALLER_WARNINGS[code], file=sys.stderr)
+
+
+def safe_caller(raw: str) -> str:
+    """검증 + 1회 경고를 묶은 것. 감사·제출 경로는 전부 이걸 거친다."""
+    value, code = normalize_caller(raw)
+    _warn_caller(code)
+    return value
+
+
+def _reset_caller_warnings_for_tests() -> None:
+    _CALLER_WARNED.clear()
 
 
 def _now_iso() -> str:
@@ -65,6 +154,7 @@ def record_scan(report: ScanReport, tool: str, caller: str = "") -> None:
     """
     if audit_dir() is None:
         return
+    caller = safe_caller(caller)
     ts = _now_iso()
     events = [AuditEvent(
         event_type="scan",
@@ -137,6 +227,7 @@ def record_package_check(
     """
     if audit_dir() is None or not checks:
         return
+    caller = safe_caller(caller)
     ts = _now_iso()
     events: list[AuditEvent] = []
 

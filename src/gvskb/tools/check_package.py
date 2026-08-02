@@ -372,6 +372,10 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
         advisories=advisories,
         kev_signals=kev_signals,
         in_kev=bool(kev_signals),
+        # KEV 캐시를 실제로 열었을 때만 True. `cache_sources_used` 가 비었는지로
+        # 추론하면 안 된다 — 악성 피드만 있고 KEV 가 없으면 목록은 비어 있지 않은데
+        # KEV 대조는 되지 않은 상태다.
+        kev_checked=kev_entry is not None,
         cache_sources_used=cache_sources_used,
         cache_freshness=cache_freshness,
         cache_ecosystems=covered_ecosystems,
@@ -544,6 +548,12 @@ def _cache_age_days(freshness: dict | None) -> int | None:
     return oldest
 
 
+# 우리가 해석할 수 있는 판정. 여기 없는 값(오류 표식·신설 상태·빈 값)은 '판정을
+# 받지 못한 것'으로 다룬다 — 모르는 값을 통과로 읽으면, 상대가 상태를 하나 늘릴
+# 때마다 우리 쪽에 조용한 초록불이 하나씩 생긴다.
+_KNOWN_REGISTRY_STATUSES = frozenset({"APPROVED", "REJECTED", "UNDER_REVIEW", "UNKNOWN"})
+
+
 def apply_registry_decision(local: dict, decision: dict) -> dict:
     """레지스트리 판정 + 로컬 대조 결과 → 최종 판정(연동합의 §4-2 3분기 규칙).
 
@@ -554,20 +564,40 @@ def apply_registry_decision(local: dict, decision: dict) -> dict:
     """
     status = str(decision.get("status") or "").upper()
     out = dict(local)
-    out["registry_status"] = "ok"
+    # 배치가 200 이라고 모든 항목이 답을 받은 것은 아니다. 상대가 부분 실패를
+    # 허용하도록 고친 뒤로 실패는 **항목 단위**로 온다 — 아는 판정이 아니면
+    # '조회했고 이상 없음'으로 두지 않는다. 조용한 초록불이 빨간불보다 위험하다.
+    out["registry_status"] = "ok" if status in _KNOWN_REGISTRY_STATUSES else "item_failed"
     out["registry_decision"] = decision
 
     if status == "REJECTED":
         # 차단은 더 강한 신호이고 추가 분석이 판정을 뒤집지 않는다 — 즉시 확정.
+        #
+        # ``stale`` 은 TTL 이 지났는데도 삭제하지 않고 강등해 둔 캐시 차단이다
+        # (registry_client._cache_get). **판정은 똑같이 차단**이다 — 조회 실패로
+        # 차단이 풀리면 레지스트리 도달을 방해하는 것만으로 우회가 되기 때문이다
+        # (합의 §4-5). 다만 방금 받은 차단과 8일째 확인 못 한 차단은 담당자가
+        # 할 일이 다르다: 후자는 '해제됐는지 확인'이 남아 있다. 판정이 같다고
+        # 안내까지 같으면, 도구는 자기가 무엇을 모르는지 말하지 않는 셈이 된다.
+        stale_block = bool(decision.get("stale"))
+        note = (
+            "기관 레지스트리가 이 패키지를 **차단**했습니다"
+            + (f" (사유: {decision['rejected_reason']})" if decision.get("rejected_reason") else "")
+            + ". 사용하지 마세요."
+        )
+        if stale_block:
+            note += (
+                " ⚠ 이 차단은 **로컬 캐시에 남아 있던 것**이며 최근 레지스트리에서 "
+                "다시 확인하지 못했습니다(보관 기한 초과). 차단은 그대로 유지됩니다 — "
+                "조회에 실패했다고 차단이 풀리지는 않습니다. 해제 여부는 레지스트리 "
+                "복구 후 재검사로 확인하세요."
+            )
         out.update(
             verdict="registry_rejected",
             verdict_severity="critical",
             requires_review=True,
-            note=(
-                "기관 레지스트리가 이 패키지를 **차단**했습니다"
-                + (f" (사유: {decision['rejected_reason']})" if decision.get("rejected_reason") else "")
-                + ". 사용하지 마세요."
-            ),
+            registry_stale=stale_block,
+            note=note,
         )
         return out
 
@@ -699,12 +729,23 @@ async def audit_manifest(
 
     async def _one(package: dict) -> dict:
         async with sem:
-            return await check_package_impl(
+            result = await check_package_impl(
                 name=str(package["name"]),
                 version=str(package["version"]) if package.get("version") else None,
                 ecosystem=ecosystem,
                 env_grade=env_grade,
             )
+        # 경계값 검사는 남기되 **관측이 아니라 가정**임을 싣는다. `requests>=2.28` 을
+        # 2.28 로 판정해 놓고 그것을 '이 프로젝트가 쓰는 버전의 사실'로 다루면,
+        # 실제로 2.31.0 이 깔린 프로젝트에 2.28 의 취약점을 보고하게 된다.
+        if package.get("version") and not package.get("version_exact", True):
+            result["version_exact"] = False
+            result["note"] = (
+                (result.get("note") or "")
+                + " 이 버전은 매니페스트 제약의 **경계값**이며 실제 설치 버전이 아닐 수 "
+                  "있습니다 — 정확한 판정은 락파일이나 `--include-installed` 로 확인하세요."
+            ).strip()
+        return result
 
     # 기관 레지스트리 조회를 **자체 분석과 병렬로** 돌린다. 직렬이면 지연이 둘의
     # 합이 되어 "조회가 자체 분석보다 느리면 의미 없다"는 전제를 깬다(합의 §6-3).
@@ -722,27 +763,41 @@ async def audit_manifest(
 
     checks = list(await asyncio.gather(*(_one(p) for p in limited)))
 
+    # 판정마다 출처를 붙인다. 하네스 집행계약 §4-0 이 이 값으로 `unknown` 차단
+    # 범위를 정하는데(사람이 고른 것만 차단), 일부 판정에만 붙어 있으면 같은
+    # 패키지가 어느 경로로 검사됐느냐에 따라 막히거나 안 막히게 된다.
+    # 설치본 경로는 호출자가 매니페스트와 대조해 덮어쓴다(직접/전이 구분).
+    default_scope = "lockfile" if source_kind == "lockfile" else "manifest"
+    for c in checks:
+        c.setdefault("source_scope", default_scope)
+
     registry_status = "disabled"
+    registry_error: dict | None = None
     if lookup_task is not None:
         decisions = await lookup_task
-        if "__error__" in decisions:
-            registry_status = "unauthorized"
-            checks = [_rc.annotate_status(c, registry_status) for c in checks]
+        registry_error = decisions.pop("__error__", None)
+        if registry_error:
+            # 실패 종류를 그대로 옮긴다. 422(형식 거부)와 연결 실패는 담당자가
+            # 할 일이 정반대라 — 스키마 교정 vs 기다렸다 재시도 — 뭉치면 안 된다.
+            registry_status = str(registry_error.get("status") or "unreachable")
         elif not decisions and limited:
-            # 조회가 통째로 비었다 — 도달 실패다. **검토로 올리지 않고** 표시만 한다.
+            # 오류 표식 없이 결과가 통째로 비었다 — 도달 실패로 본다.
             registry_status = "unreachable"
-            checks = [_rc.annotate_status(c, registry_status) for c in checks]
         else:
             registry_status = "ok"
-            merged: list[dict] = []
-            for c in checks:
-                purl = f"pkg:{c.get('ecosystem')}/{c.get('name')}" + (
-                    f"@{c['version']}" if c.get("version") else ""
-                )
-                d = decisions.get(purl)
-                merged.append(apply_registry_decision(c, d) if d else
-                              _rc.annotate_status(c, "ok"))
-            checks = merged
+
+        # 부분 실패여도 **받은 판정은 반영한다**. 청크 하나가 거부됐다고 나머지의
+        # 기관 차단까지 버리면, 부분 실패 자체가 차단 우회 수단이 된다.
+        # 판정을 못 받은 것에는 실패 사유를 그대로 붙여 '조회 안 됨'을 남긴다.
+        merged: list[dict] = []
+        for c in checks:
+            purl = f"pkg:{c.get('ecosystem')}/{c.get('name')}" + (
+                f"@{c['version']}" if c.get("version") else ""
+            )
+            d = decisions.get(purl)
+            merged.append(apply_registry_decision(c, d) if d else
+                          _rc.annotate_status(c, registry_status))
+        checks = merged
     # critical 을 빠뜨리면 기관이 명시적으로 차단한 패키지(registry_rejected)가
     # 집계에서 통째로 누락된다 — 사다리 최상단이 게이트를 못 지나는 셈이다.
     blocked = any(
@@ -772,6 +827,9 @@ async def audit_manifest(
         "concurrency": _concurrency(),
         # 도달 실패는 패키지가 아니라 **시스템**의 문제다 — 배너 1개로 알린다.
         "registry_status": registry_status,
+        # 실패의 규모(몇 청크 중 몇 개, 어떤 HTTP 코드). 배너는 무엇을 고칠지만
+        # 말하고, 얼마나 잃었는지는 여기서 확인한다. 실패 없으면 None.
+        "registry_error": registry_error,
         # 인텔 캐시 상태는 **패키지가 아니라 시스템의 문제**다. 조치는 "번들 반입"
         # 한 번이므로 패키지 수백 건에 같은 깃발을 꽂으면 담당자가 그것을 무시하게
         # 되고, 그러면 그 사이의 진짜 위험도 함께 묻힌다. 집계해서 한 번만 알린다.
@@ -991,6 +1049,9 @@ async def check_package_impl(
         malicious_advisory_count=len(malicious_advisories),
         max_cve=max_cve,
         in_kev=in_kev,
+        # 'missing' 일 때만 False 다. 'not_needed'(취약점 0건)는 대조할 대상이
+        # 없었던 것이고 KEV 는 CVE 기반이므로 in_kev=false 가 사실로 성립한다.
+        kev_checked=kev_cache["state"] != "missing",
         kev_signals=kev_hits,
         cooldown=cooldown,
         license_verdict=lic_verdict,

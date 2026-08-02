@@ -144,8 +144,27 @@ def collect_installed_packages(
     }
 
 
-def to_requirements_text(packages: list[dict]) -> str:
-    """수집 결과를 requirements 형식으로 바꿔 기존 audit_manifest 로 넘긴다."""
+def to_requirements_text(packages: list[dict], ecosystem: str = "pypi") -> str:
+    """수집 결과를 **해당 생태계의 매니페스트 형식**으로 바꿔 audit_manifest 로 넘긴다.
+
+    생태계 인자가 없던 시절 이 함수는 npm 목록도 ``express==4.17.0`` 로 만들었고,
+    ``audit_manifest(..., ecosystem="npm")`` 는 그것을 JSON 으로 파싱하려다 실패해
+    ``verdict="unparsed"`` 를 냈다. 결과적으로 **node_modules 에서 수집한 전이
+    의존성이 한 건도 검사되지 않았다** — ``--include-installed`` 의 존재 이유가
+    전이 의존성인데 npm 쪽은 통째로 비어 있었다(실측 확인).
+
+    'unparsed' 로 검토 대상에는 올라갔으므로 완전한 침묵은 아니었지만, 화면에는
+    "형식·ecosystem을 확인하세요"라고만 나와 **도구 자신의 결함이 사용자 입력
+    문제처럼 보였다.**
+    """
+    if ecosystem.lower() == "npm":
+        deps = {
+            str(p.get("name") or "").strip(): str(p.get("version") or "")
+            for p in packages
+            if str(p.get("name") or "").strip()
+        }
+        return json.dumps({"dependencies": {k: v for k, v in deps.items() if v}},
+                          ensure_ascii=False)
     lines = []
     for p in packages:
         name = str(p.get("name") or "").strip()

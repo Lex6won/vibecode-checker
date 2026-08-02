@@ -643,9 +643,18 @@ def path_level_rule_ids() -> tuple[str, ...]:
     return ("GOV-SECRET-KEYFILE-001",)
 
 
-def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict[str, str | None]]:
-    """Parse common dependency manifests without executing package managers."""
-    packages: list[dict[str, str | None]] = []
+def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
+    """Parse common dependency manifests without executing package managers.
+
+    각 항목은 ``version_exact`` 를 함께 싣는다. ``requests>=2.28`` 은 "2.28 이상"이지
+    "2.28"이 아니다 — 설치된 것은 2.31.0 일 수 있다. 예전에는 연산자를 버리고 경계값을
+    구체 버전처럼 다뤄, 2.31.0 을 쓰는 프로젝트에 2.28 의 취약점을 보고할 수 있었고
+    그 판정이 레지스트리에 "2.28 에 대한 사실"로 제출됐다.
+
+    경계값 검사 자체는 남긴다 — "이 제약이 취약한 버전을 허용한다"는 것도 실제 신호다.
+    다만 그것이 **관측이 아니라 가정**임을 값에 실어 뒤에서 구분할 수 있게 한다.
+    """
+    packages: list[dict] = []
     eco = ecosystem.lower()
     if eco == "pypi":
         for raw in manifest_text.splitlines():
@@ -654,7 +663,14 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict[str
                 continue
             m = re.match(r"([A-Za-z0-9_.-]+)\s*(==|>=|<=|~=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
             if m:
-                packages.append({"name": m.group(1), "version": m.group(3)})
+                version, op = m.group(3), m.group(2)
+                packages.append({
+                    "name": m.group(1),
+                    "version": version,
+                    # ``===`` 는 정규식상 ``==`` + 남은 ``=`` 로 잡히지 않으므로 다루지 않는다.
+                    # 와일드카드(``2.*``)는 고정이 아니다.
+                    "version_exact": bool(version) and op == "==" and "*" not in version,
+                })
     elif eco == "npm":
         try:
             data = json.loads(manifest_text)
@@ -663,8 +679,15 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict[str
         deps = {}
         for key in ("dependencies", "devDependencies", "optionalDependencies"):
             deps.update(data.get(key, {}) or {})
-        for name, version in deps.items():
-            packages.append({"name": name, "version": str(version).lstrip("^~") if version else None})
+        for name, spec in deps.items():
+            raw_spec = str(spec) if spec else ""
+            version = raw_spec.lstrip("^~") if raw_spec else None
+            # npm 은 접두사가 없어야 고정이다. ``4.17.0`` 은 고정, ``^4.17.0``·``>=4``·
+            # ``*``·``latest``·git URL 은 아니다.
+            exact = bool(version) and raw_spec == version and re.fullmatch(
+                r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
+            ) is not None
+            packages.append({"name": name, "version": version, "version_exact": exact})
     return packages
 
 

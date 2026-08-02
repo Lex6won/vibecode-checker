@@ -86,12 +86,35 @@ def test_scan_code_detects_llm_output_handling():
 def test_parse_manifest_packages_for_pypi_and_npm():
     pypi = parse_manifest_packages("fastapi==0.111.0\n# comment\nuvicorn>=0.30\n", "pypi")
     assert pypi == [
-        {"name": "fastapi", "version": "0.111.0"},
-        {"name": "uvicorn", "version": "0.30"},
+        {"name": "fastapi", "version": "0.111.0", "version_exact": True},
+        # `>=0.30` 은 "0.30 이상"이지 "0.30"이 아니다 — 경계값임을 함께 싣는다.
+        {"name": "uvicorn", "version": "0.30", "version_exact": False},
     ]
 
     npm = parse_manifest_packages('{"dependencies": {"react": "^19.0.0"}}', "npm")
-    assert npm == [{"name": "react", "version": "19.0.0"}]
+    assert npm == [{"name": "react", "version": "19.0.0", "version_exact": False}]
+
+
+def test_manifest_constraints_are_not_mistaken_for_installed_versions():
+    """제약 연산자를 버리면 하한이 '쓰는 버전'으로 둔갑한다.
+
+    `requests>=2.28` 인 프로젝트에 실제로는 2.31.0 이 깔려 있을 수 있다. 예전에는
+    연산자를 버려 2.28 로 판정했고, 2.28 의 취약점이 2.30 에서 고쳐졌다면 그대로
+    오탐이 됐다. 더 나쁜 것은 그 오탐이 레지스트리에 "2.28 에 대한 관측 사실"로
+    저장된다는 점이다 — 우리가 보지 않은 것을 사실로 넘기게 된다.
+    """
+    exact = {"==2.31.0"}
+    for spec in ("==2.31.0", ">=2.28", "<=3.0", "~=2.31", ">2.0", "<3.0", "==2.*"):
+        pkg = parse_manifest_packages(f"requests{spec}\n", "pypi")[0]
+        assert pkg["version_exact"] is (spec in exact), f"{spec} 판단이 틀렸다"
+
+    # npm: 접두사가 없어야 고정이다.
+    for spec, want in (("4.17.0", True), ("^4.17.0", False), ("~4.17.0", False),
+                       ("4.17.0-beta.1", True), ("*", False), ("latest", False)):
+        pkg = parse_manifest_packages(
+            '{"dependencies": {"express": "%s"}}' % spec, "npm",
+        )[0]
+        assert pkg["version_exact"] is want, f"{spec} 판단이 틀렸다"
 
 
 def test_suggest_fix_for_known_rule():

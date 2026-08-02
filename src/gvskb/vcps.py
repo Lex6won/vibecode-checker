@@ -79,6 +79,21 @@ def cooldown_days_for(env_grade: str | None) -> tuple[int, str]:
     return days, grade
 
 
+def env_grade_summary(env_grade: str | None) -> tuple[str, str, int]:
+    """(적용 등급, 라벨, 쿨다운 일수) — 보고서 표기용.
+
+    ``cooldown_days_for`` 와 달리 라벨까지 돌려주는 이유는, 등급이 판정을 바꾸는데
+    보고서에는 그 값이 전혀 표기되지 않았기 때문이다. 같은 패키지가 E1 에서는
+    통과하고 E2 에서는 ``cooldown_hold`` 가 되는데, 읽는 사람이 어느 기준으로
+    나온 판정인지 알 수 없으면 결과를 검증할 수 없다.
+    """
+    days, grade = cooldown_days_for(env_grade)
+    envs = load_vcps_config().get("environments", {}) or {}
+    entry = envs.get(grade) or {}
+    label = str(entry.get("label") or _DEFAULTS["environments"].get(grade, {}).get("label", ""))
+    return grade, label, days
+
+
 def license_verdict(license_str: str | None) -> str:
     """라이선스 문자열 → 'allowed' | 'review_required' | 'unknown'.
 
