@@ -167,3 +167,44 @@ def test_new_verdicts_are_accepted_by_the_schema() -> None:
     for v in ("registry_approved", "registry_rejected"):
         r = PackageCheckResult(name="x", ecosystem="pypi", verdict=v)
         assert r.verdict == v
+
+
+# ---------------------------------------------------------------------------
+# 낡은 차단(stale) — 판정은 같고 안내는 다르다
+# ---------------------------------------------------------------------------
+
+
+def test_stale_block_is_still_a_block() -> None:
+    """보관 기한을 넘긴 차단도 차단이다(합의 §4-5).
+
+    조회 실패로 차단이 풀리면 레지스트리 도달을 방해하는 것만으로 우회가 된다.
+    """
+    out = apply_registry_decision(_local(), {**REJECTED, "stale": True})
+    assert out["verdict"] == "registry_rejected"
+    assert out["verdict_severity"] == "critical"
+    assert out["requires_review"] is True
+
+
+def test_stale_block_says_it_could_not_be_reconfirmed() -> None:
+    """8일째 확인 못 한 차단과 방금 받은 차단의 안내가 같으면 안 된다.
+
+    판정은 둘 다 차단이지만 담당자가 할 일은 다르다 — 후자에는 '해제됐는지
+    확인'이 남아 있다. 도구가 자기가 무엇을 모르는지 말하지 않으면, 담당자는
+    캐시에 남은 기록을 현재의 확인된 사실로 읽는다.
+    """
+    fresh = apply_registry_decision(_local(), REJECTED)
+    stale = apply_registry_decision(_local(), {**REJECTED, "stale": True})
+
+    assert stale["registry_stale"] is True
+    assert fresh["registry_stale"] is False
+    assert stale["note"] != fresh["note"]
+    assert "로컬 캐시에 남아 있던 것" in stale["note"]
+    # 차단이 풀린 것처럼 읽히면 안 된다.
+    assert "차단은 그대로 유지됩니다" in stale["note"]
+    assert "로컬 캐시에 남아 있던 것" not in fresh["note"]
+
+
+def test_stale_block_keeps_the_reason() -> None:
+    """낡았다는 사실을 덧붙이느라 원래 차단 사유를 잃지 않는다."""
+    out = apply_registry_decision(_local(), {**REJECTED, "stale": True})
+    assert "사유" in out["note"]

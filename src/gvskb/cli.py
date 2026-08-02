@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -41,6 +42,16 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
 
     Only non-default options are emitted so the command stays readable for the
     common case (`gvskb scan <path>`).
+
+    **판정을 바꾸는 옵션은 하나도 빠뜨리면 안 된다.** 보고서는 이 명령 위에
+    "같은 결과를 다시 만들거나 다른 환경에서 검증하려면"이라고 적는다 — 재현을
+    명시적으로 주장하는 문장이다. 그런데 ``--include-installed``(전이 의존성
+    포함 여부)와 ``--env``(쿨다운 기준일 3·7·14일)가 빠져 있었고, 둘 다 빠지면
+    **발견이 줄어드는 방향**으로 결과가 달라진다. 검증하러 재실행한 사람이 더
+    깨끗한 결과를 받고 "해소됐다"고 읽게 된다 — 도구가 스스로 만드는 초록불이다.
+
+    종료 코드만 바꾸는 것(``--fail-on``)과 부산물만 만드는 것(``--registry-bundle``)
+    은 넣지 않는다. 명령이 길어질 뿐 재현되는 판정은 같다.
     """
     parts: list[str] = ["gvskb", "scan", str(args.path)]
     if args.profile and args.profile != "public-default-strict":
@@ -51,6 +62,10 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
         parts += ["--max-files", str(args.max_files)]
     if getattr(args, "check_deps", False):
         parts += ["--check-deps"]
+    if getattr(args, "include_installed", False):
+        parts += ["--include-installed"]
+    if getattr(args, "env", None):
+        parts += ["--env", str(args.env)]
     return " ".join(parts)
 
 
@@ -111,6 +126,36 @@ def _emit_doc_report(
         f"(scanned={len(report.scanned_files)}, findings={report.summary.finding_count})",
         file=sys.stderr,
     )
+
+
+def _norm_pkg(name: str, ecosystem: str) -> str:
+    """패키지 이름 비교용 정규화. pypi 는 ``-``/``_``/``.`` 를 구분하지 않는다(PEP 503)."""
+    low = name.strip().lower()
+    return re.sub(r"[-_.]+", "-", low) if ecosystem.lower() == "pypi" else low
+
+
+def _direct_dependency_names(
+    found: list[tuple[Path, str, str, str]], ecosystem: str,
+) -> set[str]:
+    """매니페스트에 **직접 적힌** 패키지 이름 집합.
+
+    락파일이 있어 검사에서 건너뛴 매니페스트도 읽는다 — 여기서 필요한 것은 검사가
+    아니라 '무엇이 직접 의존성인가'라는 목록이고, 그건 락파일에는 없다(락파일은
+    직접·전이를 구분하지 않고 평면으로 담는다).
+    """
+    from .scanner import parse_manifest_packages
+
+    names: set[str] = set()
+    for p, _rel, eco, kind in found:
+        if kind != "manifest" or eco != ecosystem:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            continue  # 읽기 실패는 이미 검사 경로에서 드러난다
+        for pkg in parse_manifest_packages(text, eco):
+            names.add(_norm_pkg(str(pkg["name"]), eco))
+    return names
 
 
 def _run_dependency_audit(
@@ -211,13 +256,28 @@ def _run_dependency_audit(
             for eco, pkgs in (("pypi", inv["pypi"]), ("npm", inv["npm"])):
                 if not pkgs:
                     continue
-                text = to_requirements_text(pkgs)
+                text = to_requirements_text(pkgs, ecosystem=eco)
                 audit = await audit_manifest(
                     text, ecosystem=eco, limit=len(pkgs), env_grade=env_grade,
                 )
                 audit["manifest"] = f"<설치된 패키지: {eco}>"
                 audit["source"] = "installed-inventory"
                 audit["inventory_stats"] = inv["stats"]
+                # 설치본 중 **매니페스트에 이름이 있는 것은 직접 의존성**이다
+                # (레지스트리 요청 §3). 이름은 매니페스트에, 정확한 버전은 설치
+                # 흔적에 있으므로 둘을 합쳐야 "직접 의존성 + 실제 버전"이 되고,
+                # 그 판단은 둘 다 읽는 이쪽에서만 할 수 있다.
+                #
+                # 이 구분이 없으면 심사 대기열이 구조적으로 빈다 — 매니페스트
+                # 경로는 경계값이라 제출에서 걸리고, 설치본 경로는 전이 의존성과
+                # 뭉뚱그려져 큐에 안 올라간다. 특히 not_found(슬롭스쿼팅 최강
+                # 신호)가 그 사이로 조용히 빠진다.
+                direct = _direct_dependency_names(found, eco)
+                for c in audit.get("checks", []):
+                    c["source_scope"] = (
+                        "manifest" if _norm_pkg(str(c.get("name", "")), eco) in direct
+                        else "installed"
+                    )
                 # 라이선스는 설치 메타데이터에서만 얻을 수 있다 — 검사 결과에 병기.
                 lic_by_name = {
                     str(p.get("name", "")).lower(): p.get("license") for p in pkgs
@@ -233,6 +293,43 @@ def _run_dependency_audit(
         return out
 
     return {"audits": asyncio.run(_gather())}
+
+
+def _emit_registry_bundle(
+    args: argparse.Namespace,
+    dependency_audit: dict | None,
+    saved_report: Path | None,
+) -> None:
+    """반입 번들을 쓴다 — 명시 경로(``--registry-bundle``)와 리포트 사이드카.
+
+    리포트를 파일로 남길 때만 사이드카를 만든다. 화면으로만 출력한 실행(``--stdout``)
+    에서 파일이 슬그머니 생기면, 담당자가 만든 줄 모르는 반출 심사 대상이 디스크에
+    남게 된다.
+    """
+    if not dependency_audit or not (dependency_audit.get("audits") or []):
+        return
+    explicit = getattr(args, "registry_bundle", None)
+    if not explicit and saved_report is None:
+        return
+
+    from .tools.registry_bundle import bundle_notice, build_bundle, write_bundle
+
+    bundle = build_bundle(dependency_audit, caller="cli:manual")
+    targets: list[Path] = []
+    if explicit:
+        targets.append(Path(explicit))
+    if saved_report is not None:
+        targets.append(saved_report.with_name(saved_report.stem + ".registry-bundle.json"))
+
+    for t in targets:
+        try:
+            path, sidecar = write_bundle(bundle, t)
+        except OSError as exc:
+            # 번들 쓰기 실패가 검사 실패는 아니다 — 단, 침묵하지도 않는다.
+            print(f"[gvskb] ⚠ 반입 번들을 쓰지 못했습니다({t}): {exc}", file=sys.stderr)
+            continue
+        print(f"[gvskb] 반입 번들 저장: {path} (+ {sidecar.name})", file=sys.stderr)
+    print(bundle_notice(bundle), file=sys.stderr)
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
@@ -304,10 +401,12 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                 f"(scanned={len(report.scanned_files)}, findings={report.summary.finding_count})",
                 file=sys.stderr,
             )
+            _emit_registry_bundle(args, report.dependency_audit, out_path)
         else:
             sys.stdout.write(output_text)
             if not output_text.endswith("\n"):
                 sys.stdout.write("\n")
+            _emit_registry_bundle(args, report.dependency_audit, None)
     else:
         # -o 를 주지 않아도 **규약 위치에 저장**한다(--stdout 으로만 끈다).
         # 기존에는 화면에 흘려보내 사라졌고, 결재에 첨부할 파일이 남지 않았다.
@@ -326,6 +425,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             output=output,
             reproduce_command=_scan_reproduce_command(args),
         )
+        _emit_registry_bundle(args, report.dependency_audit, Path(output) if output else None)
 
     return _scan_exit_code(report, args.fail_on)
 
@@ -720,6 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-installed", action="store_true",
         help="의존성 검사 범위를 **설치 흔적까지** 확대(.venv의 dist-info·*.whl·node_modules). "
              "매니페스트에 없는 전이 의존성의 취약점까지 잡습니다. --check-deps 와 함께 사용",
+    )
+    scan.add_argument(
+        "--registry-bundle", metavar="파일", default=None,
+        help="기관 레지스트리 반입용 번들(JSON)을 이 경로에 생성. 패키지 판정만 담기며 "
+             "코드 조각·파일 경로·findings 는 담기지 않습니다(연동합의 §3). "
+             "무결성 확인용 .sha256 을 함께 만듭니다. --check-deps 와 함께 사용. "
+             "번들 자체도 '어떤 기관이 어떤 패키지를 쓰는가'라는 정보이므로 반출 심사 대상입니다",
     )
     scan.add_argument(
         "--env", choices=["E0", "E1", "E2"], default=None,

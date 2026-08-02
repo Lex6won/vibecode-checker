@@ -20,7 +20,7 @@ from .scanner import (
     suggest_fix as suggest_fix_impl,
 )
 from .schema import ScanReport
-from .audit import record_package_check, record_scan
+from .audit import record_package_check, record_scan, safe_caller
 from .search import simple_search
 from .tools.check_package import audit_manifest, check_package_impl
 
@@ -230,9 +230,13 @@ async def check_package(
     호출 없이 로컬 인텔 캐시로 대체하며, 실재·발행일은 '미확인'으로 표시됩니다.
     """
     result = await check_package_impl(name=name, ecosystem=ecosystem, version=version, env_grade=env_grade)
+    # result 에 실린 caller 는 감사로그뿐 아니라 레지스트리 봉투의 result 로도
+    # 그대로 나간다 — 검증은 감사 기록 직전이 아니라 **값이 들어오는 지점**에서
+    # 해야 두 경로가 모두 덮인다(연동합의 §3 개인 식별자 금지).
+    caller = safe_caller(caller or "")
     if caller:
         result["caller"] = caller
-    record_package_check([result], tool="check_package", caller=caller or "", scope="single")
+    record_package_check([result], tool="check_package", caller=caller, scope="single")
     return result
 
 
@@ -272,10 +276,11 @@ async def scan_dependencies(
     뜻입니다 — '이상 없음'이 아니므로 limit 를 올려 재검사하세요.
     """
     result = await audit_manifest(manifest_text, ecosystem=ecosystem, limit=limit, env_grade=env_grade)
+    caller = safe_caller(caller or "")   # 봉투로도 나가는 값 — 진입 지점에서 검증
     if caller:
         result["caller"] = caller
     record_package_check(
-        result.get("checks") or [], tool="scan_dependencies", caller=caller or "",
+        result.get("checks") or [], tool="scan_dependencies", caller=caller,
         # 레지스트리 심사 대기열 보호 — 락파일 유래 수백 건이 큐에 그대로 쌓이면
         # 담당자 일이 늘어 연동 목적과 정반대가 된다(연동합의 §5-C).
         scope="lockfile" if result.get("source_kind") == "lockfile" else "manifest",
@@ -512,11 +517,18 @@ async def scan_installed_packages(
         if not pkgs:
             continue
         audit = await audit_manifest(
-            to_requirements_text(pkgs), ecosystem=eco,
+            to_requirements_text(pkgs, ecosystem=eco), ecosystem=eco,
             limit=len(pkgs), env_grade=env_grade,
         )
         audit["manifest"] = f"<설치된 패키지: {eco}>"
         audit["source"] = "installed-inventory"
+        # 이 도구는 매니페스트를 읽지 않으므로 직접 의존성을 가려낼 수 없다 —
+        # 전부 `installed` 로 둔다. 직접/전이 구분이 필요하면
+        # `scan_path --check-deps --include-installed` 경로를 쓸 것(그쪽은 매니페스트와
+        # 대조한다). 여기서 임의로 `manifest` 를 붙이면 하네스 §4-0 의 차단 범위가
+        # 근거 없이 넓어진다.
+        for c in audit.get("checks", []):
+            c["source_scope"] = "installed"
         lic_by_name = {str(p.get("name", "")).lower(): p.get("license") for p in pkgs}
         for c in audit.get("checks", []):
             lic = lic_by_name.get(str(c.get("name", "")).lower())

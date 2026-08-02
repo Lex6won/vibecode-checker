@@ -1051,6 +1051,8 @@ def render_markdown(
     lines.append("```")
     lines.append("")
     lines.append(f"- 프로파일: `{report.profile}`")
+    if (_env := _env_grade_line(report)) is not None:
+        lines.append(f"- {_env}")
     if report.scenario:
         lines.append(f"- 시나리오: `{report.scenario}`")
     if report.language:
@@ -1680,6 +1682,8 @@ def render_html(
     p.append('<div class="subh">재현 절차</div>')
     p.append('<div class="kv">같은 결과를 다시 만들거나 다른 환경에서 검증하려면 다음을 실행합니다.</div>')
     p.append(f"<pre>{_esc(repro)}</pre>")
+    if (_env := _env_grade_line(report)) is not None:
+        p.append(f'<div class="kv">{_esc(_env.replace("`", ""))}</div>')
     p.append('<div class="subh">수정 후 다시 검증</div>')
     p.append('<ol class="steps">')
     p.append('<li><b>CLI</b>: 위 재현 명령(<code class="ev">gvskb scan ...</code>)을 다시 실행</li>')
@@ -2028,6 +2032,28 @@ def _intel_cache_banner(audits: list[dict]) -> str | None:
     )
 
 
+def _env_grade_line(report: ScanReport) -> str | None:
+    """판정에 적용된 실행환경 등급 한 줄. 의존성 검사를 안 했으면 None.
+
+    등급은 쿨다운 기준일(3·7·14일)을 정해 **판정을 바꾼다** — 같은 패키지가
+    E1 에서는 통과하고 E2 에서는 `cooldown_hold` 가 된다. 그런데 그 값이 보고서
+    어디에도 없었다. 읽는 사람이 어느 기준으로 나온 판정인지 모르면 결과를
+    검증할 수 없고, 결재 문서로서도 근거가 비어 있는 셈이다.
+
+    ``--env`` 를 주지 않은 실행도 **적용된 기본 등급**을 그대로 적는다. '지정하지
+    않음'과 '적용되지 않음'은 다르다 — 지정하지 않아도 기준일은 적용됐다.
+    """
+    audits = ((report.dependency_audit or {}).get("audits")) or []
+    if not audits:
+        return None
+    from .vcps import env_grade_summary
+
+    raw = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    grade, label, days = env_grade_summary(raw)
+    suffix = "" if raw else " — 미지정이라 기본값 적용"
+    return f"실행환경 등급: `{grade}` ({label}, 쿨다운 기준 {days}일){suffix}"
+
+
 def _registry_banner(audits: list[dict]) -> str | None:
     """기관 레지스트리 도달 실패 배너 — 매니페스트 전체에 **한 줄만**.
 
@@ -2037,14 +2063,14 @@ def _registry_banner(audits: list[dict]) -> str | None:
     """
     from .tools.registry_client import registry_banner
 
-    worst = "ok"
+    # 사람이 붙어야 풀리는 것부터 — 인증(토큰) > 형식 거부(스키마 교정) >
+    # 연결 실패(기다리면 풀릴 수 있음). 배너가 하나뿐이므로 순서가 곧 안내다.
+    rank = {"unauthorized": 4, "rejected": 3, "unreachable": 2, "item_failed": 1}
+    worst, worst_rank = "ok", 0
     for a in audits:
         s = str(a.get("registry_status") or "")
-        if s == "unauthorized":
-            worst = "unauthorized"
-            break
-        if s == "unreachable":
-            worst = "unreachable"
+        if rank.get(s, 0) > worst_rank:
+            worst, worst_rank = s, rank[s]
     return registry_banner(worst)
 
 

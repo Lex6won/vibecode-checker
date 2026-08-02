@@ -82,12 +82,18 @@ def test_offline_requires_explicit_optin(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_lookup_failure_is_fail_open_not_an_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    """조회 실패가 검사를 멈추면 안 된다 — 빈 결과로 돌려준다."""
+    """조회 실패가 검사를 멈추면 안 된다 — 판정 없이, 그러나 침묵하지 않고 돌아온다.
+
+    '판정이 하나도 없다'까지는 예전과 같고, 달라진 것은 **왜 없는지가 함께
+    실린다**는 점이다. 침묵 금지(원칙 3)는 예외를 안 던지는 것만으로는 지켜지지
+    않는다 — 호출자가 사유를 알 수 있어야 표시할 수 있다.
+    """
     monkeypatch.setenv("GVSKB_REGISTRY_URL", "https://reg.example")
     monkeypatch.setattr(rc.httpx, "AsyncClient",
                         _client_returning(None, raises=OSError("connection refused")))
     out = asyncio.run(rc.lookup_batch([{"ecosystem": "pypi", "name": "x", "version": "1"}]))
-    assert out == {}
+    assert [k for k in out if k != "__error__"] == []      # 판정은 하나도 없다
+    assert out["__error__"]["status"] == "unreachable"     # 재시도가 유효한 실패
 
 
 def test_unauthorized_is_distinguished_from_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,6 +102,95 @@ def test_unauthorized_is_distinguished_from_unreachable(monkeypatch: pytest.Monk
     monkeypatch.setattr(rc.httpx, "AsyncClient", _client_returning(_Resp(status_code=401)))
     out = asyncio.run(rc.lookup_batch([{"ecosystem": "pypi", "name": "x", "version": "1"}]))
     assert "__error__" in out and out["__error__"]["status"] == "unauthorized"
+
+
+# ---------------------------------------------------------------------------
+# 실패 종류 구분 — 재시도가 유효한 실패와 무의미한 실패
+# ---------------------------------------------------------------------------
+#
+# `lookup_batch` 가 모든 실패를 `except Exception` 으로 뭉개고 있었다. 그 결과
+# 422(서버가 요청 형식을 거부 — 재시도해도 같음)가 "연결하지 못했습니다"로
+# 보고돼, 담당자는 방화벽·VPN을 뒤지게 된다. 실제로 고칠 곳은 스키마다.
+#
+# 이건 가상의 상황이 아니다: source_scope 에 `installed` 를 추가하기로 했는데
+# 상대 enum 에 아직 없으면 배치가 통째로 422 로 돌아온다(회신 §1).
+
+
+def _client_sequence(responses: list):
+    """호출 순서대로 다른 응답을 주는 가짜 클라이언트 — 부분 실패 재현용."""
+    seq = list(responses)
+
+    class _C:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, *a, **k):
+            return seq.pop(0) if seq else _Resp(status_code=500)
+
+    return _C
+
+
+def test_schema_rejection_is_distinguished_from_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """422 는 '연결 안 됨'이 아니다 — 기다린다고 풀리지 않는다."""
+    monkeypatch.setenv("GVSKB_REGISTRY_URL", "https://reg.example")
+    monkeypatch.setattr(rc.httpx, "AsyncClient", _client_returning(_Resp(status_code=422)))
+    out = asyncio.run(rc.lookup_batch([{"ecosystem": "pypi", "name": "x", "version": "1"}]))
+    err = out["__error__"]
+    assert err["status"] == "rejected"
+    assert err["http_codes"] == [422]
+    assert err["failed_chunks"] == err["total_chunks"] == 1
+
+
+def test_server_error_stays_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5xx·타임아웃은 재시도가 유효한 쪽이다 — 스키마 거부와 섞지 않는다.
+
+    조치가 같은 것끼리 묶는다(작업원칙 6). 여기서 종류를 더 쪼개면 배너만 늘고
+    담당자가 할 일은 똑같다.
+    """
+    monkeypatch.setenv("GVSKB_REGISTRY_URL", "https://reg.example")
+    monkeypatch.setattr(rc.httpx, "AsyncClient", _client_returning(_Resp(status_code=503)))
+    out = asyncio.run(rc.lookup_batch([{"ecosystem": "pypi", "name": "x", "version": "1"}]))
+    assert out["__error__"]["status"] == "unreachable"
+
+
+def test_partial_failure_keeps_the_decisions_we_did_receive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """청크 하나가 거부돼도 **받은 차단 판정은 버리지 않는다**.
+
+    전부 버리면 부분 실패 자체가 차단 우회 수단이 된다 — 200건짜리 청크 하나만
+    깨뜨리면 나머지 600건의 기관 차단이 함께 사라지는 셈이다.
+    """
+    monkeypatch.setenv("GVSKB_REGISTRY_URL", "https://reg.example")
+    ok = _Resp(payload={"results": [{"purl": "pkg:pypi/bad@1.0.0", "status": "REJECTED"}]})
+    monkeypatch.setattr(rc.httpx, "AsyncClient",
+                        _client_sequence([ok, _Resp(status_code=422)]))
+
+    # 청크 2개가 되도록 _MAX_BATCH 를 넘긴다.
+    packages = [{"ecosystem": "pypi", "name": f"p{i}", "version": "1.0.0"}
+                for i in range(rc._MAX_BATCH + 1)]
+    out = asyncio.run(rc.lookup_batch(packages))
+
+    assert out["pkg:pypi/bad@1.0.0"]["status"] == "REJECTED"   # 살아남았다
+    assert out["__error__"]["status"] == "rejected"            # 손실도 드러난다
+    assert out["__error__"]["failed_chunks"] == 1
+    assert out["__error__"]["total_chunks"] == 2
+
+
+def test_rejected_banner_says_retry_is_pointless() -> None:
+    """배너는 '무엇을 고칠지'를 말해야 한다 — 네트워크를 뒤지게 만들면 실패다."""
+    text = rc.registry_banner("rejected")
+    assert text
+    assert "재시도해도 같습니다" in text
+    assert "'승인받았다'는 뜻이 아닙니다" in text
+    # 연결 실패 배너와 같은 문구면 구분한 의미가 없다.
+    assert text != rc.registry_banner("unreachable")
 
 
 def test_annotate_status_does_not_raise_requires_review() -> None:
@@ -273,3 +368,116 @@ def test_registry_disabled_leaves_everything_untouched(
     assert r["checks"][0]["registry_status"] == "disabled"
     from gvskb.report import _registry_banner
     assert _registry_banner([r]) is None
+
+
+def test_audit_manifest_reports_rejection_not_unreachable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """422 가 화면까지 '형식 거부'로 도착하는지.
+
+    클라이언트가 구분해도 소비자가 뭉개면 담당자에게는 예전과 똑같이 보인다 —
+    실패는 올바른 곳에서 나야 한다.
+    """
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("GVSKB_REGISTRY_URL", "https://reg.example")
+    monkeypatch.setenv("GVSKB_REGISTRY_ALLOW_OFFLINE", "1")
+    monkeypatch.setenv("GVSKB_REGISTRY_SUBMIT", "0")
+    monkeypatch.setattr(rc.httpx, "AsyncClient", _client_returning(_Resp(status_code=422)))
+
+    from gvskb.tools.check_package import audit_manifest
+
+    r = asyncio.run(audit_manifest("a==1.0.0\nb==2.0.0\n", ecosystem="pypi"))
+    assert r["registry_status"] == "rejected"
+    assert r["registry_error"]["http_codes"] == [422]
+    assert all(c["registry_status"] == "rejected" for c in r["checks"])
+
+    from gvskb.report import _registry_banner
+    banner = _registry_banner([r])
+    assert banner and "재시도해도 같습니다" in banner
+
+
+def test_partial_failure_still_applies_the_block_it_received(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """부분 실패에서도 받은 차단은 집행된다 — 판정 있는 것과 없는 것을 나눠 표시.
+
+    이전 구현은 조회에 조금이라도 문제가 있으면 전체를 상태 표시로 덮어, 이미
+    받아 둔 REJECTED 를 함께 버렸다.
+    """
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("GVSKB_REGISTRY_URL", "https://reg.example")
+    monkeypatch.setenv("GVSKB_REGISTRY_ALLOW_OFFLINE", "1")
+    monkeypatch.setenv("GVSKB_REGISTRY_SUBMIT", "0")
+
+    # 청크는 하나지만 서버가 일부 패키지에 대해서만 답한 상황.
+    monkeypatch.setattr(rc.httpx, "AsyncClient", _client_returning(_Resp(
+        payload={"results": [{"purl": "pkg:pypi/a@1.0.0", "status": "REJECTED",
+                              "rejected_reason": "기관 차단"}]},
+    )))
+
+    from gvskb.tools.check_package import audit_manifest
+
+    r = asyncio.run(audit_manifest("a==1.0.0\nb==2.0.0\n", ecosystem="pypi"))
+    by_name = {c["name"]: c for c in r["checks"]}
+    assert by_name["a"]["verdict"] == "registry_rejected"      # 차단은 집행됐다
+    assert by_name["b"]["registry_status"] == "ok"             # 답이 없던 것은 그대로
+    assert r["blocked"] is True
+
+
+# ---------------------------------------------------------------------------
+# 항목 단위 실패 — 배치가 200 이라고 모든 항목이 답을 받은 것은 아니다
+# ---------------------------------------------------------------------------
+#
+# 레지스트리가 배치 부분 실패를 허용하도록 고친 뒤(2026-08-03 회신 §2), 실패는
+# HTTP 상태가 아니라 **항목 단위**로 온다. 우리 클라이언트는 HTTP 상태만 보므로
+# 그대로 두면 판정을 못 받은 항목이 '조회했고 이상 없음'으로 보인다.
+
+
+def test_unknown_item_status_is_not_read_as_ok() -> None:
+    """모르는 status 를 통과로 읽으면, 상대가 상태를 하나 늘릴 때마다
+    우리 쪽에 조용한 초록불이 하나씩 생긴다."""
+    from gvskb.tools.check_package import apply_registry_decision
+
+    local = {"name": "x", "version": "1.0.0", "ecosystem": "pypi",
+             "verdict": "checked_clean", "requires_review": False}
+    for status in ("FAILED", "ERROR", "", "SOMETHING_NEW"):
+        out = apply_registry_decision(local, {"status": status})
+        assert out["registry_status"] == "item_failed", f"{status!r} 가 ok 로 통과했다"
+
+
+@pytest.mark.parametrize("status", ["APPROVED", "REJECTED", "UNDER_REVIEW", "UNKNOWN"])
+def test_known_statuses_still_count_as_answered(status: str) -> None:
+    """아는 판정까지 실패로 몰면 과잉 교정이다 — UNDER_REVIEW 도 '답을 받은 것'이다."""
+    from gvskb.tools.check_package import apply_registry_decision
+
+    out = apply_registry_decision(
+        {"name": "x", "version": "1.0.0", "ecosystem": "pypi", "verdict": "checked_clean"},
+        {"status": status},
+    )
+    assert out["registry_status"] == "ok"
+
+
+def test_item_failed_banner_says_it_is_not_approval() -> None:
+    text = rc.registry_banner("item_failed")
+    assert text
+    assert "'승인받았다'는 뜻이 아닙니다" in text
+    assert text != rc.registry_banner("unreachable")
+
+
+# ---------------------------------------------------------------------------
+# 제출 필터 — 경계값은 사실이 아니다
+# ---------------------------------------------------------------------------
+
+
+def test_boundary_versions_are_not_submitted_as_fact() -> None:
+    """`requests>=2.28` 을 2.28 로 판정해 보내면 레지스트리에는 '2.28 에 대한
+    관측'으로 저장되는데, 그 프로젝트가 실제로 쓰는 것은 2.31.0 일 수 있다."""
+    exact = {"name": "requests", "version": "2.31.0", "verdict": "not_found",
+             "version_exact": True}
+    bound = {**exact, "version": "2.28", "version_exact": False}
+    assert rc.should_submit(exact) is True
+    assert rc.should_submit(bound) is False
+    # 필드가 없는 옛 결과는 고정으로 본다 — 락파일·설치본이 그렇다.
+    assert rc.should_submit({k: v for k, v in exact.items() if k != "version_exact"}) is True

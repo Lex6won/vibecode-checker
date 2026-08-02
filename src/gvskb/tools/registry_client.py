@@ -40,6 +40,12 @@ _NO_SUBMIT_VERDICTS = frozenset({
 _MAX_BATCH = 200        # 합의 §5-A·§5-B
 _CONCURRENCY = 8        # 합의 §5-F 권고값
 
+# 서버가 **요청 자체를 거부**한 것 — 재시도해도 같은 답이다. 네트워크 장애와
+# 조치가 정반대라(기다림 vs 스키마 교정) 같은 통에 담으면 담당자가 엉뚱한 곳을
+# 본다. 422 는 실제로 예상되는 경로다: source_scope 에 `installed` 를 추가하기로
+# 했는데 상대 enum 에 아직 없으면 배치가 통째로 422 로 돌아온다(회신 §1).
+_SCHEMA_REJECT_CODES = frozenset({400, 404, 422})
+
 
 def registry_url() -> str | None:
     """설정된 레지스트리 주소. 미설정이면 None = 플러그인 전체 비활성."""
@@ -162,7 +168,12 @@ async def lookup_batch(packages: list[dict], env_grade: str | None = None) -> di
     chunks = [pending[i:i + _MAX_BATCH] for i in range(0, len(pending), _MAX_BATCH)]
     sem = asyncio.Semaphore(_CONCURRENCY)
 
-    async def _one(chunk: list[dict]) -> list[dict]:
+    async def _one(chunk: list[dict]) -> tuple[list[dict], str, int]:
+        """(결과, 실패 종류, HTTP 코드). 실패 종류가 ``""`` 이면 성공이다.
+
+        실패를 한 종류로 뭉개면 조치를 고를 수 없다 — 재시도가 유효한 상황과
+        무의미한 상황은 담당자가 할 일이 완전히 다르다.
+        """
         body = {
             "env_grade": env_grade,
             "packages": [
@@ -178,25 +189,49 @@ async def lookup_batch(packages: list[dict], env_grade: str | None = None) -> di
                     )
                     if r.status_code in (401, 403):
                         raise PermissionError("unauthorized")
+                    if r.status_code in _SCHEMA_REJECT_CODES:
+                        return [], "rejected", r.status_code
                     r.raise_for_status()
                     data = r.json()
             except PermissionError:
                 raise
             except Exception:  # noqa: BLE001 — 조회 실패가 검사를 막으면 안 된다
-                return []
+                # 5xx·타임아웃·연결 거부·본문 파손 — 전부 '다시 해 보면 될 수도'
+                # 쪽이다. 조치가 같으므로 한 종류로 묶는다(작업원칙 6).
+                return [], "unreachable", 0
         results = data.get("results") if isinstance(data, dict) else None
-        return results if isinstance(results, list) else []
+        return (results if isinstance(results, list) else []), "", 200
 
     try:
         batches = await asyncio.gather(*(_one(c) for c in chunks))
     except PermissionError:
         return {"__error__": {"status": "unauthorized"}}
 
-    for batch in batches:
-        for item in batch:
+    failed: dict[str, int] = {}   # 실패 종류 -> 해당 청크 수
+    codes: set[int] = set()
+    for items, kind, code in batches:
+        if kind:
+            failed[kind] = failed.get(kind, 0) + 1
+            if code:
+                codes.add(code)
+            continue
+        for item in items:
             if isinstance(item, dict) and item.get("purl"):
                 out[str(item["purl"])] = item
                 _cache_put(str(item["purl"]), item)
+
+    if failed:
+        # 성공한 청크의 판정은 **버리지 않는다**. 800건 중 200건이 거부됐다고
+        # 나머지 600건의 기관 차단까지 잃으면, 부분 실패가 차단 우회 수단이 된다.
+        # 대신 실패 사실을 봉투에 실어 호출자가 반드시 표시하게 한다.
+        out["__error__"] = {
+            # 조치가 더 급한 쪽을 대표값으로 — 스키마 교정은 사람이 붙어야 하고
+            # 연결 실패는 기다리면 풀릴 수 있다.
+            "status": "rejected" if "rejected" in failed else "unreachable",
+            "failed_chunks": sum(failed.values()),
+            "total_chunks": len(chunks),
+            "http_codes": sorted(codes),
+        }
     return out
 
 
@@ -210,17 +245,29 @@ def should_submit(result: dict) -> bool:
     if str(result.get("verdict") or "") in _NO_SUBMIT_VERDICTS:
         return False
     # 버전 미지정은 '특정 버전의 사실'이 아니다 — 레지스트리 저장 키가 성립하지 않는다.
-    return bool(result.get("version"))
+    if not result.get("version"):
+        return False
+    # 같은 이유로 **경계값도 사실이 아니다**. `requests>=2.28` 을 2.28 로 판정해
+    # 보내면 레지스트리에는 "2.28 에 대한 관측"으로 저장되는데, 그 프로젝트가 실제로
+    # 쓰는 것은 2.31.0 일 수 있다. 우리가 보지 않은 것을 사실로 넘기지 않는다.
+    return bool(result.get("version_exact", True))
 
 
 def _envelope(result: dict, *, caller: str, source_scope: str, now_iso: str) -> dict:
     """봉투(합의 §5-B). ``result`` 는 변환 없는 원본 — 전송 사정으로 판정 모델을
-    오염시키지 않는다."""
+    오염시키지 않는다.
+
+    ``caller`` 만은 예외로 검증한다. 규칙(``<출처>:<모드>[:부서코드]``)을 제안한
+    것이 우리이고, 개인 식별자가 섞이면 상대 저장소와 **우리 감사 기록이 함께**
+    오염되기 때문이다. 상대 서버도 검증을 추가하지만, 규칙을 지킬 주체와 강제할
+    주체가 같으면 안 된다는 말은 우리에게도 적용된다.
+    """
     from .. import __version__
+    from ..audit import safe_caller
 
     return {
         "result": result,
-        "caller": caller,
+        "caller": safe_caller(caller),
         "submitted_at": now_iso,
         "client": f"gvskb/{__version__}",
         # 배포본에는 git 메타데이터가 없어 대부분 null 이다. 가짜 값을 채우느니
@@ -295,5 +342,23 @@ def registry_banner(status: str) -> str | None:
         return (
             "⚠️ **기관 레지스트리 인증에 실패했습니다**(토큰 만료·권한 변경 가능) — "
             "기관 차단 목록이 적용되지 않았습니다. `GVSKB_REGISTRY_TOKEN` 을 확인하세요."
+        )
+    if status == "item_failed":
+        return (
+            "⚠️ **일부 패키지가 기관 레지스트리에서 판정을 받지 못했습니다** — 조회 자체는 "
+            "성공했으나 해당 항목만 답이 없었습니다(배치가 성공해도 항목마다 실패할 수 "
+            "있습니다). 그 패키지들에는 기관 차단 목록이 적용되지 않았으며, 판정이 없다는 "
+            "것은 '승인받았다'는 뜻이 아닙니다. `registry_status=item_failed` 인 항목을 "
+            "확인하세요."
+        )
+    if status == "rejected":
+        # '연결하지 못했습니다'로 뭉뚱그리면 담당자는 방화벽·VPN을 뒤진다. 실제
+        # 원인은 요청 형식이고, 고칠 곳은 네트워크가 아니라 스키마다.
+        return (
+            "⚠️ **기관 레지스트리가 조회 요청을 거부했습니다**(형식·경로 불일치) — "
+            "네트워크 문제가 아니므로 **재시도해도 같습니다**. 기관 차단 목록이 이 "
+            "결과에 적용되지 않았으며, 조회되지 않은 것은 '승인받았다'는 뜻이 "
+            "아닙니다. 클라이언트와 서버의 스키마 버전이 어긋난 것이므로 레지스트리 "
+            "담당자에게 알리세요."
         )
     return None

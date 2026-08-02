@@ -465,6 +465,15 @@ class PackageCheckResult(BaseModel):
 
     name: str
     version: str | None = None
+    version_exact: bool = Field(
+        default=True,
+        description=(
+            "``version`` 이 **실제로 쓰이는 버전**인가, 아니면 매니페스트 제약의 경계값인가. "
+            "``requests>=2.28`` 은 '2.28 이상'이지 '2.28'이 아니다 — 설치된 것은 2.31.0 일 수 "
+            "있다. False 인 판정은 그 버전에 대한 **관측이 아니라 가정**이므로 레지스트리에 "
+            "사실로 제출하지 않는다(연동합의 §5-D)."
+        ),
+    )
     ecosystem: str
     checked: bool = Field(default=False, description="취약점 검사가 실제 수행됐는가(실재확인과 별개)")
     verdict: Literal[
@@ -492,6 +501,15 @@ class PackageCheckResult(BaseModel):
         description="발견된 취약점의 최고 심각도. UNKNOWN=취약점은 있으나 심각도 미상(안전 아님)",
     )
     in_kev: bool = Field(default=False, description="CISA KEV(실제 악용 목록) 교차 일치 여부")
+    kev_checked: bool = Field(
+        default=False,
+        description=(
+            "KEV 대조가 실제로 성립했는가 — **``in_kev=False`` 를 '악용 목록에 없음'이라는 "
+            "사실로 읽어도 되는지**를 정하는 값. False 면 '악용 없음'이 아니라 '대조 못 함'이다. "
+            "``cache_sources_used`` 가 비었는지로 추론하면 안 된다: 악성 피드만 있고 KEV 캐시가 "
+            "없는 경우 목록은 비어 있지 않은데 KEV 대조는 되지 않았다."
+        ),
+    )
     advisories: list[dict] = Field(default_factory=list)
     kev_signals: list[dict] = Field(default_factory=list)
     heuristics: dict = Field(default_factory=dict)
@@ -504,16 +522,30 @@ class PackageCheckResult(BaseModel):
     # ── 기관 레지스트리 연동(선택) ────────────────────────────────────────
     # 연동은 GVSKB_REGISTRY_URL 환경변수 옵트인이며, 미설정 시 아래 값들은
     # 기본값 그대로 남는다(기존 동작과 100% 동일).
-    registry_status: Literal["ok", "unreachable", "unauthorized", "disabled"] = Field(
+    registry_status: Literal[
+        "ok", "unreachable", "rejected", "item_failed", "unauthorized", "disabled",
+    ] = Field(
         default="disabled",
         description=(
             "레지스트리 조회 결과 상태. unreachable 은 '승인받았다'가 아니라 "
-            "'물어보지 못했다' — 두 경우가 화면에서 구분돼야 한다."
+            "'물어보지 못했다' — 두 경우가 화면에서 구분돼야 한다. "
+            "rejected 는 서버가 요청 형식을 거부한 것(재시도 무의미)이라 "
+            "unreachable(재시도 유효)과 조치가 다르다. "
+            "item_failed 는 배치는 성공했으나 **이 항목만** 판정되지 않은 것 — "
+            "배치가 200 이라고 모든 항목이 답을 받은 것은 아니다."
         ),
     )
     registry_decision: dict | None = Field(
         default=None,
         description="레지스트리 원본 판정(status·max_env·approved_by·expires_at 등). 미조회 시 None",
+    )
+    registry_stale: bool = Field(
+        default=False,
+        description=(
+            "이 판정이 보관 기한을 넘긴 로컬 캐시에서 나왔는가. True 여도 **차단은 "
+            "그대로 유지된다**(조회 실패가 차단을 풀면 우회 수단이 된다) — 다르게 "
+            "다뤄야 하는 것은 판정이 아니라 안내다."
+        ),
     )
     engine_version: str | None = None
     checked_at: str | None = Field(default=None, description="검사 시각(UTC ISO)")
