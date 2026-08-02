@@ -2088,6 +2088,14 @@ def _dep_banner_text(audits: list[dict]) -> str:
     if unchecked:
         return (f"⚠️ **의존성 일부 판정 불가** — {unchecked}건은 검사되지 못했습니다"
                 "(캐시 없는 오프라인·API 실패·파싱 불가). **판정 불가는 '안전'이 아닙니다.**")
+    # 경계값 판정은 조치가 하나(락파일·설치본 검사)이므로 여기서 한 줄로만 알린다.
+    # 패키지마다 같은 문장을 달면 20건짜리 매니페스트에서 같은 안내가 20번 나온다.
+    bounded = sum(int(a.get("bounded_version_count") or 0) for a in audits)
+    if bounded:
+        return (f"**의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음. "
+                f"다만 {bounded}건은 `>=`·`^` 같은 **범위 표기**라 실제 설치 버전이 "
+                "아닐 수 있습니다 — 정확히 보려면 락파일을 쓰거나 `--include-installed` "
+                "로 다시 검사하세요.")
     return f"**의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음(검사 시점 기준)."
 
 

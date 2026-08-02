@@ -126,3 +126,42 @@ def test_no_env_line_without_dependency_check(
     out = tmp_path / "r.md"
     cli.main(["scan", str(src), "-o", str(out)])
     assert "실행환경 등급" not in out.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 알림 단위 — 조치가 하나면 알림도 하나
+# ---------------------------------------------------------------------------
+
+
+def test_bounded_versions_are_reported_once_not_per_package() -> None:
+    """`>=` 표기 20건에 같은 안내를 20번 달지 않는다.
+
+    조치는 "락파일을 쓰거나 --include-installed 를 켜라" 한 건이다. 패키지마다
+    같은 문장을 달면 담당자는 그것을 넘기게 되고, 그러면 그 사이의 진짜 위험도
+    함께 묻힌다. 사용자가 읽어야 할 양을 늘리는 것 자체가 탐지력 저하다.
+    """
+    from gvskb.report import _dep_banner_text
+
+    checks = [
+        {"name": f"p{i}", "version": "1.0", "verdict": "checked_clean",
+         "checked": True, "version_exact": False}
+        for i in range(20)
+    ]
+    audits = [{"checks": checks, "checked_count": 20, "unchecked_count": 0,
+               "bounded_version_count": 20}]
+    banner = _dep_banner_text(audits)
+
+    assert banner.count("락파일") == 1
+    assert "20건" in banner
+    # 개별 판정에는 같은 문장이 붙지 않는다.
+    assert all("범위 표기" not in (c.get("note") or "") for c in checks)
+
+
+def test_no_bounded_notice_when_every_version_is_pinned() -> None:
+    """해당 없으면 아무 말도 하지 않는다 — 통과에 문장을 더하지 않는다."""
+    from gvskb.report import _dep_banner_text
+
+    audits = [{"checks": [{"name": "p", "version": "1.0", "verdict": "checked_clean",
+                           "checked": True, "version_exact": True}],
+               "checked_count": 1, "unchecked_count": 0, "bounded_version_count": 0}]
+    assert "범위 표기" not in _dep_banner_text(audits)
