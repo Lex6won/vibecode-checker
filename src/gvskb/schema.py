@@ -384,6 +384,15 @@ class ScanReport(BaseModel):
             "리포트가 '동일 파일 N곳'으로 설명하게 한다."
         ),
     )
+    vendor_bundles: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "벤더링된 프런트엔드 라이브러리(`*.min.js`) 식별 결과 — "
+            "[{'path','name','version','evidence','ecosystem'}]. `version` 이 None 이면 "
+            "'이름은 알지만 버전 미상'(판정 불가)이다. 소스 룰 검사에서는 제외하되 "
+            "**컴포넌트 취약점 검사 대상**으로 넘겨 조용히 사라지지 않게 한다."
+        ),
+    )
     suppression_summary: dict | None = Field(
         default=None,
         description=(

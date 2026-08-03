@@ -47,6 +47,8 @@ def _skip_reason_group(reason: str) -> str:
     r = reason or ""
     if "확장자 아님" in r:
         return "검사 대상 확장자 아님"
+    if "벤더 번들" in r:
+        return "벤더 번들(외부 라이브러리 · 컴포넌트 검사로 이관)"
     if "빌드 산출물" in r:
         return "빌드 산출물(압축·번들)"
     if "매니페스트" in r:
@@ -467,36 +469,96 @@ def _privacy_findings(findings: list[Finding]) -> list[Finding]:
     return [f for f in findings if _is_privacy_related(f)]
 
 
+# 배포 판정 표시 색 — _deploy_status() 의 tone 과 1:1.
+_VERDICT_COLOR = {
+    "none": "#607d8b",
+    "block": "#c0392b",
+    "warn": "#e67e22",
+    "ok": "#2e7d32",
+}
+
+
+def _dep_risk(report: ScanReport) -> tuple[int, int, int, bool]:
+    """의존성 감사 → (취약·악성, 판정불가, 미존재, 차단여부). 감사 자체가 없으면 0/False.
+
+    결론 박스가 이 값을 함께 보게 하는 것이 핵심이다. 이전에는 ``dependency_audit``
+    이 리포트의 부가 필드로만 존재해, **패키지가 차단 판정이어도 결론은 초록불**
+    ("배포 승인 가능")이 나왔다 — 같은 문서 안에서 서로 모순되는 결론이다.
+    담당자가 가장 먼저 읽는 곳이 결론 박스이므로 조용한 초록불은 빨간불보다 위험하다.
+    """
+    audits = _dep_audits(report)
+    if not audits:
+        return (0, 0, 0, False)
+    _checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
+    return (vuln, unchecked, not_found, blocked)
+
+
+def _dep_verdict_clause(report: ScanReport) -> str:
+    """배포 판정 문장에 덧붙일 의존성 사유 한 조각 — 위험이 없으면 빈 문자열."""
+    vuln, unchecked, not_found, _blocked = _dep_risk(report)
+    parts: list[str] = []
+    if vuln:
+        parts.append(f"취약·악성 패키지 {vuln}건")
+    if not_found:
+        parts.append(f"레지스트리에 없는 패키지 {not_found}건")
+    if unchecked:
+        parts.append(f"판정 불가 {unchecked}건(‘안전’이 아닙니다)")
+    if not parts:
+        return ""
+    return " 의존성: " + " · ".join(parts) + "."
+
+
 def _deploy_verdict(report: ScanReport) -> tuple[str, str]:
     """운영서버 배포 판정 한 줄 + 표시 색 — 보안팀이 승인 근거로 쓰는 결론.
 
     항상 '잔여 위험' 개념을 함께 언급해 도구 미탐지 영역이 남아 있음을 알린다.
+    소스 발견과 **의존성 감사 결과를 함께** 반영한다(둘 중 하나만 위험해도 초록 금지).
     """
     s = report.summary
+    status = _deploy_status(report)
+    color = _VERDICT_COLOR[status]
     block_n = s.by_decision.get(Decision.block.value, 0)
     warn_n = s.by_decision.get(Decision.warn.value, 0)
-    if s.finding_count == 0 and not report.scanned_files:
+    dep_clause = _dep_verdict_clause(report)
+    _vuln, _unchecked, _nf, dep_blocked = _dep_risk(report)
+
+    if status == "none":
         return (
             "판정 불가 — 검사된 파일이 0개라 배포 가부를 판단할 수 없습니다. "
             "경로·확장자를 확인해 다시 검사하세요.",
-            "#607d8b",
+            color,
         )
-    if s.blocked or block_n:
+    if status == "block":
+        if block_n and dep_blocked:
+            head = (
+                f"배포 불가 — 차단(block) {block_n}건과 차단 기준에 걸린 패키지를 "
+                "해소하거나 보안담당자 승인이 필요합니다."
+            )
+        elif dep_blocked:
+            head = (
+                "배포 불가 — 차단 기준에 걸린 패키지가 있습니다. 해당 패키지를 "
+                "안전한 버전으로 올린 뒤 다시 검사하세요."
+            )
+        else:
+            head = (
+                f"배포 불가 — 차단(block) {block_n}건을 해소하거나 보안담당자 승인이 "
+                "필요합니다."
+            )
+        return (head + dep_clause + " 미해소 항목은 잔여 위험으로 남습니다.", color)
+    if status == "warn":
+        if s.finding_count:
+            head = f"⚠ 조건부 — 경고 {warn_n}건을 검토한 후 배포하세요."
+        else:
+            head = "⚠ 조건부 — 소스코드 발견은 없으나 의존성을 먼저 확인해야 합니다."
         return (
-            f"배포 불가 — 차단(block) {block_n}건을 해소하거나 보안담당자 승인이 "
-            "필요합니다. 미해소 항목은 잔여 위험으로 남습니다.",
-            "#c0392b",
-        )
-    if s.finding_count:
-        return (
-            f"⚠ 조건부 — 경고 {warn_n}건을 검토한 후 배포하세요. 수정하지 않기로 한 "
-            "항목은 잔여 위험으로 기록·관리해야 합니다.",
-            "#e67e22",
+            head + dep_clause + " 수정하지 않기로 한 항목은 잔여 위험으로 "
+            "기록·관리해야 합니다.",
+            color,
         )
     return (
         "심각 위험 미발견 — 단, 아래 '검토 범위 및 한계' 고지를 참조하세요. "
         "본 도구가 탐지하지 못하는 영역은 잔여 위험으로 남습니다.",
-        "#2e7d32",
+        color,
     )
 
 
@@ -637,15 +699,24 @@ _VERDICT_LABEL = {
 
 
 def _deploy_status(report: ScanReport) -> str:
-    """배포 판정 tone: 'ok'(초록) | 'block'(빨강) | 'warn'(주황) | 'none'(회색)."""
+    """배포 판정 tone: 'ok'(초록) | 'block'(빨강) | 'warn'(주황) | 'none'(회색).
+
+    소스 발견만이 아니라 **의존성 감사 결과도 함께** 본다. 패키지가 차단 판정이거나
+    취약·미존재·판정 불가가 남아 있으면 초록불을 주지 않는다. 반대로 의존성이 전부
+    '이상 없음'이면 기존과 같이 초록을 유지한다(과잉 교정 방지).
+    """
     s = report.summary
-    if s.finding_count == 0 and not report.scanned_files:
-        return "none"
-    if s.finding_count == 0:
-        return "ok"
-    if s.blocked or s.by_decision.get(Decision.block.value, 0):
+    dep_vuln, dep_unchecked, dep_nf, dep_blocked = _dep_risk(report)
+    dep_risky = bool(dep_vuln or dep_unchecked or dep_nf)
+    if s.blocked or s.by_decision.get(Decision.block.value, 0) or dep_blocked:
         return "block"
-    return "warn"
+    if s.finding_count == 0 and not report.scanned_files:
+        # 소스를 한 건도 보지 못했다. 의존성에 위험이 있으면 그것을 말하고,
+        # 없으면 '안전'이 아니라 '판정 불가'로 남긴다.
+        return "warn" if dep_risky else "none"
+    if s.finding_count or dep_risky:
+        return "warn"
+    return "ok"
 
 
 def _verdict_box_md(report: ScanReport) -> list[str]:

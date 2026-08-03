@@ -52,6 +52,11 @@ mcp = FastMCP(
         "표시되면 scan_dependencies 로 패키지를 따로 검사하고, 그 결과를 scan 결과 JSON의 "
         "dependency_audit 필드에 넣은 뒤 render_report 를 호출하세요(보고서에 의존성 섹션이 "
         "함께 들어갑니다).\n"
+        "2-1) 결과의 vendor_bundles 가 비어 있지 않으면 **반드시** scan_vendor_bundles 에 "
+        "그 값을 그대로 넘겨 검사하세요. static/*.min.js 같은 벤더 라이브러리는 소스 룰 "
+        "검사에서 제외되지만 알려진 취약점이 붙고, package.json 도 node_modules 도 없는 "
+        "프로젝트에서는 이것이 유일한 컴포넌트 발견 경로입니다. 결과가 둘 다 있으면 "
+        "dependency_audit 에 {\"audits\": [의존성결과, 벤더번들결과]} 형태로 합쳐 넣습니다.\n"
         "3) render_report 로 한국어 보고서를 만들어 사용자에게 보여줍니다. 이 도구는 "
         "**파일 저장까지 함께** 하므로(<검사한 경로>/.check-reports/), 반환값의 saved "
         "경로를 사용자에게 그대로 알려 주세요. **에이전트가 보고서를 별도 파일로 다시 "
@@ -285,6 +290,47 @@ async def scan_dependencies(
         # 담당자 일이 늘어 연동 목적과 정반대가 된다(연동합의 §5-C).
         scope="lockfile" if result.get("source_kind") == "lockfile" else "manifest",
         summary=result,
+    )
+    return result
+
+
+@mcp.tool()
+async def scan_vendor_bundles(
+    vendor_bundles: Annotated[
+        list[dict],
+        Field(description="scan_path 결과 JSON 의 `vendor_bundles` 값을 **그대로** 전달 "
+                          "(직접 조립하지 말 것). 각 항목: {path, name, version, evidence, ecosystem}"),
+    ],
+    env_grade: Annotated[
+        Literal["E0", "E1", "E2"] | None,
+        Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(3일) | E1(7일, 기본) | E2(14일)"),
+    ] = None,
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
+) -> dict:
+    """벤더링된 프런트엔드 라이브러리(`static/*.min.js`)의 컴포넌트 취약점을 검사합니다.
+
+    scan_path 결과에 ``vendor_bundles`` 가 비어 있지 않으면 **반드시** 이 도구로
+    이어서 검사하세요. 이 파일들은 소스 룰 검사에서는 제외되지만(미니파이드라
+    오탐만 나옴) 그 자체가 프로젝트가 실행하는 남의 코드이고 알려진 취약점이 붙습니다.
+    ``package.json`` 도 ``node_modules`` 도 없는 프로젝트에서는 **이것이 유일한
+    컴포넌트 발견 경로**입니다(실측: `xlsx 0.18.5` → CVE-2023-30533 등).
+
+    버전을 확정하지 못한 번들은 조회하지 않고 '판정 불가'로 남깁니다 — 추측한 버전으로
+    취약점을 단정하지 않기 위해서입니다. **판정 불가는 '안전'이 아닙니다.**
+
+    결과를 scan_path 결과 JSON 의 ``dependency_audit`` 에 넣어 render_report 를
+    호출하세요. 이미 scan_dependencies 결과가 있다면
+    ``{"audits": [<의존성 결과>, <이 결과>]}`` 형태로 합쳐 넣습니다.
+    """
+    from .tools.vendor_bundle import audit_vendor_bundles
+
+    result = await audit_vendor_bundles(list(vendor_bundles or []), env_grade=env_grade)
+    caller = safe_caller(caller or "")
+    if caller:
+        result["caller"] = caller
+    record_package_check(
+        result.get("checks") or [], tool="scan_vendor_bundles", caller=caller,
+        scope="manifest", summary=result,
     )
     return result
 
