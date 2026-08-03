@@ -1,0 +1,27 @@
+profile_id: dev-quick
+name: 개발 중 경량 점검
+description: |-
+  구현 중 사용자가 "중간 점검해줘"라고 하거나 기능 단위를 마칠 때 쓰는 가벼운
+  체크. 전체 룰셋이 아니라 "가장 중요한 안전장치"만 본다 — 나머지(중간·낮은
+  심각도)는 배포 전 전체 점검(public-default-strict 등)에서 잡는다. 여기서
+  조용히 넘어간 항목은 "안전 확정"이 아니라 "지금은 안 본다"는 뜻이다.
+
+  범위 근거(rules/ 소스 대조로 확인, 2026-08-03): SQL 인젝션(GOV-SQL-INJECTION-001
+  critical · KISA-PY-INPUT-01 critical · KISA-JS-INPUT-01 critical)·OS 명령 실행
+  (KISA-PY-INPUT-05 critical · GOV-CMD-INJECTION-001 critical)·코드 실행/역직렬화
+  (KISA-PY-INPUT-02 critical · MOIS-49-CODE-05 critical · GOV-CODE-EXEC-001
+  critical)·경로조작(KISA-PY-INPUT-03 high)·파일업로드(KISA-PY-INPUT-06 high)는
+  모두 critical/high 로 등록돼 있어 severity_min 만으로 자동 포함된다.
+  secret-scanning·개인정보는 등급이 낮은 개별 룰도 있어(예: KISA-PY-SEC-13 medium)
+  category_overrides 로 별도 강제한다. 새 패키지(할루시네이션·차단 패키지)와
+  "정책과 다른 언어·DB·런타임"은 코드 스캔 대상이 아니다 — 전자는 패키지 검사
+  게이트가, 후자는 설계 단계 결정이 담당한다(여기서 중복하지 않음).
+
+  출처: vibe_harness_claude 가 작성해 하네스 저장소에서 운용하던 프로파일을
+  체커 표준으로 채택했다(2026-08-03, 양 하네스 동의). 사본이 양쪽에 있으면
+  반드시 갈라지고, 갈라져도 아무도 모른다 — 단일 출처를 체커에 둔다.
+applies_to: [web-app, data-pipeline, batch-job, agent]
+category_overrides:
+  secret-scanning: block          # 비밀값 하드코딩 — 등급 낮은 개별 룰도 강제 포함
+  privacy-public-sector: block    # 개인정보 샘플(주민번호·전화번호 등)
+severity_min: high                # critical·high만 표시. SQLi·명령/코드실행·경로조작·업로드는 이미 이 등급
