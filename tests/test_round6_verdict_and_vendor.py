@@ -353,20 +353,68 @@ def test_unknown_profile_is_reported_not_silently_substituted() -> None:
     실측(하네스 연동): MCP `scan_path(profile="dev-quick")` 이 정책 파일을 못 찾아
     아무 필터도 걸리지 않았는데 머리표에는 `dev-quick` 으로 판정했다고 찍혔다.
     CLI 는 경고 후 기본값으로 바꿔 정직했지만 API·MCP 경로에는 그 처리가 없었다.
+    (`dev-quick` 은 그 뒤 체커 표준으로 채택돼, 여기서는 실재하지 않는 이름을 쓴다.)
     """
+    from gvskb.profiles import list_profiles
     from gvskb.scanner import scan_code
 
-    report = scan_code("x = 1\n", filename="a.py", profile="dev-quick")
+    missing = "org-custom-not-installed"
+    assert missing not in list_profiles()      # 전제: 정말 없는 이름이어야 한다
+
+    report = scan_code("x = 1\n", filename="a.py", profile=missing)
 
     assert report.profile == "public-default-strict"      # 실제 적용된 것
     fb = report.profile_fallback
     assert fb is not None
-    assert fb["requested"] == "dev-quick"
+    assert fb["requested"] == missing
     assert fb["applied"] == "public-default-strict"
     assert "public-default-strict" in fb["available"]
 
     md = render_markdown(report)
-    assert "dev-quick" in md and "찾지 못해 대체" in md
+    assert missing in md and "찾지 못해 대체" in md
+
+
+def test_dev_quick_profile_is_built_in() -> None:
+    """`dev-quick` 은 체커 표준 프로파일이다 — 하네스 사본에 의존하지 않는다.
+
+    하네스가 작성해 자기 저장소에서 운용하던 것을 채택했다(2026-08-03). 사본이
+    양쪽에 있으면 반드시 갈라지고, 갈라져도 아무도 모른다.
+    """
+    from gvskb.profiles import list_profiles, load_profile
+    from gvskb.scanner import scan_code
+
+    assert "dev-quick" in list_profiles()
+
+    spec = load_profile("dev-quick")
+    assert spec.resolved is True
+    assert spec.severity_min == "high"
+    # 등급 낮은 개별 룰이 있는 두 분야는 severity_min 으로 안 잡혀 강제 포함해야 한다.
+    assert spec.category_overrides.get("secret-scanning") == "block"
+    assert spec.category_overrides.get("privacy-public-sector") == "block"
+
+    report = scan_code("x = 1\n", filename="a.py", profile="dev-quick")
+    assert report.profile == "dev-quick"
+    assert report.profile_fallback is None      # 더 이상 대체되지 않는다
+
+
+def test_dev_quick_drops_below_high_but_keeps_critical() -> None:
+    """경량 점검이 실제로 가벼워야 한다 — medium 이하는 빼고 critical 은 남긴다."""
+    from gvskb.scanner import scan_code
+
+    code = (
+        "import os, sqlite3\n"
+        'def f(u, c):\n'
+        "    c.execute(\"SELECT * FROM t WHERE n='\" + u + \"'\")\n"
+        "    os.system(u)\n"
+        '    conn = sqlite3.connect("a.db")\n'   # 자원 해제 누락 = medium
+    )
+    quick = scan_code(code, filename="a.py", profile="dev-quick")
+    full = scan_code(code, filename="a.py", profile="public-default-strict")
+
+    levels = {f.severity.value for f in quick.findings}
+    assert levels and levels <= {"critical", "high"}      # 경량: high 이상만
+    assert quick.summary.finding_count < full.summary.finding_count
+    assert any(f.severity.value == "medium" for f in full.findings)   # 전체엔 남아 있다
 
 
 def test_known_profile_has_no_fallback_noise() -> None:
