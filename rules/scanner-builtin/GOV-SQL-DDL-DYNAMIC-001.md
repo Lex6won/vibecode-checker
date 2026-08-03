@@ -40,9 +40,9 @@ detection:
     DDL 은 파라미터 바인딩이 불가능하므로 **화이트리스트 검증**으로 방어합니다.
 
     # 안전: 허용 목록에서만 이름을 가져온다(개발자 상수)
-    ALLOWED = {"응소코드": "TEXT", "자유출석": "INTEGER DEFAULT 0"}
+    ALLOWED = {"접수번호": "TEXT", "처리상태": "INTEGER DEFAULT 0"}
     for col, dfn in ALLOWED.items():
-        cur.execute(f"ALTER TABLE 이벤트 ADD COLUMN {col} {dfn}")
+        cur.execute(f"ALTER TABLE 민원 ADD COLUMN {col} {dfn}")
 
     # 위험: 요청 값이 그대로 들어간다
     col = request.args["col"]
@@ -78,7 +78,7 @@ DDL(ALTER/CREATE/DROP/TRUNCATE)과 PRAGMA 는 **식별자(테이블·컬럼명)�
 
 ## 안전한 패턴
 ```python
-ALLOWED_COLUMNS = {"응소코드": "TEXT", "자유출석": "INTEGER DEFAULT 0"}
+ALLOWED_COLUMNS = {"접수번호": "TEXT", "처리상태": "INTEGER DEFAULT 0"}
 
 def add_column(cur, name: str) -> None:
     if name not in ALLOWED_COLUMNS:          # 화이트리스트 대조

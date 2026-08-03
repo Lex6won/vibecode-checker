@@ -4,8 +4,8 @@
 입력이 닿을 수 없다**. 삽입되는 ``col``·``dfn`` 은 바로 위 리터럴 리스트에서만
 나오기 때문이다::
 
-    for col, dfn in [('자유출석', 'INTEGER DEFAULT 0'), ('응소코드', 'TEXT')]:
-        c.execute(f'ALTER TABLE 이벤트 ADD COLUMN {col} {dfn}')
+    for col, dfn in [('처리상태', 'INTEGER DEFAULT 0'), ('접수번호', 'TEXT')]:
+        c.execute(f'ALTER TABLE 민원 ADD COLUMN {col} {dfn}')
 
 테인트 추적이 이걸 구분하지 못하면 "사용자 입력이 SQL 에 들어간다"는 **사실과
 다른 critical 경보**가 뜬다(공공기관 대상 도구에서 오탐은 신뢰를 직접 깎는다).
