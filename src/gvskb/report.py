@@ -740,12 +740,28 @@ def _verdict_box_html(report: ScanReport) -> str:
 
 
 def _meta_rows(report: ScanReport, ts: str) -> list[tuple[str, str]]:
-    rows = [("대상", report.target), ("검사일시", ts), ("프로파일", report.profile)]
+    rows = [("대상", report.target), ("검사일시", ts), ("프로파일", _profile_cell(report))]
     if report.scenario:
         rows.append(("시나리오", report.scenario))
     if report.language:
         rows.append(("언어 힌트", report.language))
     return rows
+
+
+def _profile_cell(report: ScanReport) -> str:
+    """머리표의 프로파일 칸 — 요청과 다른 것이 적용됐으면 **그 사실을 같이 적는다**.
+
+    프로파일이 다르면 판정 기준 자체가 다르다. 요청한 이름만 적으면 읽는 사람은
+    그 기준으로 판정된 줄 안다(실측: 하네스가 `dev-quick` 을 요청했는데 정책 파일을
+    못 찾아 적용되지 않았고, 보고서에는 `dev-quick` 이라고만 찍혔다).
+    """
+    fb = report.profile_fallback
+    if not fb:
+        return report.profile
+    return (
+        f"{fb.get('applied', report.profile)} "
+        f"⚠ 요청한 `{fb.get('requested')}` 을(를) 찾지 못해 대체 — {fb.get('reason', '')}"
+    )
 
 
 def _meta_table_md(report: ScanReport, ts: str) -> list[str]:
