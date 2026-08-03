@@ -403,16 +403,28 @@ def _looks_like_vendor_bundle_name(name: str) -> bool:
 _VENDOR_READ_MAX_BYTES = 5_000_000
 
 
-def _identify_vendor_bundle_file(p: Path, rel_path: str) -> dict | None:
-    """벤더 번들 파일을 읽어 컴포넌트(이름·버전)를 식별한다. 읽기 실패 시 None."""
+def _identify_vendor_bundle_file(
+    p: Path, rel_path: str, *, detected_by: str = "name", text: str | None = None
+) -> dict | None:
+    """벤더 번들 파일을 읽어 컴포넌트(이름·버전)를 식별한다. 읽기 실패 시 None.
+
+    ``detected_by`` 는 **무엇을 근거로 벤더로 봤는가**다.
+    ``name`` = 파일명에 ``.min.`` (작성자가 명시적으로 배포본 라이브러리를 넣은 신호),
+    ``content`` = 이름은 평범한데 내용이 미니파이드(자체 번들일 수도 있음).
+    이 구분이 있어야 '식별 실패'를 어디까지 위험으로 올릴지 정할 수 있다.
+    """
     from .tools.vendor_bundle import identify_vendor_bundle
 
-    try:
-        with p.open("rb") as fh:
-            raw = fh.read(_VENDOR_READ_MAX_BYTES)
-    except OSError:
-        return None
-    return identify_vendor_bundle(rel_path, raw.decode("utf-8", errors="replace")).as_dict()
+    if text is None:
+        try:
+            with p.open("rb") as fh:
+                raw = fh.read(_VENDOR_READ_MAX_BYTES)
+        except OSError:
+            return None
+        text = raw.decode("utf-8", errors="replace")
+    info = identify_vendor_bundle(rel_path, text).as_dict()
+    info["detected_by"] = detected_by
+    return info
 
 
 def _looks_minified(text: str) -> bool:
@@ -594,8 +606,17 @@ def scan_path(
                 skipped.append(SkippedFile(path=rel, reason="encoding: not utf-8 or cp949"))
                 continue
         # single-line 초장문/평균 줄 과대 = 미니파이드 번들. 룰 대량 오탐의 원인.
+        # 다만 **파일명에 `.min.` 이 없어도** 미니파이드 `.js` 는 벤더 라이브러리를
+        # 그대로 받아 둔 경우가 흔하다(`vendor/lib.js`). 이름 규칙으로만 걸면 그쪽이
+        # 통째로 사각지대로 남으므로, 내용으로 판정된 것도 컴포넌트 식별을 시도한다.
         if _looks_minified(text):
-            skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
+            if f.suffix.lower() in {".js", ".mjs", ".cjs"}:
+                vb = _identify_vendor_bundle_file(f, rel, detected_by="content", text=text)
+                if vb is not None:
+                    vendor_bundles.append(vb)
+                skipped.append(SkippedFile(path=rel, reason=VENDOR_BUNDLE_SKIP_REASON))
+            else:
+                skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
             continue
         # 내용 해시 — 같은 파일이 여러 경로에 복사돼 발견이 배수로 보이는 상황을
         # 리포트가 "동일 파일 N곳"으로 설명할 수 있게 한다(예: ssl/ 폴더 복제).
