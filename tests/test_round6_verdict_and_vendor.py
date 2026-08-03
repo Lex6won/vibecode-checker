@@ -374,6 +374,31 @@ def test_unknown_profile_is_reported_not_silently_substituted() -> None:
     assert missing in md and "찾지 못해 대체" in md
 
 
+def test_cli_path_also_records_profile_fallback(tmp_path, capsys) -> None:
+    """CLI 도 대체 사실을 **리포트에** 남긴다 — stderr 경고만으로는 부족하다.
+
+    예전에는 CLI 가 스캔 전에 args.profile 을 기본값으로 치환해, 스캐너가 정상
+    프로파일을 받은 것으로 보여 `profile_fallback` 이 남지 않았다. 경고는 stderr 로
+    휘발되고 **결재 붙임으로 나가는 리포트에는 운영자가 무엇을 요청했는지 흔적이
+    없었다**(하네스 지적, 2026-08-03). MCP 경로에는 없던 문제라 CLI 만 어긋나 있었다.
+    """
+    import json
+
+    from gvskb.cli import main
+
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    out = tmp_path / "r.json"
+    rc = main(["scan", str(tmp_path), "--profile", "org-typo-abc",
+               "--format", "json", "-o", str(out)])
+    assert rc in (0, 1)
+
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["profile"] == "public-default-strict"        # 실제 적용된 것
+    fb = report["profile_fallback"]
+    assert fb is not None and fb["requested"] == "org-typo-abc"
+    assert "알 수 없는 프로파일" in capsys.readouterr().err     # 즉시 경고도 유지
+
+
 def test_dev_quick_profile_is_built_in() -> None:
     """`dev-quick` 은 체커 표준 프로파일이다 — 하네스 사본에 의존하지 않는다.
 
