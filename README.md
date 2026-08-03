@@ -36,12 +36,12 @@
   <!-- jsDelivr 경유 — 기관망 다수가 raw.githubusercontent.com은 차단하고 camo 프록시는
        허용한다. GitHub은 자사 raw 주소는 camo로 감싸지 않지만 외부 도메인(jsDelivr)은
        감싸므로, 열람자는 camo만 접촉하고 이미지가 기관망에서도 보인다. -->
-  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/report-summary.png" alt="vibecode-checker 보고서 — 요약층(공무원): 배포 승인/미승인 결론·핵심 숫자·조치 가이드" width="620"/>
-  <br/><sub><b>① 요약층 (공무원)</b> — 배포 승인/미승인 결론 박스 → 핵심 숫자 → 조치 가이드(3단계)</sub>
+  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/report-summary-2026-08.png" alt="vibecode-checker 보고서 — 요약층(공무원): 배포 승인/미승인 결론·핵심 숫자·조치 가이드" width="620"/>
+  <br/><sub><b>① 요약층 (공무원)</b> — 배포 승인/미승인 결론 박스(<b>코드+패키지 함께 판정</b>) → 핵심 숫자 → 조치 가이드(3단계)</sub>
 </p>
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/report-detail.png" alt="vibecode-checker 보고서 — 상세층(보안팀): 보안 분야별 접힘 카드·개인정보 콜아웃·의존성/예외" width="620"/>
+  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/report-detail-2026-08.png" alt="vibecode-checker 보고서 — 상세층(보안팀): 보안 분야별 접힘 카드·개인정보 콜아웃·의존성/예외" width="620"/>
   <br/><sub><b>② 상세층 (보안팀)</b> — 보안 분야별로 묶어 접힘, 펼치면 위치·취약점·대응·근거. 개인정보·의존성·승인 예외도 함께</sub>
 </p>
 
