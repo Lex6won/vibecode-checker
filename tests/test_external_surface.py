@@ -202,7 +202,7 @@ def test_unknown_host_operator_is_none() -> None:
 
 
 def test_installer_download_hosts_are_classified_not_unclassified() -> None:
-    """실측(응소ON): 온프레미스 설치 스크립트의 배포처가 전부 '미분류'로 남았다.
+    """실측(공공 Flask 프로젝트): 온프레미스 설치 스크립트의 배포처가 전부 '미분류'로 남았다.
 
     운영 중 전송이 아니라 설치 자재 다운로드이므로 국외이전 검토 대상은 아니지만,
     폐쇄망에서는 곧 '설치 불가' 지점이라 무엇을 반입해야 하는지 드러나야 한다.
@@ -219,7 +219,7 @@ def test_installer_download_hosts_are_classified_not_unclassified() -> None:
 def test_doc_context_does_not_erase_known_host_warning() -> None:
     """문맥 표시가 카탈로그의 구체적 경고를 덮어쓰면 안 된다.
 
-    실측(응소ON): 설치 가이드가 `Invoke-RestMethod https://api.ipify.org` 실행을
+    실측(공공 Flask 프로젝트): 설치 가이드가 `Invoke-RestMethod https://api.ipify.org` 실행을
     안내하는데, 통짜 문구가 이를 '다운로드 주소'로 덮어써 '서버 공인 IP 노출'
     경고가 보고서에서 사라졌다 — 문서라는 이유로 위험을 지운 셈이다.
     """
@@ -252,7 +252,7 @@ def test_google_hosts_do_not_shadow_googleapis_entries() -> None:
 
 
 def test_google_maps_link_names_the_coordinate_risk() -> None:
-    """실측(응소ON): 신고 좌표가 `maps?q={lat},{lon}` 로 외부에 실려 나갔다.
+    """실측(공공 Flask 프로젝트): 신고 좌표가 `maps?q={lat},{lon}` 로 외부에 실려 나갔다.
 
     _lookup_host 는 호스트만 보므로 용도를 단정할 수 없다 — 단정하는 대신
     확인 지점(경로)을 지목해야 검토자가 무엇을 볼지 안다.

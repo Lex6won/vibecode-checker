@@ -296,7 +296,7 @@ def _run_dependency_audit(
                 out.append(audit)
 
         # 벤더 번들(`static/*.min.js`) — 그 자체가 프로젝트가 실행하는 남의 코드다.
-        # 실측(응소ON): `xlsx 0.18.5` 가 CVE-2023-30533 등에 해당하는데, 예전에는
+        # 실측(공공 Flask 프로젝트): `xlsx 0.18.5` 가 CVE-2023-30533 등에 해당하는데, 예전에는
         # '빌드 산출물'로 제외돼 매니페스트·설치본 어느 경로에도 걸리지 않았다.
         if vendor_bundles:
             from .tools.vendor_bundle import audit_vendor_bundles

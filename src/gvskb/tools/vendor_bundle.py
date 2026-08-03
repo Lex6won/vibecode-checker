@@ -6,7 +6,7 @@
 도 없는 프로젝트에서는 SCA 발견 경로가 하나도 걸리지 않아 *아무도 그 파일을 보지
 않는* 상태가 된다.
 
-실측(응소ON, 2026-08-03): ``static/xlsx.full.min.js`` 는 SheetJS ``xlsx 0.18.5`` 로,
+실측(공공 Flask 프로젝트, 2026-08-03): ``static/xlsx.full.min.js`` 는 SheetJS ``xlsx 0.18.5`` 로,
 CVE-2023-30533(Prototype Pollution, HIGH)·CVE-2024-22363(ReDoS, HIGH)에 해당한다.
 게다가 템플릿이 사용자가 고른 엑셀을 ``XLSX.read()`` 로 파싱하므로 advisory 가 명시한
 취약 경로에 **실제로 도달한다**. 오탐을 피하려던 규칙이 진짜 취약 컴포넌트를 가린 것이라
