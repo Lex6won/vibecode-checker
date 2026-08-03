@@ -357,7 +357,14 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         return EXIT_NOT_FOUND
 
     # (#4) 알 수 없는 프로파일을 조용히 수용하지 않는다 — 오타 시 의도와 다른
-    # 정책이 적용될 수 있으므로 경고 후 기본값으로 진행한다.
+    # 정책이 적용될 수 있으므로 즉시 경고한다.
+    #
+    # **여기서 args.profile 을 바꾸지 않는다.** 예전에는 기본값으로 미리 치환했는데,
+    # 그러면 스캐너가 정상 프로파일을 받은 것으로 보여 `profile_fallback` 이 남지
+    # 않았다 — stderr 경고는 휘발되고 **결재 붙임으로 나가는 리포트에는 운영자가
+    # 무엇을 요청했는지 흔적이 없었다**(하네스 지적, 2026-08-03).
+    # 스캐너가 대체·기록을 함께 처리하므로 여기서는 알리기만 한다. 재현 명령에도
+    # 운영자가 실제로 친 값이 남아, 그 명령을 다시 실행하면 같은 결과가 나온다.
     try:
         from .profiles import DEFAULT_PROFILE_ID, list_profiles
         known = set(list_profiles())
@@ -367,7 +374,6 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                 f"'{DEFAULT_PROFILE_ID}'로 진행합니다. (사용 가능: {', '.join(sorted(known))})",
                 file=sys.stderr,
             )
-            args.profile = DEFAULT_PROFILE_ID
     except Exception:
         pass  # 프로파일 목록을 못 읽어도 스캔 자체는 진행
 
