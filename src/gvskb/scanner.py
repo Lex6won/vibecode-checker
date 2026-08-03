@@ -200,12 +200,14 @@ def scan_code(
     # Apply scenario-bound policy: decision overrides + severity_min filter.
     profile_spec = load_profile(profile)
     findings = apply_profile(findings, profile_spec)
+    effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)
 
     return ScanReport(
         target=filename,
         language=language,
         scenario=scenario,
-        profile=profile,
+        profile=effective_profile,
+        profile_fallback=profile_fallback,
         summary=_summary(findings),
         findings=findings,
         # 인메모리 조각도 "이 파일을 검사함"으로 기록 — 발견 0이 "검사 안 됨"이
@@ -377,6 +379,31 @@ _MINIFIED_MIN_BYTES = 1000  # 너무 짧은 파일은 판정 제외(정상적인
 
 DEFAULT_MAX_FILES = 500
 DEFAULT_MAX_FILE_BYTES = 1_000_000
+
+
+def _profile_resolution(requested: str, spec) -> tuple[str, dict | None]:
+    """(리포트에 적을 프로파일, 대체 사실) — 못 찾았으면 그 사실을 값으로 남긴다.
+
+    요청한 이름을 그대로 적으면 **적용되지 않은 정책으로 판정한 것처럼** 보인다.
+    실측(하네스 연동): MCP `scan_path(profile="dev-quick")` 이 정책을 못 찾아 아무
+    필터도 걸리지 않았는데 보고서 머리표에는 `dev-quick` 이 찍혔다. CLI 는 경고 후
+    기본값으로 바꿔 정직했지만 **API·MCP 경로에는 그 처리가 없었다** — 하네스가
+    쓰는 쪽이 하필 그 경로다.
+    """
+    from .profiles import DEFAULT_PROFILE_ID, list_profiles
+
+    if getattr(spec, "resolved", True):
+        return requested, None
+    try:
+        available = list_profiles()
+    except OSError:
+        available = []
+    return DEFAULT_PROFILE_ID, {
+        "requested": requested,
+        "applied": DEFAULT_PROFILE_ID,
+        "reason": "정책 파일을 찾지 못했습니다(GVSKB_POLICIES_DIR 경로를 확인하세요)",
+        "available": available,
+    }
 
 
 def _looks_binary(sample: bytes) -> bool:
@@ -668,10 +695,12 @@ def scan_path(
             "invalid": sup.invalid,
         }
 
+    _eff_profile, _profile_fallback = _profile_resolution(profile, load_profile(profile))
     report = ScanReport(
         target=str(root),
         scenario=scenario,
-        profile=profile,
+        profile=_eff_profile,
+        profile_fallback=_profile_fallback,
         summary=_summary(active),
         findings=all_findings,
         scanned_files=scanned,

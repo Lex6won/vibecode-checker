@@ -384,6 +384,14 @@ class ScanReport(BaseModel):
             "리포트가 '동일 파일 N곳'으로 설명하게 한다."
         ),
     )
+    profile_fallback: dict | None = Field(
+        default=None,
+        description=(
+            "요청한 프로파일을 찾지 못해 적용되지 않았을 때만 채워진다 — "
+            "{'requested','applied','reason','available'}. 프로파일이 다르면 **판정 기준 "
+            "자체가 다르므로**, 이를 표시하지 않으면 보고서가 근거를 틀리게 말한다."
+        ),
+    )
     vendor_bundles: list[dict] = Field(
         default_factory=list,
         description=(

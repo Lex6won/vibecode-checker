@@ -46,6 +46,14 @@ class ProfileSpec(BaseModel):
         description="Drop findings below this severity ('low' | 'medium' | 'high' | 'critical')",
     )
     exceptions: dict = Field(default_factory=dict)
+    resolved: bool = Field(
+        default=True,
+        description=(
+            "정책 파일을 실제로 찾아 읽었는가. False 면 요청한 프로파일이 없어 "
+            "아무 정책도 적용되지 않은 상태다 — 호출자는 이를 '적용됨'으로 "
+            "기록해서는 안 된다."
+        ),
+    )
 
 
 def _resolve_policies_dir() -> Path:
@@ -62,16 +70,25 @@ def _resolve_policies_dir() -> Path:
 
 
 def load_profile(profile_id: str) -> ProfileSpec:
-    """Load a profile by id. Falls back to an empty spec for unknown ids."""
+    """Load a profile by id. Falls back to an empty spec for unknown ids.
+
+    ``resolved=False`` 로 **찾지 못했음을 값에 실어** 돌려준다. 예전에는 빈 스펙과
+    정상 스펙이 구분되지 않아, 호출자가 요청한 이름을 그대로 리포트에 적었다 —
+    실측(하네스 연동, 2026-08-03): `profile="dev-quick"` 이 정책 파일을 못 찾아
+    아무 필터도 적용되지 않았는데 **보고서에는 `dev-quick` 으로 판정했다고 적혔다.**
+    판정 근거를 틀리게 말하는 것이라 조용한 초록불과 같은 계열의 결함이다.
+    """
     pid = profile_id or DEFAULT_PROFILE_ID
     p = _resolve_policies_dir() / f"{pid.replace('_', '-')}.yaml"
     if not p.exists():
         # Try snake_case form as a fallback (file naming variance)
         p = _resolve_policies_dir() / f"{pid.replace('-', '_')}.yaml"
     if not p.exists():
-        return ProfileSpec(profile_id=pid, name=f"unknown profile: {pid}")
+        return ProfileSpec(profile_id=pid, name=f"unknown profile: {pid}", resolved=False)
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return ProfileSpec.model_validate(data)
+    spec = ProfileSpec.model_validate(data)
+    spec.resolved = True
+    return spec
 
 
 def list_profiles() -> list[str]:

@@ -342,6 +342,126 @@ def test_minified_non_js_stays_a_build_artifact(tmp_path) -> None:
     assert any(s.reason == BUILD_ARTIFACT_SKIP_REASON for s in report.skipped_files)
 
 
+# ---------------------------------------------------------------------------
+# 개선 5 (C1) — 적용되지 않은 프로파일을 적용된 것처럼 적지 않는다
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_profile_is_reported_not_silently_substituted() -> None:
+    """요청한 프로파일이 없으면 리포트가 그 사실을 말해야 한다.
+
+    실측(하네스 연동): MCP `scan_path(profile="dev-quick")` 이 정책 파일을 못 찾아
+    아무 필터도 걸리지 않았는데 머리표에는 `dev-quick` 으로 판정했다고 찍혔다.
+    CLI 는 경고 후 기본값으로 바꿔 정직했지만 API·MCP 경로에는 그 처리가 없었다.
+    """
+    from gvskb.scanner import scan_code
+
+    report = scan_code("x = 1\n", filename="a.py", profile="dev-quick")
+
+    assert report.profile == "public-default-strict"      # 실제 적용된 것
+    fb = report.profile_fallback
+    assert fb is not None
+    assert fb["requested"] == "dev-quick"
+    assert fb["applied"] == "public-default-strict"
+    assert "public-default-strict" in fb["available"]
+
+    md = render_markdown(report)
+    assert "dev-quick" in md and "찾지 못해 대체" in md
+
+
+def test_known_profile_has_no_fallback_noise() -> None:
+    """과잉 교정 방지 — 정상 프로파일에는 대체 안내가 붙지 않는다."""
+    from gvskb.scanner import scan_code
+
+    report = scan_code("x = 1\n", filename="a.py", profile="public-default-strict")
+    assert report.profile_fallback is None
+    assert "찾지 못해 대체" not in render_markdown(report)
+
+
+# ---------------------------------------------------------------------------
+# 개선 6 (C3) — 파일명으로 추정한 컴포넌트를 레지스트리로 검증한다
+# ---------------------------------------------------------------------------
+
+
+def test_banner_name_beats_filename_for_chartjs() -> None:
+    """`chart.min.js` 의 실체는 Chart.js(npm `chart.js`)다 — npm `chart` 가 아니다.
+
+    파일명만 믿으면 전혀 다른 패키지(최신 0.1.2)를 조회해 '이상 없음'이 나온다.
+    """
+    from gvskb.tools.vendor_bundle import identify_vendor_bundle
+
+    vb = identify_vendor_bundle(
+        "static/chart.min.js", "/*! Chart.js v3.9.1 | (c) Chart.js Contributors */\nvar x=1;"
+    )
+    assert vb.version == "3.9.1"
+    assert vb.name_candidates[0] == "chart.js"      # 배너 이름이 파일명보다 앞선다
+    assert "chart" in vb.name_candidates
+
+
+def test_unresolvable_component_is_not_reported_clean() -> None:
+    """레지스트리에 없는 조합은 '이상 없음'이 아니라 판정 불가다.
+
+    네트워크를 타지 않도록 오프라인 경로가 아닌 '후보 없음'을 직접 검증한다.
+    """
+    import asyncio
+
+    from gvskb.tools import vendor_bundle as vb_mod
+
+    async def _no_match(candidates, version, *, timeout=10.0):
+        return None, "no_match"
+
+    orig = vb_mod.resolve_npm_component
+    vb_mod.resolve_npm_component = _no_match
+    try:
+        audit = asyncio.run(vb_mod.audit_vendor_bundles([{
+            "path": "static/mylib.min.js", "name": "mylib", "version": "9.9.9",
+            "evidence": "파일명에 버전 표기", "ecosystem": "npm",
+            "detected_by": "name", "name_candidates": ["mylib"],
+        }]))
+    finally:
+        vb_mod.resolve_npm_component = orig
+
+    (check,) = audit["checks"]
+    assert check["verdict"] == "unchecked"
+    assert check["checked"] is False
+    assert audit["unchecked_count"] == 1
+    assert "다른 라이브러리일 수 있어" in check["note"]
+
+
+def test_unverified_identity_is_flagged_for_review() -> None:
+    """오프라인 등으로 확인하지 못했으면 '확인함'으로 두지 않는다."""
+    import asyncio
+
+    from gvskb.tools import vendor_bundle as vb_mod
+
+    async def _unverified(candidates, version, *, timeout=10.0):
+        return candidates[0], "unverified"
+
+    async def _fake_audit(text, **kw):
+        return {"ecosystem": "npm", "verdict": "ok", "parsed_count": 1,
+                "checked_count": 1, "unchecked_count": 0, "blocked": False,
+                "checks": [{"name": "mylib", "version": "1.0.0", "checked": True,
+                            "is_malicious_package": False, "vulnerability_count": 0}]}
+
+    orig_r, orig_a = vb_mod.resolve_npm_component, None
+    vb_mod.resolve_npm_component = _unverified
+    import gvskb.tools.check_package as cp
+    orig_a, cp.audit_manifest = cp.audit_manifest, _fake_audit
+    try:
+        audit = asyncio.run(vb_mod.audit_vendor_bundles([{
+            "path": "static/mylib.min.js", "name": "mylib", "version": "1.0.0",
+            "evidence": "파일명에 버전 표기", "ecosystem": "npm",
+            "detected_by": "name", "name_candidates": ["mylib"],
+        }]))
+    finally:
+        vb_mod.resolve_npm_component = orig_r
+        cp.audit_manifest = orig_a
+
+    (check,) = audit["checks"]
+    assert check["requires_review"] is True
+    assert "'안전' 아님" in check["note"]
+
+
 def test_hashed_build_artifact_stays_a_build_artifact(tmp_path) -> None:
     """과잉 교정 방지 — 콘텐츠 해시가 박힌 진짜 빌드 산출물은 벤더 번들이 아니다."""
     from gvskb.scanner import BUILD_ARTIFACT_SKIP_REASON, scan_path

@@ -61,6 +61,7 @@ class VendorBundle:
     version: str | None
     evidence: str          # 어디서 알아냈는지 — 사람이 검증할 수 있게 남긴다
     ecosystem: str = "npm"
+    name_candidates: tuple[str, ...] = ()   # 레지스트리로 검증할 이름 후보(우선순위 순)
 
     def as_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ class VendorBundle:
             "version": self.version,
             "evidence": self.evidence,
             "ecosystem": self.ecosystem,
+            "name_candidates": list(self.name_candidates or (self.name,)),
         }
 
 
@@ -129,29 +131,104 @@ def _version_from_self_assignment(text: str, name: str) -> str | None:
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+# 배너에서 라이브러리 이름을 뽑는다: `/*! Chart.js v3.9.1 */` → `Chart.js`
+_BANNER_NAME_RE = re.compile(r"^[\s/*!]*([A-Za-z][\w.\-]{1,40})", re.MULTILINE)
+
+
+def banner_name_candidates(text: str, filename_name: str) -> tuple[str, ...]:
+    """레지스트리로 검증할 이름 후보를 우선순위 순으로 만든다.
+
+    파일명만 믿으면 틀린다 — 실측: `chart.min.js` 는 **Chart.js** 인데 파일명 기준
+    이름은 `chart` 이고, npm 의 `chart` 는 전혀 다른 패키지다(최신 0.1.2). 그대로
+    조회하면 "이상 없음"이 나와 **조용한 초록불**이 된다. 배너가 선언한 이름
+    (`Chart.js` → `chart.js`)을 후보에 넣어 레지스트리가 고르게 한다.
+    """
+    cands: list[str] = []
+
+    head = text[:_BANNER_SCAN_BYTES]
+    if head.lstrip().startswith("/*"):
+        end = head.find("*/")
+        banner = head[: end if end != -1 else len(head)]
+        m = _BANNER_NAME_RE.search(banner)
+        if m:
+            raw = m.group(1).strip(".-_")
+            for cand in (raw.lower(), _strip_dist_tokens(raw.lower())):
+                if cand and cand not in cands:
+                    cands.append(cand)
+
+    for cand in (filename_name.lower(), _strip_dist_tokens(filename_name.lower())):
+        if cand and cand not in cands:
+            cands.append(cand)
+    return tuple(cands)
+
+
 def identify_vendor_bundle(path: str, text: str) -> VendorBundle:
     """벤더 번들 1건을 식별한다. 버전을 확신할 수 없으면 ``version=None``.
 
     ``path`` 는 리포트에 실릴 상대경로, ``text`` 는 파일 내용(전체 또는 충분히 긴 앞부분).
     """
     name = component_name_from_filename(path)
+    cands = banner_name_candidates(text, name)
 
     ver = _version_from_filename(path)
     if ver:
-        return VendorBundle(path=path, name=name, version=ver, evidence="파일명에 버전 표기")
+        return VendorBundle(path=path, name=name, version=ver,
+                            evidence="파일명에 버전 표기", name_candidates=cands)
 
     ver = _version_from_banner(text, name)
     if ver:
-        return VendorBundle(path=path, name=name, version=ver, evidence="선두 배너 주석")
+        return VendorBundle(path=path, name=name, version=ver,
+                            evidence="선두 배너 주석", name_candidates=cands)
 
     ver = _version_from_self_assignment(text, name)
     if ver:
         return VendorBundle(
             path=path, name=name, version=ver,
-            evidence=f"본문 `{name}.version` 대입",
+            evidence=f"본문 `{name}.version` 대입", name_candidates=cands,
         )
 
-    return VendorBundle(path=path, name=name, version=None, evidence="버전 표기를 찾지 못함")
+    return VendorBundle(path=path, name=name, version=None,
+                        evidence="버전 표기를 찾지 못함", name_candidates=cands)
+
+
+async def resolve_npm_component(
+    candidates: list[str] | tuple[str, ...],
+    version: str,
+    *,
+    timeout: float = 10.0,
+) -> tuple[str | None, str]:
+    """후보 이름 중 **그 버전이 실제로 존재하는** npm 패키지를 고른다.
+
+    반환 ``(이름 | None, 상태)``. 상태는 ``verified`` · ``no_match`` · ``unverified``.
+    ``unverified`` 는 오프라인·통신 실패로 확인하지 못한 것이며 **'맞다'는 뜻이 아니다.**
+    """
+    import os
+
+    import httpx
+
+    if os.environ.get("GVSKB_MODE", "").lower() == "offline":
+        return (candidates[0] if candidates else None), "unverified"
+
+    unreachable = False
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for name in candidates:
+            try:
+                resp = await client.get(f"https://registry.npmjs.org/{name}")
+            except httpx.HTTPError:
+                unreachable = True
+                continue
+            if resp.status_code != 200:
+                continue
+            try:
+                versions = (resp.json() or {}).get("versions") or {}
+            except ValueError:
+                unreachable = True
+                continue
+            if version in versions:
+                return name, "verified"
+    if unreachable:
+        return (candidates[0] if candidates else None), "unverified"
+    return None, "no_match"
 
 
 async def audit_vendor_bundles(
@@ -167,7 +244,23 @@ async def audit_vendor_bundles(
     from .check_package import audit_manifest
     from .installed_packages import to_requirements_text
 
-    identified = [b for b in bundles if b.get("version")]
+    # 파일명으로 뽑은 이름을 그대로 믿지 않는다 — 그 버전이 레지스트리에 실재하는
+    # 후보만 검사한다. 실측: `chart.min.js`(Chart.js 3.9.1)를 npm `chart` 로 조회하면
+    # 그 버전이 없는데도 `checked_clean`(이상 없음)이 나왔다 — 조용한 초록불이다.
+    identified: list[dict] = []
+    mismatched: list[dict] = []
+    for b in bundles:
+        if not b.get("version"):
+            continue
+        cands = b.get("name_candidates") or [b["name"]]
+        resolved, status = await resolve_npm_component(cands, str(b["version"]))
+        if status == "no_match" or not resolved:
+            mismatched.append(b)
+            continue
+        item = {**b, "name": resolved, "identity": status}
+        if resolved != b["name"]:
+            item["renamed_from"] = b["name"]
+        identified.append(item)
     # 버전 미상을 '판정 불가'로 올릴지는 **벤더라는 근거의 세기**로 가른다.
     # 파일명 `.min.`(detected_by="name")은 작성자가 배포본 라이브러리를 넣었다는
     # 명시적 신호이므로 판정 불가로 남긴다. 반면 이름은 평범한데 내용만 미니파이드인
@@ -201,6 +294,38 @@ async def audit_vendor_bundles(
         if b:
             c["vendor_bundle_path"] = b["path"]
             c["vendor_bundle_evidence"] = b["evidence"]
+            if b.get("renamed_from"):
+                c["vendor_bundle_evidence"] += (
+                    f" · 파일명은 `{b['renamed_from']}` 이나 레지스트리 대조로 확정"
+                )
+            # 확인하지 못한 것을 확인한 것처럼 두지 않는다(오프라인·통신 실패).
+            if b.get("identity") == "unverified":
+                c["requires_review"] = True
+                c["note"] = (
+                    (c.get("note") or "")
+                    + " 벤더 번들 식별을 레지스트리로 확인하지 못했습니다 — 다른 "
+                      "라이브러리일 수 있습니다('안전' 아님)."
+                ).strip()
+
+    # 레지스트리에 그 이름·버전이 없다 = 우리 추정이 틀렸다. '이상 없음'이 아니라
+    # 판정 불가로 남긴다 — 엉뚱한 패키지의 결과를 그 파일의 결과로 말하면 안 된다.
+    for b in mismatched:
+        audit.setdefault("checks", []).append({
+            "name": b["name"], "version": b.get("version"), "checked": False,
+            "verdict": "unchecked", "requires_review": True,
+            "is_malicious_package": False, "vulnerability_count": 0,
+            "note": (
+                f"{b['path']} — 추정한 `{b['name']}@{b.get('version')}` 이(가) npm 에 없습니다. "
+                f"다른 라이브러리일 수 있어 검사하지 못했습니다(후보: "
+                f"{', '.join(b.get('name_candidates') or [b['name']])})"
+            ),
+            "vendor_bundle_path": b["path"],
+            "vendor_bundle_evidence": b.get("evidence", ""),
+        })
+    if mismatched:
+        audit["unchecked_count"] = int(audit.get("unchecked_count") or 0) + len(mismatched)
+        audit["parsed_count"] = int(audit.get("parsed_count") or 0) + len(mismatched)
+        audit["requires_review"] = True
 
     for b in unknown:
         audit.setdefault("checks", []).append({
