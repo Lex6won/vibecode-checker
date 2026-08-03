@@ -221,7 +221,11 @@ def _run_dependency_audit(
             continue  # 락파일이 이미 상위 집합을 검사한다
         manifests.append((p, rel, eco))
 
-    if not manifests and not include_installed:
+    # 벤더 번들(static/*.min.js)은 매니페스트가 없어도 검사 대상이다 — 매니페스트도
+    # node_modules 도 없는 프로젝트에서는 이것이 **유일한 컴포넌트 발견 경로**다.
+    vendor_bundles = list(getattr(report, "vendor_bundles", None) or [])
+
+    if not manifests and not include_installed and not vendor_bundles:
         print(
             "[gvskb] --check-deps: 검사할 매니페스트(requirements*.txt·package.json)를 찾지 못했습니다.",
             file=sys.stderr,
@@ -290,6 +294,14 @@ def _run_dependency_audit(
                             c["registry_metadata"]["license"] = lic
                         c["license_source"] = "installed-metadata"
                 out.append(audit)
+
+        # 벤더 번들(`static/*.min.js`) — 그 자체가 프로젝트가 실행하는 남의 코드다.
+        # 실측(응소ON): `xlsx 0.18.5` 가 CVE-2023-30533 등에 해당하는데, 예전에는
+        # '빌드 산출물'로 제외돼 매니페스트·설치본 어느 경로에도 걸리지 않았다.
+        if vendor_bundles:
+            from .tools.vendor_bundle import audit_vendor_bundles
+
+            out.append(await audit_vendor_bundles(vendor_bundles, env_grade=env_grade))
         return out
 
     return {"audits": asyncio.run(_gather())}

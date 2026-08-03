@@ -353,6 +353,16 @@ DEFAULT_EXCLUDE_PATH_SUFFIXES: tuple[str, ...] = (
 # "빌드 산출물 N건 제외" 한 줄을 집계한다(scanner→report 결합도 최소화).
 BUILD_ARTIFACT_SKIP_REASON = "빌드 산출물(압축/번들) — 원본 소스 아님"
 
+# 벤더링된 서드파티 라이브러리(`static/xlsx.full.min.js` 같은 것). 빌드 산출물과
+# **성격이 다르다** — 빌드 출력은 원본 소스가 따로 있지만, 벤더 번들은 그 자체가
+# 프로젝트가 실제로 실행하는 남의 코드이고 알려진 취약점이 붙는다.
+# 예전에는 둘을 같은 사유로 묶어 조용히 제외했고, 그 결과 응소ON 의
+# `xlsx 0.18.5`(CVE-2023-30533 등)를 아무도 보지 않았다. 소스 룰 검사는 계속
+# 제외하되(오탐 방지 원래 의도), 컴포넌트 취약점 검사로 넘긴다.
+VENDOR_BUNDLE_SKIP_REASON = (
+    "벤더 번들(외부 라이브러리) — 소스 룰 검사 제외, 컴포넌트 취약점 검사 대상"
+)
+
 # 콘텐츠 해시가 박힌 빌드 파일명: app-3f9a2c1b.js, chunk.4F2A.css, main.min.js 등.
 # Vite/webpack/rollup/esbuild 의 캐시버스팅 산출물을 파일명만으로 거른다.
 _HASHED_ASSET_RE = re.compile(
@@ -374,11 +384,35 @@ def _looks_binary(sample: bytes) -> bool:
 
 
 def _looks_like_build_artifact_name(name: str) -> bool:
-    """파일명만으로 압축/번들 산출물을 식별한다(해시 파일명 · *.min.* )."""
+    """파일명만으로 **빌드 산출물**을 식별한다(콘텐츠 해시가 박힌 캐시버스팅 파일).
+
+    ``*.min.*`` 은 여기서 빼야 한다 — 그것은 빌드 출력이 아니라 대개 벤더링된
+    서드파티 라이브러리이고, `_looks_like_vendor_bundle_name` 이 따로 받는다.
+    """
+    return bool(_HASHED_ASSET_RE.search(name.lower()))
+
+
+def _looks_like_vendor_bundle_name(name: str) -> bool:
+    """``*.min.js`` 계열 — 벤더링된 프런트엔드 라이브러리 후보."""
     lower = name.lower()
-    if ".min." in lower:
-        return True
-    return bool(_HASHED_ASSET_RE.search(lower))
+    return ".min." in lower and lower.endswith((".js", ".mjs", ".cjs"))
+
+
+# 식별을 위해 읽어들일 최대 바이트. 라이브러리 자기 버전 대입은 파일 중간에
+# 나올 수 있다(실측: xlsx 0.18.5 는 639KB 중 31.7% 지점) — 앞부분만 봐선 못 찾는다.
+_VENDOR_READ_MAX_BYTES = 5_000_000
+
+
+def _identify_vendor_bundle_file(p: Path, rel_path: str) -> dict | None:
+    """벤더 번들 파일을 읽어 컴포넌트(이름·버전)를 식별한다. 읽기 실패 시 None."""
+    from .tools.vendor_bundle import identify_vendor_bundle
+
+    try:
+        with p.open("rb") as fh:
+            raw = fh.read(_VENDOR_READ_MAX_BYTES)
+    except OSError:
+        return None
+    return identify_vendor_bundle(rel_path, raw.decode("utf-8", errors="replace")).as_dict()
 
 
 def _looks_minified(text: str) -> bool:
@@ -427,6 +461,7 @@ def scan_path(
     inc = frozenset(e.lower() for e in (include_exts or DEFAULT_INCLUDE_EXTS))
     exc = frozenset(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
     skipped: list[SkippedFile] = []
+    vendor_bundles: list[dict] = []                  # 벤더 번들 식별 결과(SCA 대상)
     external: list[ExternalConnection] = []          # 외부 연결 인벤토리 누적
     manifest_files: list[tuple[Path, str]] = []      # (경로, ecosystem) — 플러그인 목록용
 
@@ -497,7 +532,19 @@ def scan_path(
                         reason=f"검사 대상 확장자 아님({p.suffix or '확장자 없음'}) — 검사되지 않았습니다",
                     ))
                     continue
-                # 압축/번들 산출물(해시 파일명 · *.min.*)은 원본이 아니므로 스킵.
+                # 벤더 번들(*.min.js)은 **조용히 빼지 않는다** — 소스 룰 검사에서만
+                # 빼고, 어떤 컴포넌트인지 식별해 취약점 검사로 넘긴다.
+                if _looks_like_vendor_bundle_name(name):
+                    rel_path = _rel(p, root, is_dir)
+                    vb = _identify_vendor_bundle_file(p, rel_path)
+                    if vb is not None:
+                        vendor_bundles.append(vb)
+                    skipped.append(SkippedFile(
+                        path=rel_path,
+                        reason=VENDOR_BUNDLE_SKIP_REASON,
+                    ))
+                    continue
+                # 콘텐츠 해시가 박힌 빌드 산출물은 원본이 따로 있으므로 스킵.
                 # single-line 초장문(내용 기준)은 아래에서 텍스트 확인 후 거른다.
                 if _looks_like_build_artifact_name(name):
                     skipped.append(SkippedFile(
@@ -612,6 +659,7 @@ def scan_path(
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),
         suppression_summary=suppression_summary,
+        vendor_bundles=vendor_bundles,
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}

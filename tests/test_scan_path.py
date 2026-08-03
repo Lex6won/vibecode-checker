@@ -89,7 +89,10 @@ def test_scan_path_returns_skipped_entry_for_missing_path(tmp_path: Path) -> Non
 # 노이즈 제거 — 빌드 산출물(압축/번들·빌드 출력 디렉터리) 자동 제외
 # ---------------------------------------------------------------------------
 
-from gvskb.scanner import BUILD_ARTIFACT_SKIP_REASON  # noqa: E402
+from gvskb.scanner import (  # noqa: E402
+    BUILD_ARTIFACT_SKIP_REASON,
+    VENDOR_BUNDLE_SKIP_REASON,
+)
 
 # 룰이 줄마다 걸리는 미니파이드 번들 한 줄. 검사하면 오탐이 폭주한다.
 _NOISY = "function deleteNode(){};function removeItem(){};agent.send_email();\n" * 40
@@ -116,7 +119,9 @@ def test_scan_path_excludes_build_output_dirs(tmp_path: Path) -> None:
 
 
 def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
-    # 해시 파일명 · *.min.* · single-line 초장문 — 모두 빌드 산출물로 스킵.
+    # 해시 파일명 · single-line 초장문 = 빌드 산출물, `*.min.js` = 벤더 번들.
+    # 셋 다 소스 룰 검사에서는 빠지지만 **사유가 다르다** — 벤더 번들은 조용히
+    # 버리지 않고 컴포넌트 취약점 검사로 넘긴다(라운드6).
     _write(tmp_path / "src" / "main.py", "import os\n")
     _write(tmp_path / "src" / "index-3f9a2c1b.js", _NOISY)   # 해시 파일명
     _write(tmp_path / "src" / "widget.min.js", "var a=1;\n" * 5)  # *.min.*
@@ -130,7 +135,11 @@ def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
     assert "src/widget.min.js" not in scanned
     assert "src/inline.js" not in scanned
     build = [s for s in report.skipped_files if s.reason == BUILD_ARTIFACT_SKIP_REASON]
-    assert len(build) >= 3
+    assert len(build) >= 2
+    vendor = [s for s in report.skipped_files if s.reason == VENDOR_BUNDLE_SKIP_REASON]
+    assert [s.path.replace("\\", "/") for s in vendor] == ["src/widget.min.js"]
+    # 제외로 끝나지 않고 컴포넌트 후보로 남아야 한다.
+    assert [b["name"] for b in report.vendor_bundles] == ["widget"]
 
 
 def test_scan_path_keeps_real_source_when_noise_present(tmp_path: Path) -> None:

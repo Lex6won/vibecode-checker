@@ -81,8 +81,8 @@
     <h1>vibecode-checker 검증 이력 — 상용 도구 비교 및 개선 트래킹</h1>
     <p>실제 공공 프로젝트를 상용 도구와 나란히 점검하고, 발견된 결함을 고쳐 나가는 누적 기록입니다.</p>
     <div class="meta">
-      <span>문서 v4.0</span><span>2026-07-31</span><span>엔진 v0.3.0</span>
-      <span>테스트 632건 통과</span><span>라운드 5회 완료</span><span>오탐 68% → 0%</span>
+      <span>문서 v5.0</span><span>2026-08-03</span><span>엔진 v0.3.0</span>
+      <span>테스트 810건 통과</span><span>라운드 6회 완료</span><span>오탐 68% → 0%</span>
     </div>
   </div>
 </header>
@@ -550,6 +550,72 @@ app_20260607.py  → BOM 있음 → 동일
     <b>배포본·AI 도구 전달 시 유출 경로</b>가 되므로 보관 방식 확인 대상입니다.
   </div>
 
+  <h2>라운드 6 — 스패로우 367쪽 전문 대조 (2026-08-03)</h2>
+  <p>이전 라운드가 보고서의 일부만 봤던 것과 달리, <b>367쪽 전문을 추출해 272건을 전수 분해</b>하고
+  원본과 대조했습니다.</p>
+
+  <h3>1. 스패로우 272건의 실제 구성</h3>
+  <table>
+    <tr><th>구분</th><th>건수</th><th>성격</th></tr>
+    <tr><td>소스코드 — C/C++ (<code>installers/nssm-2.24/</code>)</td><td>45</td><td>서드파티 설치 프로그램</td></tr>
+    <tr><td>소스코드 — Python</td><td>6</td><td>직접 대조 대상</td></tr>
+    <tr><td>컴포넌트 엔트리(라이선스 + 취약)</td><td>221</td><td>SCA</td></tr>
+    <tr><td><b>합계</b></td><td><b>272</b></td><td></td></tr>
+  </table>
+  <p>221건 중 <b>pillow 12.2.0 하나가 106건(39%)</b> 입니다 — 같은 패키지·같은 버전을
+  <code>requirements.txt</code> 36 · <code>.venv</code> 33 · <code>offline_packages</code> 32 로
+  세 번 계상했습니다. 우리는 같은 pillow 를 "취약점 26건" 한 줄로 냅니다.</p>
+
+  <h3>2. 오탐 판정 — 스패로우 15건 (우리 도구와 같은 기준)</h3>
+  <table>
+    <tr><th>위치</th><th>도구 주장</th><th>원본 확인</th><th>판정</th></tr>
+    <tr><td><code>app.py:638·657·1242</code></td><td>신뢰되지 않은 URL 자동접속</td>
+        <td>전부 <code>redirect(url_for('응소완료', …))</code> — 내부 엔드포인트명, 사용자 입력 미유입</td>
+        <td><span class="tag t-fp">오탐 3</span></td></tr>
+    <tr><td><code>app.py:809·892</code></td><td>하드코드된 중요정보(높음)</td>
+        <td>둘 다 <code>pw = ''</code> 빈 문자열 초기화, 직후 폼 값으로 덮어씀</td>
+        <td><span class="tag t-fp">오탐 2</span></td></tr>
+    <tr><td><code>make_test_data.py:9</code></td><td>적절하지 않은 난수(높음)</td>
+        <td><code>import random</code> 선언줄. 보안값인 응소코드는 <code>secrets.token_urlsafe(6)</code> 로 이미 올바르게 분리</td>
+        <td><span class="tag t-fp">오탐 1</span></td></tr>
+    <tr><td><code>static/qrcode.min.js</code></td><td>GPL-3.0-only <code>Cuckoo</code>(매우 높음) ×9</td>
+        <td>실체는 qrcodejs(MIT). 같은 파일에 <b>9개 버전을 동시 주장</b> = 지문 충돌</td>
+        <td><span class="tag t-fp">오탐 9</span></td></tr>
+  </table>
+
+  <h3>3. 각자만 찾은 것</h3>
+  <p><b>우리만 찾음</b> — <code>.pem</code>·<code>개인키</code>·<code>ssl/</code>·<code>secret_key</code> 를
+  367쪽 전문에서 검색한 결과 <b>스패로우 발견 0건</b>. 기관 도메인 인증서 개인키·<code>.secret_key</code>·
+  주석 내 <code>admin/admin1234</code> 를 상용툴이 통째로 놓쳤습니다 — <b>공공 특화 룰의 실증</b>입니다.</p>
+  <p><b>스패로우만 찾음(진짜)</b> — <code>static/xlsx.full.min.js</code> = <code>xlsx 0.18.5</code>.
+  OSV 확인: CVE-2023-30533(Prototype Pollution, HIGH)·CVE-2024-22363(ReDoS, HIGH).
+  <b>도달 가능성까지 확인</b> — <code>event_new.html:1015</code> 에서 사용자가 고른 엑셀을
+  <code>XLSX.read()</code> 로 파싱하므로 advisory 가 명시한 취약 경로에 실제로 닿습니다.</p>
+
+  <h3>4. 이번 라운드에 고친 결함 2종</h3>
+  <p><b>① 결론 박스가 의존성 결과를 통째로 무시</b> (신규 발견 · 재현 완료) —
+  깨끗한 소스 + <code>pillow==12.2.0</code> 만으로 재현했습니다. 같은 문서가
+  결론은 <b>"배포 승인 가능"(초록)</b>, 의존성 절은 <b>"차단 권고"</b> 라고 말했습니다.
+  소스가 깨끗하고 패키지만 위험한 프로젝트는 전부 초록불을 받았습니다 —
+  담당자가 가장 먼저 읽는 곳이라 <b>조용한 초록불</b>의 정확한 사례입니다.</p>
+  <p><b>② <code>.min.</code> 제외 규칙이 진짜 취약 컴포넌트를 가림</b> —
+  <code>static/</code> 에 직접 떨궈진 <code>*.min.js</code> 는 빌드 출력이 아니라 벤더 라이브러리입니다.
+  이 프로젝트엔 <code>package.json</code>·락파일·<code>node_modules</code> 가 하나도 없어
+  매니페스트 SCA 도 설치본 경로도 발동하지 않는 <b>이중 사각지대</b>였습니다.
+  라운드 2 백로그가 "wheel·venv·min.js" 를 묶어 잡았다가 앞 둘만 연결하고 닫혔고,
+  그 남은 절반이 위 CVE 2건이었습니다 — <b>복합 항목을 한 줄로 닫으면 나머지가 사라집니다.</b></p>
+
+  <h3>5. 최종 결과 (응소ON 재스캔)</h3>
+  <table>
+    <tr><th>지표</th><th>라운드5</th><th>라운드6</th></tr>
+    <tr><td>발견</td><td>16</td><td><b>16</b> (손실 없음)</td></tr>
+    <tr><td>차단</td><td>2</td><td><b>2</b></td></tr>
+    <tr><td>취약 패키지</td><td>3</td><td><b>4</b> (xlsx 추가)</td></tr>
+    <tr><td>판정 불가</td><td>0</td><td><b>1</b> (qrcode — 추측 대신 정직)</td></tr>
+    <tr><td>제외 표기</td><td>빌드 산출물 2 (오탐 방지)</td><td><b>벤더 번들(컴포넌트 검사로 이관) 2</b></td></tr>
+    <tr><td>테스트</td><td>797</td><td><b>810</b></td></tr>
+  </table>
+
   <h2>라운드 기록 (누적)</h2>
   <table>
     <tr><th>라운드</th><th>일자</th><th>대상</th><th>비교 도구</th><th>주요 성과</th></tr>
@@ -566,6 +632,13 @@ app_20260607.py  → BOM 있음 → 동일
     <tr><td>5</td><td>2026-07-31</td><td>재설치 안전성</td><td>코덱스 2차</td>
         <td><b>구버전 가림 근본 수정</b>(기동 경고 + CI 패키징 잡). 비밀 파일 내용 탐지 신설로
         <code>.secret_key</code> 발견. 복제 파일 표시, 문서·설치 링크 분리(과잉 교정 1건 자체 발견·수정). 테스트 605→632</td></tr>
+    <tr><td>6</td><td>2026-08-03</td><td>응소ON 전수 대조</td><td>코드 스패로우(367쪽 전문)</td>
+        <td>스패로우 272건 전수 분해(소스 51 + 컴포넌트 221 — pillow 1종이 106건 39%).
+        <b>오탐 15건 판정</b>(Python 6 + Cuckoo GPL 9). 결함 2종 수정:
+        <b>결론 박스가 의존성을 무시</b>해 취약 패키지에도 초록불이 나오던 문제(재현 완료) ·
+        <b><code>.min.</code> 제외가 진짜 CVE 를 가림</b>(<code>xlsx 0.18.5</code> → CVE-2023-30533).
+        벤더 번들 SCA 경로 신설(CLI+MCP). 기관 도메인 개인키 미탐은 상용툴 쪽 — 공공 특화 룰 실증.
+        테스트 797→810</td></tr>
   </table>
 
   <h2>이 문서 갱신 방법</h2>
