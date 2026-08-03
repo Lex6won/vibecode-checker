@@ -168,7 +168,15 @@ async def audit_vendor_bundles(
     from .installed_packages import to_requirements_text
 
     identified = [b for b in bundles if b.get("version")]
-    unknown = [b for b in bundles if not b.get("version")]
+    # 버전 미상을 '판정 불가'로 올릴지는 **벤더라는 근거의 세기**로 가른다.
+    # 파일명 `.min.`(detected_by="name")은 작성자가 배포본 라이브러리를 넣었다는
+    # 명시적 신호이므로 판정 불가로 남긴다. 반면 이름은 평범한데 내용만 미니파이드인
+    # 것(detected_by="content")은 프로젝트 자체 번들일 수 있어, 매번 노란불을 켜면
+    # 경고 피로만 만든다(원칙 6) — 제외 목록에는 남지만 위험으로 올리지 않는다.
+    unknown = [
+        b for b in bundles
+        if not b.get("version") and b.get("detected_by", "name") == "name"
+    ]
 
     if identified:
         audit = await audit_manifest(

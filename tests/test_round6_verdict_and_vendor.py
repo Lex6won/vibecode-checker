@@ -207,6 +207,141 @@ def test_mcp_exposes_vendor_bundle_scan_tool() -> None:
     assert "scan_vendor_bundles" in names
 
 
+# ---------------------------------------------------------------------------
+# 개선 3 — 동일 컴포넌트를 매니페스트·설치본 양쪽에서 두 번 세지 않는다
+# ---------------------------------------------------------------------------
+
+
+def _audit_pair(v_manifest: str, v_installed: str, name: str = "pillow") -> dict:
+    """같은 패키지를 매니페스트와 설치본 양쪽에서 본 상황."""
+    def _one(version: str, manifest: str, source: str | None) -> dict:
+        a = {
+            "ecosystem": "pypi", "manifest": manifest,
+            "parsed_count": 1, "checked_count": 1, "unchecked_count": 0,
+            "blocked": False, "verdict": "ok",
+            "checks": [{
+                "name": name, "version": version, "checked": True,
+                "is_malicious_package": False, "vulnerability_count": 26,
+            }],
+        }
+        if source:
+            a["source"] = source
+        return a
+
+    return {"audits": [
+        _one(v_manifest, "requirements.txt", None),
+        _one(v_installed, "<설치된 패키지: pypi>", "installed-inventory"),
+    ]}
+
+
+def test_same_component_counted_once_with_both_sources() -> None:
+    """조치 단위(업그레이드할 패키지)와 알림 단위가 같아야 한다 — 원칙 6."""
+    report = _clean_source_report()
+    report.dependency_audit = _audit_pair("12.2.0", "12.2.0")
+
+    md = render_markdown(report)
+    assert "취약 패키지: **1건**" in md
+    assert "고유 1종" in md
+    # 출처는 버리지 않는다 — 조치는 모든 사본에 함께 적용해야 한다.
+    assert "requirements.txt · 설치본" in md
+
+
+def test_different_versions_stay_separate_components() -> None:
+    """과잉 병합 방지 — 버전이 다르면 서로 다른 조치 대상이다."""
+    report = _clean_source_report()
+    report.dependency_audit = _audit_pair("12.2.0", "12.3.0")
+
+    md = render_markdown(report)
+    assert "취약 패키지: **2건**" in md
+    assert "고유 2종" in md
+
+
+def test_pep503_name_variants_merge() -> None:
+    """`et_xmlfile` 과 `et-xmlfile` 은 같은 패키지다(PEP 503 정규화)."""
+    from gvskb.report import _dep_audits, _dep_merged_components
+
+    report = _clean_source_report()
+    report.dependency_audit = _audit_pair("2.0.0", "2.0.0", name="et_xmlfile")
+    report.dependency_audit["audits"][1]["checks"][0]["name"] = "et-xmlfile"
+
+    assert len(_dep_merged_components(_dep_audits(report))) == 1
+
+
+# ---------------------------------------------------------------------------
+# 개선 4 — 파일명에 `.min.` 이 없어도 내용이 미니파이드면 벤더 식별을 시도한다
+# ---------------------------------------------------------------------------
+
+
+def test_content_minified_js_is_identified_as_component(tmp_path) -> None:
+    """`vendor/lib.js` 처럼 이름은 평범한데 미니파이드인 라이브러리도 잡아야 한다."""
+    from gvskb.scanner import VENDOR_BUNDLE_SKIP_REASON, scan_path
+
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "moment.js").write_text(
+        "/*! moment.js v2.29.4 */\n" + "var a=1;" * 400, encoding="utf-8",
+    )
+
+    report = scan_path(tmp_path)
+
+    found = {(b["name"], b["version"], b["detected_by"]) for b in report.vendor_bundles}
+    assert found == {("moment", "2.29.4", "content")}
+    assert any(s.reason == VENDOR_BUNDLE_SKIP_REASON for s in report.skipped_files)
+
+
+def test_unidentified_self_bundle_does_not_raise_alarm(tmp_path) -> None:
+    """과잉 교정 방지 — 자체 번들(식별 불가·이름 신호 없음)이 매번 노란불을 켜면 안 된다.
+
+    제외 목록에는 남지만 '판정 불가'로 올리지는 않는다. 안 그러면 자체 번들을 둔
+    프로젝트는 영구히 초록불을 못 받고, 그 피로가 진짜 경고까지 묻는다(원칙 6).
+    """
+    import asyncio
+
+    from gvskb.scanner import scan_path
+    from gvskb.tools.vendor_bundle import audit_vendor_bundles
+
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "app.js").write_text("var x=1;" * 400, encoding="utf-8")
+
+    report = scan_path(tmp_path)
+    assert [b["detected_by"] for b in report.vendor_bundles] == ["content"]
+
+    audit = asyncio.run(audit_vendor_bundles(report.vendor_bundles))
+    assert audit["unchecked_count"] == 0
+    assert audit["checks"] == []
+
+
+def test_named_min_js_without_version_still_escalates(tmp_path) -> None:
+    """반대로 `.min.js` 는 작성자가 배포본 라이브러리를 넣었다는 명시적 신호다 —
+    버전을 몰라도 '판정 불가'로 남겨야 한다(조용히 사라지면 안 됨)."""
+    import asyncio
+
+    from gvskb.scanner import scan_path
+    from gvskb.tools.vendor_bundle import audit_vendor_bundles
+
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "qrcode.min.js").write_text("var QRCode;!function(){}();", encoding="utf-8")
+
+    report = scan_path(tmp_path)
+    assert [b["detected_by"] for b in report.vendor_bundles] == ["name"]
+
+    audit = asyncio.run(audit_vendor_bundles(report.vendor_bundles))
+    assert audit["unchecked_count"] == 1
+
+
+def test_minified_non_js_stays_a_build_artifact(tmp_path) -> None:
+    """미니파이드라도 `.js` 계열이 아니면 벤더 컴포넌트가 아니다."""
+    from gvskb.scanner import BUILD_ARTIFACT_SKIP_REASON, scan_path
+
+    (tmp_path / "page.html").write_text("<div>" + "x" * 3000 + "</div>", encoding="utf-8")
+    report = scan_path(tmp_path)
+
+    assert report.vendor_bundles == []
+    assert any(s.reason == BUILD_ARTIFACT_SKIP_REASON for s in report.skipped_files)
+
+
 def test_hashed_build_artifact_stays_a_build_artifact(tmp_path) -> None:
     """과잉 교정 방지 — 콘텐츠 해시가 박힌 진짜 빌드 산출물은 벤더 번들이 아니다."""
     from gvskb.scanner import BUILD_ARTIFACT_SKIP_REASON, scan_path

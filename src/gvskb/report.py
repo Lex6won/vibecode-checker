@@ -2046,19 +2046,83 @@ def _dep_audits(report: ScanReport) -> list[dict]:
     return [da]
 
 
+def _dep_source_label(audit: dict) -> str:
+    """감사 출처를 사람이 읽는 짧은 이름으로. 표의 '출처' 칸에 들어간다."""
+    src = str(audit.get("source") or "")
+    if src == "vendor-bundle":
+        return "벤더 번들"
+    if src == "installed-inventory":
+        return "설치본"
+    return str(audit.get("manifest") or audit.get("ecosystem") or "매니페스트")
+
+
+def _dep_component_key(check: dict, ecosystem: str) -> tuple[str, str, str]:
+    """(생태계, 정규화 이름, 버전) — 같은 컴포넌트를 한 번만 세기 위한 키.
+
+    PEP 503 정규화로 ``et_xmlfile`` 과 ``et-xmlfile`` 을 같은 것으로 본다.
+    """
+    from .tools.installed_packages import _normalize
+
+    name = str(check.get("name") or "")
+    norm = _normalize(name) if ecosystem.lower() == "pypi" else name.lower()
+    return (ecosystem.lower(), norm, str(check.get("version") or ""))
+
+
+def _dep_merged_components(audits: list[dict]) -> list[dict]:
+    """모든 감사의 checks 를 **고유 컴포넌트 단위로 병합**한다.
+
+    같은 패키지·같은 버전이 매니페스트·설치본·휠에 각각 있으면 예전에는 그 수만큼
+    따로 셌다 — 응소ON 실측에서 pillow 12.2.0 이 '취약 패키지 3건' 중 2건을
+    차지했다(고유 취약 컴포넌트는 pillow·pip 2종). **조치 단위(업그레이드할 패키지)와
+    알림 단위가 어긋나면 경고 피로가 생기고, 그 사이로 진짜 위험이 묻힌다**(원칙 6).
+    상용 도구(스패로우)는 같은 오류를 3배로 저질러 pillow 하나에 106건을 썼다.
+
+    출처는 버리지 않고 한 행의 ``sources`` 로 모은다 — 조치는 모든 사본에 적용해야 한다.
+    """
+    merged: dict[tuple[str, str, str], dict] = {}
+    for a in audits:
+        eco = str(a.get("ecosystem") or "?")
+        label = _dep_source_label(a)
+        for c in a.get("checks") or []:
+            key = _dep_component_key(c, eco)
+            cur = merged.get(key)
+            if cur is None:
+                merged[key] = {"check": c, "ecosystem": eco, "sources": [label]}
+                continue
+            if label not in cur["sources"]:
+                cur["sources"].append(label)
+            # 더 많이 아는 쪽을 대표로 삼는다(설치본에만 라이선스가 있는 등).
+            if _dep_check_rank(c) > _dep_check_rank(cur["check"]):
+                cur["check"] = c
+    return list(merged.values())
+
+
+def _dep_check_rank(check: dict) -> int:
+    """대표 레코드 선택 우선순위 — 위험을 아는 쪽 > 검사된 쪽 > 나머지."""
+    if check.get("is_malicious_package") or check.get("verdict") == "not_found":
+        return 3
+    if check.get("vulnerability_count"):
+        return 2
+    return 1 if check.get("checked") else 0
+
+
 def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool, int]:
-    """(검사됨, 판정불가, 취약·악성 수, 차단 여부, 미존재 수) 합계."""
+    """(검사됨, 판정불가, 취약·악성 수, 차단 여부, 미존재 수) 합계.
+
+    ``검사됨``·``판정불가`` 는 **수행한 검사 횟수**(작업량)이고, ``취약·악성``·``미존재``
+    는 **고유 컴포넌트 수**(조치 단위)다 — 후자가 담당자가 실제로 처리할 항목 수다.
+    """
     checked = sum(int(a.get("checked_count") or 0) for a in audits)
     unchecked = sum(int(a.get("unchecked_count") or 0) for a in audits)
     unchecked += sum(1 for a in audits if a.get("verdict") == "unparsed")  # 파싱 실패도 판정불가
     vuln = 0
     not_found = 0
-    for a in audits:
-        for c in a.get("checks") or []:
-            if c.get("is_malicious_package") or c.get("vulnerability_count"):
-                vuln += 1
-            if c.get("verdict") == "not_found":
-                not_found += 1
+    for comp in _dep_merged_components(audits):
+        c = comp["check"]
+        if c.get("is_malicious_package") or c.get("vulnerability_count"):
+            vuln += 1
+        if c.get("verdict") == "not_found":
+            not_found += 1
     # 미존재(슬롭스쿼팅 의심)는 '취약점 검사 불가'로 unchecked 에도 잡히지만,
     # 성격이 다르므로(설치 시도 자체가 위험) 별도 집계해 배너에 드러낸다.
     unchecked = max(0, unchecked - not_found)
@@ -2235,20 +2299,40 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
                + (f" · **미존재(가짜 이름 의심) {not_found}건**" if not_found else "")
                + (" · **차단 권고**" if blocked else ""))
     out.append("")
+
+    # 검사한 곳 목록 — 어디를 봤는지는 남기되, 표는 컴포넌트 단위로 한 번만 낸다.
+    out.append("### 검사한 곳")
+    out.append("")
     for a in audits:
         title = a.get("manifest") or a.get("ecosystem", "manifest")
-        out.append(f"### `{title}` ({a.get('ecosystem', '?')}) — 판정: {a.get('verdict', '?')}")
-        out.append("")
+        out.append(f"- `{title}` ({a.get('ecosystem', '?')}) — 판정: {a.get('verdict', '?')}")
         if a.get("verdict") == "unparsed":
-            out.append(f"> ⚠ {a.get('note', '파싱하지 못했습니다.')} **파싱 0건은 '안전'이 아닙니다.**")
-            out.append("")
-            continue
-        out.append("| 패키지 | 버전 | 라이선스 | 판정 | 비고 |")
-        out.append("|---|---|---|---|---|")
-        for c in a.get("checks") or []:
+            out.append(f"  - ⚠ {a.get('note', '파싱하지 못했습니다.')} **파싱 0건은 '안전'이 아닙니다.**")
+    out.append("")
+
+    components = _dep_merged_components(audits)
+    if components:
+        # 조치할 것부터 위로 — 악성·미존재 > 취약 > 판정 불가 > 이상 없음.
+        components.sort(
+            key=lambda comp: (
+                -_dep_check_rank(comp["check"]),
+                0 if not comp["check"].get("checked") else 1,
+                str(comp["check"].get("name") or "").lower(),
+            )
+        )
+        out.append(f"### 컴포넌트 (고유 {len(components)}종)")
+        out.append("")
+        out.append("> 같은 패키지가 매니페스트·설치본·번들에 함께 있어도 **한 줄로 셉니다**. "
+                   "조치(업그레이드)는 패키지 단위이며, **출처에 적힌 모든 사본에 함께** 적용하세요.")
+        out.append("")
+        out.append("| 패키지 | 버전 | 라이선스 | 판정 | 출처 | 비고 |")
+        out.append("|---|---|---|---|---|---|")
+        for comp in components:
+            c = comp["check"]
             out.append(
                 f"| `{c.get('name', '?')}` | {c.get('version') or '—'} | "
-                f"{_pkg_license_label(c)} | {_pkg_verdict_label(c)} | {_pkg_note(c)} |"
+                f"{_pkg_license_label(c)} | {_pkg_verdict_label(c)} | "
+                f"{' · '.join(comp['sources'])} | {_pkg_note(c)} |"
             )
         out.append("")
     if unchecked:
@@ -2276,17 +2360,33 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
         if a.get("verdict") == "unparsed":
             out.append(f'<div class="depwarn">⚠ {_esc(str(a.get("note", "파싱하지 못했습니다.")))} '
                        "<b>파싱 0건은 '안전'이 아닙니다.</b></div>")
-            continue
+
+    components = _dep_merged_components(audits)
+    if components:
+        components.sort(
+            key=lambda comp: (
+                -_dep_check_rank(comp["check"]),
+                0 if not comp["check"].get("checked") else 1,
+                str(comp["check"].get("name") or "").lower(),
+            )
+        )
+        out.append(f'<div class="subh">컴포넌트 (고유 {len(components)}종)</div>')
+        out.append('<div class="depwarn">같은 패키지가 매니페스트·설치본·번들에 함께 있어도 '
+                   '<b>한 줄로 셉니다</b>. 조치는 패키지 단위이며 <b>출처의 모든 사본에 함께</b> '
+                   "적용하세요.</div>")
         out.append("<table><tr><th>패키지</th><th>버전</th><th>라이선스</th>"
-                   "<th>판정</th><th>비고</th></tr>")
-        for c in a.get("checks") or []:
+                   "<th>판정</th><th>출처</th><th>비고</th></tr>")
+        for comp in components:
+            c = comp["check"]
             bad = c.get("is_malicious_package") or c.get("vulnerability_count")
             cls = ' class="w"' if bad else ""
             out.append(
                 f"<tr{cls}><td>{_esc(str(c.get('name', '?')))}</td>"
                 f"<td>{_esc(str(c.get('version') or '—'))}</td>"
                 f"<td>{_esc(_pkg_license_label(c))}</td>"
-                f"<td>{_esc(_pkg_verdict_label(c))}</td><td>{_esc(_pkg_note(c))}</td></tr>"
+                f"<td>{_esc(_pkg_verdict_label(c))}</td>"
+                f"<td>{_esc(' · '.join(comp['sources']))}</td>"
+                f"<td>{_esc(_pkg_note(c))}</td></tr>"
             )
         out.append("</table>")
     if unchecked:

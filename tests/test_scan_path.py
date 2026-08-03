@@ -119,7 +119,8 @@ def test_scan_path_excludes_build_output_dirs(tmp_path: Path) -> None:
 
 
 def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
-    # 해시 파일명 · single-line 초장문 = 빌드 산출물, `*.min.js` = 벤더 번들.
+    # 해시 파일명 = 빌드 산출물(원본이 따로 있음).
+    # `*.min.js` = 벤더 번들(이름 신호) · 미니파이드 `.js` = 벤더 번들(내용 신호).
     # 셋 다 소스 룰 검사에서는 빠지지만 **사유가 다르다** — 벤더 번들은 조용히
     # 버리지 않고 컴포넌트 취약점 검사로 넘긴다(라운드6).
     _write(tmp_path / "src" / "main.py", "import os\n")
@@ -134,12 +135,16 @@ def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
     assert "src/index-3f9a2c1b.js" not in scanned
     assert "src/widget.min.js" not in scanned
     assert "src/inline.js" not in scanned
-    build = [s for s in report.skipped_files if s.reason == BUILD_ARTIFACT_SKIP_REASON]
-    assert len(build) >= 2
-    vendor = [s for s in report.skipped_files if s.reason == VENDOR_BUNDLE_SKIP_REASON]
-    assert [s.path.replace("\\", "/") for s in vendor] == ["src/widget.min.js"]
-    # 제외로 끝나지 않고 컴포넌트 후보로 남아야 한다.
-    assert [b["name"] for b in report.vendor_bundles] == ["widget"]
+    build = [s.path.replace("\\", "/") for s in report.skipped_files
+             if s.reason == BUILD_ARTIFACT_SKIP_REASON]
+    assert build == ["src/index-3f9a2c1b.js"]
+    vendor = {s.path.replace("\\", "/") for s in report.skipped_files
+              if s.reason == VENDOR_BUNDLE_SKIP_REASON}
+    assert vendor == {"src/widget.min.js", "src/inline.js"}
+    # 제외로 끝나지 않고 컴포넌트 후보로 남아야 한다(이름 신호 vs 내용 신호 구분).
+    assert {(b["name"], b["detected_by"]) for b in report.vendor_bundles} == {
+        ("widget", "name"), ("inline", "content"),
+    }
 
 
 def test_scan_path_keeps_real_source_when_noise_present(tmp_path: Path) -> None:

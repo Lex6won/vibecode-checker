@@ -82,7 +82,7 @@
     <p>실제 공공 프로젝트를 상용 도구와 나란히 점검하고, 발견된 결함을 고쳐 나가는 누적 기록입니다.</p>
     <div class="meta">
       <span>문서 v5.0</span><span>2026-08-03</span><span>엔진 v0.3.0</span>
-      <span>테스트 810건 통과</span><span>라운드 6회 완료</span><span>오탐 68% → 0%</span>
+      <span>테스트 817건 통과</span><span>라운드 6회 완료</span><span>오탐 68% → 0%</span>
     </div>
   </div>
 </header>
@@ -610,10 +610,10 @@ app_20260607.py  → BOM 있음 → 동일
     <tr><th>지표</th><th>라운드5</th><th>라운드6</th></tr>
     <tr><td>발견</td><td>16</td><td><b>16</b> (손실 없음)</td></tr>
     <tr><td>차단</td><td>2</td><td><b>2</b></td></tr>
-    <tr><td>취약 패키지</td><td>3</td><td><b>4</b> (xlsx 추가)</td></tr>
+    <tr><td>취약 패키지</td><td>3</td><td><b>3종</b> (xlsx 추가 · 중복 계상 제거)</td></tr>
     <tr><td>판정 불가</td><td>0</td><td><b>1</b> (qrcode — 추측 대신 정직)</td></tr>
     <tr><td>제외 표기</td><td>빌드 산출물 2 (오탐 방지)</td><td><b>벤더 번들(컴포넌트 검사로 이관) 2</b></td></tr>
-    <tr><td>테스트</td><td>797</td><td><b>810</b></td></tr>
+    <tr><td>테스트</td><td>797</td><td><b>817</b></td></tr>
   </table>
 
   <h2>라운드 기록 (누적)</h2>
@@ -637,8 +637,8 @@ app_20260607.py  → BOM 있음 → 동일
         <b>오탐 15건 판정</b>(Python 6 + Cuckoo GPL 9). 결함 2종 수정:
         <b>결론 박스가 의존성을 무시</b>해 취약 패키지에도 초록불이 나오던 문제(재현 완료) ·
         <b><code>.min.</code> 제외가 진짜 CVE 를 가림</b>(<code>xlsx 0.18.5</code> → CVE-2023-30533).
-        벤더 번들 SCA 경로 신설(CLI+MCP). 기관 도메인 개인키 미탐은 상용툴 쪽 — 공공 특화 룰 실증.
-        테스트 797→810</td></tr>
+        벤더 번들 SCA 경로 신설(CLI+MCP) · <b>중복 계상 제거</b>(고유 컴포넌트 단위) · 미니파이드 <code>.js</code> 벤더 식별. 기관 도메인 개인키 미탐은 상용툴 쪽 — 공공 특화 룰 실증.
+        테스트 797→817</td></tr>
   </table>
 
   <h2>이 문서 갱신 방법</h2>
