@@ -181,6 +181,9 @@ def _guideline_distribution(findings: list[Finding]) -> Counter[str]:
 # ---------------------------------------------------------------------------
 
 _LINE_LIST_LIMIT = 8
+# 상세 카드에 펼쳐 보일 파일 수 상한. 넘으면 '외 N개 파일'로 접고, 전체 목록은
+# 수정 프롬프트 블록에 그대로 들어간다(잘라도 정보가 사라지지 않는 자리).
+_LOC_FILE_LIMIT = 3
 
 
 def _by_file(findings: list[Finding]) -> dict[str, list[Finding]]:
@@ -241,28 +244,58 @@ def _top_actions(findings: list[Finding], n: int = 5) -> list[dict]:
     return sorted(_rule_groups(findings), key=key)[:n]
 
 
-def _line_list(findings: list[Finding], limit: int = _LINE_LIST_LIMIT) -> str:
-    """같은 룰의 발견 위치를 'line a, b, c 외 N건' 으로 합친다."""
-    lines = sorted({f.location.line for f in findings})
-    shown = ", ".join(str(n) for n in lines[:limit])
-    if len(lines) > limit:
-        shown += f" 외 {len(lines) - limit}건"
-    return shown
+def _top_actions_scope_note(findings: list[Finding], n: int = 3) -> str:
+    """Top N 이 **전체의 일부**임을 숫자로 밝히는 한 줄.
+
+    실측 오해: Top3 는 '위험 유형(룰)' 단위 3개라 건수 합이 전체와 다르고, 분야
+    개요는 '분야' 단위 전체다. 라벨이 그 차이를 말하지 않아 읽는 사람이 두 숫자를
+    같은 것의 요약으로 보고 "왜 안 맞지"에서 멈춘다. 세는 단위를 문장으로 적는다.
+    """
+    groups = _rule_groups(findings)
+    shown = _top_actions(findings, n)
+    shown_count = sum(g["count"] for g in shown)
+    total = len(findings)
+    if len(groups) <= len(shown):
+        return f"위험 유형 {len(groups)}개 전부입니다(전체 {total}건)."
+    return (
+        f"위험 유형 {len(groups)}개 중 {len(shown)}개 · 전체 {total}건 중 {shown_count}건입니다. "
+        f"나머지 {len(groups) - len(shown)}개 유형 {total - shown_count}건은 아래 "
+        "'상세 검토 결과'에 있습니다."
+    )
 
 
-def _locations_by_file(findings: list[Finding], limit_lines: int = _LINE_LIST_LIMIT) -> str:
-    """수정 프롬프트용: 'app.py(line 2, 5); other.js(line 9)' 형태."""
+def _locations_by_file(
+    findings: list[Finding],
+    limit_lines: int = _LINE_LIST_LIMIT,
+    limit_files: int | None = None,
+) -> str:
+    """'app.py(line 2, 5); other.js(line 9)' — **파일 경로를 포함한** 위치 문자열.
+
+    상세 카드와 수정 프롬프트가 **같은 함수를 쓴다.** 예전에는 카드가 줄 번호만
+    찍어(``line 1, 39, 66``) 어느 파일인지 알 수 없었다 — 실측: 그 인증서 룰은
+    2개 파일 × 3줄인데 읽는 사람은 3건으로 읽고 나머지 3건을 찾지 못했다.
+    위치를 못 찾으면 고칠 수도 없다. 파일 경로를 아는 함수가 이미 있었는데
+    **사람이 읽는 화면에서만 버리고 있었다.**
+
+    ``limit_files`` 는 카드가 길어지지 않게 앞쪽 파일만 보이고 나머지는 개수로
+    접는다(전체 목록은 수정 프롬프트 블록에 그대로 들어간다).
+    """
     byf: dict[str, list[int]] = defaultdict(list)
     for f in findings:
         byf[f.location.file].append(f.location.line)
+    ordered = _ordered_files_by_name(byf)
+    shown = ordered[:limit_files] if limit_files else ordered
     parts: list[str] = []
-    for fn in _ordered_files_by_name(byf):
+    for fn in shown:
         lines = sorted(set(byf[fn]))
         ls = ", ".join(str(n) for n in lines[:limit_lines])
         if len(lines) > limit_lines:
             ls += f" 외 {len(lines) - limit_lines}건"
         parts.append(f"{fn.replace(chr(92), '/')}(line {ls})")
-    return "; ".join(parts)
+    text = "; ".join(parts)
+    if limit_files and len(ordered) > limit_files:
+        text += f" 외 {len(ordered) - limit_files}개 파일"
+    return text
 
 
 def _ordered_files_by_name(byf: dict[str, list[int]]) -> list[str]:
@@ -491,6 +524,116 @@ def _dep_risk(report: ScanReport) -> tuple[int, int, int, bool]:
         return (0, 0, 0, False)
     _checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
     return (vuln, unchecked, not_found, blocked)
+
+
+# ---------------------------------------------------------------------------
+# 의존성 심각도 — 패키지 판정을 **소스 발견과 같은 자**로 옮긴다.
+#
+# 왜 필요한가(실측): 보안 분야 개요·심각도 표는 소스 발견만 셌고 패키지는 어느
+# 분야에도 없었다. 그런데 결론 박스는 "차단 기준에 걸린 패키지"를 근거로 배포를
+# 막는다 — **판정에는 쓰이는데 집계에는 없는** 상태였다. 게다가 두 심각도가 서로
+# 다른 방식으로 정해진다(룰은 저작 시 고정, 패키지는 검사 시 계산)는 사실이
+# 보고서 어디에도 없어, 읽는 사람은 '높음'끼리 같은 자로 잰 값이라 오해한다.
+#
+# 아래 매핑은 **표시 계층 전용**이다. ``report.findings``·발견 건수·게이트 판정은
+# 건드리지 않는다(패키지를 소스 발견으로 둔갑시키지 않는다). 이 표는 보고서
+# 부록 '심각도 판정 기준'에 그대로 실려, 독자가 근거를 확인할 수 있다.
+# ---------------------------------------------------------------------------
+
+#: (판정 조건, 심각도, 부록 기준표에 적을 설명). 위에서부터 첫 매칭 우선.
+_DEP_SEVERITY_TABLE: tuple[tuple[str, Severity, str], ...] = (
+    ("malicious", Severity.critical, "악성 패키지 · 기관 레지스트리 차단 · 레지스트리에 없는 이름(가짜 이름 의심)"),
+    ("kev_or_high", Severity.high, "취약점 있음 + CISA KEV 등재 또는 CVSS 심각도 HIGH·CRITICAL"),
+    ("vulnerable", Severity.medium, "취약점 있음 (CVSS MEDIUM 이하 또는 심각도 미상)"),
+    ("cooldown", Severity.medium, "발행 직후 버전 — 쿨다운 보류(위험 확인이 아니라 '아직 신뢰할 수 없음')"),
+)
+
+
+def _dep_component_severity(check: dict) -> Severity | None:
+    """패키지 1건 → 보고서 심각도. None 이면 **등급을 매기지 않는다**.
+
+    등급을 매기지 않는 경우가 두 가지고 성격이 다르다:
+    이상 없음(위험이 없다)과 판정 불가(확인하지 못했다). 판정 불가를 '낮음'으로
+    적으면 확인하지 못한 것이 확인된 것처럼 보이므로, 등급 대신 별도 칸에 센다.
+    """
+    if check.get("is_malicious_package") or check.get("verdict") in ("registry_rejected", "not_found"):
+        return Severity.critical
+    if check.get("vulnerability_count"):
+        if check.get("in_kev") or str(check.get("max_cve") or "").upper() in ("HIGH", "CRITICAL"):
+            return Severity.high
+        return Severity.medium
+    if check.get("verdict") == "cooldown_hold":
+        return Severity.medium
+    return None
+
+
+def _dep_domain_row(report: ScanReport) -> dict | None:
+    """의존성을 '보안 분야' 한 줄로 — 소스 분야 표에 같이 올리기 위한 집계.
+
+    ``count`` 는 등급이 매겨진 **고유 패키지 수**(= 담당자가 업그레이드할 항목 수)이고,
+    ``unknown`` 은 판정 불가 수다. 둘을 더하지 않는다 — 조치 단위가 다르다.
+    """
+    audits = _dep_audits(report)
+    if not audits:
+        return None
+    by_severity: Counter[str] = Counter()
+    graded: list[dict] = []
+    for comp in _dep_merged_components(audits):
+        sev = _dep_component_severity(comp["check"])
+        if sev is None:
+            continue
+        by_severity[sev.value] += 1
+        graded.append({**comp, "severity": sev})
+    _checked, unchecked, _vuln, _blocked, _nf = _dep_stats(audits)
+    if not graded and not unchecked:
+        return None
+    max_sev = max(
+        (g["severity"] for g in graded),
+        key=lambda s: _SEVERITY_RANK[s],
+        default=None,
+    )
+    return {
+        "label": "의존성·공급망(패키지)",
+        "count": len(graded),
+        "packages": len(graded),
+        "unknown": unchecked,
+        "by_severity": by_severity,
+        "max_severity": max_sev,
+        "components": graded,
+    }
+
+
+def _domain_table_notes(
+    report: ScanReport, domains: list[dict], dep_row: dict | None,
+) -> list[str]:
+    """분야 개요표 아래 각주 — 표의 숫자가 무엇을 세는지 밝힌다.
+
+    실측 오해 두 가지를 잡는다.
+    1. **파일 열의 합이 실제 파일 수와 다르다** — 한 파일이 두 분야에 걸리면
+       (예: 같은 파일의 주석 계정 + 자원 해제) 분야마다 한 번씩 세어진다.
+       건수에는 '고유 위치'를 함께 적어 두면서 파일 수에는 같은 장치가 없었다.
+    2. **의존성은 다른 자로 잰다** — 심각도 산정 방식이 소스와 다르고, 판정 불가는
+       등급을 매기지 않는다.
+    """
+    notes: list[str] = []
+    files_sum = sum(d["files"] for d in domains)
+    unique_files = len({f.location.file for f in report.findings})
+    if files_sum != unique_files:
+        notes.append(
+            f"**파일 열은 분야별로 셉니다** — 한 파일이 여러 분야에 걸리면 각 분야에서 "
+            f"한 번씩 세므로 합({files_sum})이 실제 파일 수({unique_files}개)보다 큽니다."
+        )
+    if dep_row:
+        unknown = dep_row.get("unknown") or 0
+        notes.append(
+            "**의존성·공급망 행은 패키지 단위**입니다(파일이 아니라 고유 패키지 수). "
+            "심각도는 소스 룰과 다른 기준으로 정해집니다 — 부록의 심각도 판정 기준 참조."
+            + (
+                f" 판정 불가 {unknown}건은 확인하지 못한 것이라 등급 없이 별도로 셉니다."
+                if unknown else ""
+            )
+        )
+    return notes
 
 
 def _dep_verdict_clause(report: ScanReport) -> str:
@@ -884,6 +1027,14 @@ def render_markdown(
             + (f" · 판정 불가 {_dep_unchecked}건" if _dep_unchecked else "")
             + " (아래 '의존성(패키지) 취약점 검사')"
         )
+    # 소스와 패키지를 합친 '실제 조치할 항목 수' — 둘을 따로만 적으면 담당자가
+    # 총량을 못 잡는다. 합계는 표시용이며 발견 건수(게이트 기준)는 그대로 둔다.
+    _dep_row_sum = _dep_domain_row(report)
+    if _dep_row_sum and _dep_row_sum["count"]:
+        lines.append(
+            f"- **총 조치 대상: {summary.finding_count + _dep_row_sum['count']}건** "
+            f"(소스 코드 {summary.finding_count}건 · 패키지 {_dep_row_sum['count']}건)"
+        )
     if suppressed:
         lines.append(f"- 승인된 예외(요약에서 제외): {len(suppressed)}건 (아래 '승인된 예외 내역')")
     # 판정 근거 분포 — 숫자만 크게 보이고 근거가 약하면 신뢰가 무너진다.
@@ -895,13 +1046,40 @@ def render_markdown(
         lines.append(dup_line)
     lines.append("")
 
-    if any(summary.by_severity.values()):
-        lines.append("| 심각도 | 건수 |")
-        lines.append("|---|---|")
+    # 심각도 표 — 의존성 검사를 했으면 **열을 나눠** 함께 싣는다. 소스와 패키지는
+    # 심각도를 정하는 방식이 다르므로(부록 '심각도 판정 기준') 한 칸에 합치지 않고
+    # 열로 구분한다. 합계 열은 담당자가 총량을 잡는 용도다.
+    _dep_sev = (_dep_row_sum or {}).get("by_severity") or Counter()
+    if any(summary.by_severity.values()) or _dep_sev:
+        if _dep_sev:
+            lines.append("| 심각도 | 소스 코드 | 의존성(패키지) | 합계 |")
+            lines.append("|---|---|---|---|")
+        else:
+            lines.append("| 심각도 | 건수 |")
+            lines.append("|---|---|")
         for sev in (Severity.critical, Severity.high, Severity.medium, Severity.low):
             count = summary.by_severity.get(sev.value, 0)
-            if count:
+            dep_count = _dep_sev.get(sev.value, 0)
+            if not count and not dep_count:
+                continue
+            if _dep_sev:
+                lines.append(
+                    f"| {_SEVERITY_LABEL_KO[sev]} ({sev.value}) | {count} | "
+                    f"{dep_count} | {count + dep_count} |"
+                )
+            else:
                 lines.append(f"| {_SEVERITY_LABEL_KO[sev]} ({sev.value}) | {count} |")
+        if _dep_sev:
+            lines.append("")
+            lines.append(
+                "> 심각도를 정하는 방식이 두 열에서 다릅니다 — 소스는 룰에 미리 정해진 등급, "
+                "패키지는 검사 시점의 취약점·악용 정보로 계산합니다(부록 '심각도 판정 기준'). "
+                + (
+                    f"판정 불가 {_dep_row_sum['unknown']}건은 **확인하지 못한 것**이라 "
+                    "등급을 매기지 않고 의존성 절에 따로 셉니다."
+                    if _dep_row_sum and _dep_row_sum.get("unknown") else ""
+                )
+            )
         lines.append("")
 
     if summary.finding_count == 0:
@@ -929,6 +1107,8 @@ def render_markdown(
     # --- ④ 가장 먼저 할 일 (Top 3) — 쉬운 말 체크리스트 --------------------
     if report.findings:
         lines.append("## 가장 먼저 할 일 (Top 3)")
+        lines.append("")
+        lines.append(f"> {_top_actions_scope_note(report.findings, 3)}")
         lines.append("")
         for g in _top_actions(report.findings, 3):
             dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
@@ -1015,7 +1195,8 @@ def render_markdown(
     # --- ⑥ 보안 분야 개요 — 어느 보안 분야가 문제인지 한눈에 ----------------
     lines.append("### 보안 분야 개요")
     lines.append("")
-    if domains:
+    dep_row = _dep_domain_row(report)
+    if domains or dep_row:
         lines.append("| 분야 | 최고 심각도 | 건수 | 파일 |")
         lines.append("|---|---|---|---|")
         for d in domains:
@@ -1023,7 +1204,16 @@ def render_markdown(
                 f"| {d['label']} | {_SEVERITY_LABEL_KO[d['max_severity']]} | "
                 f"{d['count']} | {d['files']} |"
             )
+        if dep_row:
+            lines.append(
+                f"| {dep_row['label']} | "
+                f"{_SEVERITY_LABEL_KO[dep_row['max_severity']] if dep_row['max_severity'] else '—'} | "
+                f"{dep_row['count']} | 패키지 {dep_row['packages']}종 |"
+            )
         lines.append("")
+        for note in _domain_table_notes(report, domains, dep_row):
+            lines.append(f"> {note}")
+            lines.append("")
 
         # 같은 (파일, 줄)에 여러 룰이 걸린 위치 — 표시 계층에서 묶어 보여
         # "건수가 부풀려졌다"는 오해를 막는다(core dedupe와는 무관).
@@ -1078,7 +1268,10 @@ def render_markdown(
     lines.extend(_render_suppressions_md(suppressed))
 
     # --- ⑫ 수정 프롬프트 (복사용) --------------------------------------------
-    if report.findings:
+    # 의존성 블록도 함께 낸다 — 소스만 고치면 차단이 풀리지 않는데, 그 사실을
+    # 사용자가 알 방법이 없었다(도구가 만든 막다른 길).
+    dep_prompt = _dep_fix_prompt_text(report)
+    if report.findings or dep_prompt:
         lines.append("## 수정 프롬프트 (복사해서 AI에게 전달)")
         lines.append("")
         lines.append(
@@ -1086,15 +1279,29 @@ def render_markdown(
             "아래 블록은 유형별로 따로 복사해 쓰고 싶을 때 사용하세요."
         )
         lines.append("")
+        if dep_prompt:
+            lines.append(
+                "> ⚠ **패키지 블록을 빠뜨리지 마세요** — 소스 코드만 고치면 의존성 차단이 "
+                "그대로 남아 다시 검사해도 배포 판정이 바뀌지 않습니다."
+            )
+            lines.append("")
         for g in _rule_groups(report.findings):
             lines.append("```text")
             lines.append(_fix_prompt_text(g))
+            lines.append("```")
+            lines.append("")
+        if dep_prompt:
+            lines.append("```text")
+            lines.append(dep_prompt)
             lines.append("```")
             lines.append("")
 
     # --- ⑬ 부록 — 가이드라인 분포·생략 파일·재현 절차·재검증 ----------------
     lines.append("## 부록")
     lines.append("")
+    # 심각도 기준을 먼저 — 표의 숫자를 읽는 데 필요한 근거이므로 부록 맨 앞에 둔다.
+    if report.findings or _dep_domain_row(report):
+        lines.extend(_render_severity_criteria_md(report))
     if report.findings:
         dist = _guideline_distribution(report.findings)
         if dist:
@@ -1526,16 +1733,38 @@ def render_html(
         )
     p.append("</div>")
 
-    chips = []
-    for sev in (Severity.critical, Severity.high, Severity.medium, Severity.low):
-        c = summary.by_severity.get(sev.value, 0)
-        if c:
-            chips.append(
-                f'<span class="chip" style="background:{_SEVERITY_COLOR[sev]}">'
-                f"{_SEVERITY_LABEL_KO[sev]} {c}</span>"
+    # 심각도 칩 — 의존성 검사를 했으면 **줄을 나눠** 함께 보여준다. 두 줄을 합치면
+    # 서로 다른 기준으로 잰 값이 한 덩어리로 읽힌다(부록 '심각도 판정 기준').
+    dep_row = _dep_domain_row(report)
+    _chip_lab = (
+        'display:inline-block;margin-right:6px;font-size:12px;color:#475569;font-weight:700'
+    )
+
+    def _chip_row(label: str, counts: dict) -> str | None:
+        chips = [
+            f'<span class="chip" style="background:{_SEVERITY_COLOR[sev]}">'
+            f"{_SEVERITY_LABEL_KO[sev]} {counts.get(sev.value, 0)}</span>"
+            for sev in (Severity.critical, Severity.high, Severity.medium, Severity.low)
+            if counts.get(sev.value, 0)
+        ]
+        if not chips:
+            return None
+        lab = f'<span style="{_chip_lab}">{_esc(label)}</span>' if label else ""
+        return f'<div class="chips">{lab}{"".join(chips)}</div>'
+
+    src_row = _chip_row("소스 코드" if dep_row else "", summary.by_severity)
+    if src_row:
+        p.append(src_row)
+    if dep_row:
+        dep_chips = _chip_row("의존성(패키지)", dep_row["by_severity"])
+        if dep_chips:
+            p.append(dep_chips)
+        if dep_row["count"]:
+            p.append(
+                f'<div class="kv"><b>총 조치 대상 {summary.finding_count + dep_row["count"]}건</b> '
+                f'(소스 코드 {summary.finding_count}건 · 패키지 {dep_row["count"]}건) — '
+                "두 심각도는 서로 다른 기준으로 정해집니다(부록 '심각도 판정 기준').</div>"
             )
-    if chips:
-        p.append(f'<div class="chips">{"".join(chips)}</div>')
 
     if summary.finding_count == 0:
         p.append(
@@ -1564,6 +1793,7 @@ def render_html(
     # --- 가장 먼저 할 일 (Top 3) — 공무원이 뭘 먼저 고칠지 ------------------
     if report.findings:
         p.append("<h2>가장 먼저 할 일 (Top 3)</h2>")
+        p.append(f'<div class="kv">{_esc(_top_actions_scope_note(report.findings, 3))}</div>')
         p.append('<ul class="todo">')
         for g in _top_actions(report.findings, 3):
             dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
@@ -1654,7 +1884,7 @@ def render_html(
 
     # --- 보안 분야 개요 — 어느 분야가 문제인지 한눈에 -----------------------
     p.append('<div class="subh">보안 분야 개요</div>')
-    if domains:
+    if domains or dep_row:
         p.append("<table><tr><th>분야</th><th>최고 심각도</th><th>건수</th><th>파일</th></tr>")
         for d in domains:
             p.append(
@@ -1663,7 +1893,21 @@ def render_html(
                 f'{_SEVERITY_COLOR[d["max_severity"]]}">{_SEVERITY_LABEL_KO[d["max_severity"]]}</span></td>'
                 f'<td class="cnt">{d["count"]}</td><td class="cnt">{d["files"]}</td></tr>'
             )
+        if dep_row:
+            dsev = dep_row["max_severity"]
+            sev_cell = (
+                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[dsev]}">'
+                f"{_SEVERITY_LABEL_KO[dsev]}</span>" if dsev else "—"
+            )
+            p.append(
+                f"<tr><td>{_esc(dep_row['label'])}</td>"
+                f'<td class="sev">{sev_cell}</td>'
+                f'<td class="cnt">{dep_row["count"]}</td>'
+                f'<td class="cnt">패키지 {dep_row["packages"]}종</td></tr>'
+            )
         p.append("</table>")
+        for note in _domain_table_notes(report, domains, dep_row):
+            p.append(f'<div class="dupnote">{_esc(note).replace("**", "")}</div>')
 
         # 같은 (파일, 줄)에 여러 룰이 걸린 위치 — 건수 부풀림 오해 방지.
         multi = _multi_rule_lines(report.findings)
@@ -1716,7 +1960,8 @@ def render_html(
         p.extend(_render_external_surface_html(report))
 
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
-    if report.findings:
+    dep_prompt = _dep_fix_prompt_text(report)
+    if report.findings or dep_prompt:
         p.append(
             '<details class="sec"><summary>수정 프롬프트 (복사해서 AI에게 전달)'
             '</summary><div class="secbody">'
@@ -1730,6 +1975,11 @@ def render_html(
             f'<button type="button" class="copybtn" data-copy="{_esc(_SAY_FIX)}">📋 복사</button>'
             "</div></div>"
         )
+        if dep_prompt:
+            p.append(
+                '<div class="depwarn">⚠ <b>패키지 블록을 빠뜨리지 마세요</b> — 소스 코드만 '
+                "고치면 의존성 차단이 그대로 남아 다시 검사해도 배포 판정이 바뀌지 않습니다.</div>"
+            )
         # ② 유형별 수정 프롬프트 — 각 블록마다 복사 버튼
         for g in _rule_groups(report.findings):
             text = _fix_prompt_text(g)
@@ -1738,6 +1988,12 @@ def render_html(
                 f'<button type="button" class="copybtn" data-copy="{_esc(text)}">📋 복사</button>'
                 f'<div class="fixprompt">{_esc(text)}</div></div>'
             )
+        if dep_prompt:
+            p.append(
+                '<div class="fixwrap">'
+                f'<button type="button" class="copybtn" data-copy="{_esc(dep_prompt)}">📋 복사</button>'
+                f'<div class="fixprompt">{_esc(dep_prompt)}</div></div>'
+            )
         p.append("</div></details>")
 
     # === 부록 (기술 정보) — 기본 접기 ====================================
@@ -1745,6 +2001,8 @@ def render_html(
     repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
     p.append('<details class="sec"><summary>부록 (가이드라인 분포·생략 파일·재현·재검증)'
              '</summary><div class="secbody">')
+    if report.findings or dep_row:
+        p.extend(_render_severity_criteria_html(report))
     dist = _guideline_distribution(report.findings) if report.findings else None
     if dist:
         p.append('<div class="subh">가이드라인별 분포</div>')
@@ -1807,6 +2065,61 @@ def _fix_prompt_text(group: dict) -> str:
     if f.safe_fix:
         out.append(f"안전한 수정 방향: {f.safe_fix.strip()}")
     out.append("지시: 위 위치의 코드를 안전한 패턴으로 수정하고, 수정 후 다시 검사해 주세요.")
+    return "\n".join(out)
+
+
+def _dep_fix_prompt_text(report: ScanReport) -> str | None:
+    """의존성 수정 프롬프트 한 블록. 조치할 패키지가 없으면 None.
+
+    **왜 필요한가(실측)**: 이 보고서의 배포 차단 사유 절반이 패키지인데 수정
+    프롬프트에는 소스 발견만 있었다. 사용자가 안내대로 "방금 나온 위험들을 고쳐줘"
+    라고 하면 소스만 고쳐지고, 다시 검사해도 **여전히 배포 미승인**이다. 왜 안
+    풀리는지 알 방법이 없다 — 도구가 만든 막다른 길이다.
+
+    권고 버전은 적지 않는다. 검사 결과에 '고쳐진 버전'이 없어서, 지어내면 틀린
+    버전으로 올리게 된다. 대신 **무엇을 왜 올려야 하는지**와 확인 방법을 준다.
+    """
+    row = _dep_domain_row(report)
+    if not row or not row["components"]:
+        return None
+    comps = sorted(
+        row["components"],
+        key=lambda c: (-_SEVERITY_RANK[c["severity"]], str(c["check"].get("name") or "").lower()),
+    )
+    blocked = any(a.get("blocked") for a in _dep_audits(report))
+    head = "[차단]" if blocked else "[경고]"
+    out = [f"{head} 취약·위험 패키지 {len(comps)}건 — 버전을 올려야 합니다"]
+    for comp in comps:
+        c = comp["check"]
+        detail: list[str] = []
+        if c.get("is_malicious_package"):
+            detail.append("악성 패키지 — 즉시 제거")
+        if c.get("verdict") == "not_found":
+            detail.append("레지스트리에 없는 이름(가짜 이름 의심) — 철자 확인 후 제거")
+        if c.get("verdict") == "registry_rejected":
+            detail.append("기관 레지스트리 차단")
+        if c.get("vulnerability_count"):
+            sev = str(c.get("max_cve") or "").upper()
+            detail.append(
+                f"취약점 {c['vulnerability_count']}건"
+                + (f" · 최고 {sev}" if sev and sev != "NONE" else "")
+                + (" · CISA KEV(실제 악용 중)" if c.get("in_kev") else "")
+            )
+        if c.get("verdict") == "cooldown_hold":
+            detail.append("발행 직후 버전 — 쿨다운 보류")
+        out.append(
+            f"- {c.get('name', '?')} {c.get('version') or '(버전 미상)'} "
+            f"[{_SEVERITY_LABEL_KO[comp['severity']]}] "
+            f"— {' · '.join(detail) or '검토 필요'} (출처: {' · '.join(comp['sources'])})"
+        )
+    out.append(
+        "지시: 위 패키지를 취약점이 해소된 버전으로 올려 주세요. 매니페스트"
+        "(requirements.txt·package.json)와 실제 설치본을 **함께** 맞추고, 벤더 번들"
+        "(static 의 *.min.js 등)은 해당 파일을 최신 배포본으로 교체하세요. "
+        "올릴 버전은 공식 배포처(PyPI·npm)와 보안 권고를 확인해 정하고, "
+        "임의로 추측하지 마세요. 업그레이드로 동작이 바뀔 수 있으니 변경 후 실행해 "
+        "확인하고, 마지막에 다시 검사해 주세요."
+    )
     return "\n".join(out)
 
 
@@ -1940,7 +2253,13 @@ def _render_rule_group_html(group: dict) -> list[str]:
         f'<span class="badge" style="background:{dec_color}">'
         f"{_DECISION_LABEL_KO.get(group['decision'], group['decision'].value)}</span>"
         f'<span class="ftitle">{_esc(f.plain_title)}</span>'
-        f'<span class="loc">{group["count"]}건 · line {_esc(_line_list(findings))}</span></div>'
+        f'<span class="loc">{group["count"]}건 · 파일 {group["files"]}개</span></div>'
+    )
+    # 위치는 **파일 경로부터** 적는다 — 줄 번호만으로는 어느 파일인지 알 수 없다.
+    out.append(
+        f'<div class="row"><span class="lab">위치</span>'
+        f'<span class="val"><code class="ev">'
+        f'{_esc(_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT))}</code></span></div>'
     )
     out.append(
         f'<div class="row"><span class="tag">{_esc(f.rule_id)}</span>'
@@ -2183,6 +2502,56 @@ def _intel_cache_banner(audits: list[dict]) -> str | None:
     )
 
 
+def _severity_criteria_rows(report: ScanReport) -> list[tuple[str, str, str]]:
+    """부록 '심각도 판정 기준' 표의 행 — (구분, 심각도, 기준).
+
+    왜 넣는가: 같은 '높음'이라도 소스 발견과 패키지는 **정하는 방식이 다르다**.
+    소스는 룰 문서에 사람이 미리 적어 둔 고정 등급이고, 패키지는 검사 시점의
+    취약점·악용 정보로 계산한다. 그 사실이 보고서 어디에도 없으면 독자는 두 값을
+    같은 자로 잰 것으로 읽고, "왜 이게 높음이냐"에 도구가 답하지 못한다.
+    """
+    rows: list[tuple[str, str, str]] = [
+        (
+            "소스 코드 발견", "룰에 고정",
+            "각 룰 문서(`rules/`)의 `severity` 값을 그대로 씁니다 — 위험 유형 자체의 등급이며 "
+            "검사할 때 계산하지 않습니다. 룰 ID로 원문을 확인할 수 있습니다(`gvskb rule <ID>`).",
+        ),
+    ]
+    if _dep_domain_row(report):
+        for _key, sev, desc in _DEP_SEVERITY_TABLE:
+            rows.append(("의존성(패키지) — 검사 시 계산", _SEVERITY_LABEL_KO[sev], desc))
+        rows.append((
+            "의존성(패키지) — 검사 시 계산", "등급 없음",
+            "오프라인·조회 실패 등으로 확인하지 못한 것입니다. '이상 없음'과 구분해 등급을 "
+            "매기지 않고 별도로 셉니다 — **판정 불가는 안전이 아닙니다.**",
+        ))
+    return rows
+
+
+def _render_severity_criteria_md(report: ScanReport) -> list[str]:
+    rows = _severity_criteria_rows(report)
+    out = ["### 심각도 판정 기준", ""]
+    out.append("| 구분 | 심각도 | 기준 |")
+    out.append("|---|---|---|")
+    for kind, sev, desc in rows:
+        out.append(f"| {kind} | {sev} | {desc} |")
+    out.append("")
+    return out
+
+
+def _render_severity_criteria_html(report: ScanReport) -> list[str]:
+    rows = _severity_criteria_rows(report)
+    out = ['<div class="subh">심각도 판정 기준</div>']
+    out.append("<table><tr><th>구분</th><th>심각도</th><th>기준</th></tr>")
+    for kind, sev, desc in rows:
+        out.append(
+            f"<tr><td>{_esc(kind)}</td><td>{_esc(sev)}</td>"
+            f"<td>{_esc(desc).replace('**', '')}</td></tr>"
+        )
+    out.append("</table>")
+    return out
+
+
 def _env_grade_line(report: ScanReport) -> str | None:
     """판정에 적용된 실행환경 등급 한 줄. 의존성 검사를 안 했으면 None.
 
@@ -2201,8 +2570,20 @@ def _env_grade_line(report: ScanReport) -> str | None:
 
     raw = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
     grade, label, days = env_grade_summary(raw)
-    suffix = "" if raw else " — 미지정이라 기본값 적용"
-    return f"실행환경 등급: `{grade}` ({label}, 쿨다운 기준 {days}일){suffix}"
+    # **누가 정했는지**를 함께 적는다. 이 도구는 실행환경을 탐지하지 않는다 —
+    # 부르는 쪽이 넘긴 값이거나 기본값이다. 실측 오해: 개인 PC 에서 돌린 검사가
+    # 'E2(내부서버 공용)' 로 찍혀 "왜 내 PC 가 내부서버냐"가 됐다. 값만 있고
+    # 출처가 없으면 읽는 사람은 도구가 환경을 판단한 것으로 읽는다.
+    origin = (
+        f"검사 실행 시 지정(`--env {grade}`)" if raw
+        else "지정 없음 · 기본값 적용(이 도구는 실행환경을 자동 판별하지 않습니다)"
+    )
+    return (
+        f"실행환경 등급: `{grade}` ({label}, 쿨다운 기준 {days}일) — {origin}. "
+        "이 등급은 **신규 버전 쿨다운 기준일만** 정합니다(취약점·악성 판정에는 영향 없음). "
+        "개인 PC 에서 만든 도구라면 `E1`(개인PC 반복도구, 7일)이 기본이며, "
+        "`E0`(3일)·`E2`(14일)로 바꿔 재검사할 수 있습니다."
+    )
 
 
 def _registry_banner(audits: list[dict]) -> str | None:
@@ -2498,7 +2879,7 @@ def _render_finding_group_md(group: dict) -> list[str]:
         f"{f.plain_title} ({group['count']}건)"
     )
     out.append("")
-    out.append(f"- **위치**: line {_line_list(findings)}")
+    out.append(f"- **위치**: {_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT)}")
     out.append(f"- **룰**: `{f.rule_id}`")
     out.append(f"- **카테고리**: {f.category}")
     out.append(f"- **판정 근거**: {_confidence_label(f.confidence)}")
