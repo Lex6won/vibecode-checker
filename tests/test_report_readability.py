@@ -22,7 +22,8 @@ from gvskb.report import (
     _dep_domain_row,
     _dep_fix_prompt_text,
     _locations_by_file,
-    _top_actions_scope_note,
+    _action_order,
+    _action_order_note,
     render_html,
     render_markdown,
 )
@@ -238,56 +239,113 @@ def test_severity_criteria_present_even_without_dependency_audit() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ⑤ 세는 단위를 문장으로 밝힌다 — Top3 범위 · 분야별 파일 중복
+# ⑤ 조치 순서 — 잘라내지 않는다 · 분야별 파일 중복
+#
+# 실측 질문: "'가장 먼저 할 일'이 어떤 의미야? 왜 일부만 표시하지? 위험요소들은
+# 모두 조치해야 하는 것 아닌가?" — 맞는 말이다. 잘린 목록은 "3개만 하면 되나"로
+# 읽히고 나머지가 조용히 남는다. 자르는 대신 **순서로** 답한다.
 # ---------------------------------------------------------------------------
 
 
-def test_top_actions_note_states_how_much_of_the_whole_it_covers() -> None:
-    findings = (
-        [_finding("a.py", i, rule="R-A") for i in range(1, 4)]
-        + [_finding("b.py", i, rule="R-B") for i in range(1, 3)]
-        + [_finding("c.py", 1, rule="R-C")]
-        + [_finding("d.py", 1, rule="R-D")]
-    )
-    note = _top_actions_scope_note(findings, 3)
-    assert "위험 유형 4개 중 3개" in note
-    assert "전체 7건 중" in note
-    assert "나머지 1개 유형" in note
+def _tiered_findings() -> list:
+    """차단 1 · 치명(경고) 1 · 낮음 2 — 3단이 모두 채워지는 모양."""
+    blocked = _finding("secret.pem", 1, rule="R-BLOCK")
+    blocked.severity = Severity.critical
+    blocked.decision = Decision.block
+    high = _finding("app.py", 10, rule="R-HIGH")
+    high.severity = Severity.high
+    rest = [_finding("a.py", 1, rule="R-LOW1"), _finding("b.py", 2, rule="R-LOW2")]
+    return [blocked, high, *rest]
 
 
-def _multi_rule_report() -> ScanReport:
-    findings = (
-        [_finding("a.py", i, rule="R-A") for i in range(1, 4)]
-        + [_finding("b.py", i, rule="R-B") for i in range(1, 3)]
-        + [_finding("c.py", 1, rule="R-C")]
-        + [_finding("d.py", 1, rule="R-D")]
-    )
+def _tiered_report() -> ScanReport:
+    findings = _tiered_findings()
     return ScanReport(
         target="fixture",
         summary=ScanSummary(
-            finding_count=len(findings), by_severity={"low": len(findings)},
-            by_decision={"warn": len(findings)}, highest_severity=Severity.low,
+            finding_count=len(findings),
+            by_severity={"critical": 1, "high": 1, "low": 2},
+            by_decision={"block": 1, "warn": 3},
+            highest_severity=Severity.critical,
         ),
         findings=findings,
-        scanned_files=["a.py", "b.py", "c.py", "d.py"],
+        scanned_files=["secret.pem", "app.py", "a.py", "b.py"],
     )
 
 
-def test_top_actions_note_is_rendered_in_both_formats() -> None:
-    """각주가 함수에만 있고 화면에 없으면 아무 소용이 없다.
+def test_action_order_covers_every_finding() -> None:
+    """3단을 합치면 **전체**가 된다 — 잘라내는 곳이 없어야 한다."""
+    findings = _tiered_findings()
+    tiers = _action_order(findings)
+    assert sum(t["count"] for t in tiers) == len(findings)
+    labels = [t["label"] for t in tiers]
+    assert labels == ["지금 막아야 하는 것", "그다음", "나머지"]
+    assert tiers[0]["count"] == 1        # 차단
+    assert tiers[1]["count"] == 1        # 치명·높음(차단 아님)
+    assert tiers[2]["count"] == 2        # 나머지
 
-    (변이 검사에서 실제로 빠져나갔던 지점 — 함수만 테스트하면 렌더러가 그것을
-    부르지 않아도 초록불이 유지된다.)
-    """
-    report = _multi_rule_report()
+
+def test_action_order_skips_empty_tiers() -> None:
+    """경고만 있는 프로젝트에 '지금 막아야 하는 것' 빈 칸을 만들지 않는다."""
+    findings = [_finding("a.py", 1, rule="R-A")]     # 낮음·경고 1건
+    tiers = _action_order(findings)
+    assert [t["label"] for t in tiers] == ["나머지"]
+
+
+def test_action_order_note_says_everything_must_be_fixed() -> None:
+    """'일부만 고르라는 뜻이 아니다'를 도구가 먼저 말한다."""
+    note = _action_order_note(_tiered_report())
+    assert "전부가 조치 대상입니다" in note
+    assert "일부만 고르라는 뜻이 아닙니다" in note
+
+
+def test_action_order_is_rendered_in_both_formats() -> None:
+    """함수만 있고 화면에 없으면 소용없다(변이 검사에서 빠져나갔던 유형)."""
+    report = _tiered_report()
     for doc in (render_markdown(report), render_html(report)):
-        assert "위험 유형 4개 중 3개" in doc
-        assert "전체 7건 중 6건" in doc
+        assert "조치 순서" in doc
+        assert "전부가 조치 대상입니다" in doc
+        assert "지금 막아야 하는 것" in doc
+        assert "나머지" in doc
+        # 4개 룰이 하나도 빠지지 않는다 — 예전 Top 3 는 하나를 잘랐다.
+        for rule in ("R-BLOCK", "R-HIGH", "R-LOW1", "R-LOW2"):
+            assert rule in doc
 
 
-def test_top_actions_note_says_when_it_covers_everything() -> None:
-    findings = [_finding("a.py", 1, rule="R-A"), _finding("b.py", 2, rule="R-B")]
-    assert "전부입니다" in _top_actions_scope_note(findings, 3)
+def test_package_step_is_listed_in_action_order() -> None:
+    """소스만 고치면 차단이 안 풀린다는 사실을 조치 순서에서 말한다."""
+    report = _tiered_report()
+    report.dependency_audit = _dep_audit(
+        _check("pillow", "12.2.0", verdict="vulnerable", vulnerability_count=26, max_cve="HIGH"),
+        blocked=True,
+    )
+    for doc in (render_markdown(report), render_html(report)):
+        assert "패키지 업그레이드" in doc
+        assert "배포 차단이 풀리지 않습니다" in doc
+
+
+# ---------------------------------------------------------------------------
+# ⑤-2 분야 표의 '치명 | 10' 오독 — 등급과 총계를 붙여 읽는다
+# ---------------------------------------------------------------------------
+
+
+def test_domain_table_shows_severity_breakdown() -> None:
+    """'최고 심각도 치명' 옆의 '10'이 '치명 10건'으로 읽히던 문제.
+
+    분포는 **표의 행 안**에 있어야 한다. 절 제목에도 같은 문구가 있으므로
+    행 형식까지 확인한다(변이 검사에서 실제로 빠져나갔던 지점).
+    """
+    report = _tiered_report()
+    md, html = render_markdown(report), render_html(report)
+    assert "심각도별 내역" in md and "심각도별 내역" in html
+    # 4건 = 치명 1 · 높음 1 · 낮음 2, 파일 4개
+    assert "| 비밀값·인증정보 노출 | 치명 | 4 | 치명 1 · 높음 1 · 낮음 2 | 4 |" in md
+    assert "<td>치명 1 · 높음 1 · 낮음 2</td>" in html
+
+
+def test_domain_section_heading_carries_breakdown() -> None:
+    md = render_markdown(_multi_file_report())
+    assert "— 6건 (낮음 6) · 파일 2개" in md
 
 
 def test_domain_file_column_double_count_is_disclosed() -> None:
