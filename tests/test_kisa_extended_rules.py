@@ -53,7 +53,9 @@ def test_kisa_py_input_11_csrf_exempt_decorator() -> None:
 
 def test_kisa_py_sec_06_hardcoded_password_with_korean_var_name() -> None:
     hits = _hits(
-        '비밀번호 = "Admin1234!"\nDB_PASSWORD = "production-secret-value"\n',
+        # 합성 문자열만 쓴다 — 감사 현장에서 본 기본 계정 문자열은 저장소에
+        # 남기지 않는다(tests/test_repo_hygiene.py 가 강제).
+        '비밀번호 = "P@ssw0rd!"\nDB_PASSWORD = "production-secret-value"\n',
         "config.py", "python",
     )
     assert "KISA-PY-SEC-06" in hits
