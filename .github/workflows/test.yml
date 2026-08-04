@@ -16,6 +16,11 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # tests/test_repo_hygiene.py 가 **커밋 메시지 전체**를 검사한다.
+          # 기본값(fetch-depth: 1)이면 마지막 커밋 하나만 보이므로, 한 번에 여러
+          # 커밋을 푸시하면 중간 커밋의 기관 식별자가 조용히 통과한다.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}

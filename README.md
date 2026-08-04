@@ -251,7 +251,7 @@ git clone --depth 1 https://github.com/owner/repo /tmp/repo && gvskb scan /tmp/r
 
 | 흔한 실수 | 예시 |
 |---|---|
-| 코드에 박힌 비밀값 | `DB_PASSWORD = "admin1234"`, API 키, JWT 토큰 |
+| 코드에 박힌 비밀값 | `DB_PASSWORD = "P@ssw0rd"`, API 키, JWT 토큰 |
 | 개인정보 노출 | 주민등록번호·전화번호 평문 저장 |
 | SQL 삽입 | `"SELECT … WHERE name='" + name + "'"` |
 | 위험한 코드 실행 | `eval()`, `exec()`, `os.system(사용자입력)` |
