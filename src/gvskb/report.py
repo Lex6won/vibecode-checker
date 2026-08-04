@@ -2107,18 +2107,29 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
             )
         if c.get("verdict") == "cooldown_hold":
             detail.append("발행 직후 버전 — 쿨다운 보류")
+        # **어느 버전으로** 올릴지까지 말한다. 예전에는 "공식 배포처를 확인해
+        # 정하세요"로 판단을 사용자에게 넘겼다 — 도구가 아는 값을 버리고 있었다.
+        rec = c.get("recommended_version")
+        latest = (c.get("registry_metadata") or {}).get("latest_version")
+        if rec:
+            target = f" → **{rec} 이상**으로 업그레이드"
+        elif latest:
+            target = f" → 목표 버전 미상(고쳐진 버전을 모르는 취약점 있음) · 최신 {latest}"
+        else:
+            target = " → 목표 버전 미상"
         out.append(
             f"- {c.get('name', '?')} {c.get('version') or '(버전 미상)'} "
             f"[{_SEVERITY_LABEL_KO[comp['severity']]}] "
-            f"— {' · '.join(detail) or '검토 필요'} (출처: {' · '.join(comp['sources'])})"
+            f"— {' · '.join(detail) or '검토 필요'}{target} "
+            f"(출처: {' · '.join(comp['sources'])})"
         )
     out.append(
-        "지시: 위 패키지를 취약점이 해소된 버전으로 올려 주세요. 매니페스트"
+        "지시: 위 패키지를 적힌 목표 버전 이상으로 올려 주세요. 매니페스트"
         "(requirements.txt·package.json)와 실제 설치본을 **함께** 맞추고, 벤더 번들"
         "(static 의 *.min.js 등)은 해당 파일을 최신 배포본으로 교체하세요. "
-        "올릴 버전은 공식 배포처(PyPI·npm)와 보안 권고를 확인해 정하고, "
-        "임의로 추측하지 마세요. 업그레이드로 동작이 바뀔 수 있으니 변경 후 실행해 "
-        "확인하고, 마지막에 다시 검사해 주세요."
+        "**목표 버전이 '미상'인 항목만** 공식 배포처(PyPI·npm)의 보안 권고를 확인해 "
+        "정하고, 임의로 추측하지 마세요. 업그레이드로 동작이 바뀔 수 있으니 변경 후 "
+        "실행해 확인하고, 마지막에 다시 검사해 주세요."
     )
     return "\n".join(out)
 
@@ -2642,7 +2653,9 @@ def _pkg_verdict_label(check: dict) -> str:
         return "악성 의심"
     n = check.get("vulnerability_count") or 0
     if n:
-        return f"⚠ 취약점 {n}건"
+        # 단위를 붙인다 — '취약·악성 3건'(패키지 수)과 섞여 읽히던 숫자다.
+        # 실측 질문: "3건인데 26건은 뭔가, 뭐가 26건인지 알 수가 없다."
+        return f"⚠ 개별 취약점 {n}건"
     if check.get("verdict") == "cooldown_hold":
         return "⏸ 발행 직후 — 대기 권고"
     if check.get("verdict") == "registry_approved":
@@ -2686,6 +2699,70 @@ def _pkg_note(check: dict) -> str:
     return " · ".join(bits)
 
 
+#: 의존성 절 머리에 붙는 단위 설명. 두 숫자가 같은 화면에 있는데 세는 단위가 달라
+#: 실제로 "3건인데 26건은 뭐냐"는 질문이 나왔다.
+_DEP_UNIT_NOTE = (
+    "> **숫자의 단위** — `취약·악성 N건` 은 **패키지 수**(조치 단위: 업그레이드할 대상)이고, "
+    "표의 `개별 취약점 N건` 은 **그 패키지 하나에 붙은 보안 권고 수**입니다. "
+    "패키지 하나를 올리면 그 패키지의 취약점이 한꺼번에 해소됩니다."
+)
+
+_ADVISORY_SEVERITY_KO = {
+    "CRITICAL": "치명", "HIGH": "높음", "MEDIUM": "보통", "LOW": "낮음",
+    "UNKNOWN": "미상", "NONE": "—",
+}
+
+#: 취약점 목록에서 한 화면에 펼칠 상한. 넘으면 접되 **접은 개수를 반드시 적는다**
+#: (조용한 절단 금지 — 이 결함이 정확히 그렇게 생겼다).
+_ADVISORY_SHOW_LIMIT = 12
+
+
+def _advisory_lines(check: dict) -> list[str]:
+    """패키지 1건의 개별 취약점 목록 — (ID · 심각도 · 고쳐진 버전 · 요약).
+
+    **왜 필요한가(실측 질문)**: "취약·악성 3건인데 26건·8건·2건은 뭔가?" 3은 패키지
+    수(조치 단위)이고 26은 그 패키지에 붙은 개별 취약점 수인데, 보고서가 숫자만
+    적고 **내역을 한 줄도 보여주지 않아** 무엇이 26건인지 알 방법이 없었다.
+    """
+    advisories = check.get("advisories") or []
+    if not advisories:
+        return []
+    out: list[str] = []
+    for a in advisories[:_ADVISORY_SHOW_LIMIT]:
+        sev = _ADVISORY_SEVERITY_KO.get(str(a.get("severity") or "").upper(), "미상")
+        fixed = a.get("fixed_versions") or []
+        fixed_txt = f" · 해결 {', '.join(fixed[:3])}" if fixed else " · 해결 버전 미상"
+        summary = _oneline(str(a.get("summary") or ""), 110)
+        out.append(f"{a.get('id') or '(ID 미상)'} [{sev}]{fixed_txt} — {summary}")
+    hidden = len(advisories) - len(out)
+    if hidden > 0:
+        out.append(f"… 외 {hidden}건 (전체 목록은 결과 JSON 의 advisories 참조)")
+    # 수집한 목록이 집계 수치보다 적으면 그 사실을 적는다 — 숫자만 크고 내역이
+    # 없으면 읽는 사람은 나머지를 확인할 방법이 없다.
+    total = int(check.get("vulnerability_count") or 0)
+    if total and total > len(advisories):
+        out.append(
+            f"※ 집계 {total}건 중 {len(advisories)}건만 내역이 수집됐습니다 "
+            "— 나머지는 재검사(온라인)로 채워집니다."
+        )
+    return out
+
+
+def _pkg_upgrade_hint(check: dict) -> str:
+    """'어느 버전으로 올려야 하는가' 한 줄. 모르면 모른다고 말한다."""
+    rec = check.get("recommended_version")
+    latest = (check.get("registry_metadata") or {}).get("latest_version")
+    if rec:
+        tail = f" (검사 시점 최신 {latest})" if latest and latest != rec else ""
+        return f"**{rec} 이상**으로 올리면 위 취약점이 해소됩니다{tail}."
+    if latest:
+        return (
+            f"고쳐진 버전을 확인하지 못한 취약점이 있어 목표 버전을 특정하지 못했습니다 "
+            f"— 검사 시점 최신 버전은 **{latest}** 입니다(올린 뒤 재검사로 확인하세요)."
+        )
+    return "고쳐진 버전 정보를 확인하지 못했습니다 — 공식 배포처의 보안 권고를 확인하세요."
+
+
 def _render_dependency_audit_md(report: ScanReport) -> list[str]:
     audits = _dep_audits(report)
     if not audits:
@@ -2695,6 +2772,8 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
     out.append(f"> 검사 {checked}건 · 판정 불가 {unchecked}건 · 취약·악성 {vuln}건"
                + (f" · **미존재(가짜 이름 의심) {not_found}건**" if not_found else "")
                + (" · **차단 권고**" if blocked else ""))
+    out.append("")
+    out.append(_DEP_UNIT_NOTE)
     out.append("")
 
     # 검사한 곳 목록 — 어디를 봤는지는 남기되, 표는 컴포넌트 단위로 한 번만 낸다.
@@ -2732,6 +2811,23 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
                 f"{' · '.join(comp['sources'])} | {_pkg_note(c)} |"
             )
         out.append("")
+
+        # 취약점이 있는 패키지는 **무엇이 몇 건인지** 내역을 펼친다.
+        for comp in components:
+            c = comp["check"]
+            lines = _advisory_lines(c)
+            if not lines:
+                continue
+            out.append(
+                f"#### `{c.get('name', '?')} {c.get('version') or ''}`".rstrip()
+                + f" — 개별 취약점 {c.get('vulnerability_count') or len(lines)}건"
+            )
+            out.append("")
+            for ln in lines:
+                out.append(f"- {ln}")
+            out.append("")
+            out.append(f"→ {_pkg_upgrade_hint(c)}")
+            out.append("")
     if unchecked:
         out.append("> ⚠ **판정 불가는 '안전'이 아닙니다** — 온라인 환경 또는 최신 인텔 캐시"
                    "(`gvskb update-intel`)로 다시 검사하세요.")
@@ -2749,6 +2845,7 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
         '<details class="sec"><summary>의존성(패키지) 취약점 검사 — '
         f"검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}{nf}</summary>"
         '<div class="secbody">',
+        f'<div class="depwarn">{_esc(_DEP_UNIT_NOTE.lstrip("> ")).replace("**", "")}</div>',
     ]
     for a in audits:
         title = a.get("manifest") or a.get("ecosystem", "manifest")
@@ -2786,6 +2883,27 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
                 f"<td>{_esc(_pkg_note(c))}</td></tr>"
             )
         out.append("</table>")
+
+        # 취약점 내역 — 패키지마다 접기. 숫자만 있고 내역이 없으면 확인할 방법이 없다.
+        for comp in components:
+            c = comp["check"]
+            lines = _advisory_lines(c)
+            if not lines:
+                continue
+            title = f"{c.get('name', '?')} {c.get('version') or ''}".strip()
+            out.append(
+                '<details class="sec"><summary>'
+                f"{_esc(title)} — 개별 취약점 "
+                f"{c.get('vulnerability_count') or len(lines)}건</summary>"
+                '<div class="secbody"><ul>'
+            )
+            for ln in lines:
+                out.append(f"<li>{_esc(ln)}</li>")
+            out.append("</ul>")
+            out.append(
+                f'<div class="depwarn">→ {_esc(_pkg_upgrade_hint(c)).replace("**", "")}</div>'
+            )
+            out.append("</div></details>")
     if unchecked:
         out.append('<div class="depwarn">⚠ <b>판정 불가는 \'안전\'이 아닙니다</b> — 온라인 환경 '
                    '또는 최신 인텔 캐시(<code class="ev">gvskb update-intel</code>)로 다시 검사하세요.</div>')

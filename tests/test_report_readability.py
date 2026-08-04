@@ -351,6 +351,107 @@ def test_fix_prompt_section_exists_even_with_no_source_findings() -> None:
         assert "pillow 12.2.0" in doc
 
 
+# ---------------------------------------------------------------------------
+# ⑦ "26건이 뭔지 알 수가 없다" — 숫자만 있고 내역이 없던 결함
+#
+# 실측 질문: 표에 '취약·악성 3건'과 '취약점 26건'이 같이 있는데 단위가 다르다.
+# 3=패키지 수(조치 단위), 26=그 패키지의 개별 권고 수. 그런데 26건의 **내역이
+# 한 줄도 없었고**, 결과에도 5건만 남기고 있었다(vulns[:5] — 조용한 절단).
+# ---------------------------------------------------------------------------
+
+
+def _advisory(aid: str, sev: str, fixed: list[str] | None = None) -> dict:
+    return {
+        "id": aid, "severity": sev, "summary": f"{aid} 요약",
+        "fixed_versions": fixed or [], "modified": "2026-01-01T00:00:00Z",
+    }
+
+
+def _vuln_check(**over) -> dict:
+    base = _check(
+        "pillow", "12.2.0", verdict="vulnerable", vulnerability_count=3, max_cve="HIGH",
+        advisories=[
+            _advisory("GHSA-aaa", "HIGH", ["12.3.0"]),
+            _advisory("GHSA-bbb", "MEDIUM", ["11.4.1", "12.2.1"]),
+            _advisory("GHSA-ccc", "UNKNOWN", ["12.1.5"]),
+        ],
+        recommended_version="12.3.0",
+        registry_metadata={"latest_version": "12.3.0", "license": "MIT-CMU"},
+    )
+    base.update(over)
+    return base
+
+
+def test_advisory_detail_is_rendered_with_id_severity_and_fix() -> None:
+    """무엇이 몇 건인지 — ID·심각도·해결 버전이 보여야 한다."""
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(_vuln_check(), blocked=True)
+    for doc in (render_markdown(report), render_html(report)):
+        assert "개별 취약점 3건" in doc
+        assert "GHSA-aaa" in doc and "GHSA-bbb" in doc and "GHSA-ccc" in doc
+        assert "[높음]" in doc and "[보통]" in doc
+        assert "미상" in doc                      # 심각도 미상을 '낮음'으로 적지 않는다
+        assert "해결 12.3.0" in doc
+
+
+def test_unit_note_explains_package_count_vs_advisory_count() -> None:
+    """3건과 26건이 같은 화면에 있는데 단위가 다르다 — 그 사실을 적는다."""
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(_vuln_check(), blocked=True)
+    for doc in (render_markdown(report), render_html(report)):
+        assert "숫자의 단위" in doc
+        assert "패키지 수" in doc
+        # 표의 **판정 칸**에도 단위가 붙어야 한다. 절 제목에도 같은 문구가 있으므로
+        # 경고 기호까지 포함해 확인한다(변이 검사에서 실제로 빠져나갔던 지점).
+        assert "⚠ 개별 취약점 3건" in doc
+
+
+def test_upgrade_target_version_is_stated() -> None:
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(_vuln_check(), blocked=True)
+    md = render_markdown(report)
+    assert "12.3.0 이상" in md
+    prompt = _dep_fix_prompt_text(report)
+    assert prompt is not None and "12.3.0 이상" in prompt
+
+
+def test_unknown_fix_version_is_not_guessed() -> None:
+    """고쳐진 버전을 모르는 취약점이 하나라도 있으면 목표 버전을 지어내지 않는다."""
+    report = _multi_file_report()
+    check = _vuln_check(
+        advisories=[_advisory("GHSA-aaa", "HIGH", ["12.3.0"]), _advisory("GHSA-zzz", "HIGH")],
+        recommended_version=None,
+    )
+    report.dependency_audit = _dep_audit(check, blocked=True)
+    md = render_markdown(report)
+    assert "해결 버전 미상" in md
+    assert "목표 버전을 특정하지 못했습니다" in md
+    assert "최신 버전은 **12.3.0**" in md          # 아는 것(최신)은 그대로 말한다
+    prompt = _dep_fix_prompt_text(report)
+    assert prompt is not None and "목표 버전 미상" in prompt
+
+
+def test_advisory_list_folds_but_states_hidden_count() -> None:
+    """길면 접되 **접은 개수를 적는다** — 조용한 절단이 이 결함의 원인이었다."""
+    report = _multi_file_report()
+    advs = [_advisory(f"GHSA-{i:03d}", "MEDIUM", ["9.9.9"]) for i in range(20)]
+    report.dependency_audit = _dep_audit(
+        _vuln_check(advisories=advs, vulnerability_count=20), blocked=True,
+    )
+    md = render_markdown(report)
+    assert "… 외 8건" in md                        # 12건 표시 + 8건 접힘
+
+
+def test_collected_fewer_than_counted_is_disclosed() -> None:
+    """집계 수치보다 내역이 적으면 그 사실을 적는다 — 26이라 적고 5건만 있던 상태."""
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(
+        _vuln_check(vulnerability_count=26), blocked=True,
+    )
+    md = render_markdown(report)
+    assert "집계 26건 중 3건만 내역이 수집됐습니다" in md
+
+
 def test_no_dependency_prompt_when_all_packages_are_clean() -> None:
     """과잉 교정 방지 — 고칠 것이 없으면 프롬프트를 만들지 않는다."""
     report = _multi_file_report()

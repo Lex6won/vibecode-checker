@@ -527,7 +527,22 @@ class PackageCheckResult(BaseModel):
             "없는 경우 목록은 비어 있지 않은데 KEV 대조는 되지 않았다."
         ),
     )
-    advisories: list[dict] = Field(default_factory=list)
+    advisories: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "개별 취약점 목록 — {id, severity, summary, fixed_versions, modified}. "
+            "``vulnerability_count`` 와 **같은 단위**이며 잘라내지 않는다. 예전에는 5건만 "
+            "남겨, 26건이라고 적으면서 내역은 5건뿐인 조용한 절단이 있었다."
+        ),
+    )
+    recommended_version: str | None = Field(
+        default=None,
+        description=(
+            "나열된 취약점을 모두 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'. "
+            "advisory 중 하나라도 고쳐진 버전을 모르면 **None** 이다(올리면 다 해결된다는 "
+            "잘못된 안심을 주지 않는다). 버전 비교가 불가능한 표기도 None."
+        ),
+    )
     kev_signals: list[dict] = Field(default_factory=list)
     heuristics: dict = Field(default_factory=dict)
     # 캐시·출처 증명
