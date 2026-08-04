@@ -226,6 +226,106 @@ def _max_cve_from_vulns(vulns: list[dict]) -> str:
     return best
 
 
+def _advisory_severity(vuln: dict) -> str:
+    """advisory 1건의 심각도. 패키지 전체 최고값과 **같은 출처**를 쓴다.
+
+    표기가 없으면 'UNKNOWN' — 낮음이 아니라 미상이고, 미상은 안전이 아니다.
+    """
+    return _max_cve_from_vulns([vuln])
+
+
+def _version_key(version: str) -> tuple[int, ...] | None:
+    """'12.3.0' → (12, 3, 0). 숫자 마디로만 비교하고, 못 읽으면 None.
+
+    ``packaging`` 을 의존성에 추가하지 않으려고 최소 구현만 둔다. 프리릴리스·
+    빌드 메타데이터(``1.2.0-rc1``·``+build``)는 앞 숫자 마디까지만 본다.
+    **못 읽으면 추측하지 않고 None** 을 돌려준다 — 틀린 버전을 권고하느니
+    권고하지 않는 편이 낫다.
+    """
+    core = re.split(r"[-+ ]", str(version).strip(), maxsplit=1)[0]
+    parts = core.split(".")
+    if not parts or not all(p.isdigit() for p in parts if p != ""):
+        return None
+    nums = [int(p) for p in parts if p != ""]
+    return tuple(nums) if nums else None
+
+
+def _highest_version(versions: list[str]) -> str | None:
+    """비교 가능한 것 중 가장 높은 버전. 하나도 못 읽으면 None."""
+    ranked = [(k, v) for v in versions if (k := _version_key(v)) is not None]
+    if not ranked:
+        return None
+    return max(ranked, key=lambda kv: kv[0])[1]
+
+
+def _advisory_fixed_versions(vuln: dict, *, name: str, eco: str) -> list[str]:
+    """이 advisory 가 '어느 버전에서 고쳐졌는지' — OSV affected[].ranges[].events[].fixed.
+
+    **왜 필요한가(실측)**: 예전에는 이 값을 통째로 버려서 보고서가 "취약점 26건"
+    까지만 말하고 **어느 버전으로 올려야 하는지**는 말하지 못했다. 담당자가 결국
+    직접 찾아야 했고, 수정 프롬프트도 "공식 배포처를 확인해 정하세요"로 판단을
+    사용자에게 넘겼다.
+
+    다른 패키지의 ``affected`` 항목(전이 의존성)이 섞여 들어오므로 이름·생태계가
+    일치하는 것만 본다 — 남의 패키지 버전을 우리 권고로 내면 안 된다.
+    """
+    from .installed_packages import _normalize
+
+    want = _normalize(name) if eco.lower() in ("pypi", "pypi") else name.lower()
+    out: list[str] = []
+    for aff in vuln.get("affected") or []:
+        pkg = aff.get("package") or {}
+        pkg_name = str(pkg.get("name") or "")
+        norm = _normalize(pkg_name) if eco.lower() == "pypi" else pkg_name.lower()
+        if pkg_name and norm != want:
+            continue
+        if pkg.get("ecosystem") and str(pkg["ecosystem"]).lower() != eco.lower():
+            continue
+        for rng in aff.get("ranges") or []:
+            for ev in rng.get("events") or []:
+                fixed = ev.get("fixed")
+                if fixed and str(fixed) not in out:
+                    out.append(str(fixed))
+    return out
+
+
+def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
+    """보고서·프롬프트에 실을 advisory 목록.
+
+    **상한을 두지 않는다.** 예전에는 ``vulns[:5]`` 로 잘라, 26건을 조회해 놓고
+    5건만 남겼다. 숫자는 26이라 적으면서 내역은 5건뿐이라 **나머지 21건은 어디에도
+    없었다** — 조용한 절단이다. 잘라야 한다면 자른 사실을 값으로 남겨야 한다.
+    """
+    rows: list[dict] = []
+    for v in vulns:
+        rows.append({
+            "id": v.get("id"),
+            "severity": _advisory_severity(v),
+            "summary": (v.get("summary") or v.get("details") or "")[:200],
+            "fixed_versions": _advisory_fixed_versions(v, name=name, eco=eco),
+            "modified": v.get("modified"),
+        })
+    return rows
+
+
+def _recommended_version(rows: list[dict]) -> str | None:
+    """나열된 취약점을 모두 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'.
+
+    각 advisory 의 fixed 중 가장 높은 값을 고른다. 하나라도 fixed 를 모르면
+    그 취약점은 이 버전으로 해소된다고 말할 수 없으므로 **None** 을 돌려준다 —
+    '올리면 다 해결된다'는 잘못된 안심을 주지 않는다.
+    """
+    if not rows:
+        return None
+    tops: list[str] = []
+    for r in rows:
+        top = _highest_version(r.get("fixed_versions") or [])
+        if top is None:
+            return None
+        tops.append(top)
+    return _highest_version(tops)
+
+
 def _kev_cache_state(cache: IntelCache | None = None) -> dict:
     """KEV 캐시 상태 — 대조 **결과를 해석하려면 반드시 함께 있어야 하는 값**.
 
@@ -1043,6 +1143,8 @@ async def check_package_impl(
         or bool(meta.deprecated)
     )
 
+    advisory_rows = _advisory_rows(vulns, name=name, eco=eco)
+
     return PackageCheckResult(
         **base,
         checked=True,
@@ -1060,14 +1162,8 @@ async def check_package_impl(
         kev_signals=kev_hits,
         cooldown=cooldown,
         license_verdict=lic_verdict,
-        advisories=[
-            {
-                "id": v.get("id"),
-                "summary": (v.get("summary") or "")[:200],
-                "modified": v.get("modified"),
-            }
-            for v in vulns[:5]
-        ],
+        advisories=advisory_rows,
+        recommended_version=_recommended_version(advisory_rows),
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
         # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
         # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.

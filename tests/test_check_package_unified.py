@@ -258,3 +258,85 @@ def test_audit_manifest_counts_not_found_and_hold(monkeypatch) -> None:
     assert audit["env_grade"] == "E1"
     assert audit["blocked"] is True                  # not_found(high) → 차단
     assert audit["engine_version"]
+
+
+# ---------------------------------------------------------------------------
+# ⑥ 취약점 내역 — 숫자만 남기고 목록을 잘라내던 결함
+#
+# 실측 질문: "취약·악성 3건인데 26건·8건·2건은 뭔가? 뭐가 26건인지 알 수가 없다."
+# 원인은 세 겹이었다. ① 보고서가 내역을 렌더하지 않았고 ② 결과에 `vulns[:5]` 로
+# **5건만** 남겼으며(26건이라 적고 내역은 5건 — 조용한 절단) ③ advisory 마다
+# 심각도·고쳐진 버전을 버려서 "어느 버전으로 올려야 하는가"를 말할 수 없었다.
+# ---------------------------------------------------------------------------
+
+
+def _osv_vuln(vid: str, severity: str | None = None, fixed: str | None = None,
+              name: str = "pillow", ecosystem: str = "PyPI") -> dict:
+    v: dict = {"id": vid, "summary": f"{vid} summary", "modified": "2026-01-01T00:00:00Z"}
+    if severity:
+        v["database_specific"] = {"severity": severity}
+    affected: dict = {"package": {"name": name, "ecosystem": ecosystem}}
+    if fixed:
+        affected["ranges"] = [{"type": "ECOSYSTEM",
+                               "events": [{"introduced": "0"}, {"fixed": fixed}]}]
+    v["affected"] = [affected]
+    return v
+
+
+def test_all_advisories_are_kept_not_truncated(monkeypatch, osv) -> None:
+    """조회한 만큼 남긴다 — 26건이라 적고 5건만 남기면 나머지는 어디에도 없다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_vuln(f"GHSA-{i:03d}", "HIGH", "12.3.0") for i in range(26)]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
+    assert r["vulnerability_count"] == 26
+    assert len(r["advisories"]) == 26        # 집계 수와 내역 수가 같아야 한다
+
+
+def test_advisory_carries_severity_and_fixed_version(monkeypatch, osv) -> None:
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_vuln("GHSA-aaa", "HIGH", "12.3.0")]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
+    a = r["advisories"][0]
+    assert a["id"] == "GHSA-aaa"
+    assert a["severity"] == "HIGH"
+    assert a["fixed_versions"] == ["12.3.0"]
+
+
+def test_missing_severity_is_unknown_not_low(monkeypatch, osv) -> None:
+    """심각도 표기가 없으면 '미상'이다 — 낮음으로 낮춰 적으면 안 된다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_vuln("GHSA-nosev", None, "1.2.3")]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["severity"] == "UNKNOWN"
+
+
+def test_recommended_version_is_highest_fix(monkeypatch, osv) -> None:
+    """여러 취약점을 모두 넘어서는 최소 상한을 고른다(문자열이 아니라 숫자 비교)."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [
+        _osv_vuln("GHSA-a", "HIGH", "12.3.0"),
+        _osv_vuln("GHSA-b", "MEDIUM", "12.10.0"),   # 문자열 비교면 12.3.0 이 이긴다
+        _osv_vuln("GHSA-c", "LOW", "12.9.0"),
+    ]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
+    assert r["recommended_version"] == "12.10.0"
+
+
+def test_recommended_version_is_none_when_any_fix_unknown(monkeypatch, osv) -> None:
+    """하나라도 고쳐진 버전을 모르면 목표 버전을 말하지 않는다 — 잘못된 안심 금지."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [
+        _osv_vuln("GHSA-a", "HIGH", "12.3.0"),
+        _osv_vuln("GHSA-b", "HIGH", None),          # fixed 없음
+    ]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
+    assert r["recommended_version"] is None
+
+
+def test_other_packages_fixed_versions_are_not_borrowed(monkeypatch, osv) -> None:
+    """전이 의존성의 fixed 를 우리 패키지 권고로 내면 안 된다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_vuln("GHSA-other", "HIGH", "99.0.0", name="other-pkg")]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
+    assert r["advisories"][0]["fixed_versions"] == []
+    assert r["recommended_version"] is None
