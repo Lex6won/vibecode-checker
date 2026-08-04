@@ -228,7 +228,7 @@ def test_render_html_has_two_layer_sections() -> None:
     html = render_html(_report_with_findings())
     for section in (
         "한눈에 보기",          # Layer 1 — 공무원 요약
-        "가장 먼저 할 일",       # Layer 1 — Top 3
+        "조치 순서",             # Layer 1 — 전체를 3단으로(잘라내지 않는다)
         "상세 검토 결과",      # Layer 2 헤더
         "보안 분야 개요",        # Layer 2 — 분야 한눈에
         "수정 프롬프트",
@@ -271,7 +271,7 @@ def test_render_markdown_has_domain_sections_and_prompts() -> None:
     md = render_markdown(_report_with_findings())
     assert "## 상세 검토 결과" in md
     assert "### 보안 분야 개요" in md
-    assert "## 가장 먼저 할 일" in md
+    assert "## 조치 순서" in md
     assert "## 수정 프롬프트" in md
     # 발견 상세(왜 위험·대응방안)는 분야별 카드에 보존된다
     assert "왜 위험한가" in md and "안전한 수정 방향" in md

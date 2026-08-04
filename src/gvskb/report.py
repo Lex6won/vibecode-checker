@@ -235,32 +235,51 @@ def _rule_groups(findings: list[Finding]) -> list[dict]:
     return rows
 
 
-def _top_actions(findings: list[Finding], n: int = 5) -> list[dict]:
-    """가장 먼저 손볼 위험 유형 Top N — 차단 우선, 그다음 심각도·빈도."""
+def _action_order(findings: list[Finding]) -> list[dict]:
+    """조치 순서 — **전체를 3단으로 나눈다. 잘라내지 않는다.**
+
+    예전에는 'Top 3'(위험 유형 3개)만 보여줬다. 실측 질문 두 가지가 거기서 나왔다:
+    "왜 일부만 표시하나", "위험은 다 조치해야 하는 것 아닌가". 둘 다 맞는 말이다 —
+    잘린 목록은 **"3개만 하면 되나"** 로 읽히고, 그러면 나머지 13건이 조용히 남는다.
+
+    Top-N 이 답하려던 질문("무엇부터 손대나")은 여전히 유효하므로, 자르는 대신
+    **순서로** 답한다. 단은 조치의 급함이 실제로 다른 지점에서만 나눈다:
+
+    1. 지금 막아야 하는 것 — 배포를 차단하는 항목(block)
+    2. 그다음 — 차단은 아니지만 치명·높음
+    3. 나머지 — 보통·낮음(다 고쳐야 하지만 순서상 뒤)
+    """
     def key(r: dict) -> tuple:
         block = 0 if r["decision"] == Decision.block else 1
         return (block, -_SEVERITY_RANK[r["severity"]], -r["count"], r["rule_id"])
 
-    return sorted(_rule_groups(findings), key=key)[:n]
+    groups = sorted(_rule_groups(findings), key=key)
+    tiers: list[dict] = [
+        {"label": "지금 막아야 하는 것", "hint": "배포가 차단됩니다", "groups": []},
+        {"label": "그다음", "hint": "치명·높음", "groups": []},
+        {"label": "나머지", "hint": "보통·낮음 — 순서가 뒤일 뿐 조치 대상입니다", "groups": []},
+    ]
+    for g in groups:
+        if g["decision"] == Decision.block:
+            tiers[0]["groups"].append(g)
+        elif g["severity"] in (Severity.critical, Severity.high):
+            tiers[1]["groups"].append(g)
+        else:
+            tiers[2]["groups"].append(g)
+    for t in tiers:
+        t["count"] = sum(g["count"] for g in t["groups"])
+    return [t for t in tiers if t["groups"]]
 
 
-def _top_actions_scope_note(findings: list[Finding], n: int = 3) -> str:
-    """Top N 이 **전체의 일부**임을 숫자로 밝히는 한 줄.
-
-    실측 오해: Top3 는 '위험 유형(룰)' 단위 3개라 건수 합이 전체와 다르고, 분야
-    개요는 '분야' 단위 전체다. 라벨이 그 차이를 말하지 않아 읽는 사람이 두 숫자를
-    같은 것의 요약으로 보고 "왜 안 맞지"에서 멈춘다. 세는 단위를 문장으로 적는다.
-    """
-    groups = _rule_groups(findings)
-    shown = _top_actions(findings, n)
-    shown_count = sum(g["count"] for g in shown)
-    total = len(findings)
-    if len(groups) <= len(shown):
-        return f"위험 유형 {len(groups)}개 전부입니다(전체 {total}건)."
+def _action_order_note(report: ScanReport) -> str:
+    """조치 순서 머리말 — **전부 조치 대상**임을 먼저 못박는다."""
+    total = len(report.findings)
+    dep_row = _dep_domain_row(report)
+    dep_n = (dep_row or {}).get("count") or 0
+    scope = f"소스 코드 {total}건" + (f" · 패키지 {dep_n}건" if dep_n else "")
     return (
-        f"위험 유형 {len(groups)}개 중 {len(shown)}개 · 전체 {total}건 중 {shown_count}건입니다. "
-        f"나머지 {len(groups) - len(shown)}개 유형 {total - shown_count}건은 아래 "
-        "'상세 검토 결과'에 있습니다."
+        f"**{scope} 전부가 조치 대상입니다.** 아래는 '무엇부터' 손댈지의 순서일 뿐, "
+        "일부만 고르라는 뜻이 아닙니다. 위에서부터 처리하세요."
     )
 
 
@@ -603,6 +622,17 @@ def _dep_domain_row(report: ScanReport) -> dict | None:
     }
 
 
+def _dep_breakdown_text(dep_row: dict) -> str:
+    """의존성 행의 심각도 분포 — 소스 분야와 같은 형식으로."""
+    counts = dep_row.get("by_severity") or Counter()
+    parts = [
+        f"{_SEVERITY_LABEL_KO[sev]} {counts.get(sev.value, 0)}"
+        for sev in (Severity.critical, Severity.high, Severity.medium, Severity.low)
+        if counts.get(sev.value, 0)
+    ]
+    return " · ".join(parts) or "—"
+
+
 def _domain_table_notes(
     report: ScanReport, domains: list[dict], dep_row: dict | None,
 ) -> list[str]:
@@ -773,6 +803,23 @@ def _security_domain(f: Finding) -> tuple[int, str]:
     return _DOMAIN_OTHER
 
 
+def _severity_breakdown(findings: list[Finding]) -> str:
+    """'치명 2 · 높음 1 · 보통 1 · 낮음 6' — 분야 안의 심각도 분포.
+
+    **왜 필요한가(실측 오독)**: 분야 표는 `최고 심각도 | 건수` 두 칸이 나란히 있어
+    `치명 | 10` 이 **"치명 10건"** 으로 읽혔다. 실제로는 그 분야에서 가장 높은 등급이
+    치명이고 전체가 10건(치명 2·높음 1·보통 1·낮음 6)이라는 뜻이다. 한 칸에 등급,
+    옆 칸에 총계를 두면 사람은 둘을 붙여 읽는다 — 분포를 함께 적어 끊는다.
+    """
+    counts = Counter(f.severity for f in findings)
+    parts = [
+        f"{_SEVERITY_LABEL_KO[sev]} {counts[sev]}"
+        for sev in (Severity.critical, Severity.high, Severity.medium, Severity.low)
+        if counts[sev]
+    ]
+    return " · ".join(parts)
+
+
 def _group_by_domain(findings: list[Finding]) -> list[dict]:
     """분야별로 findings 를 모아 정렬순서대로 반환. 빈 분야는 생략."""
     buckets: dict[tuple[int, str], list[Finding]] = defaultdict(list)
@@ -787,6 +834,7 @@ def _group_by_domain(findings: list[Finding]) -> list[dict]:
             "count": len(fs),
             "files": len({f.location.file for f in fs}),
             "max_severity": _file_max_severity(fs),
+            "breakdown": _severity_breakdown(fs),
         })
     return out
 
@@ -1104,19 +1152,32 @@ def render_markdown(
         lines.append(f"> ⚠ **{_ACTION_CAVEAT}**")
         lines.append("")
 
-    # --- ④ 가장 먼저 할 일 (Top 3) — 쉬운 말 체크리스트 --------------------
+    # --- ④ 조치 순서 — 전체를 3단으로. 잘라내지 않는다 ---------------------
     if report.findings:
-        lines.append("## 가장 먼저 할 일 (Top 3)")
+        lines.append("## 조치 순서 — 무엇부터 할지")
         lines.append("")
-        lines.append(f"> {_top_actions_scope_note(report.findings, 3)}")
+        lines.append(f"> {_action_order_note(report)}")
         lines.append("")
-        for g in _top_actions(report.findings, 3):
-            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+        for i, tier in enumerate(_action_order(report.findings), 1):
+            lines.append(f"**{i}. {tier['label']}** ({tier['hint']}) — {tier['count']}건")
+            lines.append("")
+            for g in tier["groups"]:
+                dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+                lines.append(
+                    f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
+                    f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
+                )
+            lines.append("")
+        if (_dep_row_order := _dep_domain_row(report)) and _dep_row_order["count"]:
             lines.append(
-                f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
-                f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
+                f"**{len(_action_order(report.findings)) + 1}. 패키지 업그레이드** "
+                f"— {_dep_row_order['count']}건 (아래 '의존성(패키지) 취약점 검사')"
             )
-        lines.append("")
+            lines.append("")
+            lines.append(
+                "> 소스 코드만 고치면 **배포 차단이 풀리지 않습니다** — 패키지도 함께 올리세요."
+            )
+            lines.append("")
         lines.append(
             "> 📌 **각 항목의 정확한 위치·취약점·대응 방법은 아래 '상세 검토 결과'의 "
             "분야별 카드에서 확인하세요.**"
@@ -1197,18 +1258,18 @@ def render_markdown(
     lines.append("")
     dep_row = _dep_domain_row(report)
     if domains or dep_row:
-        lines.append("| 분야 | 최고 심각도 | 건수 | 파일 |")
-        lines.append("|---|---|---|---|")
+        lines.append("| 분야 | 최고 심각도 | 건수 | 심각도별 내역 | 파일 |")
+        lines.append("|---|---|---|---|---|")
         for d in domains:
             lines.append(
                 f"| {d['label']} | {_SEVERITY_LABEL_KO[d['max_severity']]} | "
-                f"{d['count']} | {d['files']} |"
+                f"{d['count']} | {d['breakdown']} | {d['files']} |"
             )
         if dep_row:
             lines.append(
                 f"| {dep_row['label']} | "
                 f"{_SEVERITY_LABEL_KO[dep_row['max_severity']] if dep_row['max_severity'] else '—'} | "
-                f"{dep_row['count']} | 패키지 {dep_row['packages']}종 |"
+                f"{dep_row['count']} | {_dep_breakdown_text(dep_row)} | 패키지 {dep_row['packages']}종 |"
             )
         lines.append("")
         for note in _domain_table_notes(report, domains, dep_row):
@@ -1245,8 +1306,7 @@ def render_markdown(
     pii_anchor = max((d["order"] for d in domains if d["order"] <= 2), default=None)
     for d in domains:
         lines.append(
-            f"### {d['label']} — {_SEVERITY_LABEL_KO[d['max_severity']]} · "
-            f"{d['count']}건 · 파일 {d['files']}개"
+            f"### {d['label']} — {d['count']}건 ({d['breakdown']}) · 파일 {d['files']}개"
         )
         lines.append("")
         for g in _rule_groups(d["findings"]):
@@ -1790,22 +1850,38 @@ def render_html(
         p.append(f'<div class="caveat">⚠ <b>{_esc(_ACTION_CAVEAT)}</b></div>')
         p.append("</div>")
 
-    # --- 가장 먼저 할 일 (Top 3) — 공무원이 뭘 먼저 고칠지 ------------------
+    # --- 조치 순서 — 전체를 3단으로. 자르지 않는다 -------------------------
     if report.findings:
-        p.append("<h2>가장 먼저 할 일 (Top 3)</h2>")
-        p.append(f'<div class="kv">{_esc(_top_actions_scope_note(report.findings, 3))}</div>')
-        p.append('<ul class="todo">')
-        for g in _top_actions(report.findings, 3):
-            dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+        p.append("<h2>조치 순서 — 무엇부터 할지</h2>")
+        p.append(f'<div class="kv">{_esc(_action_order_note(report)).replace("**", "")}</div>')
+        tiers = _action_order(report.findings)
+        for i, tier in enumerate(tiers, 1):
             p.append(
-                f'<li><span class="box">☐</span>'
-                f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
-                f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
-                f"<b>{_esc(g['title'])}</b>"
-                f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
-                f'{_esc(g["rule_id"])}</span></li>'
+                f'<div class="subh">{i}. {_esc(tier["label"])} '
+                f'({_esc(tier["hint"])}) — {tier["count"]}건</div>'
             )
-        p.append("</ul>")
+            p.append('<ul class="todo">')
+            for g in tier["groups"]:
+                dec_ko = _DECISION_LABEL_KO.get(g["decision"], g["decision"].value)
+                p.append(
+                    f'<li><span class="box">☐</span>'
+                    f'<span class="sevdot" style="background:{_SEVERITY_COLOR[g["severity"]]}">'
+                    f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
+                    f"<b>{_esc(g['title'])}</b>"
+                    f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
+                    f'{_esc(g["rule_id"])}</span></li>'
+                )
+            p.append("</ul>")
+        if dep_row_top := _dep_domain_row(report):
+            if dep_row_top["count"]:
+                p.append(
+                    f'<div class="subh">{len(tiers) + 1}. 패키지 업그레이드 — '
+                    f'{dep_row_top["count"]}건</div>'
+                )
+                p.append(
+                    '<div class="depwarn">소스 코드만 고치면 <b>배포 차단이 풀리지 않습니다</b> '
+                    "— 패키지도 함께 올리세요(아래 '의존성(패키지) 취약점 검사').</div>"
+                )
         p.append(
             '<div class="jumpnote">📌 <b>각 항목의 정확한 위치·취약점·대응 방법은 아래 '
             "'상세 검토 결과'의 분야별 카드에서 확인하세요.</b></div>"
@@ -1885,13 +1961,18 @@ def render_html(
     # --- 보안 분야 개요 — 어느 분야가 문제인지 한눈에 -----------------------
     p.append('<div class="subh">보안 분야 개요</div>')
     if domains or dep_row:
-        p.append("<table><tr><th>분야</th><th>최고 심각도</th><th>건수</th><th>파일</th></tr>")
+        p.append(
+            "<table><tr><th>분야</th><th>최고 심각도</th><th>건수</th>"
+            "<th>심각도별 내역</th><th>파일</th></tr>"
+        )
         for d in domains:
             p.append(
                 f"<tr><td>{_esc(d['label'])}</td>"
                 f'<td class="sev"><span class="sevdot" style="background:'
                 f'{_SEVERITY_COLOR[d["max_severity"]]}">{_SEVERITY_LABEL_KO[d["max_severity"]]}</span></td>'
-                f'<td class="cnt">{d["count"]}</td><td class="cnt">{d["files"]}</td></tr>'
+                f'<td class="cnt">{d["count"]}</td>'
+                f"<td>{_esc(d['breakdown'])}</td>"
+                f'<td class="cnt">{d["files"]}</td></tr>'
             )
         if dep_row:
             dsev = dep_row["max_severity"]
@@ -1903,6 +1984,7 @@ def render_html(
                 f"<tr><td>{_esc(dep_row['label'])}</td>"
                 f'<td class="sev">{sev_cell}</td>'
                 f'<td class="cnt">{dep_row["count"]}</td>'
+                f"<td>{_esc(_dep_breakdown_text(dep_row))}</td>"
                 f'<td class="cnt">패키지 {dep_row["packages"]}종</td></tr>'
             )
         p.append("</table>")
@@ -1938,7 +2020,8 @@ def render_html(
             '<details class="sec"><summary>'
             f'<span class="sevdot" style="background:{_SEVERITY_COLOR[d["max_severity"]]}">'
             f'{_SEVERITY_LABEL_KO[d["max_severity"]]}</span> '
-            f'{_esc(d["label"])} — {d["count"]}건 · 파일 {d["files"]}개</summary>'
+            f'{_esc(d["label"])} — {d["count"]}건 ({_esc(d["breakdown"])}) '
+            f'· 파일 {d["files"]}개</summary>'
             '<div class="secbody">'
         )
         for g in _rule_groups(d["findings"]):
