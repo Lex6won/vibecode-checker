@@ -220,6 +220,243 @@ def _gvskb_path() -> str:
         return f"import failed: {exc!s}"
 
 
+# ---------------------------------------------------------------------------
+# 설치 신원(identity) — 버전 문자열은 신원이 아니다
+#
+# 실측 사고: ``__version__`` 이 7/31 이후 고정이라 그 뒤에 넣은 기능이 전부
+# "0.3.0" 으로 보였다. 연동 하네스 하나가 **0.1.0 설치본**을 쓰고 있었는데,
+# 증상(도구 호출 실패)으로 역추적하기 전까지 아무도 몰랐다. 버전이 아니라
+# **커밋 SHA** 와 **도구 존재 여부**로 신원을 말하게 한다.
+# ---------------------------------------------------------------------------
+
+#: 이 릴리스가 제공하기로 한 MCP 도구 전체. 서버에 실제 등록된 목록과 대조해
+#: 빠진 것을 ``missing_tools`` 로 알린다. 목록이 굳지 않도록(추가하고 매니페스트를
+#: 잊는 것) 테스트가 실제 등록분과의 일치를 강제한다.
+MCP_TOOL_MANIFEST: tuple[str, ...] = (
+    "check_package",
+    "detect_secrets_and_pii",
+    "get_rule",
+    "list_loaded_rules",
+    "render_report",
+    "save_report",
+    "scan_code",
+    "scan_dependencies",
+    "scan_installed_packages",
+    "scan_path",
+    "scan_vendor_bundles",
+    "search_rules",
+    "server_status",
+    "suggest_fix",
+)
+
+
+def _direct_url_metadata() -> dict:
+    """pip 이 기록한 설치 출처(PEP 610 ``direct_url.json``). 없으면 빈 dict.
+
+    ``pip install git+https://...`` 로 설치하면 ``vcs_info.commit_id`` 에 **정확한
+    커밋 SHA** 가 남는다. 연동 하네스는 대개 이 방식으로 설치하므로, 낡은 설치본을
+    식별하는 가장 신뢰할 수 있는 단서다.
+    """
+    import json
+
+    try:
+        dist = metadata.distribution(PKG_NAME)
+    except metadata.PackageNotFoundError:
+        return {}
+    try:
+        raw = dist.read_text("direct_url.json")
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return {}
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:  # pragma: no cover - defensive
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _git_head_commit(start: Path) -> tuple[str | None, str | None]:
+    """소스 체크아웃의 HEAD 커밋 — ``git`` 프로세스를 띄우지 않고 파일만 읽는다.
+
+    MCP 서버 안에서 호출되므로 외부 프로세스 실행은 피한다(느리고, 기관 PC 에서는
+    막혀 있을 수 있다). 반환값은 (커밋 SHA, 브랜치명).
+    """
+    for base in (start, *start.parents):
+        git = base / ".git"
+        if git.is_file():  # worktree·submodule 은 "gitdir: <경로>" 파일
+            try:
+                pointer = git.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:  # pragma: no cover - defensive
+                continue
+            if pointer.startswith("gitdir:"):
+                candidate = Path(pointer[len("gitdir:"):].strip())
+                git = candidate if candidate.is_absolute() else (base / candidate)
+        if not git.is_dir():
+            continue
+        try:
+            head = (git / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if not head.startswith("ref:"):
+            return (head or None), None  # detached HEAD
+        ref = head[len("ref:"):].strip()
+        branch = ref.rsplit("/", 1)[-1]
+        try:
+            return (git / ref).read_text(encoding="utf-8", errors="replace").strip(), branch
+        except OSError:
+            pass
+        try:  # 느슨한 ref 가 없으면 packed-refs
+            for line in (git / "packed-refs").read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith(("#", "^")):
+                    continue
+                sha, _, name = line.partition(" ")
+                if name.strip() == ref:
+                    return sha.strip(), branch
+        except OSError:
+            pass
+        return None, branch
+    return None, None
+
+
+def install_identity() -> dict:
+    """이 설치본이 **정확히 어느 코드인지**. 절대 예외를 던지지 않는다.
+
+    ``commit_id`` 우선순위:
+
+    1. pip 의 ``direct_url.json`` → ``vcs_info.commit_id`` (git URL 설치)
+    2. 소스 체크아웃의 ``.git/HEAD`` (editable·개발 설치)
+    3. 없음 — 이때는 ``commit_source`` 가 왜 모르는지와 해결책을 말한다
+    """
+    identity: dict = {
+        "package_version": _package_version(),
+        "commit_id": None,
+        "commit_source": "unavailable",
+        "requested_revision": None,
+        "install_url": None,
+        "editable": None,
+        "branch": None,
+    }
+    try:
+        direct = _direct_url_metadata()
+        if direct:
+            identity["install_url"] = direct.get("url")
+            dir_info = direct.get("dir_info")
+            if isinstance(dir_info, dict):
+                identity["editable"] = bool(dir_info.get("editable"))
+            vcs = direct.get("vcs_info")
+            if isinstance(vcs, dict):
+                commit = vcs.get("commit_id")
+                identity["requested_revision"] = vcs.get("requested_revision")
+                if commit:
+                    identity["commit_id"] = commit
+                    identity["commit_source"] = "direct_url.json (pip)"
+
+        if not identity["commit_id"]:
+            module_dir = Path(_gvskb_path())
+            if module_dir.is_dir():
+                commit, branch = _git_head_commit(module_dir)
+                identity["branch"] = branch
+                if commit:
+                    identity["commit_id"] = commit
+                    # 작업 트리에 커밋 안 된 수정이 있어도 알 수 없다 — 그대로 말한다.
+                    identity["commit_source"] = "git checkout (작업 트리 변경분은 반영 안 됨)"
+    except Exception as exc:  # pragma: no cover - 진단이 서버를 막으면 안 된다
+        identity["error"] = str(exc)
+
+    if not identity["commit_id"]:
+        identity["note"] = (
+            "커밋 SHA 를 알 수 없습니다(로컬 폴더에서 복사·설치된 사본으로 보입니다). "
+            "설치본의 신원을 남기려면 `pip install git+<저장소 URL>@<브랜치>` 또는 "
+            "저장소 체크아웃에서 `pip install -e .` 로 설치하세요."
+        )
+    identity["short_commit"] = (identity["commit_id"] or "")[:12] or None
+    return identity
+
+
+def mcp_tool_inventory() -> dict:
+    """이 설치본이 **실제로 등록한** MCP 도구와, 매니페스트 대비 빠진 것.
+
+    ``missing_tools`` 는 같은 릴리스 안에서의 등록 실패(선택 의존성 때문에 도구가
+    조용히 빠지는 경우)를 잡는다. **낡은 설치본**은 매니페스트도 같이 낡으므로
+    스스로는 알 수 없다 — 그래서 ``tools`` (실제 등록 목록)를 함께 노출한다.
+    연동 상대가 자기가 필요한 도구 이름을 이 목록과 대조하면, 증상으로 역추적하지
+    않고 **한 번의 호출로** 낡은 설치를 확인할 수 있다.
+    """
+    expected = list(MCP_TOOL_MANIFEST)
+    try:
+        from . import server
+        registered = getattr(server, "REGISTERED_TOOLS", None)
+        if registered is None:
+            # 낡은 설치본에는 이 목록 자체가 없다 — 그 사실이 곧 신원 정보다.
+            raise AttributeError(
+                "server.REGISTERED_TOOLS 가 없습니다 — 이 설치본은 도구 재고를 "
+                "보고하지 못하는 구버전입니다."
+            )
+        tools = sorted(registered)
+    except Exception as exc:  # noqa: BLE001 — 진단은 어떤 실패도 보고로 바꾼다
+        return {
+            "tools": [],
+            "tool_count": 0,
+            "expected_tools": expected,
+            # 도구를 못 세는 상황은 "빠진 것 없음"이 아니라 "전부 확인 불가"다.
+            "missing_tools": expected,
+            "unlisted_tools": [],
+            "inventory_ok": False,
+            "error": str(exc),
+        }
+    return {
+        "tools": tools,
+        "tool_count": len(tools),
+        "expected_tools": expected,
+        "missing_tools": sorted(set(expected) - set(tools)),
+        "unlisted_tools": sorted(set(tools) - set(expected)),
+        "inventory_ok": True,
+    }
+
+
+def check_install_identity() -> list[CheckResult]:
+    """doctor 용 — 커밋 신원과 MCP 도구 재고를 사람이 읽는 형태로."""
+    identity = install_identity()
+    results: list[CheckResult] = []
+    if identity["commit_id"]:
+        results.append(_check(
+            "Install commit", _OK, identity["short_commit"],
+            note=f"출처: {identity['commit_source']}"
+                 + (f" · branch={identity['branch']}" if identity.get("branch") else "")
+                 + (f" · rev={identity['requested_revision']}" if identity.get("requested_revision") else ""),
+        ))
+    else:
+        results.append(_check(
+            "Install commit", _WARN, "unknown", note=identity.get("note", ""),
+        ))
+
+    inventory = mcp_tool_inventory()
+    if not inventory["inventory_ok"]:
+        results.append(_check(
+            "MCP tools", _ERROR, "확인 불가",
+            note=f"도구 목록을 읽지 못했습니다: {inventory.get('error', '')}",
+        ))
+        return results
+    missing = inventory["missing_tools"]
+    unlisted = inventory["unlisted_tools"]
+    if missing:
+        results.append(_check(
+            "MCP tools", _ERROR, f"{inventory['tool_count']}/{len(MCP_TOOL_MANIFEST)}",
+            note=("이 설치본에 없는 도구: " + ", ".join(missing)
+                  + " — 재설치가 필요합니다(pip install -e . 또는 git URL 재설치)."),
+        ))
+    elif unlisted:
+        results.append(_check(
+            "MCP tools", _WARN, str(inventory["tool_count"]),
+            note="매니페스트에 없는 도구: " + ", ".join(unlisted)
+                 + " — diagnostics.MCP_TOOL_MANIFEST 를 갱신하세요.",
+        ))
+    else:
+        results.append(_check("MCP tools", _OK, str(inventory["tool_count"])))
+    return results
+
+
 def _resolve_rules_dir() -> tuple[Path, str]:
     """Mirror the resolution order used by server.py and scanner.py."""
     override = os.environ.get("GVSKB_RULES_DIR")
@@ -454,6 +691,7 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     checks.extend(check_python())
     checks.extend(check_package())
     checks.extend(check_install_consistency())
+    checks.extend(check_install_identity())
     checks.extend(check_encoding())
     checks.extend(check_mode())
     checks.extend(check_rules(expected_minimum=expected_minimum))
@@ -517,8 +755,18 @@ def _autopull_status_safe() -> dict:
 def runtime_status_for_mcp() -> dict:
     rules_dir, src = _resolve_rules_dir()
     mode = os.environ.get("GVSKB_MODE", "").lower()
+    identity = install_identity()
+    inventory = mcp_tool_inventory()
     info: dict = {
         "package_version": _package_version(),
+        # 버전 문자열은 신원이 아니다 — 어느 커밋인지, 어떤 도구가 있는지를 함께
+        # 노출해 연동 상대가 낡은 설치를 증상 없이 바로 확인하게 한다.
+        "commit_id": identity["commit_id"],
+        "install_identity": identity,
+        "mcp_tools": inventory["tools"],
+        "missing_tools": inventory["missing_tools"],
+        "unlisted_tools": inventory["unlisted_tools"],
+        "tool_inventory_ok": inventory["inventory_ok"],
         "module_path": _gvskb_path(),
         "rules_dir": str(rules_dir),
         "rules_dir_source": src,
@@ -578,6 +826,8 @@ def runtime_status_for_mcp() -> dict:
         })
     except Exception as exc:
         info.update({"rules_loaded_ok": False, "rule_load_error": str(exc)})
+    if not inventory["inventory_ok"]:
+        info["tool_inventory_error"] = inventory.get("error", "")
     info["disclaimer"] = (
         "이 상태는 보안 보조 도구의 운영 진단입니다. 공공기관 운영 반영 전에는 "
         "기관 보안 담당자의 정책과 최신 법령·지침을 함께 확인하세요."
