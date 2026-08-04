@@ -99,6 +99,12 @@ def test_report_states_the_env_grade_that_produced_the_verdicts(
         assert "실행환경 등급" in doc
         assert "E2" in doc
         assert "14일" in doc          # 쿨다운 기준일까지 — 등급 문자만으로는 의미가 없다
+        # 등급의 **출처**까지 적는다. 실측 오해: 개인 PC 에서 돌린 검사가
+        # 'E2(내부서버 공용)' 로 찍혀 "왜 내 PC 가 내부서버냐"가 됐다.
+        # 도구가 환경을 판단한 것처럼 읽히면 안 된다.
+        assert "검사 실행 시 지정" in doc
+        # 등급이 무엇을 바꾸는지도 그 자리에서 — 라벨만 보면 검사 대상 환경으로 오독한다.
+        assert "쿨다운 기준일만" in doc
 
 
 def test_unspecified_env_still_reports_the_applied_default(
@@ -108,7 +114,9 @@ def test_unspecified_env_still_reports_the_applied_default(
     md, _html = _scan_with_deps(tmp_path, monkeypatch, env=None)
     assert "실행환경 등급" in md
     assert "E1" in md and "7일" in md
-    assert "미지정이라 기본값 적용" in md
+    assert "지정 없음" in md and "기본값 적용" in md
+    assert "자동 판별하지 않습니다" in md
+    assert "검사 실행 시 지정" not in md  # 지정하지 않은 것을 지정했다고 적으면 안 된다
 
 
 def test_no_env_line_without_dependency_check(

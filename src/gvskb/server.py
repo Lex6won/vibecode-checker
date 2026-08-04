@@ -73,6 +73,19 @@ mcp = FastMCP(
 )
 
 
+#: 실행환경 등급 파라미터 설명 — 의존성 계열 도구 4개가 같은 문장을 쓴다.
+#:
+#: 왜 "비워 두라"고 명시하는가(실측): 개인 PC 에서 돌린 검사가 보고서에
+#: `E2(내부서버 공용)` 으로 찍혀 사용자가 "왜 내 PC 가 내부서버냐"고 물었다.
+#: 이 도구는 환경을 **판별하지 않는다** — 에이전트가 넘긴 값이 그대로 결재
+#: 문서에 실린다. 모르면서 값을 지어 넣으면 도구가 판단한 것처럼 보인다.
+_ENV_GRADE_DESC = (
+    "실행환경 등급 — 신규 버전 쿨다운 기준일만 정합니다(취약점·악성 판정에는 영향 없음): "
+    "E0(개인PC 일회성, 3일) | E1(개인PC 반복도구, 7일, 기본) | E2(내부서버 공용, 14일). "
+    "**사용자가 배포 환경을 명시하지 않으면 비워 두세요** — 도구가 자동 판별하지 않으며, "
+    "넘긴 값이 보고서에 '검사 실행 시 지정'으로 그대로 기록됩니다."
+)
+
 #: 이 **설치본이 실제로 등록한** MCP 도구 이름. server_status 가 신원을 말하는 근거다.
 #:
 #: 왜 프레임워크에 묻지 않는가: fastmcp 의 도구 목록은 비동기(list_tools)라 MCP 도구
@@ -230,9 +243,7 @@ async def check_package(
     version: Annotated[str | None, Field(description="검사할 버전(권장). 미지정 시 전체 버전 이력 기준이라 판정이 보수적")] = None,
     env_grade: Annotated[
         Literal["E0", "E1", "E2"] | None,
-        Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(개인PC 일회성, 3일) | "
-              "E1(개인PC 반복도구, 7일, 기본) | E2(내부서버 공용, 14일). "
-              "E3(대민·개인정보)는 바이브코딩 대상이 아니므로 받지 않음"),
+        Field(description=_ENV_GRADE_DESC + " E3(대민·개인정보)는 바이브코딩 대상이 아니므로 받지 않음"),
     ] = None,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto', 'registry:manual'). 감사 구분용")] = None,
 ) -> dict:
@@ -279,7 +290,7 @@ async def scan_dependencies(
     limit: Annotated[int | None, Field(description="검사할 최대 패키지 수. 미지정 시 형식에 맞춰 자동(매니페스트 20 · 락파일 500). 초과분은 truncated_count 로 표시")] = None,
     env_grade: Annotated[
         Literal["E0", "E1", "E2"] | None,
-        Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(3일) | E1(7일, 기본) | E2(14일)"),
+        Field(description=_ENV_GRADE_DESC),
     ] = None,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
@@ -325,7 +336,7 @@ async def scan_vendor_bundles(
     ],
     env_grade: Annotated[
         Literal["E0", "E1", "E2"] | None,
-        Field(description="실행환경 등급 — 쿨다운 기준일 결정: E0(3일) | E1(7일, 기본) | E2(14일)"),
+        Field(description=_ENV_GRADE_DESC),
     ] = None,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
@@ -555,7 +566,7 @@ async def scan_installed_packages(
     path: Annotated[str, Field(description="프로젝트 폴더 경로. 하위의 .venv·*.whl·node_modules 설치 흔적을 훑습니다")],
     env_grade: Annotated[
         Literal["E0", "E1", "E2"] | None,
-        Field(description="실행환경 등급 — 쿨다운 기준일: E0(3일) | E1(7일, 기본) | E2(14일)"),
+        Field(description=_ENV_GRADE_DESC),
     ] = None,
     limit: Annotated[int, Field(description="검사할 최대 패키지 수 (기본 100)")] = 100,
 ) -> dict:
