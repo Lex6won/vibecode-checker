@@ -73,7 +73,29 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+#: 이 **설치본이 실제로 등록한** MCP 도구 이름. server_status 가 신원을 말하는 근거다.
+#:
+#: 왜 프레임워크에 묻지 않는가: fastmcp 의 도구 목록은 비동기(list_tools)라 MCP 도구
+#: 안에서 부를 수 없고, 동기 접근 경로는 버전마다 바뀌는 사설 속성(_tool_manager →
+#: _local_provider._components)이다. 진단이 프레임워크 내부 구조 변경에 조용히
+#: 깨지면 안 되므로 등록 시점에 직접 남기고, **프레임워크의 실제 등록분과 같은지는
+#: 테스트가 강제**한다(tests/test_doctor_and_validation.py).
+REGISTERED_TOOLS: list[str] = []
+
+
+def _tool(*decorator_args, **decorator_kwargs):
+    """``@_tool()`` 과 동일하되, 등록한 도구 이름을 REGISTERED_TOOLS 에 남긴다."""
+    decorate = mcp.tool(*decorator_args, **decorator_kwargs)
+
+    def wrap(fn):
+        registered = decorate(fn)
+        REGISTERED_TOOLS.append(getattr(registered, "name", None) or fn.__name__)
+        return registered
+
+    return wrap
+
+
+@_tool()
 def search_rules(
     query: Annotated[str, Field(description="검색어(한국어·영어 키워드, 룰 제목·본문·태그 대상). 예: 'SQL 삽입', 'hardcoded secret'")],
     scenario: Annotated[str | None, Field(description="시나리오 태그로 필터. 값: web-app | data-pipeline | llm-integration | agent")] = None,
@@ -123,7 +145,7 @@ def search_rules(
     }
 
 
-@mcp.tool()
+@_tool()
 def get_rule(
     rule_id: Annotated[str, Field(description="룰 ID (예: NIS-AI-M01, OWASP-LLM-2025-01). finding.rule_id 또는 search_rules 결과에서 얻음")],
 ) -> dict:
@@ -142,7 +164,7 @@ def get_rule(
     return {"error": "rule not found", "rule_id": rule_id, "available_count": len(RULES)}
 
 
-@mcp.tool()
+@_tool()
 def scan_code(
     code: Annotated[str, Field(description="검사할 소스 코드 전문(파일이 아닌 텍스트). 파일·폴더는 scan_path 사용")],
     filename: Annotated[str, Field(description="표시용 파일명. 확장자로 언어를 추정하므로 알면 넣기 (예: app.py)")] = "<memory>",
@@ -182,7 +204,7 @@ def scan_code(
     return report.model_dump(mode="json")
 
 
-@mcp.tool()
+@_tool()
 def detect_secrets_and_pii(
     code: Annotated[str, Field(description="검사할 소스 코드 또는 설정 파일 텍스트")],
     filename: Annotated[str, Field(description="표시용 파일명 (예: config.py, .env)")] = "<memory>",
@@ -201,7 +223,7 @@ def detect_secrets_and_pii(
     return report.model_dump(mode="json")
 
 
-@mcp.tool()
+@_tool()
 async def check_package(
     name: Annotated[str, Field(description="패키지 이름 (예: requests, express). 버전 표기 없이 이름만")],
     ecosystem: Annotated[Literal["pypi", "npm"], Field(description="패키지 저장소: pypi(Python) | npm(Node.js)")] = "pypi",
@@ -245,7 +267,7 @@ async def check_package(
     return result
 
 
-@mcp.tool()
+@_tool()
 async def scan_dependencies(
     manifest_text: Annotated[
         str,
@@ -294,7 +316,7 @@ async def scan_dependencies(
     return result
 
 
-@mcp.tool()
+@_tool()
 async def scan_vendor_bundles(
     vendor_bundles: Annotated[
         list[dict],
@@ -335,7 +357,7 @@ async def scan_vendor_bundles(
     return result
 
 
-@mcp.tool()
+@_tool()
 def suggest_fix(
     rule_id: Annotated[str, Field(description="스캔 결과 finding.rule_id 값 (예: NIS-AI-M01)")],
     unsafe_code: Annotated[str | None, Field(description="문제가 된 코드 조각(선택). 넣으면 마스킹된 미리보기가 함께 반환됨")] = None,
@@ -350,7 +372,7 @@ def suggest_fix(
     return suggest_fix_impl(rule_id=rule_id, unsafe_code=unsafe_code)
 
 
-@mcp.tool()
+@_tool()
 def scan_path(
     path: Annotated[str, Field(description="검사할 로컬 파일 또는 폴더의 절대·상대 경로. 원격 URL 불가(먼저 clone)")],
     scenario: Annotated[
@@ -387,7 +409,7 @@ def scan_path(
     return report.model_dump(mode="json")
 
 
-@mcp.tool()
+@_tool()
 def render_report(
     report: Annotated[
         dict,
@@ -466,7 +488,7 @@ def render_report(
     return out
 
 
-@mcp.tool()
+@_tool()
 def save_report(
     report: Annotated[
         dict,
@@ -528,7 +550,7 @@ def save_report(
     }
 
 
-@mcp.tool()
+@_tool()
 async def scan_installed_packages(
     path: Annotated[str, Field(description="프로젝트 폴더 경로. 하위의 .venv·*.whl·node_modules 설치 흔적을 훑습니다")],
     env_grade: Annotated[
@@ -602,7 +624,7 @@ async def scan_installed_packages(
     }
 
 
-@mcp.tool()
+@_tool()
 def list_loaded_rules() -> dict:
     """현재 서버에 적재된 전체 보안 룰 목록(ID·제목·심각도·계층)을 반환합니다.
 
@@ -625,12 +647,21 @@ def list_loaded_rules() -> dict:
     }
 
 
-@mcp.tool()
+@_tool()
 def server_status() -> dict:
-    """Return runtime diagnostics: package version, rules dir, rule counts, env.
+    """Return runtime diagnostics: install identity, rules dir, rule counts, env.
 
     Use this from any MCP client (Claude, Cursor, Codex, ...) to verify the
     server is healthy and to see which rules are loaded. No network calls.
+
+    설치 신원을 함께 돌려준다 — **버전 문자열만 믿지 마세요**:
+
+    - ``commit_id`` — 이 설치본이 정확히 어느 커밋인지(pip ``direct_url.json``
+      또는 소스 체크아웃의 ``.git/HEAD``). ``__version__`` 은 릴리스 사이에
+      고정돼 있어 최근 변경분을 구분하지 못한다.
+    - ``mcp_tools`` / ``missing_tools`` — 이 설치본이 실제로 제공하는 도구 목록.
+      필요한 도구 이름이 ``mcp_tools`` 에 없으면 **낡은 설치본**이므로,
+      호출 실패 증상으로 역추적하지 말고 재설치하면 된다.
     """
     from .diagnostics import runtime_status_for_mcp
     return runtime_status_for_mcp()

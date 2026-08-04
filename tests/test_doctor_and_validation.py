@@ -186,3 +186,180 @@ def test_server_status_exposes_intel_cache(monkeypatch, tmp_path):
     assert osv["stale"] is False
     assert osv["ecosystems"] == ["PyPI"]
     assert info["intel_cache"]["cisa-kev"]["present"] is False
+
+
+# ---------------------------------------------------------------------------
+# 설치 신원 — 버전 문자열은 신원이 아니다
+#
+# 실측 사고: __version__ 이 고정된 사이에 들어간 변경분이 전부 같은 버전으로 보였고,
+# 연동 하네스 하나가 몇 달 된 설치본을 쓰고 있었는데 **호출 실패 증상으로 역추적할
+# 때까지** 아무도 몰랐다. 커밋 SHA 와 도구 목록을 도구가 먼저 말하게 한다.
+# ---------------------------------------------------------------------------
+
+
+def test_registered_tools_matches_fastmcp_registry() -> None:
+    """우리가 기록한 도구 목록 == 프레임워크에 실제 등록된 목록.
+
+    server.REGISTERED_TOOLS 는 fastmcp 사설 API 를 피하려고 등록 시점에 직접 남기는
+    사본이다. 사본은 반드시 갈라지므로, 갈라지는 순간 여기서 실패하게 둔다.
+    """
+    import asyncio
+
+    from gvskb.server import REGISTERED_TOOLS, mcp
+
+    actual = {t.name for t in asyncio.run(mcp.list_tools())}
+    assert set(REGISTERED_TOOLS) == actual
+    assert len(REGISTERED_TOOLS) == len(set(REGISTERED_TOOLS)), "도구 이름이 중복 기록됐습니다"
+
+
+def test_tool_manifest_matches_registered_tools() -> None:
+    """매니페스트가 굳지 않게 — 도구를 추가하고 매니페스트를 잊으면 실패한다."""
+    from gvskb.server import REGISTERED_TOOLS
+
+    assert sorted(diagnostics.MCP_TOOL_MANIFEST) == sorted(REGISTERED_TOOLS)
+
+
+def test_server_status_exposes_commit_and_tool_inventory() -> None:
+    """server_status 만 보고도 '어느 커밋의, 어떤 도구를 가진 설치본인지' 알 수 있어야 한다."""
+    info = diagnostics.runtime_status_for_mcp()
+
+    assert "commit_id" in info
+    assert info["missing_tools"] == []
+    assert info["unlisted_tools"] == []
+    assert info["tool_inventory_ok"] is True
+    assert "server_status" in info["mcp_tools"]
+    identity = info["install_identity"]
+    assert identity["package_version"] == info["package_version"]
+    # 이 저장소 체크아웃에서 돌리면 커밋을 알 수 있어야 한다(.git 이 있는 경우).
+    if (Path(__file__).resolve().parents[1] / ".git").exists():
+        assert identity["commit_id"] and len(identity["commit_id"]) == 40
+        assert identity["short_commit"] == identity["commit_id"][:12]
+    else:  # pragma: no cover - sdist 설치본
+        assert identity["note"]
+
+
+def test_commit_id_prefers_pip_direct_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """git URL 로 설치한 경우 pip 이 기록한 커밋을 그대로 신원으로 쓴다."""
+    monkeypatch.setattr(diagnostics, "_direct_url_metadata", lambda: {
+        "url": "https://example.invalid/org/repo",
+        "vcs_info": {"vcs": "git", "commit_id": "a" * 40, "requested_revision": "main"},
+    })
+    identity = diagnostics.install_identity()
+    assert identity["commit_id"] == "a" * 40
+    assert identity["commit_source"].startswith("direct_url.json")
+    assert identity["requested_revision"] == "main"
+    assert "note" not in identity
+
+
+def test_commit_id_falls_back_to_git_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """editable·소스 설치는 pip 에 커밋 기록이 없다 — .git 에서 읽는다."""
+    monkeypatch.setattr(diagnostics, "_direct_url_metadata", lambda: {
+        "url": "file:///somewhere", "dir_info": {"editable": True},
+    })
+    identity = diagnostics.install_identity()
+    if (Path(__file__).resolve().parents[1] / ".git").exists():
+        assert identity["commit_id"] and identity["commit_source"].startswith("git checkout")
+        assert identity["editable"] is True
+    else:  # pragma: no cover - sdist 설치본
+        assert identity["commit_id"] is None
+
+
+def test_commit_id_unknown_explains_how_to_fix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """알 수 없으면 조용히 None 만 주지 말고 해결 방법을 말한다."""
+    monkeypatch.setattr(diagnostics, "_direct_url_metadata", dict)
+    monkeypatch.setattr(diagnostics, "_git_head_commit", lambda _p: (None, None))
+    identity = diagnostics.install_identity()
+    assert identity["commit_id"] is None
+    assert identity["commit_source"] == "unavailable"
+    assert "pip install" in identity["note"]
+
+
+def test_git_head_commit_reads_loose_ref(tmp_path: Path) -> None:
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "refs" / "heads" / "main").write_text("b" * 40 + "\n", encoding="utf-8")
+    work = tmp_path / "src" / "gvskb"
+    work.mkdir(parents=True)
+    assert diagnostics._git_head_commit(work) == ("b" * 40, "main")
+
+
+def test_git_head_commit_reads_packed_refs(tmp_path: Path) -> None:
+    """느슨한 ref 가 없는 저장소(git gc 이후)에서도 읽어야 한다."""
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        f"{'c' * 40} refs/heads/main\n"
+        f"{'d' * 40} refs/remotes/origin/main\n",
+        encoding="utf-8",
+    )
+    assert diagnostics._git_head_commit(tmp_path) == ("c" * 40, "main")
+
+
+def test_git_head_commit_handles_detached_head(tmp_path: Path) -> None:
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("e" * 40 + "\n", encoding="utf-8")
+    assert diagnostics._git_head_commit(tmp_path) == ("e" * 40, None)
+
+
+def test_missing_tool_is_reported_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이 설치본에 없는 도구를 **도구 스스로** 말해야 한다 — 호출 실패로 역추적하지 않게."""
+    from gvskb import server
+
+    monkeypatch.setattr(
+        server, "REGISTERED_TOOLS",
+        [t for t in server.REGISTERED_TOOLS if t not in {"scan_vendor_bundles", "save_report"}],
+    )
+    inventory = diagnostics.mcp_tool_inventory()
+    assert inventory["missing_tools"] == ["save_report", "scan_vendor_bundles"]
+    assert inventory["inventory_ok"] is True
+
+    status = {c["name"]: c for c in diagnostics.check_install_identity()}["MCP tools"]
+    assert status["status"] == "error"
+    assert "scan_vendor_bundles" in status["note"]
+
+    info = diagnostics.runtime_status_for_mcp()
+    assert info["missing_tools"] == ["save_report", "scan_vendor_bundles"]
+
+
+def test_unlisted_tool_flags_manifest_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """매니페스트에 없는 도구가 등록되면 경고한다 — 목록이 실물보다 낡지 않게."""
+    from gvskb import server
+
+    monkeypatch.setattr(server, "REGISTERED_TOOLS", [*server.REGISTERED_TOOLS, "scan_the_moon"])
+    inventory = diagnostics.mcp_tool_inventory()
+    assert inventory["unlisted_tools"] == ["scan_the_moon"]
+    status = {c["name"]: c for c in diagnostics.check_install_identity()}["MCP tools"]
+    assert status["status"] == "warn"
+
+
+def test_tool_inventory_failure_is_not_reported_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    """도구 목록을 못 읽는 상황은 '빠진 것 없음'이 아니다 — 조용한 초록불 금지.
+
+    낡은 설치본에는 REGISTERED_TOOLS 자체가 없다. 그때 missing_tools 가 빈
+    목록이면 연동 상대는 '멀쩡한 설치'로 읽는다.
+    """
+    from gvskb import server
+
+    monkeypatch.delattr(server, "REGISTERED_TOOLS", raising=True)
+    inventory = diagnostics.mcp_tool_inventory()
+    assert inventory["inventory_ok"] is False
+    assert inventory["missing_tools"] == list(diagnostics.MCP_TOOL_MANIFEST)
+    assert inventory["error"]
+
+    info = diagnostics.runtime_status_for_mcp()
+    assert info["tool_inventory_ok"] is False
+    assert info["tool_inventory_error"]
+
+    status = {c["name"]: c for c in diagnostics.check_install_identity()}["MCP tools"]
+    assert status["status"] == "error"
+
+
+def test_doctor_reports_install_identity() -> None:
+    """doctor 출력에도 커밋·도구 재고가 보여야 한다(사용자는 문제가 생겨야 doctor 를 연다)."""
+    report = diagnostics.run_diagnostics(network=False, expected_minimum=20)
+    names = {c["name"] for c in report["checks"]}
+    assert {"Install commit", "MCP tools"} <= names
