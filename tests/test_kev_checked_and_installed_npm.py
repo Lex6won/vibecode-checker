@@ -185,15 +185,19 @@ def test_installed_direct_dependency_is_labelled_manifest(
 def test_direct_dependency_carries_the_installed_version_not_the_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """번들에 나가는 것은 경계값 2.28 이 아니라 실제 설치 버전 2.31.0 이어야 한다."""
+    """번들에 나가는 것은 경계값 2.28 이 아니라 실제 설치 버전 2.31.0 이어야 한다.
+
+    **오프라인은 제출 자체가 성립하지 않는다**(오프라인 판정은 CVE 미확인이라
+    `unknown` 이고, `unknown` 은 합의 §5-D 의 미제출 판정이다). 여기서 보려는 것은
+    필터가 아니라 '어느 버전이 실리는가'이므로, 병합까지는 실제 스캔으로 만들고
+    제출 가능한 판정만 대입해 번들을 만든다.
+    """
     from gvskb import cli
     from gvskb.intel.cache import IntelCache
     from gvskb.tools.registry_bundle import build_bundle
 
     monkeypatch.setenv("GVSKB_MODE", "offline")
     monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path / "cache"))
-    # 캐시가 비면 판정이 unknown 이라 §5-D 로 전부 걸린다 — 여기서 보려는 것은
-    # 필터가 아니라 '어느 버전이 실리는가'이므로 대조가 성립하게 해 둔다.
     cache = IntelCache()
     cache.save("osv-malicious", "local://test", [], ecosystems=["PyPI"])
     cache.save("cisa-kev", "local://test", [])
@@ -208,9 +212,23 @@ def test_direct_dependency_carries_the_installed_version_not_the_bound(
               "--format", "json", "-o", str(tmp_path / "r.json")])
     payload = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
 
-    bundle = build_bundle(payload["dependency_audit"])
+    audit = payload["dependency_audit"]
+
+    # ① 오프라인 판정은 제출 대상이 아니다 — CVE 를 못 본 판정을 기관 레지스트리에
+    #    '이상 없음'으로 쌓으면 그 저장소를 쓰는 모든 기관이 오염된다.
+    assert build_bundle(audit)["items"] == []
+
+    # ② 병합 결과 자체는 그대로여야 한다 — 실린 버전은 경계값이 아니라 설치본이다.
+    merged = {c["name"]: c for a in audit["audits"] for c in a["checks"]}
+    assert merged["requests"]["version"] == "2.31.0"
+    assert merged["requests"].get("source_scope") == "manifest"
+
+    # ③ 제출 가능한 판정이면 그 버전이 그대로 번들에 실린다.
+    for a in audit["audits"]:
+        for c in a["checks"]:
+            c.update(verdict="checked_clean", checked=True, requires_review=False)
     sent = {(i["result"]["name"], i["result"]["version"], i["source_scope"])
-            for i in bundle["items"]}
+            for i in build_bundle(audit)["items"]}
     assert ("requests", "2.31.0", "manifest") in sent
     assert not any(v == "2.28" for _n, v, _s in sent), "경계값이 사실로 나갔다"
 

@@ -526,8 +526,33 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
             ),
         ).model_dump(mode="json")
 
+    # 여기까지 왔다는 것은 **"악성 피드에 없다"** 일 뿐, "알려진 취약점이 없다"가 아니다.
+    #
+    # 실측 사고: 하네스 두 개가 `.mcp.json` 에 GVSKB_MODE=offline 을 박아 두고 있어
+    # 온라인 PC 에서도 오프라인 경로를 탔다. 그 경로가 `checked_clean` ·
+    # `requires_review=False` 를 돌려주는 바람에 **취약점 26건짜리 pillow 12.2.0 이
+    # '이상 없음'** 으로 통과했다(온라인: vulnerable/high). 오프라인 캐시에는 악성 피드와
+    # KEV 만 있고 CVE DB 자체가 없어, 이 경로는 구조적으로 CVE 를 볼 수 없다.
+    #
+    # 그래서 '검사했고 깨끗함'이 아니라 **'악성은 대조했고 CVE 는 확인 못 함'** 으로
+    # 돌려준다. `checked=False` 는 집계에서 '판정 불가'로 세어져 보고서의
+    # "판정 불가 N건 — '안전'이 아닙니다" 로 이어진다(이미 있는 정직한 자리).
+    # KEV 신호가 있으면 그것만으로도 '이상 없음'일 수 없다.
+    kev_note = (
+        " CISA KEV 목록에 이 이름과 일치하는 항목이 있습니다 — 우선 확인하세요."
+        if kev_signals else ""
+    )
     return PackageCheckResult(
-        **base, checked=True, verdict="checked_clean", requires_review=False,
+        **base,
+        checked=False,
+        verdict="unknown",
+        requires_review=True,
+        note=(
+            "오프라인 캐시에 **악성 등록은 없습니다**. 다만 오프라인에는 CVE 데이터가 "
+            "없어 **알려진 취약점 여부는 확인하지 못했습니다**('이상 없음'이 아닙니다). "
+            "취약점까지 보려면 외부망에서 검사하거나(GVSKB_MODE 를 offline 로 고정하지 "
+            "마세요) 온라인 검사 결과를 반입하세요." + kev_note
+        ),
     ).model_dump(mode="json")
 
 

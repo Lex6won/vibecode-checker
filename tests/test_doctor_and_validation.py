@@ -363,3 +363,52 @@ def test_doctor_reports_install_identity() -> None:
     report = diagnostics.run_diagnostics(network=False, expected_minimum=20)
     names = {c["name"] for c in report["checks"]}
     assert {"Install commit", "MCP tools"} <= names
+
+
+# ---------------------------------------------------------------------------
+# 결과 필드 계약 — 없는 이름을 읽는 것은 예외가 아니라 침묵이다
+#
+# 실측: 연동 하네스의 설치 게이트가 max_cve_severity · severity · status ·
+# typosquat 를 읽고 있었다. 넷 다 우리 결과에 없는 이름이라 항상 빈 값이 나왔고,
+# 그 빈 값이 취약점 심각도 사다리의 입력이었다 — CRITICAL 이 경고로 내려앉는데
+# 양쪽 어디에도 예외가 나지 않는다. 대조할 목록을 우리가 내놓아야 한다.
+# ---------------------------------------------------------------------------
+
+
+def test_result_contract_matches_the_real_schema() -> None:
+    from gvskb.schema import PackageCheckResult
+
+    contract = diagnostics.package_result_contract()
+    assert contract["fields"] == sorted(PackageCheckResult.model_fields)
+    # 판정 문자열 목록도 실제 Literal 과 같아야 한다 — 모르는 판정을 만난 게이트는
+    # 대개 else 로 흘러 통과시킨다.
+    assert "vulnerable" in contract["verdicts"] and "malicious" in contract["verdicts"]
+
+
+def test_decision_fields_all_exist() -> None:
+    """게이트가 읽어야 할 최소 집합이 실제로 존재하는 이름인지 강제한다.
+
+    이 테스트가 없으면 계약 목록 자체가 오타를 담은 채 배포될 수 있다 —
+    그러면 하네스는 우리가 준 잘못된 목록을 믿고 같은 침묵을 반복한다.
+    """
+    contract = diagnostics.package_result_contract()
+    missing = [f for f in contract["decision_fields"] if f not in contract["fields"]]
+    assert not missing, f"계약에 있는데 실제 결과에 없는 필드: {missing}"
+
+
+def test_fields_the_harness_wrongly_read_are_absent() -> None:
+    """하네스가 읽던 이름들이 실제로 없다는 사실을 회귀로 고정한다.
+
+    나중에 우연히 같은 이름이 생기면 이 테스트가 깨지고, 그때 계약을 다시 맞춘다.
+    """
+    fields = set(diagnostics.package_result_contract()["fields"])
+    for wrong in ("max_cve_severity", "severity", "status", "typosquat"):
+        assert wrong not in fields
+
+
+def test_server_status_exposes_result_contract() -> None:
+    info = diagnostics.runtime_status_for_mcp()
+    contract = info["package_result_contract"]
+    assert "verdict" in contract["fields"]
+    assert contract["decision_fields"]
+    assert "없는 이름을 읽으면" in contract["note"]

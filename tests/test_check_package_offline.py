@@ -112,22 +112,47 @@ def test_offline_osv_ecosystem_must_match(offline_with_cache: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cache MISS but cache present — clean result, still counts as checked
+# 캐시는 있는데 이름이 없을 때 — '악성 없음'이지 '이상 없음'이 아니다
+#
+# 실측 사고: 하네스 두 개가 .mcp.json 에 GVSKB_MODE=offline 을 박아 둬 온라인 PC 도
+# 이 경로를 탔다. 예전 구현은 여기서 checked_clean · requires_review=False 를 돌려줬고,
+# 그래서 **취약점 26건짜리 pillow 12.2.0 이 '이상 없음'** 으로 통과했다.
+# 오프라인 캐시에는 악성 피드·KEV 만 있고 CVE DB 가 없다 — 구조적으로 CVE 를 못 본다.
 # ---------------------------------------------------------------------------
 
 
-def test_offline_cache_present_no_match_returns_info(offline_with_cache: Path) -> None:
+def test_offline_cache_present_no_match_is_not_clearance(offline_with_cache: Path) -> None:
+    """악성 피드 대조는 했지만 CVE 는 확인 못 했다 — '판정 불가'로 남긴다."""
     _write_cache(offline_with_cache, "osv-malicious", [])
     _write_cache(offline_with_cache, "cisa-kev", [])
 
     result = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
 
     assert result["offline"] is True
-    assert result["checked"] is True
     assert result["is_malicious_package"] is False
-    assert result["verdict_severity"] == "info"
     assert "osv-malicious" in result.get("cache_sources_used", [])
     assert "heuristics" in result
+    # 핵심: '이상 없음'을 선언하지 않는다.
+    assert result["verdict"] != "checked_clean"
+    assert result["verdict"] == "unknown"
+    assert result["checked"] is False           # 집계에서 '판정 불가'로 세어진다
+    assert result["requires_review"] is True
+    assert result["max_cve"] == "UNKNOWN"
+    note = result["note"] or ""
+    assert "악성 등록은 없습니다" in note        # 한 것과
+    assert "확인하지 못했습니다" in note          # 못 한 것을 함께 말한다
+
+
+def test_offline_kev_signal_is_surfaced_in_note(offline_with_cache: Path) -> None:
+    """KEV 이름 일치가 있으면 그 사실을 사유에 적는다 — 조용히 넘기지 않는다."""
+    _write_cache(offline_with_cache, "osv-malicious", [])
+    _write_cache(offline_with_cache, "cisa-kev", [
+        {"vendorProject": "requests", "product": "requests", "cveID": "CVE-2026-0001"},
+    ])
+    result = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
+    if result.get("in_kev"):                     # 매칭 방식은 구현에 맡긴다
+        assert "KEV" in (result["note"] or "")
+        assert result["requires_review"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -387,16 +412,22 @@ def test_v1_cache_without_ecosystems_assumed_pypi(offline_with_cache: Path) -> N
     """v1 캐시(ecosystems 미기록)는 당시 기본 수집(PyPI)으로 간주 — pypi는 판정, npm은 불가."""
     _write_cache(offline_with_cache, "osv-malicious", [])  # ecosystems 미기록
     ok = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
-    assert ok["checked"] is True and ok["verdict"] == "checked_clean"
+    # 커버되는 생태계라도 오프라인에서는 CVE 를 못 보므로 '이상 없음'이 아니다.
+    assert ok["verdict"] == "unknown" and ok["is_malicious_package"] is False
+    assert "악성 등록은 없습니다" in (ok["note"] or "")
     npm = asyncio.run(check_package_impl(name="left-pad", ecosystem="npm"))
+    # 커버되지 않는 생태계는 악성 대조조차 못 했다 — 사유가 다르다.
     assert npm["checked"] is False and npm["verdict"] == "unknown"
+    assert "생태계를 포함하지 않습니다" in (npm["note"] or "")
 
 
-def test_npm_covered_cache_clears_npm_package(offline_with_cache: Path) -> None:
+def test_npm_covered_cache_clears_malicious_only(offline_with_cache: Path) -> None:
+    """생태계가 커버돼도 해소되는 건 '악성 여부'뿐 — 취약점은 여전히 미확인이다."""
     _write_cache(offline_with_cache, "osv-malicious", [], ecosystems=["PyPI", "npm"])
     result = asyncio.run(check_package_impl(name="left-pad", ecosystem="npm"))
-    assert result["checked"] is True
-    assert result["verdict"] == "checked_clean"
+    assert result["is_malicious_package"] is False
+    assert result["verdict"] == "unknown"
+    assert "생태계를 포함하지 않습니다" not in (result["note"] or "")
 
 
 def test_kev_only_cache_is_not_clearance(offline_with_cache: Path) -> None:

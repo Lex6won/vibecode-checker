@@ -415,6 +415,45 @@ def mcp_tool_inventory() -> dict:
     }
 
 
+def package_result_contract() -> dict:
+    """패키지 판정 결과의 **필드 계약** — 연동 상대가 대조할 수 있게 노출한다.
+
+    **왜 필요한가(실측)**: 하네스의 설치 게이트가 결과에서 ``max_cve_severity`` ·
+    ``severity`` · ``status`` · ``typosquat`` 를 읽고 있었다. 넷 다 우리 결과에 **없는
+    이름**이라 항상 빈 값이 나왔고, 그 빈 값이 취약점 심각도 사다리의 입력이었다 —
+    CRITICAL 취약점이 경고로 내려앉는데 **양쪽 다 아무 예외도 보지 못한다.**
+    없는 필드를 읽는 것은 예외가 아니라 침묵이라서, 대조할 목록을 우리가 내놓지
+    않으면 상대는 알아낼 방법이 없다.
+
+    ``verdicts`` 를 함께 주는 이유도 같다 — 모르는 판정 문자열을 만난 게이트는
+    보통 else 분기로 흘러 통과시킨다. 목록이 있으면 미리 맞출 수 있다.
+    """
+    from .schema import PackageCheckResult
+
+    fields = sorted(PackageCheckResult.model_fields)
+    verdicts: list[str] = []
+    try:  # Literal 이 아니면(스키마 변경) 조용히 비운다 — 진단이 죽으면 안 된다
+        from typing import get_args
+        verdicts = sorted(str(v) for v in get_args(PackageCheckResult.model_fields["verdict"].annotation))
+    except Exception:  # pragma: no cover - defensive
+        verdicts = []
+    return {
+        "fields": fields,
+        "verdicts": verdicts,
+        # 게이트가 판정을 내리는 데 실제로 필요한 최소 집합. 이름이 바뀌면 여기서
+        # 먼저 드러나야 한다(테스트가 이 목록과 실제 필드의 일치를 강제한다).
+        "decision_fields": [
+            "verdict", "verdict_severity", "checked", "requires_review",
+            "is_malicious_package", "vulnerability_count", "max_cve",
+            "in_kev", "kev_checked", "version_exact", "recommended_version",
+        ],
+        "note": (
+            "게이트·하네스는 이 목록에 있는 이름만 읽으세요. 없는 이름을 읽으면 예외가 "
+            "아니라 빈 값이 돌아오고, 그 빈 값이 판정을 조용히 낮춥니다."
+        ),
+    }
+
+
 def check_install_identity() -> list[CheckResult]:
     """doctor 용 — 커밋 신원과 MCP 도구 재고를 사람이 읽는 형태로."""
     identity = install_identity()
@@ -767,6 +806,8 @@ def runtime_status_for_mcp() -> dict:
         "missing_tools": inventory["missing_tools"],
         "unlisted_tools": inventory["unlisted_tools"],
         "tool_inventory_ok": inventory["inventory_ok"],
+        # 결과 필드 계약 — 게이트가 없는 이름을 읽고 조용히 통과시키는 일을 막는다.
+        "package_result_contract": package_result_contract(),
         "module_path": _gvskb_path(),
         "rules_dir": str(rules_dir),
         "rules_dir_source": src,
