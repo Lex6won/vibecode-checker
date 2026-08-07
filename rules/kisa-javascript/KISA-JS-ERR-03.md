@@ -26,6 +26,8 @@ detection:
     - "\\.catch\\s*\\(\\s*\\(?\\s*[A-Za-z_$][\\w$]*\\s*\\)?\\s*=>\\s*\\{\\s*(?://[^\\n]*\\n\\s*)*(?:console\\.(?:log|error|warn|debug)\\s*\\([^)]*\\)\\s*;?\\s*)?\\}\\s*\\)"
     - "\\.catch\\s*\\(\\s*\\(?\\s*\\)?\\s*=>\\s*\\{\\s*\\}\\s*\\)"
     - "catch\\s*\\(\\s*[A-Za-z_$][\\w$]*\\s*\\)\\s*\\{\\s*/\\*[^*]*\\*/\\s*\\}"
+  # -02 와 같은 묶음 — 설명은 다르지만 가리키는 코드가 같다.
+  dedup_group: js-swallowed-exception
   category: kisa-secure-coding
   why_it_matters: >-
     `catch` 블록을 비워두거나 `console.log(err)`만 적어두면, 예외가 *조용히

@@ -48,6 +48,13 @@ detection:
     - MOIS-49-INPUT-06
     - CWE-434
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "const upload = multer({ dest: \"uploads/\" });"
+    - "req.files.avatar.mv(\"./public/\" + name, cb);"
+  negative:
+    - "const upload = multer({ storage, fileFilter: allowImagesOnly, limits });"
 ---
 
 ## 무엇이 위험한가

@@ -20,10 +20,24 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
+    # 이름 뒤에 한 마디가 더 붙는 형태(SECRET_KEY, JWT_SECRET_KEY)도 받는다.
+    # 예전 패턴은 키워드 바로 뒤에 `[:=]` 를 요구해 Django 의 SECRET_KEY —
+    # 파이썬 웹앱에서 가장 흔히 하드코딩되는 시크릿 — 를 통째로 놓쳤다.
+    #
+    # 뒷마디는 **아무 단어나 받지 않는다.** 처음엔 `[_-][A-Za-z]+` 로 열었다가
+    # `token_endpoint`(URL) · `secret_name`(이름) · `password_hint`(안내문) ·
+    # `api_key_header`(헤더명) 가 전부 걸렸다 — 시크릿을 *가리키는* 이름이지
+    # 시크릿을 *담은* 이름이 아니다. 이름 전체가 여전히 "비밀값"을 뜻하는
+    # 단어만 허용한다.
+    #
     # 값이 명백한 플레이스홀더(YOUR_KEY_HERE, XXXX…, <your-token>, CHANGEME, 예시 등)면
     # 실제 시크릿이 아니므로 부정 전방탐색으로 제외한다. 실제 키 값에는 이 토큰들이
     # 사실상 나타나지 않으므로 미탐 위험은 무시할 수 있다.
-    - '(?i)(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))[^"'']{8,}["'']'
+    #
+    # 두 번째 전방탐색은 *테스트 픽스처*를 제외한다. test-only-key·join_new 처럼
+    # 구분자로 끊긴 자리에 test/dummy/fake/mock/sample 등이 오는 값은 가짜다.
+    # 구분자를 요구하므로 latest·contest 같은 단어에는 걸리지 않는다.
+    - '(?i)(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
     - 'sk-[A-Za-z0-9_-]{20,}'
     # sk_<벤더>_<본문> 형태 — Stripe(sk_live_·sk_test_), 기관 발급 키 등.
     # `sk_` 만으로는 잡지 않는다: 하이픈과 달리 언더스코어는 식별자에 흔해
@@ -57,6 +71,12 @@ examples:
     # 푸시 보호가 이 파일을 실제 유출로 판단해 푸시를 거부한다(실측). 형태만
     # 같으면 패턴 검증에는 충분하다.
     - 'client = VendorSDK(api_key="sk_vendor_Ab3xK9mQ2pR7sT1uV5wY8zC4")'
+    # 이름 뒤에 한 마디 더 — Django 의 SECRET_KEY 가 대표 사례(예전엔 미탐)
+    - 'SECRET_KEY = "d9f2ka83jdkq0zmx84hsly26rbtv51cn"'
+    - 'JWT_SECRET_KEY = "Ab3xK9mQ2pR7sT1uV5wY8zC4dE6f"'
+    # 'latest' 는 test 를 품지만 구분자로 끊기지 않으므로 제외되지 않는다 —
+    # 테스트 픽스처 제외가 평범한 단어를 삼키지 않는지 고정하는 예시
+    - 'password = "latestbuild9x2"'
   negative:
     - "pi = 3.14"
     - 'greeting = "hello world"'
@@ -65,6 +85,16 @@ examples:
     - 'password = "XXXXXXXXXXXX"'
     # 언더스코어 식별자는 키가 아니다 — 벤더 구절이 있어도 본문이 전부 소문자면 제외
     - "sk_model_pipeline_transformer = build()"
+    # 테스트 픽스처 — 실측 오탐(wiggle_web tests/). 값이 가짜임이 이름에 드러난다
+    - 'apiKey = "test-only-key"'
+    - 'joinToken = "join_new"'
+    - 'password = "dummy_password_1"'
+    # 시크릿을 *가리키는* 이름은 시크릿이 아니다 — 뒷마디를 아무 단어나 받았을 때
+    # 실제로 걸렸던 네 가지. 이름 전체가 "비밀값"을 뜻해야 한다.
+    - 'token_endpoint = "https://auth.acme.invalid/oauth/token"'
+    - 'secret_name = "prod-db-credential"'
+    - 'password_hint = "생일 8자리를 입력하세요"'
+    - 'api_key_header = "X-Api-Key-Value"'
 ---
 
 ## 무엇이 위험한가

@@ -42,6 +42,14 @@ detection:
     - CWE-352
     - OWASP ASVS V7
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "@csrf_exempt"
+    - "WTF_CSRF_ENABLED = False"
+  negative:
+    - "WTF_CSRF_ENABLED = True"
+    - "CSRF_TRUSTED_ORIGINS = [\"https://portal.acme.invalid\"]"
 ---
 
 ## 무엇이 위험한가

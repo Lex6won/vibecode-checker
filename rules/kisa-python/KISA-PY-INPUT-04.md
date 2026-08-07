@@ -43,6 +43,14 @@ detection:
     - CWE-79
     - OWASP ASVS V1.3
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "return render_template_string(request.args[\"tpl\"])"
+    - "body = mark_safe(user_supplied_html)"
+  negative:
+    - "return render_template(\"page.html\", body=user_supplied_html)"
+    - "body = escape(user_supplied_html)"
 ---
 
 ## 무엇이 위험한가

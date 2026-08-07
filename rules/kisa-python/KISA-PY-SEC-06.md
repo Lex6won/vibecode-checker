@@ -43,6 +43,15 @@ detection:
     - CWE-798
     - NIST SSDF PW.4
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "password = \"hunter2plus9\""
+    - "JWT_SECRET = \"H3xK9mQ2pR7sT1uV5wY8zC4d\""
+    - "DB_PASSWORD = \"p9x2mQ7r\""
+  negative:
+    - "password = os.environ[\"DB_PASSWORD\"]"
+    - "JWT_SECRET = os.getenv(\"JWT_SECRET\")"
 ---
 
 ## 무엇이 위험한가

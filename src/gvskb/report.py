@@ -214,18 +214,23 @@ def _rule_groups(findings: list[Finding]) -> list[dict]:
 
     같은 룰의 설명을 한 번만 보여주고 위치는 목록으로 합치기 위한 기반.
     심각도 높은 순 → 건수 많은 순으로 정렬.
+
+    **묶음 키에 심각도·결정·조정사유를 함께 넣는다.** rule_id 만으로 묶으면,
+    같은 룰이 운영 코드에서는 치명·차단이고 테스트 코드에서는 감쇄된 낮음일 때
+    한 카드로 합쳐진다. 그러면 카드 머리의 '심각도 조정: critical → low' 가
+    운영 코드의 진짜 시크릿에까지 걸린 것처럼 읽히고, `decision` 은 첫 발견의
+    것을 쓰므로 차단이 경고로 표시될 수 있다.
     """
-    groups: dict[str, list[Finding]] = defaultdict(list)
+    groups: dict[tuple[str, Severity, Decision, str], list[Finding]] = defaultdict(list)
     for f in findings:
-        groups[f.rule_id].append(f)
+        groups[(f.rule_id, f.severity, f.decision, f.severity_adjusted or "")].append(f)
     rows: list[dict] = []
-    for rid, fs in groups.items():
-        sev = _file_max_severity(fs)
+    for (rid, sev, dec, _adj), fs in groups.items():
         rows.append({
             "rule_id": rid,
             "title": fs[0].plain_title,
             "severity": sev,
-            "decision": fs[0].decision,
+            "decision": dec,
             "count": len(fs),
             "files": len({f.location.file for f in fs}),
             "sample": fs[0],
@@ -2360,6 +2365,11 @@ def _render_rule_group_html(group: dict) -> list[str]:
         f'<span class="tag">{_esc(f.category)}</span>'
         f'<span class="tag">{_esc(_confidence_label(f.confidence))}</span></div>'
     )
+    if f.severity_adjusted:
+        out.append(
+            f'<div class="row"><span class="lab">심각도 조정</span>'
+            f'<span class="val">{_esc(f.severity_adjusted)}</span></div>'
+        )
     if f.evidence:
         out.append(
             f'<div class="row"><span class="lab">증거(마스킹됨)</span>'
@@ -3084,6 +3094,10 @@ def _render_finding_group_md(group: dict) -> list[str]:
     out.append(f"- **룰**: `{f.rule_id}`")
     out.append(f"- **카테고리**: {f.category}")
     out.append(f"- **판정 근거**: {_confidence_label(f.confidence)}")
+    # 등급을 낮췄으면 그 사실과 이유를 반드시 함께 보여준다 — 조용히 낮추면
+    # 검토자가 "왜 low 인지" 판단할 근거를 잃는다.
+    if f.severity_adjusted:
+        out.append(f"- **심각도 조정**: {f.severity_adjusted}")
     if f.evidence:
         out.append(f"- **증거(자동 마스킹됨)**: `{_oneline(f.evidence)}`")
     if f.why_it_matters:
