@@ -40,6 +40,16 @@ detection:
     - 전자정부 보안 운영 관행
     - CISA Secure by Design
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "DB_HOST = \"10.0.15.22\""
+    - "PROXY = \"http://192.168.0.100:8080\""
+    - "BACKEND = \"172.16.4.9\""
+  negative:
+    - "PARTNER = \"172.15.1.1\""
+    - "DNS = \"8.8.8.8\""
+    - "NETMASK = \"255.255.255.0\""
 ---
 
 ## 무엇이 위험한가

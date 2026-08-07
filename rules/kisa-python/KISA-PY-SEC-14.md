@@ -41,6 +41,14 @@ detection:
     - CWE-759, CWE-916
     - OWASP ASVS V6.2
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "stored = hashlib.sha256(password.encode()).hexdigest()"
+    - "stored = hashlib.md5(pwd.encode()).hexdigest()"
+  negative:
+    - "stored = bcrypt.hashpw(password.encode(), bcrypt.gensalt())"
+    - "stored = hashlib.pbkdf2_hmac(\"sha256\", password.encode(), salt, 200000)"
 ---
 
 ## 무엇이 위험한가

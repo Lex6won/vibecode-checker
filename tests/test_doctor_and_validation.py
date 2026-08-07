@@ -96,6 +96,70 @@ def test_validate_rules_detects_regex_compile_failure(tmp_path: Path) -> None:
     assert report["overall"] == "error"
 
 
+def _rule_md(rule_id: str, *, extra: str = "", status: str = "approved") -> str:
+    return (
+        "---\n"
+        f"id: {rule_id}\n"
+        f"title_ko: 예시 검사용 룰\n"
+        "sources: [{publisher: test, document: t}]\n"
+        "severity: high\n"
+        f"status: {status}\n"
+        "verified_at: 2026-01-01\n"
+        "detection:\n"
+        "  patterns: ['eval\\\\s*\\\\(']\n"
+        "  category: test\n"
+        f"{extra}"
+        "---\n\n"
+        "body\n"
+    )
+
+
+def test_validate_rules_flags_runnable_rule_without_examples(tmp_path: Path) -> None:
+    """실행형 룰에 examples 가 없으면 evaluate 가 통째로 건너뛴다 — ERROR 로 막는다.
+
+    실측: 이 검사가 없을 때 GOV-PII-RRN-001 이 임의 13자리 정수의 40%를
+    주민등록번호로 보고하고 있었는데, examples 가 없어 평가표에 나타나지 않았고
+    나머지 룰이 전부 100%라 품질 게이트는 초록불이었다.
+    """
+    (tmp_path / "NOEX-01.md").write_text(_rule_md("NOEX-01"), encoding="utf-8")
+    report = validation.validate_rules_dir(tmp_path)
+    codes = {i["code"] for i in report["issues"]}
+    assert "examples-missing" in codes
+    assert report["overall"] == "error"
+
+
+def test_validate_rules_requires_negative_examples_too(tmp_path: Path) -> None:
+    """positive 만 있으면 재현율만 고정되고 정작 사용자를 괴롭히는 오탐은 방치된다."""
+    extra = "examples:\n  language: python\n  positive:\n    - \"eval(user_input)\"\n"
+    (tmp_path / "POSONLY-01.md").write_text(_rule_md("POSONLY-01", extra=extra), encoding="utf-8")
+    report = validation.validate_rules_dir(tmp_path)
+    codes = {i["code"] for i in report["issues"]}
+    assert "examples-missing-negative" in codes
+    assert report["overall"] == "error"
+
+
+def test_validate_rules_accepts_rule_with_both_example_kinds(tmp_path: Path) -> None:
+    extra = (
+        "examples:\n  language: python\n"
+        "  positive:\n    - \"eval(user_input)\"\n"
+        "  negative:\n    - \"json.loads(user_input)\"\n"
+    )
+    (tmp_path / "BOTH-01.md").write_text(_rule_md("BOTH-01", extra=extra), encoding="utf-8")
+    report = validation.validate_rules_dir(tmp_path)
+    codes = {i["code"] for i in report["issues"]}
+    assert not {c for c in codes if c.startswith("examples-")}
+
+
+def test_validate_rules_skips_examples_check_for_unenforced_rules(tmp_path: Path) -> None:
+    """proposed 룰은 집행되지 않으므로 예시를 요구하지 않는다(intel 자동 생성 룰)."""
+    (tmp_path / "PROP-01.md").write_text(
+        _rule_md("PROP-01", status="proposed"), encoding="utf-8",
+    )
+    report = validation.validate_rules_dir(tmp_path)
+    codes = {i["code"] for i in report["issues"]}
+    assert "examples-missing" not in codes
+
+
 def test_validate_rules_detects_duplicate_id(tmp_path: Path) -> None:
     common = (
         "title_ko: duplicate test\n"

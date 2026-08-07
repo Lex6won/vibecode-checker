@@ -42,6 +42,15 @@ detection:
     - MOIS-49-SEC-06
     - CWE-798
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "const jwtSecret = \"H3xK9mQ2pR7sT1uV5wY8\";"
+    - "const password = \"hunter2plus9\";"
+    - "const dsn = \"mongodb://admin:pw9x2mQ7@dbhost/app\";"
+  negative:
+    - "const jwtSecret = process.env.JWT_SECRET;"
+    - "const password = \"\";"
 ---
 
 ## 무엇이 위험한가

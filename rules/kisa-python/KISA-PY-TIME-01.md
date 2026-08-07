@@ -42,6 +42,13 @@ detection:
     - MOIS-49-TIME-01
     - CWE-367
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "if os.access(path, os.W_OK):"
+  negative:
+    - "if os.path.isfile(path):"
+    - "with open(path, \"w\") as fh:"
 ---
 
 ## 무엇이 위험한가

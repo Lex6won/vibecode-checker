@@ -49,6 +49,14 @@ detection:
     - CWE-521, CWE-330
     - OWASP ASVS V6.2
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "if (user.password === req.body.password) { return issueSession(); }"
+    - "const resetToken = Math.random().toString(36).slice(2);"
+  negative:
+    - "if (await bcrypt.compare(req.body.password, user.passwordHash)) { return issueSession(); }"
+    - "const resetToken = crypto.randomBytes(32).toString(\"hex\");"
 ---
 
 ## 무엇이 위험한가

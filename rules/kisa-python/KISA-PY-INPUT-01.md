@@ -43,6 +43,14 @@ detection:
     - MOIS-49-INPUT-01
     - CWE-89
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "cursor.execute(\"SELECT * FROM users WHERE id = %s\" % user_id)"
+    - "rows = User.objects.raw(\"SELECT * FROM users WHERE name = \" + name)"
+  negative:
+    - "cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))"
+    - "rows = User.objects.filter(name=name)"
 ---
 
 ## 무엇이 위험한가

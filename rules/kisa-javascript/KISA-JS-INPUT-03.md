@@ -43,6 +43,15 @@ detection:
     - MOIS-49-INPUT-03
     - CWE-22
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "fs.readFile(req.query.path, (err, data) => send(data));"
+    - "res.sendFile(req.params.filename);"
+    - "const target = path.join(BASE_DIR, req.query.file);"
+  negative:
+    - "fs.readFile(SAFE_REPORT_PATH, (err, data) => send(data));"
+    - "res.sendFile(path.resolve(ALLOWED_DIR, allowlist[key]));"
 ---
 
 ## 무엇이 위험한가

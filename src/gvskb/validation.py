@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 from .schema import CURRENT_RULE_SCHEMA_VERSION, Decision, Rule, Severity
+from .schema import Status as RuleStatus
 
 Status = Literal["ok", "warn", "error"]
 
@@ -73,6 +74,37 @@ def _check_schema_version(rule: Rule, rel_path: str) -> list[RuleIssue]:
     return []
 
 
+def _check_examples(rule: Rule, rel_path: str) -> list[RuleIssue]:
+    """실제로 집행되는 룰은 positive·negative 예시를 반드시 가져야 한다.
+
+    이게 없으면 ``gvskb evaluate`` 가 그 룰을 **평가 대상에서 통째로 건너뛴다**.
+    실측에서 GOV-PII-RRN-001 은 임의 13자리 정수의 40%를 주민등록번호로
+    보고하고 있었는데, examples 가 없어 평가표에는 아예 나타나지 않았고 나머지
+    75개 룰이 전부 100% 라 품질 게이트는 초록불이었다. 룰의 정확도를 아무도
+    모르는 상태를 만드는 것이 이 검사가 막으려는 대상이다.
+
+    negative 를 함께 요구하는 이유: positive 만 있으면 재현율만 고정되고,
+    정작 사용자를 괴롭히는 *오탐*은 그대로 통과한다.
+    """
+    if rule.detection is None or not rule.detection.patterns:
+        return []                      # 전용 엔진용·참고용 룰은 대상 아님
+    if rule.status not in (RuleStatus.approved, RuleStatus.stale):
+        return []                      # proposed/deprecated 는 집행되지 않음
+    ex = rule.examples
+    if ex is None or (not ex.positive and not ex.negative):
+        return [_issue(rule.id, rel_path, "error", "examples-missing",
+                       "실행형 룰에 examples 가 없어 evaluate 가 이 룰을 건너뜁니다 "
+                       "— positive/negative 를 추가하세요")]
+    out: list[RuleIssue] = []
+    if not ex.positive:
+        out.append(_issue(rule.id, rel_path, "error", "examples-missing-positive",
+                          "positive 예시가 없어 재현율이 고정되지 않습니다"))
+    if not ex.negative:
+        out.append(_issue(rule.id, rel_path, "error", "examples-missing-negative",
+                          "negative 예시가 없어 오탐이 고정되지 않습니다"))
+    return out
+
+
 def _check_review_due(rule: Rule, rel_path: str, today: date) -> list[RuleIssue]:
     if rule.review_due is None:
         return []
@@ -123,6 +155,7 @@ def validate_rules_dir(rules_dir: Path, *, today: date | None = None) -> dict:
         issues.extend(_check_severity_decision(r, rel))
         issues.extend(_check_review_due(r, rel, today))
         issues.extend(_check_schema_version(r, rel))
+        issues.extend(_check_examples(r, rel))
 
     summary = {
         "rules_dir": str(rules_dir),
