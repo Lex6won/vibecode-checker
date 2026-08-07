@@ -48,6 +48,14 @@ detection:
     - CWE-404
     - PEP 343 (with statement)
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "f = open(\"report.csv\")"
+    - "conn = sqlite3.connect(\"app.db\")"
+  negative:
+    - "with open(\"report.csv\") as f:"
+    - "with sqlite3.connect(\"app.db\") as conn:"
 ---
 
 ## 무엇이 위험한가

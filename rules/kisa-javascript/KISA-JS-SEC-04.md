@@ -46,6 +46,15 @@ detection:
     - CWE-327
     - 국정원 암호모듈 검증 정책
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "const digest = crypto.createHash(\"md5\").update(body).digest(\"hex\");"
+    - "const mac = crypto.createHmac(\"sha1\", key).update(body).digest();"
+    - "const hashed = CryptoJS.SHA1(password);"
+  negative:
+    - "const digest = crypto.createHash(\"sha256\").update(body).digest(\"hex\");"
+    - "const mac = crypto.createHmac(\"sha256\", key).update(body).digest();"
 ---
 
 ## 무엇이 위험한가

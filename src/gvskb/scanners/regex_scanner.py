@@ -11,11 +11,12 @@ import hashlib
 import os
 import re
 import sys
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 
 from ..loader import load_all_rules
-from ..schema import CodeLocation, Decision, Finding, Rule, Status
+from ..schema import CodeLocation, Decision, Finding, Rule, Severity, Status
 from .base import ScannerAdapter
 
 _FLAG_NAMES = {
@@ -50,6 +51,51 @@ _COMMENT_SKIP_EXEMPT_CATEGORIES = {
 }
 
 _IGNORE_RE = re.compile(r"gvskb:\s*ignore(?:\s+([A-Za-z0-9_.:-]+))?", re.IGNORECASE)
+
+# ── 값 검증기 ──────────────────────────────────────────────────────────────
+# 정규식은 *형태*만 본다. 형태가 같은 남(13자리 정수, 16자리 카드 모양 숫자)을
+# 걸러내려면 값 자체를 계산해 봐야 한다. 룰이 detection.validators 로 이름을
+# 지정하면 매치된 문자열에 대해 여기 등록된 함수가 돌고, 하나라도 실패하면
+# 그 매치는 발견으로 올리지 않는다.
+
+_RRN_WEIGHTS = (2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5)
+
+
+def _rrn_checksum_ok(matched: str) -> bool:
+    """주민등록번호 검증식(mod 11) — **하이픈 없는 값에만** 적용한다.
+
+    앞 12자리에 가중치를 곱해 더한 뒤 ``(11 - 합%11) % 10`` 이 마지막 자리와
+    같아야 한다. 날짜 유효성까지 통과한 13자리 난수가 이 식까지 맞을 확률은
+    약 1/11 이라, 하이픈 없는 형태의 오탐이 크게 준다(실측: 임의 13자리 정수
+    기준 1.51% → 0.15%).
+
+    **하이픈이 있으면 검증식을 적용하지 않고 통과시킨다.** 두 가지 이유다:
+    ① ``YYMMDD-#######`` 형태 자체가 "주민번호로 쓰려 했다"는 강한 의도 신호라
+       검증식까지 요구할 이유가 없다.
+    ② 2020.10. 뒷자리 개편으로 지역번호가 임의값으로 바뀌었고, 이 검증식이
+       모든 신규 번호에 성립한다고 단정할 근거를 확인하지 못했다. 확실하지
+       않은 규칙을 *탐지 취소*(미탐) 쪽에 쓰면 놓친 사실이 아무 데도 남지
+       않으므로, 형태가 명확한 쪽에는 적용하지 않는다.
+    """
+    if "-" in matched:
+        return True
+    digits = [int(ch) for ch in matched if ch.isdigit()]
+    if len(digits) != 13:
+        return False
+    total = sum(d * w for d, w in zip(digits[:12], _RRN_WEIGHTS))
+    return (11 - total % 11) % 10 == digits[12]
+
+
+_VALIDATORS: dict[str, "Callable[[str], bool]"] = {
+    "rrn_checksum": _rrn_checksum_ok,
+}
+
+# 증거 문자열 — 매치 구간을 중심으로 잘라 낸다. 줄 전체를 넣으면 200자가 넘는
+# 요즘 TS/JS 한 줄에서 *매치와 무관한 앞부분만* 보여, 정탐인데도 사용자가
+# 오탐으로 판단한다(실측: VoiceWhisper.tsx 의 빈 catch 가 줄 끝에 있어
+# 증거에는 useEffect(fetch(...)) 만 찍혔다).
+_EVIDENCE_CONTEXT = 60
+_EVIDENCE_WHOLE_LINE_MAX = 200
 
 
 def _infer_language(filename: str, language: str | None) -> str | None:
@@ -225,6 +271,17 @@ def _compile_rule(rule: Rule) -> dict | None:
         except re.error as exc:
             print(f"[regex_scanner] invalid exclude regex in {rule.id}: {exc}", file=sys.stderr)
 
+    # 값 검증기 — 이름이 등록돼 있지 않으면 *조용히 통과시키지 않고* 경고한다.
+    # 오타 난 검증기 이름이 무시되면 룰이 의도보다 느슨하게 동작하는데, 그
+    # 사실이 아무 데도 드러나지 않는다.
+    validators: list[Callable[[str], bool]] = []
+    for name in detection.validators:
+        fn = _VALIDATORS.get(name)
+        if fn is None:
+            print(f"[regex_scanner] unknown validator {name!r} in {rule.id}", file=sys.stderr)
+            continue
+        validators.append(fn)
+
     return {
         "rule_id": rule.id,
         "title": rule.title_en or rule.title_ko,
@@ -234,6 +291,8 @@ def _compile_rule(rule: Rule) -> dict | None:
         "category": detection.category or (rule.domains[0] if rule.domains else "uncategorized"),
         "patterns": compiled,
         "excludes": excludes,
+        "validators": validators,
+        "dedup_group": detection.dedup_group,
         "confidence": detection.confidence,
         "languages": {lang.lower() for lang in rule.languages},
         "why": detection.why_it_matters or rule.body[:200].strip(),
@@ -313,6 +372,66 @@ def redact_evidence(text: str) -> str:
     return text.strip()[:240]
 
 
+_SEVERITY_RANK = {
+    Severity.critical: 4, Severity.high: 3, Severity.medium: 2, Severity.low: 1,
+}
+_DECISION_RANK = {Decision.block: 2, Decision.warn: 1, Decision.allow: 0}
+
+
+def _dedup_rank(finding: Finding) -> tuple:
+    # 심각도 → 결정 → rule_id 순. rule_id 를 마지막에 넣어 같은 무게일 때
+    # 실행 순서와 무관하게 항상 같은 룰이 남게 한다(리포트 재현성).
+    return (
+        _SEVERITY_RANK.get(finding.severity, 0),
+        _DECISION_RANK.get(finding.decision, 0),
+        finding.rule_id,
+    )
+
+
+def dedupe_by_group(findings: list[Finding]) -> list[Finding]:
+    """같은 ``dedup_group`` 룰이 같은 파일·같은 줄에 걸리면 하나만 남긴다.
+
+    같은 코드를 다른 각도로 보는 룰(예: KISA-JS-ERR-02 '오류상황 대응 부재' 와
+    -03 '부적절한 예외 처리' 는 둘 다 빈 catch 를 본다)이 각각 발행하면 검토자는
+    같은 한 줄을 두 번 고쳐야 하는 줄 안다. 그룹을 선언한 룰끼리만 묶으므로,
+    서로 다른 주제의 룰이 우연히 같은 줄에 걸린 것은 그대로 남는다.
+    """
+    kept: list[Finding] = []
+    seen: dict[tuple[str, int | None, str], int] = {}
+    for finding in findings:
+        rule = lookup_rule(finding.rule_id)
+        group = (rule or {}).get("dedup_group")
+        if not group:
+            kept.append(finding)
+            continue
+        key = (finding.location.file, finding.location.line, group)
+        index = seen.get(key)
+        if index is None:
+            seen[key] = len(kept)
+            kept.append(finding)
+        elif _dedup_rank(finding) > _dedup_rank(kept[index]):
+            kept[index] = finding
+    return kept
+
+
+def evidence_for_match(line: str, start: int, end: int) -> str:
+    """매치 구간을 중심으로 증거를 잘라 낸다(짧은 줄은 그대로).
+
+    잘라 낸 쪽에는 '…' 를 붙여 *줄의 일부*임을 드러낸다. 그래야 검토자가
+    "왜 이 코드가 걸렸지?" 를 증거만 보고 판단할 수 있다.
+    """
+    if len(line.strip()) <= _EVIDENCE_WHOLE_LINE_MAX:
+        return redact_evidence(line)
+    left = max(0, start - _EVIDENCE_CONTEXT)
+    right = min(len(line), end + _EVIDENCE_CONTEXT)
+    snippet = line[left:right].strip()
+    if left > 0:
+        snippet = "… " + snippet
+    if right < len(line):
+        snippet = snippet + " …"
+    return redact_evidence(snippet)
+
+
 def build_finding(rule: dict, *, filename: str, line_no: int, evidence: str,
                   engine: str, confidence: str | None = None) -> Finding:
     # 근거 강도 기본값 — 엔진이 명시하지 않으면 방식으로 추정한다.
@@ -384,14 +503,30 @@ class RegexScanner(ScannerAdapter):
                 rule_langs = rule.get("languages") or set()
                 if rule_langs and eff_lang and eff_lang not in rule_langs:
                     continue
-                if not any(pat.search(line) for pat in rule["patterns"]):
+                # 매치 객체를 들고 있어야 ① 값 검증기를 돌리고 ② 증거를 매치
+                # 구간으로 자를 수 있다. 검증기가 떨어뜨린 매치는 다음 패턴으로
+                # 계속 시도한다 — 한 룰의 여러 패턴 중 하나만 통과하면 된다.
+                validators = rule.get("validators") or ()
+                match = None
+                for pat in rule["patterns"]:
+                    candidate = pat.search(line)
+                    if candidate is None:
+                        continue
+                    if validators and not all(v(candidate.group(0)) for v in validators):
+                        continue
+                    match = candidate
+                    break
+                if match is None:
                     continue
                 # 맥락 제외 — 예시·플레이스홀더 문구가 같은 줄에 있으면 취소.
                 if any(ex.search(line) for ex in rule.get("excludes") or ()):
                     continue
-                evidence = redact_evidence(line)
+                evidence = evidence_for_match(line, match.start(), match.end())
                 findings.append(build_finding(
                     rule, filename=filename, line_no=line_no,
                     evidence=evidence, engine=self.name,
                 ))
+        # 중복 묶기는 여기서 하지 않는다 — 룰별 정확도 평가(evaluate)는 "이 룰이
+        # 잡았는가"를 물으므로, 묶어 버리면 가려진 룰의 재현율이 0으로 보인다.
+        # 묶기는 scan_code 가 결과를 합칠 때 한다.
         return findings

@@ -51,6 +51,14 @@ detection:
     - MOIS-49-TIME-02
     - CWE-835
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "while request.args.get(\"more\"):"
+    - "sys.setrecursionlimit(1000000)"
+  negative:
+    - "while retries < MAX_RETRIES:"
+    - "sys.setrecursionlimit(3000)"
 ---
 
 ## 무엇이 위험한가

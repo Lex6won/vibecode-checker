@@ -25,7 +25,12 @@ detection:
   patterns:
     # 환경변수 읽기(os.environ / process.env / getenv)는 안전하므로 제외한다.
     # 그 외 LLM 전송 컨텍스트에 민감값이 결합된 라인만 탐지한다.
-    - '(?i)^(?!.*(?:os\.environ|process\.env|os\.getenv|getenv))(?=.*(openai|chat\.completions|messages\s*=|prompt\s*=)).*(resident|rrn|주민|민원|phone|전화|password|secret|api_key)'
+    # `openai` 를 그냥 부분문자열로 찾으면 식별자 안쪽에 걸린다 —
+    # requestStructuredOpenAI(...) 같은 *함수 이름*이 LLM 호출로 오인돼,
+    # 오류 본문에 "secret" 이라는 단어가 있다는 이유만으로 개인정보 전송으로
+    # 보고됐다(실측: 시크릿이 새지 않는지 검증하는 테스트가 critical 4건).
+    # 실제 호출·임포트 형태만 LLM 맥락으로 인정한다.
+    - '(?i)^(?!.*(?:os\.environ|process\.env|os\.getenv|getenv))(?=.*(?:\bopenai\s*\.|\bfrom\s+openai\b|\bimport\s+openai\b|new\s+OpenAI\s*\(|api\.openai\.com|chat\.completions|\bmessages\s*=|\bprompt\s*=)).*(resident|rrn|주민|민원|phone|전화|password|secret|api_key)'
   category: llm-appsec
   why_it_matters: 프롬프트는 외부 서비스, 로그, 모니터링, trace에 남을 수 있어 개인정보와 내부정보를 그대로 넣으면 안 됩니다.
   public_sector_impact:
@@ -43,10 +48,15 @@ examples:
   positive:
     - "prompt = f\"민원인 주민번호는 {rrn} 입니다\""
     - "messages = [{\"role\": \"user\", \"content\": f\"전화 {phone}\"}]"
+    - "resp = openai.chat.completions.create(messages=[{\"role\":\"user\",\"content\":f\"주민번호 {rrn}\"}])"
   negative:
     - "host = os.environ.get(\"OPENAI_API_KEY\")"
     - "api_key = os.environ[\"OPENAI_API_KEY\"]"
     - "messages = build_safe_messages(user_id)"
+    # 함수 이름 안의 'OpenAI' 는 LLM 호출이 아니다 — 실측 오탐(wiggle_web).
+    # 아래 두 줄은 오히려 시크릿이 새지 '않는지' 검증하는 테스트 코드다.
+    - "await assert.rejects(requestStructuredOpenAI({ ...base, fetchImpl: async () => new Response(\"secret upstream body\", { status: 429 }) }))"
+    - "const client = createOpenAIAdapter({ onError: (e) => log(\"secret redacted\") })"
 ---
 
 ## 무엇이 위험한가

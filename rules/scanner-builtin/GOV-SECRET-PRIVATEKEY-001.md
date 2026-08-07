@@ -48,6 +48,14 @@ detection:
     - NIST SSDF
     - Sigstore
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "KEY = \"\"\"-----BEGIN RSA PRIVATE KEY-----\"\"\""
+    - "PUTTY = \"PuTTY-User-Key-File-2: ssh-rsa\""
+  negative:
+    - "CERT = \"\"\"-----BEGIN CERTIFICATE-----\"\"\""
+    - "PUB = \"\"\"-----BEGIN PUBLIC KEY-----\"\"\""
 ---
 
 ## 무엇이 위험한가

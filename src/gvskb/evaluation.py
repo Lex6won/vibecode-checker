@@ -61,14 +61,18 @@ def evaluate_rule(rule: Rule) -> RuleMetrics | None:
     lang = _language_for(rule)
     tp = fn = tn = fp = 0
     for snippet in rule.examples.positive:
-        report = scan_code(snippet, filename=f"{rule.id}.pos", language=lang)
+        # dedup_group 으로 묶인 룰이 서로를 가리면 재현율이 0으로 보인다 —
+        # 룰별 평가에서는 묶기를 끈다.
+        report = scan_code(snippet, filename=f"{rule.id}.pos", language=lang,
+                           collapse_duplicates=False)
         hit = any(f.rule_id == rule.id for f in report.findings)
         if hit:
             tp += 1
         else:
             fn += 1
     for snippet in rule.examples.negative:
-        report = scan_code(snippet, filename=f"{rule.id}.neg", language=lang)
+        report = scan_code(snippet, filename=f"{rule.id}.neg", language=lang,
+                           collapse_duplicates=False)
         hit = any(f.rule_id == rule.id for f in report.findings)
         if hit:
             fp += 1
