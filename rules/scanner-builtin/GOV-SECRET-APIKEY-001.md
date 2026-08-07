@@ -34,10 +34,18 @@ detection:
     # 실제 시크릿이 아니므로 부정 전방탐색으로 제외한다. 실제 키 값에는 이 토큰들이
     # 사실상 나타나지 않으므로 미탐 위험은 무시할 수 있다.
     #
+    # `${VAR}` · `{{ var }}` · `%VAR%` 도 같은 부류다 — 오히려 **비밀값을 코드에
+    # 두지 않았다는 증거**인데, 실측에서 `DB_PASSWORD = "${DB_PASSWORD}"` 가
+    # '치명·차단'으로 잡혀 모범 사례를 막고 있었다. `%VAR%` 는 **대문자만**
+    # 받는다: 소문자까지 열면 `pa%ss%word` 같은 실제 비밀번호가 미탐이 된다.
+    # 이때 `(?-i:...)` 로 대소문자 구분을 되살려야 한다 — 패턴 앞의 `(?i)` 가
+    # 전역이라 그냥 `[A-Z_]` 로 쓰면 소문자까지 먹어 실제로 미탐이 났다(실측).
+    # 맨몸 `$VAR` 는 제외하지 않는다 — 실제 비밀번호에 흔한 문자라 미탐 위험이 크다.
+    #
     # 두 번째 전방탐색은 *테스트 픽스처*를 제외한다. test-only-key·join_new 처럼
     # 구분자로 끊긴 자리에 test/dummy/fake/mock/sample 등이 오는 값은 가짜다.
     # 구분자를 요구하므로 latest·contest 같은 단어에는 걸리지 않는다.
-    - '(?i)(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
+    - '(?i)(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
     - 'sk-[A-Za-z0-9_-]{20,}'
     # sk_<벤더>_<본문> 형태 — Stripe(sk_live_·sk_test_), 기관 발급 키 등.
     # `sk_` 만으로는 잡지 않는다: 하이픈과 달리 언더스코어는 식별자에 흔해
@@ -77,6 +85,9 @@ examples:
     # 'latest' 는 test 를 품지만 구분자로 끊기지 않으므로 제외되지 않는다 —
     # 테스트 픽스처 제외가 평범한 단어를 삼키지 않는지 고정하는 예시
     - 'password = "latestbuild9x2"'
+    # % 를 대문자로 한정했으므로 소문자 사이의 % 는 여전히 실제 비밀번호로 본다
+    - 'password = "pa%ss%word12"'
+    - 'password = "P4ss$WORD123x"'
   negative:
     - "pi = 3.14"
     - 'greeting = "hello world"'
@@ -95,6 +106,11 @@ examples:
     - 'secret_name = "prod-db-credential"'
     - 'password_hint = "생일 8자리를 입력하세요"'
     - 'api_key_header = "X-Api-Key-Value"'
+    # 환경변수·템플릿 주입 표기 — 실측 오탐. 비밀값이 코드에 '없다'는 증거다
+    - 'DB_PASSWORD = "${DB_PASSWORD}"'
+    - 'api_key = "${CIVIL_AI_API_KEY}"'
+    - 'VAULT_SECRET = "{{ vault_secret }}"'
+    - 'DEPLOY_TOKEN = "%DEPLOY_TOKEN%"'
 ---
 
 ## 무엇이 위험한가

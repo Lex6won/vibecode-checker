@@ -313,6 +313,106 @@ def test_suffixed_secret_names_are_still_detected(snippet: str) -> None:
     assert "GOV-SECRET-APIKEY-001" in _rule_ids(snippet, language="python")
 
 
+# ---------------------------------------------------------------------------
+# KISA-PY-INPUT-03 — 고정 경로 open 이 '경로 조작'으로 차단되던 문제
+#
+# 출처: 백테스트 파이프라인(semi_fable5) 검사에서 8건이 전부 이 형태였고,
+# 모두 '높음·차단'이라 정상 프로젝트의 배포 판정이 막혔다.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("snippet", [
+    'with open(os.path.join(DATA_DIR, "meta.json"), "w", encoding="utf-8") as f:',
+    'with open(os.path.join(DATA_DIR, "params.json"), "r", encoding="utf-8") as f:',
+    'open(os.path.join(BASE_DIR, "config", "app.json"))',
+    "open(os.path.join(DATA_DIR,'meta.json'))",
+    'return send_file(os.path.join(EXPORT_DIR, "report.pdf"))',
+])
+def test_constant_path_join_is_not_path_traversal(snippet: str) -> None:
+    """조각이 전부 문자열 리터럴이면 경로가 동적이지 않다."""
+    assert "KISA-PY-INPUT-03" not in _rule_ids(snippet, language="python")
+
+
+@pytest.mark.parametrize("snippet", [
+    "with open(os.path.join(UPLOAD_DIR, filename)) as f:",
+    'with open(os.path.join(BASE_DIR, "sub", user_name)) as f:',
+    'with open(os.path.join(BASE_DIR, f"{report_id}.json")) as f:',
+    "return send_file(os.path.join(EXPORT_DIR, requested))",
+    'data = open(request.args["path"]).read()',
+])
+def test_dynamic_path_join_is_still_detected(snippet: str) -> None:
+    """반대 방향 고정 — 변수·f-string이 섞이면 여전히 잡아야 한다."""
+    assert "KISA-PY-INPUT-03" in _rule_ids(snippet, language="python")
+
+
+def test_path_rule_whitespace_lookahead_actually_narrows() -> None:
+    """전방탐색 밖에 `\\s*` 를 두면 0글자로 백트래킹해 공백이 '따옴표 아님'으로
+    통과한다 — 아무것도 좁혀지지 않은 채 '수정 완료'가 되는 함정이다."""
+    import re
+    broken = re.compile(r'open\s*\(\s*os\.path\.join\s*\([^)]*,\s*(?!["\'])')
+    fixed = re.compile(r'open\s*\(\s*os\.path\.join\s*\([^)]*,(?!\s*["\'])')
+    line = 'open(os.path.join(DATA_DIR, "meta.json"), "w")'
+    assert broken.search(line), "이 형태가 예전에 통과하던 것을 고정해 둔다"
+    assert not fixed.search(line)
+
+
+# ---------------------------------------------------------------------------
+# GOV-SECRET-APIKEY-001 — 환경변수·템플릿 주입 표기
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("snippet", [
+    'DB_PASSWORD = "${DB_PASSWORD}"',
+    'api_key = "${CIVIL_AI_API_KEY}"',
+    'VAULT_SECRET = "{{ vault_secret }}"',
+    'DEPLOY_TOKEN = "%DEPLOY_TOKEN%"',
+])
+def test_env_placeholder_is_not_a_secret(snippet: str) -> None:
+    """비밀값을 코드에 두지 '않았다'는 증거를 차단하고 있었다."""
+    assert "GOV-SECRET-APIKEY-001" not in _rule_ids(snippet, language="python")
+
+
+@pytest.mark.parametrize("snippet", [
+    'password = "pa%ss%word12"',      # 소문자 %..% 는 실제 비밀번호일 수 있다
+    'password = "P4ss$WORD123x"',     # 맨몸 $ 는 제외하지 않는다
+    'SECRET_KEY = "d9f2ka83jdkq0zmx84hsly26rbtv51cn"',
+])
+def test_real_secret_with_special_chars_still_detected(snippet: str) -> None:
+    """`%VAR%` 제외가 실제 비밀번호를 삼키면 안 된다.
+
+    `(?i)` 가 패턴 전역이라 `[A-Z_]` 만 쓰면 소문자까지 먹어 실제로 미탐이 났다.
+    `(?-i:...)` 로 그 구간만 대소문자를 되살린다.
+    """
+    assert "GOV-SECRET-APIKEY-001" in _rule_ids(snippet, language="python")
+
+
+# ---------------------------------------------------------------------------
+# GOV-PII-RRN-001 — 실수 소수부의 우연한 일치
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("snippet", [
+    '{"sharpe": 12.9001011234568, "trades": 418}',   # 유효 날짜 + 검증식까지 통과
+    '{"avg_win": 294.4441521234567}',                # 실측(semi_fable5)
+    "score = 9001011234568.75",
+])
+def test_number_inside_a_decimal_is_not_a_resident_number(snippet: str) -> None:
+    """`\\b` 만으로는 부족하다 — 소수점이 단어 경계라 소수부가 후보가 된다.
+
+    실측값이 지금까지 안 걸린 건 날짜가 '84월'이라 운이 좋았을 뿐이고,
+    유효 날짜를 심자 즉시 '치명·차단'으로 재현됐다.
+    """
+    assert "GOV-PII-RRN-001" not in _rule_ids(snippet, language="python")
+
+
+def test_bare_resident_number_still_detected_next_to_delimiters() -> None:
+    """반대 방향 고정 — 숫자열의 일부가 아니면 그대로 잡아야 한다."""
+    assert "GOV-PII-RRN-001" in _rule_ids("rrn = 8203154567890", language="python")
+    assert "GOV-PII-RRN-001" in _rule_ids('{"rrn": 8203154567890}', language="python")
+
+
+def test_hyphenated_resident_number_keeps_no_boundary_guard() -> None:
+    """하이픈 형태에는 가드를 걸지 않는다 — 문장 끝 마침표에서 미탐이 난다."""
+    assert "GOV-PII-RRN-001" in _rule_ids("주민번호는 900101-1234568.", language="python")
+
+
 def test_dedup_choice_is_stable() -> None:
     code = 'promise.then(run).catch(() => {});'
     picks = {
