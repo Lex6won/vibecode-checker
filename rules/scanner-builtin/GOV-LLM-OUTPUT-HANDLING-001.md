@@ -32,6 +32,14 @@ detection:
     - CWE-79
     - CWE-94
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "exec(llm_response)"
+    - "os.system(model_output.strip())"
+  negative:
+    - "logger.info(\"status=%s\", response.status_code)"
+    - "render_plain_text(sanitize(llm_response))"
 ---
 
 ## 무엇이 위험한가

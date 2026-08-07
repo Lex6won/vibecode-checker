@@ -44,6 +44,14 @@ detection:
     - CWE-352
     - OWASP ASVS V7
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "res.cookie(\"sid\", token, { httpOnly: true, sameSite: 'none' });"
+    - "app.use(cors({ origin: '*', credentials: true }));"
+  negative:
+    - "res.cookie(\"sid\", token, { httpOnly: true, sameSite: 'strict', secure: true });"
+    - "app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));"
 ---
 
 ## 무엇이 위험한가

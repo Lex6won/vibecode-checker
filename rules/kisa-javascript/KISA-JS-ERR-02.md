@@ -27,6 +27,9 @@ detection:
     - "catch\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*console\\.log\\s*\\(\\s*\\1\\s*\\)\\s*;?\\s*\\}"
     - "\\.catch\\s*\\(\\s*\\(\\s*\\w*\\s*\\)\\s*=>\\s*\\{\\s*\\}\\s*\\)"
     - "\\.catch\\s*\\(\\s*\\(\\s*\\)\\s*=>\\s*\\{\\s*\\}\\s*\\)"
+  # -03 과 같은 코드(삼켜진 예외)를 다른 각도로 본다. 같은 줄에 둘 다 걸리면
+  # 검토자는 한 곳을 두 번 고쳐야 하는 줄 알게 되므로 하나만 남긴다.
+  dedup_group: js-swallowed-exception
   category: kisa-secure-coding
   why_it_matters: >-
     `try { ... } catch (e) {}` 또는 `.catch(() => {})`처럼 *예외를 잡고도 아무

@@ -32,6 +32,7 @@ from .scanners.regex_scanner import (
     RULES as RULES,
     RegexScanner,
     build_finding,
+    dedupe_by_group,
     lookup_rule,
     redact_evidence as _redact_evidence,
     reload_rules as _reload_runtime_rules,
@@ -61,6 +62,62 @@ SEVERITY_RANK = {
     Severity.high: 2,
     Severity.critical: 3,
 }
+
+
+# ── 테스트 코드 경로 감쇄 ──────────────────────────────────────────────────
+# 테스트 픽스처의 "비밀번호"·"주민번호"는 대개 진짜가 아니다. 그런데 값만 보는
+# 룰은 진짜와 구분하지 못해, 실측에서 시크릿·PII 오탐 8건이 **전부** tests/ 밑에
+# 있었고 그것만으로 배포 차단 판정이 났다. 발견을 지우지는 않는다 — 테스트에
+# 진짜 키를 넣는 사고도 흔하기 때문이다. 등급만 낮춰 리포트에는 남기고 게이트는
+# 통과시킨다.
+_TEST_PATH_SEGMENTS = {
+    "test", "tests", "__tests__", "spec", "specs", "testdata", "__mocks__",
+}
+_TEST_FILE_RE = re.compile(
+    r"(?:^|[._-])(?:test|spec)s?\.[A-Za-z0-9]+$"   # foo.test.mjs · bar.spec.ts
+    r"|^test_[^/\\]*\.py$"                          # test_foo.py
+    r"|_test\.py$"                                  # foo_test.py
+    r"|^conftest\.py$",
+    re.IGNORECASE,
+)
+
+# 값의 진위가 판정을 좌우하는 계열만 감쇄한다. 주입·XSS 같은 *코드 모양* 룰은
+# 테스트 코드에서도 그대로 둔다 — 모양이 잘못된 건 어디서든 잘못된 것이다.
+_VALUE_BASED_CATEGORIES = {"secret-scanning", "privacy-public-sector"}
+
+_TEST_PATH_REASON = "테스트 코드 경로 — 값이 실제 자격증명·개인정보가 아닐 가능성이 높음"
+
+
+def is_test_path(filename: str) -> bool:
+    """경로가 테스트 코드로 보이는지."""
+    if not filename or filename == "<memory>":
+        return False
+    normalized = filename.replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    if any(p.lower() in _TEST_PATH_SEGMENTS for p in parts[:-1]):
+        return True
+    return bool(parts and _TEST_FILE_RE.search(parts[-1]))
+
+
+def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list[Finding]:
+    """테스트 경로의 값 기반 발견을 low·warn 으로 낮춘다(삭제하지 않음)."""
+    if not is_test_path(filename):
+        return findings
+    adjusted: list[Finding] = []
+    for finding in findings:
+        if (
+            finding.category not in _VALUE_BASED_CATEGORIES
+            or finding.severity == Severity.low
+        ):
+            adjusted.append(finding)
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_TEST_PATH_REASON}",
+        }))
+    return adjusted
 
 
 def reload_rules() -> int:
@@ -182,7 +239,10 @@ def scan_code(
     scenario: str | None = None,
     profile: str = "public-default-strict",
     categories: set[str] | None = None,
+    collapse_duplicates: bool = True,
 ) -> ScanReport:
+    """``collapse_duplicates=False`` 는 룰별 정확도 평가용 — dedup_group 으로
+    묶인 룰이 서로를 가려 재현율이 0으로 보이는 것을 막는다."""
     raw: list[Finding] = []
     for adapter in _ADAPTERS:
         raw.extend(adapter.scan(
@@ -200,6 +260,10 @@ def scan_code(
     # Apply scenario-bound policy: decision overrides + severity_min filter.
     profile_spec = load_profile(profile)
     findings = apply_profile(findings, profile_spec)
+    # 프로파일 뒤에 감쇄한다 — 프로파일의 decision 상향이 감쇄를 되돌리지 못하게.
+    findings = attenuate_test_path_findings(findings, filename)
+    if collapse_duplicates:
+        findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)
 
     return ScanReport(

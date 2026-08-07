@@ -52,6 +52,14 @@ detection:
     - MOIS-49-INPUT-05
     - CWE-78
   can_auto_fix: false
+examples:
+  language: javascript
+  positive:
+    - "child_process.exec(\"convert \" + req.query.name);"
+    - "child_process.spawnSync(cmd, args, { shell: true });"
+  negative:
+    - "const out = spawnSync(\"git\", [\"status\", \"--porcelain\"]);"
+    - "execFile(\"/usr/bin/convert\", [inputPath, outputPath], cb);"
 ---
 
 ## 무엇이 위험한가

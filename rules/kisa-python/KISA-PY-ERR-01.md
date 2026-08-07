@@ -44,6 +44,14 @@ detection:
     - MOIS-49-ERR-01
     - CWE-209, CWE-497
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "return jsonify({\"error\": str(e)}), 500"
+    - "app.run(host=\"127.0.0.1\", debug=True)"
+  negative:
+    - "return jsonify({\"error\": \"처리 중 오류가 발생했습니다\"}), 500"
+    - "app.run(host=\"127.0.0.1\")"
 ---
 
 ## 무엇이 위험한가

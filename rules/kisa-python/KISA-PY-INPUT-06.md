@@ -45,6 +45,13 @@ detection:
     - MOIS-49-INPUT-06
     - CWE-434
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "uploaded.save(os.path.join(UPLOAD_DIR, file.filename))"
+    - "handler.save(request.files[\"doc\"])"
+  negative:
+    - "uploaded.save(os.path.join(UPLOAD_DIR, secure_filename(checked_name)))"
 ---
 
 ## 무엇이 위험한가

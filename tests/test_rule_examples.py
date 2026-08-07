@@ -31,9 +31,11 @@ _RUNNABLE_RULES: list[Rule] = [
     r for r in _RULES if r.detection and r.detection.patterns
 ]
 
-# Soft coverage floor for runnable rules. Bump as more rules get examples.
-# At the introduction of this infrastructure we set it conservatively.
-_COVERAGE_FLOOR_PCT: float = 25.0
+# 실행형 룰은 전부 examples 를 가져야 한다. 25%로 두었을 때 실제로 22개 룰이
+# 예시 없이 굴러갔고, 그중 GOV-PII-RRN-001 은 임의 13자리 정수의 40%를 주민번호로
+# 보고하고 있었다 — examples 가 없으니 evaluate 표에 아예 나타나지 않아 아무도
+# 몰랐다. validate-rules 도 같은 규칙을 ERROR 로 집행한다.
+_COVERAGE_FLOOR_PCT: float = 100.0
 
 
 def _language_for(rule: Rule) -> str | None:
@@ -66,7 +68,10 @@ def test_rule_positive_examples_are_detected(rule: Rule) -> None:
         pytest.skip(f"{rule.id} needs file context (see test_round2_fixes/test_secret_keyfile)")
     lang = _language_for(rule)
     for i, snippet in enumerate(rule.examples.positive):
-        report = scan_code(snippet, filename=f"{rule.id}.pos.{i}", language=lang)
+        # dedup_group 으로 묶인 룰은 서로를 가릴 수 있다 — 룰별 예시 검증은
+        # "이 룰이 잡았는가"를 묻는 것이므로 묶기를 끈다.
+        report = scan_code(snippet, filename=f"{rule.id}.pos.{i}", language=lang,
+                           collapse_duplicates=False)
         ids = {f.rule_id for f in report.findings}
         assert rule.id in ids, (
             f"{rule.id} positive example #{i} was not detected.\n"
@@ -86,7 +91,8 @@ def test_rule_negative_examples_are_not_detected(rule: Rule) -> None:
         pytest.skip(f"{rule.id} has no negative examples")
     lang = _language_for(rule)
     for i, snippet in enumerate(rule.examples.negative):
-        report = scan_code(snippet, filename=f"{rule.id}.neg.{i}", language=lang)
+        report = scan_code(snippet, filename=f"{rule.id}.neg.{i}", language=lang,
+                           collapse_duplicates=False)
         ids = {f.rule_id for f in report.findings}
         assert rule.id not in ids, (
             f"{rule.id} negative example #{i} produced a false positive.\n"

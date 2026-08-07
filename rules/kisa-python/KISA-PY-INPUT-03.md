@@ -47,6 +47,14 @@ detection:
     - MOIS-49-INPUT-03
     - CWE-22
   can_auto_fix: false
+examples:
+  language: python
+  positive:
+    - "data = open(request.args[\"path\"]).read()"
+    - "return send_file(request.args.get(\"name\"))"
+  negative:
+    - "data = open(SAFE_REPORT_PATH, \"rb\").read()"
+    - "return send_file(ALLOWED_FILES[key])"
 ---
 
 ## 무엇이 위험한가

@@ -63,6 +63,24 @@ class RuleDetection(BaseModel):
             "예: 안내 문구의 예시 IP('e.g. 192.168.1.100'). patterns 와 같은 flags 를 쓴다."
         ),
     )
+    validators: list[str] = Field(
+        default_factory=list,
+        description=(
+            "매치 뒤에 돌리는 값 검증기 이름. 정규식만으로는 '형태가 같은 남'을 "
+            "걸러낼 수 없는 자리에 쓴다 — 예: rrn_checksum 은 주민등록번호 검증식"
+            "(mod 11)을 실제로 계산해, 13자리 숫자이기만 한 값(Unix ms 타임스탬프 등)을 "
+            "탈락시킨다. 등록된 이름만 허용하며 모든 검증기를 통과해야 발견이 남는다."
+        ),
+    )
+    dedup_group: str | None = Field(
+        default=None,
+        description=(
+            "같은 코드를 다른 각도로 보는 룰들의 묶음 이름. 같은 그룹의 룰이 "
+            "같은 파일·같은 줄에 걸리면 하나만 남긴다(심각도 높은 쪽 우선). "
+            "지정하지 않으면 중복 제거를 하지 않는다 — 서로 다른 주제의 룰이 "
+            "우연히 같은 줄에 걸린 것을 임의로 지우지 않기 위해서다."
+        ),
+    )
     flags: list[Literal["IGNORECASE", "MULTILINE", "DOTALL"]] = Field(default_factory=list)
     confidence: Literal["confirmed", "likely", "pattern-only"] | None = Field(
         default=None,
@@ -199,6 +217,15 @@ class Finding(BaseModel):
     suppress_reason: str | None = Field(
         default=None,
         description="억제 사유(원 사유 + 승인자 + 만료일). suppressed=True일 때만 존재",
+    )
+    # 심각도 감쇄 — 발견을 지우지 않고 등급만 낮춘다. 지우면 "왜 안 나왔지"를
+    # 추적할 수 없고, 그대로 두면 가짜 값 때문에 배포가 막힌다.
+    severity_adjusted: str | None = Field(
+        default=None,
+        description=(
+            "원래 등급에서 낮춘 사유(예: '테스트 코드 경로 — 값이 실제 자격증명이 "
+            "아닐 가능성이 높음'). 값이 있으면 리포트가 감쇄 사실을 함께 표시한다"
+        ),
     )
 
 
