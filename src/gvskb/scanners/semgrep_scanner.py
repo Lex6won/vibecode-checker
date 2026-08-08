@@ -28,7 +28,9 @@ from ..schema import Finding
 from .base import ScannerAdapter
 
 
-_JS_EXTS: tuple[str, ...] = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte")
+_JS_EXTS: tuple[str, ...] = (
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte",
+)
 _JS_LANGS: frozenset[str] = frozenset({"javascript", "typescript", "js", "ts"})
 
 

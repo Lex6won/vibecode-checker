@@ -614,3 +614,55 @@ def test_no_truncation_means_no_banner() -> None:
     audit["audits"][0].update({"truncated_count": 0, "parsed_count": 906})
     report.dependency_audit = audit
     assert "검사되지 않았습니다" not in render_markdown(report)
+
+
+# ---------------------------------------------------------------------------
+# 소스 파일 절단 — '열어보지도 못한 파일'을 결론 근처에서 말한다
+#
+# 실측(lexdiff, 2026-08-08): 568개 중 500개만 검사되고 68개가 잘렸는데, 리포트의
+# 제외 요약에는 "최대 파일 수 도달 1건"으로만 나왔다. 의존성 절단(라운드13)과
+# 완전히 같은 결함 — 커버리지가 깨진 사실이 종이에 없으면 결재는 그냥 통과한다.
+# ---------------------------------------------------------------------------
+
+from gvskb.report import _source_truncation_banner  # noqa: E402
+from gvskb.schema import SkippedFile  # noqa: E402
+
+
+def _truncated_report(missed: int = 68, limit: int = 500) -> ScanReport:
+    report = _multi_file_report()
+    report.skipped_files = [
+        SkippedFile(path="repo", reason=f"max_files={limit} reached — {missed}개 파일이 검사되지 않았습니다"),
+    ]
+    return report
+
+
+def test_source_truncation_banner_states_missed_and_total() -> None:
+    banner = _source_truncation_banner(_truncated_report(68, 500))
+    assert banner is not None
+    assert "68개가 검사되지 않았습니다" in banner
+    assert "568개 중 500개" in banner      # 전체를 복원해 보여준다
+    assert "--max-files" in banner          # 어떻게 고치는지까지
+
+
+def test_source_truncation_banner_absent_when_nothing_truncated() -> None:
+    assert _source_truncation_banner(_multi_file_report()) is None
+
+
+def test_source_truncation_banner_rendered_in_md_and_html() -> None:
+    report = _truncated_report(68, 500)
+    md, html = render_markdown(report), render_html(report)
+    for doc in (md, html):
+        assert "68개가 검사되지 않았습니다" in doc, doc[:200]
+    assert 'class="depwarn"' in html
+
+
+def test_skip_breakdown_shows_file_count_not_event_count() -> None:
+    """제외 요약의 '1건'은 파일 1개가 아니라 절단 사건 1건이다.
+    실제 미검사 파일 수를 같이 적지 않으면 68 누락이 1로 읽힌다."""
+    md = render_markdown(_truncated_report(68, 500))
+    # 제외 요약 **줄 자체**를 본다. 단순히 "68개"가 문서 어딘가에 있는지만
+    # 확인하면 배너와 생략파일 목록이 이 줄을 가려, 요약을 옛 문구로 되돌려도
+    # 테스트가 통과한다(변이검사에서 실제로 통과했다).
+    line = next((ln for ln in md.splitlines() if "최대 파일 수에 걸려" in ln), None)
+    assert line is not None, "제외 요약에 절단 줄이 없습니다"
+    assert "68개 파일이 검사되지 않았습니다" in line, line

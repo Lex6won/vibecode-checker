@@ -85,7 +85,15 @@ def _skip_breakdown_lines(report: "ScanReport") -> list[str]:
             "없다는 의미가 아닙니다. 필요한 형식이 있으면 담당자에게 문의하세요."
         )
     if groups.get("최대 파일 수 도달"):
-        out.append("  - ⚠ 최대 파일 수에 걸려 **일부만 검사**했습니다 — `--max-files` 를 늘려 다시 검사하세요.")
+        # 여기 '1건'은 파일 1개가 아니라 '절단 사건 1건'이다 — 실제 미검사
+        # 파일 수를 함께 적지 않으면 70개 누락이 1건으로 읽힌다.
+        missed = next(
+            (m.group(2) for s in skips
+             if (m := _SOURCE_TRUNC_RE.search(s.reason or ""))),
+            None,
+        )
+        detail = f"**{missed}개 파일이 검사되지 않았습니다**" if missed else "**일부만 검사**했습니다"
+        out.append(f"  - ⚠ 최대 파일 수에 걸려 {detail} — `--max-files` 를 늘려 다시 검사하세요.")
     return out
 
 
@@ -1213,6 +1221,10 @@ def render_markdown(
     if dep_audits and (_trunc_banner := _dep_truncation_banner(dep_audits)):
         lines.append(f"> {_trunc_banner}")
         lines.append("")
+    # 열어보지도 못한 소스 파일도 마찬가지다(의존성 절단과 같은 무게로).
+    if _src_trunc := _source_truncation_banner(report):
+        lines.append(f"> {_src_trunc}")
+        lines.append("")
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
     ]
@@ -1913,6 +1925,8 @@ def render_html(
         p.append(f'<div class="depwarn">{_esc(_intel_banner).replace("**", "")}</div>')
     if dep_audits and (_trunc_banner := _dep_truncation_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_trunc_banner).replace("**", "")}</div>')
+    if _src_trunc := _source_truncation_banner(report):
+        p.append(f'<div class="depwarn">{_esc(_src_trunc).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
     if not dep_audits and manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
@@ -2606,6 +2620,36 @@ def _dep_truncation_banner(audits: list[dict]) -> str | None:
         "않습니다.** 상한을 올려 다시 검사하세요"
         "(MCP `scan_dependencies` 의 `limit`, CLI `--dep-limit`)."
     )
+
+
+_SOURCE_TRUNC_RE = re.compile(r"max_files=(\d+) reached — (\d+)개")
+
+
+def _source_truncation_banner(report: "ScanReport") -> str | None:
+    """상한에 걸려 **열어보지도 못한 소스 파일**이 있으면 알린다.
+
+    의존성 쪽과 똑같은 결함이 소스 쪽에도 있었다(실측 2026-08-08): ``lexdiff``
+    는 검사 대상이 568개인데 상한이 500이라 **70개가 잘렸다**. 그런데 그 70개가
+    ``skipped_files`` 에 **한 줄**로만 들어가, 제외 요약에는 "최대 파일 수 도달
+    1건" 으로 보였다 — 담당자가 읽는 숫자는 1이고 실제로 안 본 파일은 70이다.
+
+    제외 요약(``_skip_breakdown_lines``)은 '무엇이 왜 빠졌나'를 나열하는 표라
+    이 사실이 목록 속에 묻힌다. 커버리지가 깨졌다는 것은 발견 목록과 같은
+    무게로, **결론 근처에서** 말해야 한다.
+    """
+    for s in report.skipped_files or []:
+        m = _SOURCE_TRUNC_RE.search(s.reason or "")
+        if not m:
+            continue
+        limit, missed = int(m.group(1)), int(m.group(2))
+        total = limit + missed
+        return (
+            f"⚠ **소스 파일 {missed}개가 검사되지 않았습니다** — 검사 대상 "
+            f"{total}개 중 {limit}개만 검사했습니다(파일 수 상한 도달). "
+            "**이 결과는 저장소 전체를 덮지 않습니다.** 상한을 올려 다시 "
+            "검사하세요(CLI `--max-files`)."
+        )
+    return None
 
 
 def _intel_cache_banner(audits: list[dict]) -> str | None:

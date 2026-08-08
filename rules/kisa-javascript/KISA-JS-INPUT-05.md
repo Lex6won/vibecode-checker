@@ -25,7 +25,16 @@ detection:
     - 'child_process\.exec(?:Sync)?\s*\('
     - "require\\s*\\(\\s*[\"']child_process[\"']\\s*\\)\\s*\\.exec"
     - 'child_process\.spawn(?:Sync)?\s*\([^)]*shell\s*:\s*true'
-    - "\\.exec(?:Sync)?\\s*\\([^)]*(?:\\+\\s*\\w|`[^`]*\\$\\{)"
+    # 수신자가 **정규식**이면 child_process 가 아니다. 실측(2026-08-08) 오탐 2건이
+    # 둘 다 `/^[A-Za-z]+/.exec(...)` · `lineRegex.exec(...)` 였다 — 정규식의
+    # `.exec()` 는 명령을 실행하지 않는다. 고정폭 부정 후방탐색을 이어 붙여
+    # 정규식 리터럴(`/…/`)·`new RegExp(…)`·regex/pattern 계열 변수명을 제외한다.
+    # (아래 bare `exec(` 패턴들은 그대로 둔다 — 그쪽은 구조분해 import 경로다.)
+    # 표기 변형은 `(?i:)` 로 한 번에 덮는다. 처음엔 Regex/regex/RegExp/regexp 를
+    # 하나씩 나열했는데, `urlRegexp`(혼합 표기)가 그 사이로 빠져나갔다 —
+    # 나열은 끝이 없고 빠진 자리가 조용하다. 후방탐색은 폭이 고정이어야 하므로
+    # 접미사별로 나누되, 각각은 대소문자를 가리지 않게 한다.
+    - "(?<![/\\)])(?<!(?i:regex))(?<!(?i:regexp))(?<!(?i:pattern))(?<!(?i:_re))\\.exec(?:Sync)?\\s*\\([^)]*(?:\\+\\s*\\w|`[^`]*\\$\\{)"
     - '\.execFile\s*\([^,)]*,\s*\[[^\]]*\$\{'
     # 구조분해 import( const { exec } = require('child_process') )로 호출한
     # bare exec( ... + 입력 ) — 앞에 점/식별자문자가 없는 exec만(점 있는 .exec는

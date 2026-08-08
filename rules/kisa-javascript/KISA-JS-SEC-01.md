@@ -24,7 +24,15 @@ detection:
   patterns:
     - "(?:router|app)\\.(?:post|put|patch|delete)\\s*\\(\\s*['\"][^'\"]*(?:password|passwd|pwd|account|withdraw|delete|transfer)[^'\"]*['\"][^)]*\\)[\\s\\S]{0,400}?updatePasswordFromDB\\s*\\("
     - "updatePasswordFromDB\\s*\\(\\s*(?:user|userId|req\\.session\\.[a-zA-Z_]+)\\s*,\\s*(?:newHashPassword|newPassword|req\\.body\\.[a-zA-Z_]+)\\s*\\)"
-    - "(?:router|app)\\.(?:post|put|patch)\\s*\\(\\s*['\"][^'\"]*(?:changePassword|change-password|reset-password|withdraw|delete-account)[^'\"]*['\"][\\s\\S]{0,300}?\\)\\s*=>\\s*\\{(?![\\s\\S]{0,400}?(?:currentPassword|oldPassword|reauth|verifyPassword|bcrypt\\.compare))"
+    # 라우트 등록줄에 **역할 기반 인가 미들웨어**가 있으면 제외한다. 실측
+    # (2026-08-08) 오탐 1건이 `app.post("/api/users/:id/reset-password",
+    # requireAuth(['admin']), …)` 였다 — 관리자가 **남의** 비밀번호를 초기화하는
+    # 경로에 그 사람의 옛 비밀번호를 요구할 수는 없다. 반면 역할 없는
+    # `requireAuth()`(= 그냥 로그인)는 **계속 잡는다** — 본인 비밀번호 변경에
+    # 재인증을 생략할 근거가 되지 않기 때문이다. 그래서 `\(\s*\[`(역할 배열)를
+    # 요구한다. 뒤쪽 부정 전방탐색은 `=> {` 이후만 보므로 여기엔 쓸 수 없어,
+    # 라우트 문자열~화살표 구간을 tempered dot 으로 막는다.
+    - "(?:router|app)\\.(?:post|put|patch)\\s*\\(\\s*['\"][^'\"]*(?:changePassword|change-password|reset-password|withdraw|delete-account)[^'\"]*['\"](?:(?!requireAuth\\s*\\(\\s*\\[|requireRole|requireAdmin|adminOnly|isAdmin)[\\s\\S]){0,300}?\\)\\s*=>\\s*\\{(?![\\s\\S]{0,400}?(?:currentPassword|oldPassword|reauth|verifyPassword|bcrypt\\.compare))"
   category: kisa-secure-coding
   why_it_matters: >-
     비밀번호 변경, 계좌이체, 회원탈퇴 등 *중요 기능*은 세션만으로 신뢰하면 안 됩니다.
