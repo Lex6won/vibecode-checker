@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
+from .gate import gate_status
 from .loader import load_all_rules
 from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
@@ -467,10 +468,18 @@ def render_report(
     except Exception as exc:
         return {"error": "invalid ScanReport", "detail": str(exc)}
 
+    # 게이트 필드는 `gate_status` 한 곳에서만 계산한다. 예전에는
+    # `summary.blocked`(=소스 발견만)를 그대로 내보내서, CRITICAL 취약 패키지가
+    # 있어도 본문은 "배포 불가"인데 이 필드는 False 였다 — 하네스가 읽는 값이다.
+    _gate = gate_status(parsed)
     out: dict = {
         "format": format,
         "finding_count": parsed.summary.finding_count,
-        "blocked": parsed.summary.blocked,
+        "blocked": _gate["blocked"],
+        # 소스는 보조, 의존성은 게이트 — 연동 상대가 자기 정책을 세울 수 있게 나눈다.
+        "blocked_source": _gate["blocked_source"],
+        "blocked_dependency": _gate["blocked_dependency"],
+        "gate_reason": _gate["reason"],
     }
     if format in ("markdown", "both"):
         md = render_markdown_impl(parsed)
@@ -555,7 +564,9 @@ def save_report(
         "saved": written,
         "directory": str(base.parent),
         "finding_count": parsed.summary.finding_count,
-        "blocked": parsed.summary.blocked,
+        "blocked": gate_status(parsed)["blocked"],
+        "blocked_source": gate_status(parsed)["blocked_source"],
+        "blocked_dependency": gate_status(parsed)["blocked_dependency"],
         "note": fallback_note or gitignore_hint(),
         "next": "HTML 파일을 열어 인쇄하면 그대로 PDF 결재 문서로 쓸 수 있습니다.",
     }

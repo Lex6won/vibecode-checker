@@ -950,7 +950,27 @@ def _meta_rows(report: ScanReport, ts: str) -> list[tuple[str, str]]:
         rows.append(("시나리오", report.scenario))
     if report.language:
         rows.append(("언어 힌트", report.language))
+    # 판정 기준(엔진 + 룰셋) — 재현성의 최소 단위. **쌍으로** 적는다:
+    # 엔진 코드가 바뀌어도 판정은 바뀌므로 룰셋만 적으면 재현 가능한 것처럼
+    # 보이는 착시가 생긴다. 이 두 값이 같아야 같은 결과가 나온다.
+    if report.engine_version or report.ruleset_version or report.ruleset_digest:
+        rows.append(("판정 기준", _criteria_cell(report)))
     return rows
+
+
+def _criteria_cell(report: ScanReport) -> str:
+    """"어떤 엔진 + 어떤 룰셋이 이 판정을 냈나" 한 칸."""
+    engine = report.engine_version or "(미상)"
+    if report.ruleset_version:
+        ruleset = f"룰셋 {report.ruleset_version}"
+    elif report.ruleset_digest:
+        ruleset = f"룰셋 (버전 선언 없음, 지문 {report.ruleset_digest[:12]}…)"
+    else:
+        ruleset = "룰셋 (미상)"
+    cell = f"엔진 {engine} · {ruleset}"
+    if report.ruleset_drift:
+        cell += f" ⚠ {report.ruleset_drift}"
+    return cell
 
 
 def _profile_cell(report: ScanReport) -> str:
@@ -1224,6 +1244,10 @@ def render_markdown(
     # 열어보지도 못한 소스 파일도 마찬가지다(의존성 절단과 같은 무게로).
     if _src_trunc := _source_truncation_banner(report):
         lines.append(f"> {_src_trunc}")
+        lines.append("")
+    # 룰셋이 선언과 다르면 **이 판정은 재현되지 않는다** — 결론 옆에서 말한다.
+    for _rs in _ruleset_banners(report):
+        lines.append(f"> {_rs}")
         lines.append("")
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
@@ -1927,6 +1951,8 @@ def render_html(
         p.append(f'<div class="depwarn">{_esc(_trunc_banner).replace("**", "")}</div>')
     if _src_trunc := _source_truncation_banner(report):
         p.append(f'<div class="depwarn">{_esc(_src_trunc).replace("**", "")}</div>')
+    for _rs in _ruleset_banners(report):
+        p.append(f'<div class="depwarn">{_esc(_rs).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
     if not dep_audits and manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
@@ -2620,6 +2646,33 @@ def _dep_truncation_banner(audits: list[dict]) -> str | None:
         "않습니다.** 상한을 올려 다시 검사하세요"
         "(MCP `scan_dependencies` 의 `limit`, CLI `--dep-limit`)."
     )
+
+
+def _ruleset_banners(report: "ScanReport") -> list[str]:
+    """룰셋 재현성 경고 — 최대 두 줄.
+
+    게이트는 "어제 통과한 것이 오늘도 통과한다"가 전제다. 그 전제가 깨진 두 경우:
+
+    ① **드리프트** — 룰이 바뀌었는데 룰셋 버전이 그대로다. 판정이 달라졌는데
+       결과에는 같은 버전이 찍혀, 비교하는 사람이 *"룰은 그대로인데 코드가
+       나빠졌구나"* 로 잘못 읽는다.
+    ② **핀 불일치** — 소비자가 `GVSKB_EXPECT_RULESET` 로 고정한 것과 실제가
+       다르다. CI 가 기준선을 잡아 둔 의미가 사라진 상태다.
+
+    둘 다 발견 목록에는 영향을 주지 않는다. 그래서 **결론 근처에서 말해야**
+    한다 — 부록에 적으면 아무도 안 본다.
+    """
+    from . import ruleset as _ruleset
+
+    out: list[str] = []
+    if report.ruleset_drift:
+        out.append(
+            f"⚠ **룰셋 버전이 실제 룰과 다릅니다** — {report.ruleset_drift} "
+            "**이 판정은 선언한 버전으로 재현되지 않습니다.**"
+        )
+    if mismatch := _ruleset.pin_mismatch(report.ruleset_version, report.ruleset_digest):
+        out.append(mismatch)
+    return out
 
 
 _SOURCE_TRUNC_RE = re.compile(r"max_files=(\d+) reached — (\d+)개")
