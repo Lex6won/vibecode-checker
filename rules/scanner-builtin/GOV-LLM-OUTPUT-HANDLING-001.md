@@ -12,7 +12,11 @@ cwe: [CWE-79, CWE-94]
 severity: high
 decision_default: block
 domains: [llm-appsec]
-languages: [python, javascript, java]
+# typescript 누락은 적대적 검증(2026-08-08)에서 드러났다 — `.ts`/`.tsx` 는 언어가
+# typescript 로 추론되고, 언어 필터가 목록에 없는 언어를 걸러 내므로 이 룰이
+# **한 번도 돌지 않았다**. LLM 을 붙이는 웹앱은 대부분 Next.js/React = TypeScript 다.
+# 같은 계열의 KISA-JS-* 룰들은 모두 [javascript, typescript] 인데 여기만 달랐다.
+languages: [python, javascript, typescript, java]
 scenarios: [llm-integration, rag, agent, web-app]
 related_baseline: [OWASP-LLM-2025-01]
 verified_at: 2026-05-31

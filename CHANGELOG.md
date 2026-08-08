@@ -5,6 +5,58 @@
 
 ## [Unreleased]
 
+### 정화 여부는 룰이 아니라 문맥이 판단한다 (Fixed/Added) — 2026-08-08
+
+남은 차단 오탐 8건이 전부 `dangerouslySetInnerHTML` 이었다. 이건 regex 로 풀 수
+없다 — `__html: processHtml(x)` 에서 `processHtml` 이 무엇을 하는지 줄 하나로는
+알 수 없기 때문이다. 그래서 **판단을 룰에서 빼내** 문맥을 읽는 곳
+(`scanners/html_sink_context.py`)으로 옮겼다.
+
+**설계를 가른 실측 한 건**::
+
+    // 법제처 API 법령 본문 = 신뢰 소스. sanitize 생략으로 조당 ~30ms 절감.
+    const html = extractArticleText(article, false, lawTitle)
+    return <div dangerouslySetInnerHTML={{ __html: html }} />
+
+같은 모양 7건 중 6건은 헬퍼 본문이 정화로 끝나는 정상 방어였지만, 이 1건은
+개발자가 **의도적으로 정화를 껐다**. "한 홉 따라가서 함수면 통과"로 만들었다면
+이 진짜 위험이 함께 사라졌을 것이다. 그래서 **이름이 아니라 본문**을 본다.
+
+확신의 정도에 따라 결과를 나눈다 — 전부 지우면 위험이 사라지고, 전부 남기면
+표준 정상 패턴이 목록을 덮어 아무도 읽지 않는다. 둘 다 실패다.
+
+| 정황 | 결과 | 실측 |
+|---|---|---|
+| 주입 지점의 정화 호출(*관찰*) | 내린다. 단 그 이름이 이 파일에서 정화하지 않는 지역 함수면 내리지 않는다 | 11 |
+| 지역 헬퍼 1홉(*추론*) | medium · warn 으로 낮추고 이유를 남긴다 | 7 |
+| `<style>` 요소 | medium · warn (CSS 라 즉시 XSS 는 아니나 `</style>` 탈출 가능) | 1 |
+| 그 밖 | **그대로 차단** | 1 |
+
+- **룰의 같은-줄 부정 전방탐색을 걷어냈다** (Changed). 예전에도 정화가 보이면
+  지웠지만 근거가 달랐다: 줄에 `sanitize` 라는 **글자**가 있으면 지웠고, 그래서
+  적대적 검증에서 `function sanitizeMaybe(h){ return h.trim() }` 에 뚫렸다 —
+  **발견이 조용히 사라졌다.** 이제 그 이름이 이 파일에서 정화하지 않는 함수인지
+  확인한 뒤에만 내린다. 볼 수 없는 것(import 된 `DOMPurify.sanitize`)은 믿는다 —
+  볼 수 없다는 이유로 전부 차단하면 아무도 이 도구를 쓰지 않는다.
+- **`GOV-LLM-OUTPUT-HANDLING-001` 이 TypeScript 를 한 번도 검사하지 않았다**
+  (Fixed). `languages: [python, javascript, java]` — `.ts`/`.tsx` 는 언어가
+  typescript 로 추론되고 언어 필터가 목록에 없는 언어를 걸러 낸다. LLM 을 붙이는
+  웹앱은 대부분 Next.js/React = TypeScript 다. 같은 계열 `KISA-JS-*` 는 모두
+  `[javascript, typescript]` 인데 여기만 달랐다. **적대적 검증이 아니었으면
+  못 찾았다** — 오탐을 세는 것만으로는 절대 드러나지 않는 종류의 미탐이다.
+- **`GOV-SECRET-KEYFILE-001` 의 위치가 언제나 1행이었다** (Fixed). 호출부가
+  `line_no=1` 을 박고 있었다. 근거 줄은 보여 주면서 위치는 거짓 — 담당자가 1행을
+  열면 아무것도 없어 **확인 자체가 되지 않았다.**
+- **비밀 파일 판정이 경로와 공개 식별자를 비밀로 봤다** (Fixed). 실측 2건:
+  `BACKOFF_FILE="/tmp/claude-token-refresh-backoff"`(경로)와
+  `CLIENT_ID="9d1c250a-…"`(OAuth client_id 는 브라우저 URL 에 실려 나가는
+  **공개값**). `/` 는 base64 알파벳이라 값 문자만으로는 경로와 구별되지 않아
+  머리 모양으로 가른다. `CLIENT_SECRET` 은 계속 잡는다 — 그 경계를 지키는
+  테스트를 따로 뒀다.
+
+검증: 변이 **16/16 검출**(감쇄기 11 + 비밀파일 5) · **적대적 우회 시도 17건 전부 차단** ·
+테스트 1093 → **1110** · ruff OK · `validate-rules` ERROR 0.
+
 ### 차단 오탐 4종 — 룰이 '단어 조각'과 '문맥'을 못 보던 것 (Fixed) — 2026-08-08
 
 전수 스캔 기준 **차단 31건 중 29건이 오탐**이었다. 원인을 하나씩 세지 않고

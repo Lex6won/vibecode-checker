@@ -238,3 +238,82 @@ def test_report_marks_doc_links_separately() -> None:
     )
     md = render_markdown(report)
     assert "문서·설치" in md
+
+
+# ---------------------------------------------------------------------------
+# 2-b. 비밀 파일 판정의 정밀도 — 실측 오탐 2건 + 위치 정직성 (2026-08-08)
+#
+# 이 발견은 '파일명 + 내용'을 함께 봐야 해서 regex 룰로 만들 수 없고, 그래서
+# 코드로 판정한다. 코드로 판정하는 것은 룰보다 눈에 덜 띄므로 더 촘촘히 고정한다.
+# ---------------------------------------------------------------------------
+
+def test_secret_file_ignores_filesystem_paths(tmp_path: Path) -> None:
+    r"""실측: `BACKOFF_FILE="/tmp/claude-token-refresh-backoff"` 가 걸렸다.
+    `/` 는 base64 알파벳이기도 해서 값 문자만 보면 경로와 구별되지 않는다 —
+    머리 모양(`/`·`./`·`~/`·`C:\`)으로 가른다."""
+    (tmp_path / "get-claude-token.sh").write_text(
+        '#!/bin/bash\nBACKOFF_FILE="/tmp/claude-token-refresh-backoff"\n'
+        'CACHE_DIR="/home/runner/.cache/claude-token-store"\n',
+        encoding="utf-8",
+    )
+    report = scan_path(tmp_path)
+    assert not [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+
+
+def test_secret_file_ignores_a_bare_path_line(tmp_path: Path) -> None:
+    """`KEY=` 없이 경로만 있는 줄 — 키 이름 가드가 닿지 않는 자리다.
+    이 경우가 없으면 경로 판정을 통째로 지워도 테스트가 통과한다
+    (실제로 변이검사에서 통과했다: 위 두 줄은 `_FILE`·`_DIR` 이라 키 이름
+    가드가 먼저 걸러 경로 가드를 가리고 있었다)."""
+    (tmp_path / "token.conf").write_text(
+        "/var/lib/app/session-store-directory-for-tokens\n", encoding="utf-8"
+    )
+    report = scan_path(tmp_path)
+    assert not [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+
+
+def test_secret_file_ignores_public_oauth_identifiers(tmp_path: Path) -> None:
+    """실측: `CLIENT_ID="9d1c250a-…"`(UUID) 가 걸렸다. OAuth client_id 는
+    브라우저 URL 에 그대로 실려 나가는 **공개값**이다."""
+    (tmp_path / "refresh-claude-token.sh").write_text(
+        '#!/bin/bash\nCLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"\n',
+        encoding="utf-8",
+    )
+    report = scan_path(tmp_path)
+    assert not [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+
+
+def test_client_secret_is_still_flagged(tmp_path: Path) -> None:
+    """CLIENT_ID 를 빼면서 CLIENT_SECRET 까지 빼면 룰이 무의미해진다.
+    이 테스트가 그 경계를 지킨다."""
+    (tmp_path / "api_key.env").write_text(
+        'CLIENT_SECRET="9d1c250ae61b44d988ed5944d1962f5e0011223344556677"\n',
+        encoding="utf-8",
+    )
+    report = scan_path(tmp_path)
+    assert [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+
+
+def test_base64_value_starting_with_slash_is_still_flagged(tmp_path: Path) -> None:
+    """경로 제외가 base64 비밀까지 삼키면 안 된다 — `+`/`=` 가 있으면 경로가 아니다."""
+    (tmp_path / "secret.key").write_text(
+        "/9j4AAQSkZJRgABAQEAYABgAAD+bWFnaWNzdHJpbmdoZXJlMTIzNA==\n",
+        encoding="utf-8",
+    )
+    report = scan_path(tmp_path)
+    assert [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+
+
+def test_secret_keyfile_points_at_the_real_line(tmp_path: Path) -> None:
+    """이전에는 `line_no=1` 을 박아서, 담당자가 1행을 열면 아무것도 없었다.
+    근거 줄은 보여 주면서 위치는 거짓인 상태 — 그러면 확인 자체가 안 된다."""
+    (tmp_path / ".secret_key").write_text(
+        "# 이 값은 기동 시 생성됩니다\n"
+        "\n"
+        "77fec85613b823cd9b6e3bdb41dfd1fc492fdf2463fd01ce7bc8cf3e1606cfac\n",
+        encoding="utf-8",
+    )
+    report = scan_path(tmp_path)
+    hits = [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+    assert hits
+    assert hits[0].location.line == 3, f"위치가 {hits[0].location.line} 행으로 보고됐습니다"

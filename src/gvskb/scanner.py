@@ -262,6 +262,10 @@ def scan_code(
     findings = apply_profile(findings, profile_spec)
     # 프로파일 뒤에 감쇄한다 — 프로파일의 decision 상향이 감쇄를 되돌리지 못하게.
     findings = attenuate_test_path_findings(findings, filename)
+    # HTML sink 의 문맥(정화 헬퍼 경유 · <style> CSS)도 같은 원칙으로 낮춘다 —
+    # 삭제가 아니라 감쇄다. 판단이 틀렸을 때 위험이 사라지면 안 된다.
+    from .scanners.html_sink_context import attenuate_html_sink_findings
+    findings = attenuate_html_sink_findings(findings, code, filename)
     if collapse_duplicates:
         findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)
@@ -346,24 +350,52 @@ _SECRET_VALUE_RE = re.compile(
 )
 _HEXLIKE_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
 
+# 경로처럼 보이는 값 — 실측(2026-08-08) `BACKOFF_FILE="/tmp/claude-token-refresh-backoff"`
+# 가 '32자 이상 무작위 값'으로 잡혔다. `/` 는 base64 알파벳이기도 해서 값 문자만
+# 보면 구별되지 않는다. 경로는 **머리 모양**으로 갈린다: `/`·`./`·`../`·`~/`·`C:\`.
+# base64 는 보통 `+` 나 `=` 를 동반하므로, 그 둘이 있으면 경로로 보지 않는다.
+_PATHLIKE_RE = re.compile(r"^(?:~|\.{1,2})?/|^[A-Za-z]:[\\/]")
 
-def _looks_like_secret_material(text: str) -> tuple[bool, str]:
-    """비밀 파일 내용이 '자격증명 값'으로 보이는가 → (판정, 근거 줄).
+# 이름이 **공개 식별자**임을 말하는 키 — 값이 무작위해 보여도 비밀이 아니다.
+# 실측: OAuth `CLIENT_ID="9d1c250a-…"`(UUID). client_id 는 브라우저 URL 에
+# 그대로 실려 나가는 공개값이다. `CLIENT_SECRET` 은 여기에 들지 않는다(끝의
+# `(?!...SECRET)` 가 아니라, 키 전체가 이 목록과 정확히 맞아야 한다).
+_PUBLIC_ID_KEY_RE = re.compile(
+    r"(?:^|[._-])(?:client[._-]?id|tenant[._-]?id|app[._-]?id|application[._-]?id|"
+    r"project[._-]?id|account[._-]?id|issuer|audience|"
+    r"\w*(?:file|path|dir|home|url|uri|endpoint))$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_secret_material(text: str) -> tuple[bool, int, str]:
+    """비밀 파일 내용이 '자격증명 값'으로 보이는가 → (판정, 줄번호, 근거 줄).
 
     파일명이 비밀을 뜻하는데 **내용이 긴 무작위 값 한 덩어리**면 그 값은 대개
     세션 서명키·API 키다. 주석·안내문만 있는 파일(예: "패스워드 없는 형태의
     인증서 파일입니다")은 제외해야 하므로 실제 값 형태만 본다.
+
+    줄번호를 함께 돌려준다 — 이전에는 호출부가 ``line_no=1`` 을 박아서, 담당자가
+    보고서를 보고 1행을 열면 아무것도 없었다. 근거 줄은 보여주면서 위치는 거짓인
+    상태였고, 그러면 그 발견은 확인 자체가 되지 않는다.
     """
-    for raw in text.splitlines()[:40]:      # 앞부분만 — 대용량 파일 방어
+    for line_no, raw in enumerate(text.splitlines()[:40], start=1):   # 앞부분만
         line = raw.strip().strip("\"'")
         if not line or line.startswith(("#", "//", ";", "--")):
             continue
-        # key=value 형태면 값 부분만 본다.
-        if "=" in line and len(line.split("=", 1)[1].strip()) >= 32:
-            line = line.split("=", 1)[1].strip().strip("\"'")
+        # key=value 형태면 값 부분만 본다. 키 이름이 공개 식별자를 뜻하면 건너뛴다.
+        if "=" in line:
+            key, _, rest = line.partition("=")
+            value = rest.strip().strip("\"'")
+            if len(value) >= 32:
+                if _PUBLIC_ID_KEY_RE.search(key.strip()):
+                    continue
+                line = value
+        if _PATHLIKE_RE.match(line) and not any(c in line for c in "+="):
+            continue
         if _HEXLIKE_RE.match(line) or _SECRET_VALUE_RE.match(line):
-            return True, raw
-    return False, ""
+            return True, line_no, raw
+    return False, 0, ""
 
 # 의존성 매니페스트/락파일 — regex 스캔으로는 취약 버전이 잡히지 않으므로
 # SCA(check-package / scan_dependencies)로 보내야 한다. 디렉터리 스캔 중
@@ -743,12 +775,12 @@ def scan_path(
         # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
         # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
         if _is_secret_filename(f.name):
-            hit, evidence_line = _looks_like_secret_material(text)
+            hit, evidence_no, evidence_line = _looks_like_secret_material(text)
             if hit:
                 keyfile_rule = lookup_rule("GOV-SECRET-KEYFILE-001")
                 if keyfile_rule is not None:
                     all_findings.append(build_finding(
-                        keyfile_rule, filename=rel, line_no=1,
+                        keyfile_rule, filename=rel, line_no=evidence_no,
                         evidence=_redact_evidence(evidence_line),
                         engine="secret-file",
                     ))
