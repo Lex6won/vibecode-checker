@@ -336,6 +336,52 @@ def _advisory_fixed_versions(vuln: dict, *, name: str, eco: str) -> list[str]:
     return out
 
 
+#: 수정 방법을 담을 가능성이 높은 순서. WEB 은 뉴스·블로그가 섞이므로 뒤로 둔다.
+_REF_PRIORITY = ("ADVISORY", "FIX", "WEB", "PACKAGE", "REPORT")
+
+
+def _advisory_references(vuln: dict, limit: int = 2) -> list[str]:
+    """OSV ``references`` 중 **조치에 쓸 수 있는** 주소 몇 개.
+
+    **왜 필요한가(실측 2026-08-08)**: ``xlsx 0.18.5`` 는 권고 버전이 ``None`` 이었다.
+    npm 에 수정 버전이 없으니 그 자체는 옳다 — 그런데 **수정본은 존재한다**.
+    SheetJS 가 배포를 자체 CDN 으로 옮겼을 뿐이고, 그 안내가 OSV ``references`` 에
+    들어 있는데 우리가 이 필드를 저장하지 않아 전달하지 못했다. 담당자에게는
+    "권고 버전 없음"이 "고칠 방법 없음"으로 읽힌다.
+    """
+    refs = vuln.get("references") or []
+    picked: list[str] = []
+    for want in _REF_PRIORITY:
+        for r in refs:
+            if not isinstance(r, dict):
+                continue
+            url = str(r.get("url") or "").strip()
+            if not url.lower().startswith(("http://", "https://")):
+                continue
+            if str(r.get("type") or "").upper() == want and url not in picked:
+                picked.append(url)
+                if len(picked) >= limit:
+                    return picked
+    return picked
+
+
+def _advisory_cvss_vector(vuln: dict) -> str | None:
+    """OSV 가 준 CVSS 벡터를 **그대로** 옮긴다 — 우리가 점수를 계산하지 않는다.
+
+    ``max_cve`` 는 ``"HIGH"`` 같은 **라벨**이라 게이트가 "CVSS 7.0 이상 차단" 같은
+    정책을 쓸 수 없다. 그렇다고 벡터에서 점수를 직접 산출하면 **틀린 CVSS 를 우리
+    이름으로 내보내게** 된다 — 없는 것보다 나쁘다. 벡터는 표준이고 기계 판독이
+    되며 원문과 대조할 수 있으므로, 통과시키는 것이 정확하고 안전하다.
+    """
+    for s in vuln.get("severity") or []:
+        if not isinstance(s, dict):
+            continue
+        score = str(s.get("score") or "").strip()
+        if score.upper().startswith("CVSS:"):
+            return score
+    return None
+
+
 def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
     """보고서·프롬프트에 실을 advisory 목록.
 
@@ -354,6 +400,12 @@ def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
             # 기존대로 fixed_versions). 평탄화된 목록만으로는 어느 수정이 내
             # 브랜치의 것인지 알 수 없다.
             "fixed_ranges": _advisory_fix_ranges(v, name=name, eco=eco),
+            # 원문·조치 안내 주소. 권고 버전이 없을 때 "그럼 어떻게 고치나"의 답이
+            # 여기 있다(레지스트리 밖 배포로 옮긴 패키지 등).
+            "references": _advisory_references(v),
+            # 표준 CVSS 벡터(있을 때만). 게이트가 자체 임계값으로 채점할 수 있게
+            # 원문 그대로 싣는다 — 우리가 점수를 만들지는 않는다.
+            "cvss_vector": _advisory_cvss_vector(v),
             "modified": v.get("modified"),
         })
     return rows

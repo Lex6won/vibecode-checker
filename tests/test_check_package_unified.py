@@ -420,6 +420,39 @@ def test_recommendation_still_covers_every_advisory(monkeypatch, osv) -> None:
     assert r["recommended_version"] == "7.31.0"
 
 
+def test_osv_references_are_stored_for_remediation(monkeypatch, osv) -> None:
+    """OSV ``references`` 를 저장한다 — 권고 버전이 없을 때 유일한 조치 단서다.
+
+    실측: ``xlsx 0.18.5`` 는 npm 에 수정 버전이 없어 권고가 None 이었다. 그런데
+    수정본은 제작사 CDN 에 있었고 그 안내가 ``references`` 에 들어 있었는데,
+    이 필드를 버리고 있어 담당자에게 전달되지 못했다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    v = _osv_vuln("GHSA-a", "HIGH", "1.2.3")
+    v["references"] = [
+        {"type": "WEB", "url": "https://blog.example.invalid/post"},
+        {"type": "ADVISORY", "url": "https://nvd.nist.gov/vuln/detail/CVE-1"},
+        {"type": "FIX", "url": "https://cdn.vendor.invalid/advisories/CVE-1"},
+    ]
+    osv({"vulns": [v]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    refs = r["advisories"][0]["references"]
+    # ADVISORY·FIX 가 앞선다 — WEB 은 뉴스·블로그가 섞여 조치에 쓰기 어렵다.
+    assert refs == ["https://nvd.nist.gov/vuln/detail/CVE-1",
+                    "https://cdn.vendor.invalid/advisories/CVE-1"]
+
+
+def test_non_http_references_are_dropped(monkeypatch, osv) -> None:
+    """http(s) 가 아닌 주소는 버린다 — 보고서는 결재에 붙는 문서다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    v = _osv_vuln("GHSA-a", "HIGH", "1.2.3")
+    v["references"] = [{"type": "ADVISORY", "url": "javascript:alert(1)"},
+                       {"type": "FIX", "url": "ftp://x.invalid/patch"}]
+    osv({"vulns": [v]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["references"] == []
+
+
 def _row(ranges: list[tuple[str, str]]) -> dict:
     """``_advisory_target`` 단위 시험용 advisory row."""
     return {"fixed_ranges": ranges, "fixed_versions": [f for _, f in ranges]}
@@ -477,3 +510,27 @@ def test_other_packages_fixed_versions_are_not_borrowed(monkeypatch, osv) -> Non
     r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
     assert r["advisories"][0]["fixed_versions"] == []
     assert r["recommended_version"] is None
+
+
+def test_cvss_vector_is_passed_through_not_computed(monkeypatch, osv) -> None:
+    """OSV 가 준 CVSS 벡터를 그대로 싣는다 — 점수를 우리가 만들지 않는다.
+
+    `max_cve` 는 "HIGH" 같은 라벨이라 게이트가 임계값 정책을 쓸 수 없다. 그렇다고
+    벡터에서 점수를 산출하면 **틀린 CVSS 를 우리 이름으로** 내보내게 된다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    v = _osv_vuln("GHSA-a", "HIGH", "1.2.3")
+    v["severity"] = [{"type": "CVSS_V3",
+                      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]
+    osv({"vulns": [v]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["cvss_vector"] == \
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
+
+def test_cvss_vector_absent_is_none_not_guessed(monkeypatch, osv) -> None:
+    """벡터가 없으면 None — 라벨에서 역산해 지어내지 않는다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_vuln("GHSA-a", "HIGH", "1.2.3")]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["cvss_vector"] is None
