@@ -70,18 +70,19 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
 
 
 def _scan_exit_code(report: ScanReport, fail_on: str) -> int:
-    """Map a scan result to an exit code under the chosen --fail-on policy.
+    """`--fail-on` 정책 → 종료코드.
 
-    never → always 0; block → non-zero only on block; warn (default) → non-zero
-    on any finding (preserves the original CLI behavior).
+    판정은 ``gate.gate_status`` 한 곳에서만 계산한다. 예전에는 여기서
+    ``report.summary.blocked`` 를 직접 읽었는데, 그 값은 **소스 발견만** 본다 —
+    의존성 감사는 스캔이 끝난 뒤에 붙기 때문이다. 그래서 CRITICAL 취약 패키지가
+    있어도 보고서 본문은 "배포 불가"인데 종료코드는 0 이었다.
     """
-    if fail_on == "never":
+    from .gate import gate_status, should_fail
+
+    if not should_fail(report, fail_on):
         return EXIT_OK
-    if report.summary.blocked:
-        return EXIT_FINDINGS_BLOCK
-    if fail_on == "warn" and report.summary.finding_count > 0:
-        return EXIT_FINDINGS_WARN
-    return EXIT_OK
+    return (EXIT_FINDINGS_BLOCK if gate_status(report)["blocked"]
+            else EXIT_FINDINGS_WARN)
 
 
 def _emit_doc_report(
@@ -772,6 +773,51 @@ def _print_update_results(results: list[dict], *, json_mode: bool) -> None:
             print(f"        error: {r['error']}")
 
 
+def _cmd_ruleset(args: argparse.Namespace) -> int:
+    """룰셋 신원 확인·갱신 — 게이트의 재현성 전제.
+
+    확인만 하는 것이 기본이고, `--bump` 를 줘야 잠금 파일을 쓴다. 룰을 고칠
+    때마다 자동으로 갱신하면 '버전을 올렸다'는 사람의 판단이 사라져, 잠금
+    파일이 그냥 현재 상태를 따라다니는 장식이 된다.
+    """
+    from . import ruleset as ruleset_mod
+    from .diagnostics import _resolve_rules_dir
+    from .loader import load_all_rules
+
+    rules_dir = Path(args.rules_dir) if args.rules_dir else _resolve_rules_dir()[0]
+    if not rules_dir.exists():
+        print(f"[gvskb] rules dir not found: {rules_dir}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+
+    rules = load_all_rules(rules_dir)
+    verdict = ruleset_mod.verify_lock(rules, rules_dir)
+
+    if args.bump:
+        path = ruleset_mod.write_lock(
+            rules_dir, version=args.bump,
+            digest=verdict["actual"], rule_count=verdict["rule_count"],
+        )
+        if args.json:
+            sys.stdout.write(json.dumps(
+                {"written": str(path), "version": args.bump, "digest": verdict["actual"],
+                 "rule_count": verdict["rule_count"], "previous": verdict["version"]},
+                ensure_ascii=False, indent=2) + "\n")
+        else:
+            prev = verdict["version"] or "(없음)"
+            print(f"룰셋 잠금 갱신: {prev} → {args.bump}")
+            print(f"  지문 {verdict['actual']} · 룰 {verdict['rule_count']}건")
+            print(f"  {path}")
+        return EXIT_OK
+
+    if args.json:
+        sys.stdout.write(json.dumps(verdict, ensure_ascii=False, indent=2) + "\n")
+    else:
+        mark = {"ok": "OK", "drift": "드리프트", "missing": "선언 없음"}[verdict["status"]]
+        print(f"[{mark}] {verdict['message']}")
+        print(f"  룰 {verdict['rule_count']}건 · 지문 {verdict['actual']}")
+    return EXIT_OK if verdict["status"] == "ok" else EXIT_FINDINGS_BLOCK
+
+
 def _cmd_validate_rules(args: argparse.Namespace) -> int:
     from . import validation
     from .diagnostics import _resolve_rules_dir
@@ -793,7 +839,11 @@ def _cmd_validate_rules(args: argparse.Namespace) -> int:
     overall = report["overall"]
     if overall == "error":
         return EXIT_FINDINGS_BLOCK
-    if overall == "warn":
+    # `--fail-on error` 는 CI 용이다. `review_due` 만료처럼 **달력 때문에 언젠가
+    # 반드시 켜지는** WARN 이 있어서, 기본값으로 CI 를 걸면 어느 날 아무도 코드를
+    # 바꾸지 않았는데 빨간불이 된다. 그러면 팀은 검사를 통째로 꺼 버린다.
+    # 재현성(룰셋 드리프트)과 오탐 archetype 은 ERROR 라 이 설정에서도 막힌다.
+    if overall == "warn" and getattr(args, "fail_on", "warn") != "error":
         return EXIT_FINDINGS_WARN
     return EXIT_OK
 
@@ -852,10 +902,13 @@ def build_parser() -> argparse.ArgumentParser:
              "E1=개인PC 반복도구(7일, 기본), E2=내부서버 공용(14일). --check-deps 와 함께 사용",
     )
     scan.add_argument(
-        "--fail-on", choices=["block", "warn", "never"], default="warn",
+        "--fail-on", choices=["block", "warn", "never", "dependency"], default="warn",
         help="0이 아닌 종료 코드를 낼 최소 수준 (기본 warn). "
              "CI 게이트에서 block만 차단하고 warn은 통과시키려면 --fail-on block, "
-             "절대 실패시키지 않으려면 --fail-on never",
+             "절대 실패시키지 않으려면 --fail-on never. "
+             "dependency 는 **의존성 차단만** 실패시키고 소스 발견은 보고만 합니다 — "
+             "의존성은 사실 조회라 오탐이 거의 없고 소스 룰은 추론이라 맥락을 타므로, "
+             "소스 오탐 하나 때문에 게이트를 통째로 끄는 것을 막습니다",
     )
     scan.set_defaults(func=_cmd_scan)
 
@@ -917,9 +970,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="네트워크 점검 건너뛰기 (망분리 환경)")
     doctor.set_defaults(func=_cmd_doctor)
 
+    rs = sub.add_parser("ruleset", help="룰셋 버전·지문 확인(게이트 재현성) · --bump 로 갱신")
+    rs.add_argument("--rules-dir", help="대상 룰 디렉토리 (기본: 자동 해석)")
+    rs.add_argument("--bump", metavar="버전", help="잠금 파일을 이 버전으로 갱신 (예: 2026.08.2)")
+    rs.add_argument("--json", action="store_true", help="JSON 출력")
+    rs.set_defaults(func=_cmd_ruleset)
+
     validate = sub.add_parser("validate-rules", help="룰 frontmatter·중복·regex·만료 검증")
     validate.add_argument("--rules-dir", help="검증할 룰 디렉토리 (기본: 자동 해석)")
     validate.add_argument("--json", action="store_true", help="JSON 출력")
+    validate.add_argument(
+        "--fail-on", choices=["error", "warn"], default="warn",
+        help="0이 아닌 종료 코드를 낼 최소 수준 (기본 warn). "
+             "CI 에서는 error 를 쓰세요 — review_due 만료처럼 **달력 때문에 언젠가 "
+             "반드시 켜지는** 경고가 있어 warn 으로 걸면 어느 날 아무도 코드를 "
+             "바꾸지 않았는데 빨간불이 됩니다(그러면 팀은 검사를 꺼 버립니다). "
+             "룰셋 드리프트와 오탐 archetype 은 ERROR 라 이 설정에서도 막힙니다",
+    )
     validate.set_defaults(func=_cmd_validate_rules)
 
     upd = sub.add_parser(

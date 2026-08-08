@@ -26,8 +26,14 @@ detection:
     # 등으로 정화한 경우 오탐이므로 부정 전방탐색으로 제외한다(실측: 정화 후 렌더가
     # 정상 방어인데 차단으로 오탐). document.write·jQuery .html()·insertAdjacentHTML 은
     # 정화 래핑이 드물고 실제 위험(DocView document.write 등)이라 그대로 둔다.
-    - '\.innerHTML\s*=\s*(?!.{0,80}(?:DOMPurify|sanitize|escapeHtml|escapeHTML|textContent))'
-    - '\.outerHTML\s*=\s*(?!.{0,80}(?:DOMPurify|sanitize|escapeHtml|escapeHTML|textContent))'
+    # innerHTML·outerHTML 도 dangerouslySetInnerHTML 과 같은 자리로 옮긴다.
+    # 예전 부정 전방탐색은 줄에 `sanitize` 라는 **글자**만 있으면 발견을 취소했고,
+    # `sanitizeMaybe(h){return h.trim()}` 에 그대로 뚫렸다(우리 룰 린터의
+    # `sanitizer-allowlist-substring` 이 이 두 줄을 지목했다 — 자기 도구가 자기
+    # 룰의 남은 결함을 찾은 사례다). 정화 판단은 함수 **본문**을 볼 수 있는
+    # `scanners/html_sink_context.py` 가 하고, 결과는 삭제가 아니라 감쇄다.
+    - '\.innerHTML\s*=\s*'
+    - '\.outerHTML\s*=\s*'
     - 'document\.write(?:ln)?\s*\('
     # 여기서는 **거르지 않는다**. 예전에는 같은 줄에 `sanitize` 라는 글자가
     # 있으면 발견을 통째로 취소했는데, 두 가지가 잘못이었다:

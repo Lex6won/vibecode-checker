@@ -11,7 +11,7 @@
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-1110_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-1191_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-219개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -449,10 +449,39 @@ GitHub code scanning 에 업로드하거나 기관 보안도구로 수집할 수
 | `66` | 경로를 찾을 수 없음 |
 
 ```bash
-gvskb scan ./src --fail-on block   # block만 실패시킴(2), warn은 통과 — CI 게이트 권장
-gvskb scan ./src --fail-on warn    # warn 이상 실패 (기본값)
-gvskb scan ./src --fail-on never   # 항상 0 (리포트만)
+gvskb scan ./src --fail-on block        # block만 실패시킴(2), warn은 통과 — CI 게이트 권장
+gvskb scan ./src --fail-on dependency   # 의존성 차단만 실패 — 소스 발견은 보고만
+gvskb scan ./src --fail-on warn         # warn 이상 실패 (기본값)
+gvskb scan ./src --fail-on never        # 항상 0 (리포트만)
 ```
+
+#### 처음 붙인다면 `--fail-on dependency` 부터
+
+성격이 다른 두 판정을 같은 게이트에 걸면 게이트가 통째로 꺼집니다.
+
+| | 판정 방식 | 오탐 |
+|---|---|---|
+| **의존성(패키지)** | *"이 버전에 이 CVE 가 있다"* — **사실 조회** | 구조적으로 거의 없음 |
+| **소스 코드** | 위험한 형태를 찾는 **추론** | 맥락을 모르면 틀림 |
+
+소스 오탐 하나 때문에 팀이 게이트를 끄면 **오탐이 거의 없는 의존성 차단까지 함께
+꺼집니다.** `--fail-on dependency` 로 시작해 신뢰가 쌓인 뒤 `block` 으로 올리세요.
+결과 JSON·MCP 응답에는 `blocked_source` · `blocked_dependency` 가 따로 들어 있어
+직접 정책을 짤 수도 있습니다.
+
+#### 판정을 재현하려면 룰셋을 고정하세요
+
+룰이 바뀌면 어제 통과한 코드가 오늘 차단될 수 있습니다. 그게 **코드 때문인지 룰
+때문인지** 구분되지 않으면 게이트를 신뢰할 수 없습니다.
+
+```bash
+gvskb ruleset                      # 현재 룰셋 버전·지문 확인
+export GVSKB_EXPECT_RULESET=2026.08.2   # 이 룰셋을 기대한다고 선언
+```
+
+고정한 것과 실제가 다르면 보고서 결론 근처에 경고가 뜹니다. 리포트 머리표의
+**「판정 기준」** 줄에는 언제나 `엔진 x.y.z · 룰셋 YYYY.MM.N` 이 함께 찍힙니다 —
+판정을 재현하려면 **둘 다** 같아야 합니다.
 
 <details>
 <summary><b>GitHub Actions 예시</b></summary>

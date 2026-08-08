@@ -137,10 +137,45 @@ def _provenance() -> dict:
     except Exception:  # pragma: no cover - defensive
         ver = None
     from datetime import datetime, timezone
-    return {
+    out = {
         "engine_version": ver,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    out.update(_ruleset_identity())
+    return out
+
+
+# 룰셋 신원은 **프로세스당 한 번**만 계산한다. 324개 룰 지문은 ~10ms 인데,
+# scan_path 는 파일마다 scan_code 를 부르므로 파일 수만큼 곱해지면 눈에 띈다.
+_RULESET_IDENTITY_CACHE: dict | None = None
+
+
+def _ruleset_identity() -> dict:
+    """(룰셋 버전, 지문, 드리프트 설명) — 실패해도 스캔을 막지 않는다."""
+    global _RULESET_IDENTITY_CACHE
+    if _RULESET_IDENTITY_CACHE is not None:
+        return _RULESET_IDENTITY_CACHE
+    identity: dict = {"ruleset_version": None, "ruleset_digest": None, "ruleset_drift": None}
+    try:
+        from . import ruleset as _ruleset
+        from .loader import load_all_rules
+        from .scanners.regex_scanner import _resolve_rules_dir
+        rules_dir = _resolve_rules_dir()
+        verdict = _ruleset.verify_lock(load_all_rules(rules_dir), rules_dir)
+        identity["ruleset_digest"] = verdict["actual"]
+        identity["ruleset_version"] = verdict["version"]
+        if verdict["status"] != "ok":
+            identity["ruleset_drift"] = verdict["message"]
+    except Exception:  # pragma: no cover - 방어: 신원 계산 실패가 검사를 막지 않는다
+        pass
+    _RULESET_IDENTITY_CACHE = identity
+    return identity
+
+
+def reset_ruleset_identity_cache() -> None:
+    """룰 디렉터리를 바꾼 뒤(테스트·`GVSKB_RULES_DIR` 변경) 다시 계산하게 한다."""
+    global _RULESET_IDENTITY_CACHE
+    _RULESET_IDENTITY_CACHE = None
 
 
 def _current_scan_mode() -> str | None:

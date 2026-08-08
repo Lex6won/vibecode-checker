@@ -30,6 +30,12 @@ jobs:
           python -m pip install ".[dev]"
       - name: Lint (ruff)
         run: ruff check src tests
+      # 룰 검증 — pytest 도 같은 계약을 확인하지만, 여기서 따로 돌려야
+      # **룰 작성자가 읽을 메시지**가 CI 로그에 그대로 남는다.
+      # 막는 것 둘: ① 룰을 고치고 룰셋 버전을 안 올린 경우(재현성이 깨진다)
+      # ② 실측에서 뚫린 오탐 archetype(경계 없는 실행 sink 등)이 새로 들어온 경우.
+      - name: Validate rules (룰셋 버전 고정 · 오탐 archetype)
+        run: gvskb validate-rules --fail-on error
       - name: Test
         run: pytest -q
 
