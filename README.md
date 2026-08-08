@@ -11,7 +11,7 @@
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-1007_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-1028_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-219개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -134,7 +134,7 @@
 
 ### 설치 (Installation)
 
-먼저 패키지를 설치합니다. **CLI든 AI 코딩 도구(MCP)든 이 설치 하나면 둘 다 됩니다** — `gvskb` 명령과 MCP 서버(`python -m gvskb.server`)가 함께 설치됩니다.
+먼저 패키지를 설치합니다. **CLI든 AI 코딩 도구(MCP)든 이 설치 하나면 둘 다 됩니다** — `gvskb` 명령과 MCP 서버 `gvskb-server` 가 함께 설치됩니다.
 
 > 현재 **PyPI에는 배포하지 않습니다**(공공기관·망분리 환경의 공급망 보안 고려). **GitHub 소스에서 설치**합니다.
 
@@ -163,13 +163,16 @@ AI 코딩 도구에서 **자연어로** 쓰려면 MCP 설정에 서버를 등록
 {
   "mcpServers": {
     "vibecode-checker": {
-      "command": "python",
-      "args": ["-m", "gvskb.server"],
+      "command": "gvskb-server",
+      "args": [],
       "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" }
     }
   }
 }
 ```
+
+> `gvskb-server` 는 위 `pip install` 이 **같은 파이썬 환경에** 만들어 주는 실행 파일입니다. 방금 `gvskb doctor` 가 실행됐다면 `gvskb-server` 도 반드시 실행됩니다 — 인터프리터를 따로 지정할 필요가 없습니다.
+> `command` 를 `python` 으로 두고 `-m gvskb.server` 를 넘기는 예전 방식도 동작하지만, **Windows 에서 `python` 이 Microsoft Store 스텁**으로 잡혀 있으면 서버가 조용히 뜨지 않습니다. 그 경우 인터프리터 전체 경로(예: `C:\Python313\python.exe`)와 소스 경로(`"PYTHONPATH"`)를 직접 지정해야 합니다.
 
 설정 파일 위치(도구별):
 
@@ -187,16 +190,18 @@ AI 코딩 도구에서 **자연어로** 쓰려면 MCP 설정에 서버를 등록
   "servers": {
     "vibecode-checker": {
       "type": "stdio",
-      "command": "python",
-      "args": ["-m", "gvskb.server"],
+      "command": "gvskb-server",
+      "args": [],
       "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" }
     }
   }
 }
 ```
 
-저장 후 도구를 재시작하면 연결됩니다. 확인: AI에게 *"server_status로 룰이 몇 개 로드됐는지 확인해줘"*.
-(`python` 이 PATH에 없으면 전체 경로로 바꾸세요. Windows 한글 깨짐은 [한 번만 설정](docs/windows_utf8.md).)
+저장 후 도구를 재시작하면 연결됩니다. 확인: AI에게 *"server_status 확인해줘"* — `runtime_freshness.process_stale` 이 `false` 이고 `rules_loaded_ok` 가 `true` 면 정상입니다.
+(`gvskb-server` 가 PATH에 없으면 전체 경로로 바꾸세요. Windows 한글 깨짐은 [한 번만 설정](docs/windows_utf8.md).)
+
+> **룰을 고친 뒤에는 서버를 재시작하세요.** gvskb 는 룰과 코드를 **프로세스 시작 시점에 한 번만** 읽습니다. 저장소를 갱신하거나 재설치해도 이미 떠 있는 프로세스는 옛 룰로 계속 판정합니다. 편집기의 MCP '재연결'이 프로세스를 그대로 두는 경우가 있으니, `server_status` 의 `runtime_freshness.process_stale` 로 확인하세요(낡았으면 `true` 와 함께 조치 방법을 알려 줍니다).
 
 > **신뢰하는 환경에서만 연결하세요** — MCP는 지정한 경로의 로컬 파일을 읽습니다([SECURITY.md](SECURITY.md)).
 
@@ -323,14 +328,14 @@ gvskb scan /tmp/repo -o 보안점검.md          # .md + .html 생성
 {
   "mcpServers": {
     "vibecode-checker": {
-      "command": "python",
-      "args": ["-m", "gvskb.server"],
+      "command": "gvskb-server",
+      "args": [],
       "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" }
     }
   }
 }
 ```
-연결 후: *"server_status로 룰이 몇 개 로드됐는지 확인해줘"*
+연결 후: *"server_status 확인해줘"* — `runtime_freshness.process_stale` 이 `false` 여야 최신 룰로 판정 중입니다.
 
 **이렇게 말하면 됩니다** (도구 이름을 몰라도, 아래 단어가 들어가면 점검→보고서까지 진행됩니다):
 

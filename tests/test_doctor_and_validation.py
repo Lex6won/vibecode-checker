@@ -329,9 +329,15 @@ def test_commit_id_falls_back_to_git_checkout(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_commit_id_unknown_explains_how_to_fix(monkeypatch: pytest.MonkeyPatch) -> None:
-    """알 수 없으면 조용히 None 만 주지 말고 해결 방법을 말한다."""
+    """알 수 없으면 조용히 None 만 주지 말고 해결 방법을 말한다.
+
+    ``commit_id`` 는 **임포트 시점 스냅샷**을 우선하므로(낡은 프로세스가 최신
+    커밋을 보고하는 것을 막기 위해), '커밋을 알 수 없는 설치본'을 재현하려면
+    디스크와 스냅샷을 **둘 다** 비워야 한다 — sdist·복사본 설치가 그 상태다.
+    """
     monkeypatch.setattr(diagnostics, "_direct_url_metadata", dict)
     monkeypatch.setattr(diagnostics, "_git_head_commit", lambda _p: (None, None))
+    monkeypatch.setattr(diagnostics, "_LOADED_PROBE", {"commit_id": None})
     identity = diagnostics.install_identity()
     assert identity["commit_id"] is None
     assert identity["commit_source"] == "unavailable"

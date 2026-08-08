@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import sys
@@ -336,6 +337,9 @@ def install_identity() -> dict:
         "install_url": None,
         "editable": None,
         "branch": None,
+        # 소스 체크아웃일 때 "지금 디스크의 HEAD". ``commit_id`` 와 다르면
+        # 돌고 있는 프로세스가 낡은 것이다 — ``runtime_freshness()`` 참고.
+        "disk_commit_id": None,
     }
     try:
         direct = _direct_url_metadata()
@@ -355,12 +359,21 @@ def install_identity() -> dict:
         if not identity["commit_id"]:
             module_dir = Path(_gvskb_path())
             if module_dir.is_dir():
-                commit, branch = _git_head_commit(module_dir)
+                disk_commit, branch = _git_head_commit(module_dir)
                 identity["branch"] = branch
-                if commit:
-                    identity["commit_id"] = commit
+                identity["disk_commit_id"] = disk_commit
+                # **디스크가 아니라 메모리에 올라간 커밋**을 신원으로 삼는다.
+                # 호출 시점의 .git/HEAD 를 그대로 답하면, 머지가 끝난 뒤에도 옛
+                # 코드로 돌고 있는 프로세스가 스스로를 "최신"이라 보고한다
+                # (2026-08-08 실측 사고 — 아래 freshness 절 주석 참고).
+                loaded_commit = _LOADED_PROBE.get("commit_id") or disk_commit
+                if loaded_commit:
+                    identity["commit_id"] = loaded_commit
                     # 작업 트리에 커밋 안 된 수정이 있어도 알 수 없다 — 그대로 말한다.
-                    identity["commit_source"] = "git checkout (작업 트리 변경분은 반영 안 됨)"
+                    identity["commit_source"] = (
+                        "git checkout · 프로세스가 임포트한 시점"
+                        " (작업 트리 변경분은 반영 안 됨)"
+                    )
     except Exception as exc:  # pragma: no cover - 진단이 서버를 막으면 안 된다
         identity["error"] = str(exc)
 
@@ -470,6 +483,20 @@ def check_install_identity() -> list[CheckResult]:
             "Install commit", _WARN, "unknown", note=identity.get("note", ""),
         ))
 
+    # 디스크가 최신이어도 **돌고 있는 프로세스**가 낡았을 수 있다. doctor 는 짧게
+    # 살다 죽는 프로세스라 대개 OK 지만, 서버와 같은 진단을 쓰게 해 둔다.
+    fresh = runtime_freshness()
+    if fresh["process_stale"]:
+        results.append(_check(
+            "Runtime freshness", _WARN, "stale",
+            note=" · ".join(fresh["reasons"]) + " — " + fresh["remedy"],
+        ))
+    else:
+        results.append(_check(
+            "Runtime freshness", _OK, "current",
+            note="메모리에 올라간 코드·룰이 디스크와 같습니다",
+        ))
+
     inventory = mcp_tool_inventory()
     if not inventory["inventory_ok"]:
         results.append(_check(
@@ -512,6 +539,149 @@ def _resolve_rules_dir() -> tuple[Path, str]:
         pass
     packaged = Path(str(resources.files("gvskb").joinpath("rules")))
     return packaged, "packaged (importlib.resources)"
+
+
+# ---------------------------------------------------------------------------
+# 프로세스 신선도(freshness) — "디스크가 최신인가"가 아니라 "메모리가 최신인가"
+#
+# 실측 사고(2026-08-08): 룰 3종의 과탐을 고쳐 머지까지 끝냈는데 MCP 서버는 계속
+# 옛 룰로 판정했다. 그런데 ``server_status`` 는 ``commit_id`` 를 **호출 시점의**
+# ``.git/HEAD`` 에서 읽으므로 최신 커밋을 답했고, ``total_rules`` 도 인텔 캐시
+# 때문에 늘어나 최신처럼 보였다. 결국 사용자가 판별용 코드를 직접 짜서야 낡음을
+# 알았다 — 도구가 먼저 말했어야 하는 것이다.
+#
+# gvskb 는 룰을 ``server.py`` 임포트 시점에 한 번 읽고(``RULES = load_all_rules``)
+# 파이썬 코드도 그때 고정된다. MCP 서버는 한 번 뜨면 며칠씩 살아 있으므로,
+# **신원의 기준 시점은 프로세스 시작이지 호출 시점이 아니다.**
+# ---------------------------------------------------------------------------
+
+#: 지문에 넣을 확장자 — 판정을 바꿀 수 있는 파일만. 룰은 .md(YAML 프런트매터),
+#: 코드는 .py. 리포트 템플릿·캐시는 판정을 바꾸지 않으므로 넣지 않는다.
+_FINGERPRINT_SUFFIXES = (".py", ".md", ".yaml", ".yml")
+
+#: 낡은 프로세스를 만났을 때 사용자가 할 일. '재설치'가 아니라 '재시작'이라는
+#: 점을 못 박는다 — 실제로 재설치만 반복하다 시간을 버린 사례가 있었다.
+_STALE_REMEDY = (
+    "MCP 서버 **프로세스를 재시작**하세요(재설치가 아니라 재시작입니다). "
+    "gvskb 는 룰과 파이썬 코드를 프로세스 시작 시점에 한 번 읽으므로, 저장소를 "
+    "갱신하거나 재설치해도 이미 돌고 있는 프로세스에는 반영되지 않습니다. "
+    "편집기의 MCP '재연결'이 프로세스를 그대로 두는 경우가 있으니, 재시작 뒤 "
+    "이 값이 다시 false 인지 반드시 확인하세요."
+)
+
+
+def _tree_fingerprint(root: Path) -> dict:
+    """코드·룰 트리의 지문 — **내용 해시**(실측 ~50ms, 프로세스당 한 번).
+
+    처음에는 ``stat`` 만 읽어 (파일 수, 총 바이트, 최신 mtime) 을 썼는데,
+    **탐지되지 않았다**: 룰 하나의 mtime 을 바꿔도 그 파일이 트리에서 가장
+    최신이 아니면 ``max`` 가 그대로였고 크기도 그대로였다. 지문이 안 변한 채
+    "최신"이라고 답하는, 고치려던 것과 똑같은 결함이다.
+
+    내용 해시는 그 구멍이 없고, 덤으로 **mtime 만 흔들리는 상황**(OneDrive
+    동기화, 같은 내용의 git checkout)에서 거짓 '낡음'을 내지 않는다. 경로도
+    함께 넣어 파일 이름만 바뀐 경우도 잡는다.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    files = 0
+    total = 0
+    try:
+        for path in sorted(root.rglob("*")):
+            if path.suffix.lower() not in _FINGERPRINT_SUFFIXES:
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:  # pragma: no cover - 경합·권한
+                continue
+            files += 1
+            total += len(data)
+            rel = str(path.relative_to(root)).replace("\\", "/")
+            digest.update(rel.encode("utf-8", "replace"))
+            digest.update(b"\0")
+            digest.update(data)
+    except OSError:  # pragma: no cover - defensive
+        pass
+    return {"files": files, "bytes": total, "digest": digest.hexdigest()}
+
+
+def _freshness_probe() -> dict:
+    """지금 이 순간 디스크의 코드·룰 상태. 절대 예외를 던지지 않는다."""
+    probe: dict = {"commit_id": None, "code": None, "rules": None, "rules_dir": None}
+    try:
+        module_dir = Path(_gvskb_path())
+        if module_dir.is_dir():
+            probe["commit_id"] = _git_head_commit(module_dir)[0]
+            probe["code"] = _tree_fingerprint(module_dir)
+        rules_dir, _ = _resolve_rules_dir()
+        probe["rules_dir"] = str(rules_dir)
+        if rules_dir.is_dir():
+            probe["rules"] = _tree_fingerprint(rules_dir)
+    except Exception as exc:  # pragma: no cover - 진단이 서버를 막으면 안 된다
+        probe["error"] = str(exc)
+    return probe
+
+
+#: 이 프로세스가 메모리에 올린 코드·룰의 지문. **임포트 시점에 한 번만** 찍는다.
+#: 이 시점 이후의 디스크 변경은 재시작 전까지 판정에 반영되지 않는다.
+_LOADED_PROBE: dict = _freshness_probe()
+
+
+def runtime_freshness() -> dict:
+    """돌고 있는 프로세스가 **디스크의 현재 코드·룰을 쓰고 있는가**.
+
+    ``install_identity()`` 가 "저장소가 어느 커밋인가"를 답한다면, 이 함수는
+    "그 커밋이 실제로 적용돼 있는가"를 답한다. 둘은 자주 어긋나며, 어긋난 줄
+    모르고 낡은 룰의 결과를 최신으로 읽는 것이 실제 사고였다.
+
+    거짓 '낡음'은 재시작 한 번으로 끝나지만, 거짓 '최신'은 틀린 판정을 그대로
+    믿게 만든다. 그래서 애매하면 낡음 쪽으로 기운다.
+    """
+    now = _freshness_probe()
+    loaded_commit = _LOADED_PROBE.get("commit_id")
+    disk_commit = now.get("commit_id")
+    reasons: list[str] = []
+    if loaded_commit and disk_commit and loaded_commit != disk_commit:
+        reasons.append(
+            f"커밋이 프로세스 시작 시점 {loaded_commit[:12]} 에서 "
+            f"현재 {disk_commit[:12]} 로 바뀌었습니다"
+        )
+    before, after = _LOADED_PROBE.get("code"), now.get("code")
+    if before and after and before != after:
+        reasons.append("소스 코드가 프로세스 시작 이후 수정되었습니다")
+    # 룰은 **디렉터리가 바뀐 것**과 **내용이 바뀐 것**을 구분해서 말한다. 뭉뚱그려
+    # "수정되었습니다" 라고 하면, GVSKB_RULES_DIR 을 바꾼 사용자가 있지도 않은
+    # 파일 수정을 찾아 헤맨다. 둘 다 프로세스에 반영되지 않은 것은 같다.
+    loaded_dir, now_dir = _LOADED_PROBE.get("rules_dir"), now.get("rules_dir")
+    if loaded_dir and now_dir and loaded_dir != now_dir:
+        reasons.append(
+            f"룰 디렉터리가 프로세스 시작 시점 {loaded_dir} 에서 현재 {now_dir} 로 "
+            "바뀌었습니다(GVSKB_RULES_DIR 확인) — 이 프로세스는 여전히 이전 경로의 "
+            "룰로 판정합니다"
+        )
+    else:
+        before, after = _LOADED_PROBE.get("rules"), now.get("rules")
+        if before and after and before != after:
+            reasons.append("룰 파일이 프로세스 시작 이후 수정되었습니다")
+    return {
+        "process_stale": bool(reasons),
+        "reasons": reasons,
+        "loaded_commit_id": loaded_commit,
+        "disk_commit_id": disk_commit,
+        "remedy": _STALE_REMEDY if reasons else "",
+    }
+
+
+def _mark_stale(freshness: dict, reason: str) -> None:
+    """신선도 판정에 근거를 하나 더 붙인다(``remedy`` 도 함께 채운다).
+
+    지문만으로는 못 보는 신호 — 예를 들어 메모리와 디스크의 **룰 개수 차이** —
+    를 나중에 덧붙일 수 있게 한다. ``remedy`` 를 빠뜨리면 '낡았다'고만 하고
+    무엇을 하라는 말이 없는 경고가 되므로 여기서 같이 채운다.
+    """
+    freshness["process_stale"] = True
+    freshness.setdefault("reasons", []).append(reason)
+    if not freshness.get("remedy"):
+        freshness["remedy"] = _STALE_REMEDY
 
 
 def _utf8_capable() -> tuple[bool, str]:
@@ -796,12 +966,16 @@ def runtime_status_for_mcp() -> dict:
     mode = os.environ.get("GVSKB_MODE", "").lower()
     identity = install_identity()
     inventory = mcp_tool_inventory()
+    freshness = runtime_freshness()
     info: dict = {
         "package_version": _package_version(),
         # 버전 문자열은 신원이 아니다 — 어느 커밋인지, 어떤 도구가 있는지를 함께
         # 노출해 연동 상대가 낡은 설치를 증상 없이 바로 확인하게 한다.
         "commit_id": identity["commit_id"],
         "install_identity": identity,
+        # 디스크가 아니라 **이 프로세스**가 최신인지. commit_id 만 보면 머지 뒤에도
+        # 옛 룰로 돌고 있는 서버가 "최신"으로 보인다 — 반드시 함께 읽으세요.
+        "runtime_freshness": freshness,
         "mcp_tools": inventory["tools"],
         "missing_tools": inventory["missing_tools"],
         "unlisted_tools": inventory["unlisted_tools"],
@@ -856,17 +1030,44 @@ def runtime_status_for_mcp() -> dict:
         info["intel_cache"] = intel
     except Exception as exc:  # pragma: no cover - defensive
         info["intel_cache"] = {"error": str(exc)}
+    # 룰 개수는 **메모리에 올라간 것**을 답한다. 디스크를 다시 읽어 세면, 옛 룰로
+    # 판정 중인 프로세스가 최신 룰 수를 보고한다(2026-08-08 실측 — 인텔 캐시로
+    # 늘어난 개수까지 겹쳐 최신처럼 보였다).
+    # 출처는 ``gvskb.server.RULES`` — 서버가 임포트 시점에 한 번 읽어 둔 전체 룰이다.
+    # (``gvskb.scanner.RULES`` 는 정규식 엔진용 컴파일 결과라 개수 의미가 다르다.)
+    # ``sys.modules`` 만 들여다본다 — 여기서 server 를 임포트하면 CLI 에서 룰을
+    # 두 번 읽게 된다.
+    loaded_module = sys.modules.get("gvskb.server")
+    in_memory = getattr(loaded_module, "RULES", None) if loaded_module is not None else None
+    # 서버와 **같은 조건**으로 디스크를 읽어야 개수 비교가 성립한다. strict 가
+    # 다르면 룰 하나가 망가진 날 '낡음' 오경보가 난다 — 없는 문제를 만드는 쪽이다.
+    disk_strict = True if loaded_module is None else bool(getattr(loaded_module, "_STRICT_RULES", True))
+    disk_dir = rules_dir if loaded_module is None else Path(getattr(loaded_module, "RULES_DIR", rules_dir))
     try:
         from .loader import load_all_rules
-        rules = load_all_rules(rules_dir, strict=True)
+        disk_rules = load_all_rules(disk_dir, strict=disk_strict)
+    except Exception as exc:
+        disk_rules = None
+        info.update({"rules_loaded_ok": False, "rule_load_error": str(exc)})
+    rules = in_memory if in_memory is not None else disk_rules
+    if rules is not None:
         info.update({
             "total_rules": len(rules),
             "runtime_detection_rules": sum(1 for r in rules if r.detection and r.detection.patterns),
             "realtime_rules": sum(1 for r in rules if r.source_layer.value == "realtime"),
-            "rules_loaded_ok": True,
+            "rules_loaded_ok": info.get("rules_loaded_ok", True),
+            "rule_count_source": (
+                "메모리 — 이 프로세스가 실제 판정에 쓰는 룰"
+                if in_memory is not None
+                else "디스크 — 이 프로세스는 아직 룰을 로드하지 않았습니다"
+            ),
         })
-    except Exception as exc:
-        info.update({"rules_loaded_ok": False, "rule_load_error": str(exc)})
+        if in_memory is not None and disk_rules is not None and len(in_memory) != len(disk_rules):
+            info["disk_rule_count"] = len(disk_rules)
+            _mark_stale(
+                freshness,
+                f"메모리의 룰 {len(in_memory)}개가 디스크의 {len(disk_rules)}개와 다릅니다",
+            )
     if not inventory["inventory_ok"]:
         info["tool_inventory_error"] = inventory.get("error", "")
     info["disclaimer"] = (
