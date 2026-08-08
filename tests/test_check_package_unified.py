@@ -333,6 +333,143 @@ def test_recommended_version_is_none_when_any_fix_unknown(monkeypatch, osv) -> N
     assert r["recommended_version"] is None
 
 
+def _osv_multi_branch(vid: str, ranges: list[tuple[str, str]], severity: str = "HIGH",
+                      name: str = "pillow", ecosystem: str = "PyPI") -> dict:
+    """브랜치별 수정본이 여러 개인 advisory — ``[(introduced, fixed), ...]``.
+
+    실제 OSV 는 이 형태가 흔하다(7.x 는 7.29.6 에서, 8.x 는 8.0.0-rc.6 에서 수정).
+    평탄화하면 어느 수정이 내 브랜치의 것인지 알 수 없어진다.
+    """
+    return {
+        "id": vid,
+        "summary": f"{vid} summary",
+        "modified": "2026-01-01T00:00:00Z",
+        "database_specific": {"severity": severity},
+        "affected": [{
+            "package": {"name": name, "ecosystem": ecosystem},
+            "ranges": [{
+                "type": "ECOSYSTEM",
+                "events": [e for intro, fixed in ranges
+                           for e in ({"introduced": intro}, {"fixed": fixed})],
+            }],
+        }],
+    }
+
+
+def test_recommendation_stays_on_my_branch(monkeypatch, osv) -> None:
+    """내 브랜치의 수정본을 권고한다 — 불필요한 메이저 업그레이드를 요구하지 않는다.
+
+    실측(2026-08-08): ``ajv 6.12.6`` 에 ``8.18.0`` 을 권고했다. 정작 ``6.14.0`` 이면
+    끝나는데 파괴적 마이그레이션을 요구한 것이다. 담당자는 "이건 못 하겠다" 하고
+    **조치를 포기**한다 — 오탐보다 나쁜 결과다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch("GHSA-a", [("0", "6.14.0"), ("7.0.0", "8.18.0")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="6.12.6"))
+    assert r["recommended_version"] == "6.14.0"
+
+
+def test_recommendation_does_not_drop_below_my_branch(monkeypatch, osv) -> None:
+    """**미탐 금지** — 내 브랜치가 아닌 낮은 수정본을 고르면 안 된다.
+
+    앞 테스트의 반대 방향이다. '가장 가까운 것'을 고르라고만 하면 8.0.1 사용자에게
+    7.29.6 을 권고해 취약점이 그대로 남는다. 구간 포함 여부로 판단해야 한다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch("GHSA-a", [("0", "7.29.6"), ("8.0.0", "8.2.0")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="8.0.1"))
+    assert r["recommended_version"] == "8.2.0"
+
+
+def test_recommendation_avoids_prerelease_when_stable_exists(monkeypatch, osv) -> None:
+    """안정판이 있으면 rc·alpha·beta 를 권고하지 않는다.
+
+    실측: ``multer 2.0.2`` 에 ``3.0.0-alpha.2`` 를 권고했다. 같은 권고문에 ``2.2.0``
+    이 있었다. 공공기관 운영에 alpha 를 올리라는 조언이 나간 것이다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch(
+        "GHSA-a", [("0", "2.2.0"), ("3.0.0-alpha.1", "3.0.0-alpha.2")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="2.0.2"))
+    assert r["recommended_version"] == "2.2.0"
+
+
+def test_recommendation_uses_prerelease_only_when_nothing_else(monkeypatch, osv) -> None:
+    """프리릴리스뿐이면 그것이라도 알려준다 — 정보를 버리지 않는다.
+
+    '안정판만' 을 원칙으로 삼으면 유일한 수정본이 rc 일 때 권고가 사라져,
+    고칠 방법이 있는데 없다고 말하게 된다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch("GHSA-a", [("2.0.0", "3.0.0-rc.1")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="2.0.2"))
+    assert r["recommended_version"] == "3.0.0-rc.1"
+
+
+def test_recommendation_still_covers_every_advisory(monkeypatch, osv) -> None:
+    """advisory **사이**에서는 최댓값을 유지한다 — 하나라도 안 넘으면 남는다.
+
+    브랜치 안에서 최소를 고르는 수정이 이 성질을 깨뜨리면 미탐이 된다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [
+        _osv_multi_branch("GHSA-a", [("0", "7.29.6"), ("8.0.0", "8.1.0")]),
+        _osv_multi_branch("GHSA-b", [("0", "7.31.0"), ("8.0.0", "8.4.0")]),
+    ]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="7.28.4"))
+    assert r["recommended_version"] == "7.31.0"
+
+
+def _row(ranges: list[tuple[str, str]]) -> dict:
+    """``_advisory_target`` 단위 시험용 advisory row."""
+    return {"fixed_ranges": ranges, "fixed_versions": [f for _, f in ranges]}
+
+
+# ── 아래 4건은 `_advisory_target` 을 **직접** 부른다.
+#
+# 파이프라인 전체로만 시험했더니 변이 검사에서 3건이 빠져나갔다: 구간 매칭이 죽어도
+# 폴백(현재보다 높은 최소 안정판)이 같은 답을 내서 테스트가 통과했다. 겹친 방어층은
+# 서로를 가린다 — 층마다 독립으로 고정해야 한다.
+
+def test_target_prefers_my_branch_over_a_lower_other_branch() -> None:
+    """다른 브랜치의 더 낮은 수정본을 집어오면 **미탐**이다.
+
+    1.5.0 은 ``[1.0.0, 3.0.0)`` 구간에 있으므로 3.0.0 으로 올려야 한다.
+    단순히 '현재보다 높은 최소'를 고르면 2.1.0 을 집는데, 그건 2.x 브랜치의
+    수정이라 1.x 사용자에게는 아무 소용이 없다.
+    """
+    row = _row([("1.0.0", "3.0.0"), ("2.0.0", "2.1.0")])
+    assert cp._advisory_target(row, "1.5.0") == "3.0.0"
+
+
+def test_target_skips_prerelease_inside_matched_ranges() -> None:
+    """구간이 여럿 걸릴 때, 낮다는 이유로 프리릴리스를 고르면 안 된다."""
+    row = _row([("0", "3.0.0-rc.1"), ("0", "3.1.0")])
+    assert cp._advisory_target(row, "2.0.2") == "3.1.0"
+
+
+def test_target_skips_prerelease_in_fallback_path() -> None:
+    """구간 정보가 없어 폴백으로 갈 때도 프리릴리스는 뒤로 미룬다."""
+    row = {"fixed_ranges": [], "fixed_versions": ["3.0.0-rc.1", "3.1.0"]}
+    assert cp._advisory_target(row, "2.0.2") == "3.1.0"
+
+
+def test_target_keeps_my_branch_prerelease_over_another_branch_stable() -> None:
+    """내 브랜치의 유일한 수정본이 rc 면, 무관한 상위 브랜치의 안정판으로 튀지 않는다.
+
+    2.0.2 는 ``[2.0.0, 3.0.0-rc.1)`` 구간이다. 안정판을 선호한다는 이유로 6.0.0 을
+    고르면 5.x 브랜치의 수정을 2.x 사용자에게 권고하는 셈이라 **미탐**이 된다.
+    """
+    row = _row([("2.0.0", "3.0.0-rc.1"), ("5.0.0", "6.0.0")])
+    assert cp._advisory_target(row, "2.0.2") == "3.0.0-rc.1"
+
+
+def test_target_returns_prerelease_when_it_is_the_only_fix_at_all() -> None:
+    """구간 정보 없이 후보가 rc 하나뿐이면 그것이라도 알려준다."""
+    assert cp._advisory_target(
+        {"fixed_ranges": [], "fixed_versions": ["3.0.0-rc.1"]}, "2.0.2") == "3.0.0-rc.1"
+
+
 def test_other_packages_fixed_versions_are_not_borrowed(monkeypatch, osv) -> None:
     """전이 의존성의 fixed 를 우리 패키지 권고로 내면 안 된다."""
     _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))

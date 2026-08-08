@@ -258,6 +258,53 @@ def _highest_version(versions: list[str]) -> str | None:
     return max(ranked, key=lambda kv: kv[0])[1]
 
 
+#: 프리릴리스 꼬리표. 운영에 올릴 버전으로 권고해서는 안 된다.
+_PRERELEASE_RE = re.compile(r"-(?:rc|alpha|beta|next|canary|dev|pre|preview|snapshot)", re.I)
+
+
+def _is_prerelease(version: str) -> bool:
+    """``8.0.0-rc.6`` 처럼 정식 출시 전 버전인가.
+
+    ``_version_key`` 는 ``-`` 앞만 보므로 ``8.0.0-rc.6`` 과 ``8.0.0`` 을 같은 값으로
+    읽는다. 그 결과 rc 가 안정판 ``7.29.6`` 을 이겨 **공공기관 운영에 alpha 를
+    올리라는 권고**가 나갔다(2026-08-08 실측). 비교 이전에 걸러야 한다.
+    """
+    return bool(_PRERELEASE_RE.search(str(version)))
+
+
+def _advisory_fix_ranges(vuln: dict, *, name: str, eco: str) -> list[tuple[str | None, str]]:
+    """``(도입 버전, 고쳐진 버전)`` 쌍 — 어느 브랜치의 수정인지 알아야 한다.
+
+    ``_advisory_fixed_versions`` 는 이 쌍을 평탄화해 ``fixed`` 만 남긴다. 그러면
+    ``[7.29.6, 8.0.0-rc.6]`` 이 "7.x 브랜치 수정"과 "8.x 브랜치 수정"이라는 사실이
+    사라져, 7.28.4 를 쓰는 사람에게 8.0.0-rc.6 을 권고하게 된다. 반대로 무턱대고
+    **낮은 쪽을 고르면 미탐**이 된다 — 내 버전이 그 브랜치가 아닐 수 있기 때문이다.
+    그래서 경계를 보존해 ``introduced <= 현재 < fixed`` 인 구간만 고른다.
+    """
+    from .installed_packages import _normalize
+
+    want = _normalize(name) if eco.lower() == "pypi" else name.lower()
+    out: list[tuple[str | None, str]] = []
+    for aff in vuln.get("affected") or []:
+        pkg = aff.get("package") or {}
+        pkg_name = str(pkg.get("name") or "")
+        norm = _normalize(pkg_name) if eco.lower() == "pypi" else pkg_name.lower()
+        if pkg_name and norm != want:
+            continue
+        if pkg.get("ecosystem") and str(pkg["ecosystem"]).lower() != eco.lower():
+            continue
+        for rng in aff.get("ranges") or []:
+            introduced: str | None = None
+            for ev in rng.get("events") or []:
+                if ev.get("introduced") is not None:
+                    introduced = str(ev["introduced"])
+                fixed = ev.get("fixed")
+                if fixed:
+                    out.append((introduced, str(fixed)))
+                    introduced = None  # 다음 쌍을 위해 초기화
+    return out
+
+
 def _advisory_fixed_versions(vuln: dict, *, name: str, eco: str) -> list[str]:
     """이 advisory 가 '어느 버전에서 고쳐졌는지' — OSV affected[].ranges[].events[].fixed.
 
@@ -303,23 +350,78 @@ def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
             "severity": _advisory_severity(v),
             "summary": (v.get("summary") or v.get("details") or "")[:200],
             "fixed_versions": _advisory_fixed_versions(v, name=name, eco=eco),
+            # 브랜치 경계를 보존한 원본 — 권고 버전 산출에만 쓴다(보고서 표시는
+            # 기존대로 fixed_versions). 평탄화된 목록만으로는 어느 수정이 내
+            # 브랜치의 것인지 알 수 없다.
+            "fixed_ranges": _advisory_fix_ranges(v, name=name, eco=eco),
             "modified": v.get("modified"),
         })
     return rows
 
 
-def _recommended_version(rows: list[dict]) -> str | None:
-    """나열된 취약점을 모두 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'.
+def _advisory_target(row: dict, current: str | None) -> str | None:
+    """advisory 하나를 해소하는 **가장 가까운** 버전.
 
-    각 advisory 의 fixed 중 가장 높은 값을 고른다. 하나라도 fixed 를 모르면
-    그 취약점은 이 버전으로 해소된다고 말할 수 없으므로 **None** 을 돌려준다 —
-    '올리면 다 해결된다'는 잘못된 안심을 주지 않는다.
+    예전에는 advisory 안에서도 ``max`` 를 골랐다. 그런데 ``fixed_versions`` 는
+    브랜치별 수정본 목록이라, ``[7.29.6, 8.0.0-rc.6]`` 에서 최댓값을 고르면
+    7.28.4 사용자에게 **불필요한 메이저 업그레이드 + 프리릴리스**를 권고한다
+    (2026-08-08 실측: 취약 59건 중 16건이 이 형태였다). 담당자는 "이건 못 하겠다"
+    하고 **조치 자체를 포기**한다 — 오탐보다 나쁜 결과다.
+
+    반대로 무조건 최솟값을 고르면 **미탐**이 된다. 내 버전이 그 수정이 적용된
+    브랜치가 아닐 수 있기 때문이다. 그래서 순서는:
+
+    1. ``introduced <= 현재 < fixed`` 인 구간의 ``fixed`` (브랜치 일치 — 가장 정확)
+    2. 현재보다 높은 안정 버전 중 최소
+    3. 안정 버전이 하나도 없으면 프리릴리스라도 (정보를 잃지 않기 위해)
+    """
+    ranges = row.get("fixed_ranges") or []
+    cur = _version_key(current) if current else None
+
+    if cur is not None:
+        matched: list[str] = []
+        for introduced, fixed in ranges:
+            fk = _version_key(fixed)
+            if fk is None:
+                continue
+            ik = _version_key(introduced) if introduced else (0,)
+            if ik is None:
+                ik = (0,)
+            if ik <= cur < fk:
+                matched.append(fixed)
+        stable = [v for v in matched if not _is_prerelease(v)]
+        if stable:
+            return min(stable, key=lambda v: _version_key(v) or ())
+        if matched:
+            return min(matched, key=lambda v: _version_key(v) or ())
+
+    cands = [v for v in (row.get("fixed_versions") or []) if _version_key(v) is not None]
+    if not cands:
+        return None
+    if cur is not None:
+        ahead = [v for v in cands if (_version_key(v) or ()) > cur]
+        stable_ahead = [v for v in ahead if not _is_prerelease(v)]
+        if stable_ahead:
+            return min(stable_ahead, key=lambda v: _version_key(v) or ())
+        if ahead:
+            return min(ahead, key=lambda v: _version_key(v) or ())
+    stable = [v for v in cands if not _is_prerelease(v)]
+    return _highest_version(stable or cands)
+
+
+def _recommended_version(rows: list[dict], current: str | None = None) -> str | None:
+    """나열된 취약점을 **모두** 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'.
+
+    advisory 안에서는 내 브랜치에 가장 가까운 수정본을 고르고(``_advisory_target``),
+    advisory 사이에서는 **최댓값**을 고른다 — 하나라도 안 넘으면 남는 취약점이
+    생기기 때문이다. 하나라도 fixed 를 모르면 **None** 을 돌려준다: '올리면 다
+    해결된다'는 잘못된 안심을 주지 않는다.
     """
     if not rows:
         return None
     tops: list[str] = []
     for r in rows:
-        top = _highest_version(r.get("fixed_versions") or [])
+        top = _advisory_target(r, current)
         if top is None:
             return None
         tops.append(top)
@@ -1188,7 +1290,7 @@ async def check_package_impl(
         cooldown=cooldown,
         license_verdict=lic_verdict,
         advisories=advisory_rows,
-        recommended_version=_recommended_version(advisory_rows),
+        recommended_version=_recommended_version(advisory_rows, version),
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
         # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
         # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.
