@@ -213,3 +213,57 @@ def test_gvskb_ignore_specific_rule_only_suppresses_that_rule():
     )
     assert not any(f.rule_id == "KISA-PY-INPUT-02" for f in report.findings)
     assert any(f.rule_id == "GOV-CODE-EXEC-001" for f in report.findings)
+
+
+# ---------------------------------------------------------------------------
+# GOV-LLM-OUTPUT-HANDLING-001 — 식별자 경계
+#
+# 실측(2026-08-08, lexdiff): 이 룰의 차단 오탐 14건이 **전부** `evaluate`·
+# `evaluator` 안의 `eval` 이었다. 예외 하나 없이 단일 원인. 토큰에 좌우 경계를
+# 걸어 좁히되, 아래 두 가지를 함께 고정한다:
+#   ① 좁히다 죽이면 안 되는 진짜 위험 (특히 camelCase 식별자와 에이전트 도구 실행)
+#   ② `(?-i:)` 로 대소문자 구분을 되살리는 부분 — (?i) 아래서 [a-z] 는 대문자까지
+#      잡아 `executeTool(llmResponse)` 를 함께 죽인다
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+
+def _llm_hit(code: str, filename: str = "app.js") -> bool:
+    report = scan_code(code, filename=filename)
+    return any(f.rule_id == "GOV-LLM-OUTPUT-HANDLING-001" for f in report.findings)
+
+
+@pytest.mark.parametrize("code, why", [
+    ("exec(llm_response)", "룰 자체 positive 예시 — snake_case"),
+    ("os.system(model_output.strip())", "룰 자체 positive 예시"),
+    ("el.innerHTML = llmResponse", "camelCase — \b 를 걸면 여기서 죽는다"),
+    ("element.innerHTML = response.data.text", "HTTP 응답 → innerHTML"),
+    ("eval(completion)", "완성문 직접 실행"),
+    ("executeTool(llmResponse)", "에이전트 도구 실행(OWASP ASI05) — (?-i:) 가 없으면 죽는다"),
+])
+def test_llm_output_handling_keeps_real_risks(code: str, why: str) -> None:
+    assert _llm_hit(code), why
+
+
+@pytest.mark.parametrize("code, why", [
+    ("evaluateResponseQuality는 toolScore만 계산한다", "실측 오탐 ×8"),
+    ("quality-evaluator.ts / LLM 행동 가드", "실측 오탐 ×4"),
+    ("def evaluate_response(item, collected):", "실측 오탐 ×2"),
+    ("per_q.append(evaluate_response(q, c))", "실측 오탐"),
+    ("const retrieval = await getResponse()", "retrieval 속 eval — 왼쪽 경계"),
+    ("logger.info('execution of response done')", "execution"),
+    ("// the code was executed after the response", "executed"),
+    ("if (isExecutable(responseBody))", "executable"),
+    ("evaluation of the model response", "evaluation"),
+])
+def test_llm_output_handling_rejects_word_fragments(code: str, why: str) -> None:
+    assert not _llm_hit(code), why
+
+
+def test_llm_output_handling_caps_distance_on_one_line() -> None:
+    """한 줄에 토큰이 181자 떨어져 있던 산문 JSON 이 실제로 걸렸다.
+    붙어 있으면 잡고, 문단 하나만큼 떨어져 있으면 잡지 않는다."""
+    assert _llm_hit('const x = exec(llmResponse)')
+    far = "llm " + ("가" * 200) + " exec(x)"
+    assert not _llm_hit(far), "거리 제한이 걸리지 않았습니다"

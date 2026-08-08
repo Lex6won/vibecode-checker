@@ -30,7 +30,11 @@ detection:
     - '\.outerHTML\s*=\s*(?!.{0,80}(?:DOMPurify|sanitize|escapeHtml|escapeHTML|textContent))'
     - 'document\.write(?:ln)?\s*\('
     - 'dangerouslySetInnerHTML\s*[:=]\s*(?!.{0,120}(?:DOMPurify|sanitize|escapeHtml))'
-    - "\\$\\([^)]*\\)\\.html\\s*\\("
+    # `.html()` 은 **인자가 없으면 getter**(HTML 을 읽기만 함)라 주입이 일어나지
+    # 않는다. 실측(2026-08-08) 오탐 3건이 전부 cheerio 의 `$("body").html()`
+    # 읽기였다. 인자가 하나라도 있어야(= 닫는 괄호가 바로 오지 않아야) 설정이다.
+    # 줄바꿈으로 인자를 넘긴 경우 줄 끝에서 멈추므로 그대로 잡힌다(보수적).
+    - "\\$\\([^)]*\\)\\.html\\s*\\(\\s*(?![\\s)])"
     - 'insertAdjacentHTML\s*\('
   category: kisa-secure-coding
   why_it_matters: >-
