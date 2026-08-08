@@ -248,7 +248,10 @@ def test_audit_manifest_counts_not_found_and_hold(monkeypatch) -> None:
                   "verdict": "checked_clean", "verdict_severity": "info", "requires_review": False},
     }
 
-    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0, env_grade=None):
+    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0,
+                         env_grade=None, **_kw):
+        # **_kw 로 받는다 — 실제 시그니처에 인자가 붙어도(예: 연결 재사용용 client)
+        # 더블이 먼저 깨져서 진짜 회귀를 가리지 않도록.
         return dict(results[name])
     monkeypatch.setattr(cp, "check_package_impl", fake_check)
 
@@ -534,3 +537,137 @@ def test_cvss_vector_absent_is_none_not_guessed(monkeypatch, osv) -> None:
     osv({"vulns": [_osv_vuln("GHSA-a", "HIGH", "1.2.3")]})
     r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
     assert r["advisories"][0]["cvss_vector"] is None
+
+
+# ---------------------------------------------------------------------------
+# ⑧ OSV 조회 신뢰성 — 일시 실패를 판정 불가로 굳히지 않는다
+# ---------------------------------------------------------------------------
+
+
+class _FlakyClient(_FakeAsyncClient):
+    """앞의 N 회는 지정한 예외를 던지고, 그다음 정상 응답."""
+
+    fail_times = 0
+    exc: Exception | None = None
+    attempts = 0
+
+    async def post(self, url, json=None):
+        type(self).attempts += 1
+        if type(self).attempts <= type(self).fail_times:
+            raise type(self).exc
+        return _FakeResponse(type(self).payload)
+
+
+def _flaky(monkeypatch, osv, exc: Exception, fail_times: int):
+    import httpx as _httpx
+
+    osv({"vulns": []})
+    _FlakyClient.attempts = 0
+    _FlakyClient.fail_times = fail_times
+    _FlakyClient.exc = exc
+    _FlakyClient.payload = {"vulns": []}
+    monkeypatch.setattr(cp.httpx, "AsyncClient", _FlakyClient)
+    monkeypatch.setattr(cp, "_OSV_BACKOFF", (0.0, 0.0))  # 테스트를 재우지 않는다
+    return _httpx
+
+
+def test_transient_dns_failure_is_retried(monkeypatch, osv) -> None:
+    """DNS 일시 실패는 다시 묻는다.
+
+    실측: `kordoc` 의 375개 중 **117개(31%)** 가 error 였고 그중 77건이
+    ``getaddrinfo failed`` 였다. 한 번만 다시 물었으면 대부분 회수됐을 것을
+    재시도 없이 '판정 불가'로 굳혔다.
+    """
+    import httpx as _httpx
+
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    _flaky(monkeypatch, osv, _httpx.ConnectError("getaddrinfo failed"), fail_times=1)
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["verdict"] == "checked_clean"      # 회수됐다
+    assert _FlakyClient.attempts == 2           # 1회 실패 + 1회 성공
+
+
+def test_client_error_is_not_retried(monkeypatch, osv) -> None:
+    """4xx 는 다시 물어도 같은 답이다 — 서버를 괴롭히고 실패를 늦게 알게 된다."""
+    import httpx as _httpx
+
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    resp = _httpx.Response(400, request=_httpx.Request("POST", cp.OSV_QUERY_URL))
+    _flaky(monkeypatch, osv, _httpx.HTTPStatusError("bad", request=resp.request,
+                                                    response=resp), fail_times=9)
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["verdict"] == "error"
+    assert _FlakyClient.attempts == 1           # 재시도 없음
+
+
+def test_retry_gives_up_and_reports_error(monkeypatch, osv) -> None:
+    """계속 실패하면 포기하되 '판정 불가'로 정직하게 남긴다 — 무한 재시도 금지."""
+    import httpx as _httpx
+
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    _flaky(monkeypatch, osv, _httpx.ConnectError("getaddrinfo failed"), fail_times=99)
+    slept: list[float] = []
+    real_sleep = cp.asyncio.sleep
+
+    async def counting_sleep(sec, *a, **kw):
+        slept.append(sec)
+        return await real_sleep(0)
+
+    monkeypatch.setattr(cp.asyncio, "sleep", counting_sleep)
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["verdict"] == "error"
+    assert r["requires_review"] is True
+    assert _FlakyClient.attempts == cp._OSV_RETRIES + 1
+    # 마지막 시도가 실패한 뒤에는 **기다리지 않는다** — 어차피 포기할 것이라
+    # 대기가 순수 낭비다. 락파일 수백 건이면 그 낭비가 분 단위로 쌓인다.
+    assert len(slept) == cp._OSV_RETRIES
+
+
+def test_server_error_and_timeout_are_transient(monkeypatch, osv) -> None:
+    """5xx·타임아웃도 일시 실패로 본다."""
+    import httpx as _httpx
+
+    req = _httpx.Request("POST", cp.OSV_QUERY_URL)
+    for exc in (_httpx.HTTPStatusError("500", request=req,
+                                       response=_httpx.Response(500, request=req)),
+                _httpx.HTTPStatusError("429", request=req,
+                                       response=_httpx.Response(429, request=req)),
+                _httpx.ReadTimeout("slow"), _httpx.ConnectTimeout("slow")):
+        assert cp._is_transient(exc), exc
+    resp404 = _httpx.Response(404, request=req)
+    assert not cp._is_transient(
+        _httpx.HTTPStatusError("404", request=req, response=resp404))
+
+
+def test_lockfile_limit_covers_real_world_trees() -> None:
+    """락파일 기본 상한이 실무 규모를 덮는다.
+
+    실측: `lexdiff` 의 pnpm-lock 은 전이 의존성 906개였는데 상한 500 이라 406개가
+    잘렸고, 그 사실이 보고서에 없었다.
+    """
+    assert cp._LOCKFILE_DEFAULT_LIMIT >= 906
+    assert cp._LOCKFILE_DEFAULT_LIMIT <= cp._MAX_PACKAGES   # 방어 상한을 넘지 않는다
+
+
+def test_progress_callback_reports_every_package(monkeypatch, osv) -> None:
+    """진행 표시는 전수 검사의 대가(시간)를 사용자가 견딜 수 있게 한다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": []})
+    seen: list[tuple[int, int, str]] = []
+    text = "a==1.0.0\nb==2.0.0\nc==3.0.0\n"
+    _run(cp.audit_manifest(text, ecosystem="pypi", on_progress=lambda *a: seen.append(a)))
+    assert [s[0] for s in seen] == [1, 2, 3]
+    assert all(s[1] == 3 for s in seen)
+    assert {s[2] for s in seen} == {"a", "b", "c"}
+
+
+def test_progress_callback_failure_does_not_break_scan(monkeypatch, osv) -> None:
+    """진행 표시가 터져도 검사는 계속된다 — 곁가지가 본체를 막으면 안 된다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": []})
+
+    def boom(*_a):
+        raise RuntimeError("progress bar exploded")
+
+    r = _run(cp.audit_manifest("a==1.0.0\n", ecosystem="pypi", on_progress=boom))
+    assert r["checked_count"] == 1

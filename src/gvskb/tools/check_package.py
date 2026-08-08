@@ -13,6 +13,7 @@ import asyncio
 import os
 import re
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Literal
 
 import httpx
@@ -935,8 +936,61 @@ def apply_registry_decision(local: dict, decision: dict) -> dict:
 
 # 규모 상수 — 락파일은 매니페스트와 자릿수가 다르다.
 _MANIFEST_DEFAULT_LIMIT = 20     # 직접 의존성만 — 사람이 훑어볼 규모
-_LOCKFILE_DEFAULT_LIMIT = 500    # 전이 의존성 포함 — 트리 전체
+# 락파일 기본 상한. 500 이던 시절 실측(2026-08-08)에서 `lexdiff` 의 pnpm-lock 은
+# 전이 의존성이 **906개**였고 406개가 조용히 잘렸다 — 트리의 45% 를 안 보고 "검사됨"
+# 이라 적은 것이다. 요즘 npm 프로젝트는 900개를 우습게 넘으므로 방어 상한
+# (`_MAX_PACKAGES`)까지 올린다. 잘리면 `truncated_count` 로 보고서에 드러난다.
+_LOCKFILE_DEFAULT_LIMIT = 2000   # 전이 의존성 포함 — 트리 전체
 _MAX_PACKAGES = 2000             # 방어 상한(무한 대기 방지)
+
+
+#: OSV 조회 재시도 — 일시 실패에만. 4xx 는 다시 물어도 같은 답이므로 재시도하지 않는다.
+_OSV_RETRIES = 2
+_OSV_BACKOFF = (0.5, 1.5)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """다시 시도하면 달라질 수 있는 실패인가.
+
+    **왜 필요한가(실측 2026-08-08)**: `kordoc` 의 패키지 375개 중 **117개(31%)** 가
+    ``error`` 로 확정됐는데, 그중 77건이 ``getaddrinfo failed`` — DNS 일시 실패였다.
+    한 번만 다시 물었으면 대부분 회수됐을 것을, 재시도 없이 '판정 불가'로 굳혔다.
+
+    반대로 4xx 는 재시도하면 안 된다. 같은 답이 오는데 서버만 괴롭히고, 무엇보다
+    **실패를 늦게 알게 된다.**
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500 or exc.response.status_code == 429
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout,
+                            httpx.ReadTimeout, httpx.WriteTimeout,
+                            httpx.PoolTimeout, httpx.RemoteProtocolError))
+
+
+async def _osv_query(payload: dict, *, timeout: float,
+                     client: "httpx.AsyncClient | None" = None) -> dict:
+    """OSV 질의 — 일시 실패는 물러났다가 다시 묻는다.
+
+    ``client`` 를 받으면 연결을 재사용한다. 예전에는 패키지마다 ``AsyncClient`` 를
+    새로 열어, 락파일 906개면 TLS 핸드셰이크도 906번이었다. 느린 것보다 나쁜 것은
+    연결이 많을수록 **일시 실패가 늘어난다**는 점이다.
+    """
+    last: Exception | None = None
+    for attempt in range(_OSV_RETRIES + 1):
+        try:
+            if client is not None:
+                resp = await client.post(OSV_QUERY_URL, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            async with httpx.AsyncClient(timeout=timeout) as own:
+                resp = await own.post(OSV_QUERY_URL, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPError as exc:
+            last = exc
+            if attempt >= _OSV_RETRIES or not _is_transient(exc):
+                raise
+            await asyncio.sleep(_OSV_BACKOFF[min(attempt, len(_OSV_BACKOFF) - 1)])
+    raise last  # pragma: no cover - 루프가 반드시 반환하거나 raise 한다
 
 
 def _concurrency() -> int:
@@ -957,6 +1011,7 @@ async def audit_manifest(
     limit: int | None = None,
     env_grade: str | None = None,
     filename: str = "",
+    on_progress: "Callable[[int, int, str], None] | None" = None,
 ) -> dict:
     """의존성 매니페스트·**락파일**을 파싱해 패키지별 취약·악성 검사를 수행한다.
 
@@ -1005,15 +1060,25 @@ async def audit_manifest(
 
     # 순차 실행이면 락파일 800건이 곧 800회 왕복이다 — 동시 실행하되 상한을 둔다.
     sem = asyncio.Semaphore(_concurrency())
+    done = 0
+    total = len(limited)
 
-    async def _one(package: dict) -> dict:
+    async def _one(package: dict, client: "httpx.AsyncClient | None") -> dict:
+        nonlocal done
         async with sem:
             result = await check_package_impl(
                 name=str(package["name"]),
                 version=str(package["version"]) if package.get("version") else None,
                 ecosystem=ecosystem,
                 env_grade=env_grade,
+                client=client,
             )
+        done += 1
+        if on_progress is not None:
+            try:
+                on_progress(done, total, str(package.get("name") or ""))
+            except Exception:  # pragma: no cover - 진행 표시가 검사를 막으면 안 된다
+                pass
         # 경계값 검사는 남기되 **관측이 아니라 가정**임을 싣는다. `requests>=2.28` 을
         # 2.28 로 판정해 놓고 그것을 '이 프로젝트가 쓰는 버전의 사실'로 다루면,
         # 실제로 2.31.0 이 깔린 프로젝트에 2.28 의 취약점을 보고하게 된다.
@@ -1040,7 +1105,16 @@ async def audit_manifest(
         if registry_on else None
     )
 
-    checks = list(await asyncio.gather(*(_one(p) for p in limited)))
+    # 연결을 하나로 모은다 — 906개면 예전에는 TLS 핸드셰이크도 906번이었고,
+    # 연결이 많을수록 일시 실패(getaddrinfo)가 늘었다. 오프라인 모드는 네트워크를
+    # 쓰지 않으므로 열지 않는다.
+    if _is_offline():
+        checks = list(await asyncio.gather(*(_one(p, None) for p in limited)))
+    else:
+        pool = httpx.Limits(max_connections=_concurrency(),
+                            max_keepalive_connections=_concurrency())
+        async with httpx.AsyncClient(timeout=10.0, limits=pool) as shared:
+            checks = list(await asyncio.gather(*(_one(p, shared) for p in limited)))
 
     # 판정마다 출처를 붙인다. 하네스 집행계약 §4-0 이 이 값으로 `unknown` 차단
     # 범위를 정하는데(사람이 고른 것만 차단), 일부 판정에만 붙어 있으면 같은
@@ -1160,6 +1234,7 @@ async def check_package_impl(
     version: str | None = None,
     timeout: float = 10.0,
     env_grade: str | None = None,
+    client: "httpx.AsyncClient | None" = None,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
@@ -1222,21 +1297,18 @@ async def check_package_impl(
     if version:
         payload["version"] = version
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            resp = await client.post(OSV_QUERY_URL, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPError as exc:
-            return PackageCheckResult(
-                **base,
-                checked=False,
-                verdict="error",
-                requires_review=True,
-                error=f"OSV API failure: {exc!s}",
-                cooldown=_evaluate_cooldown(meta, env_grade),
-                license_verdict=license_verdict(meta.license) if meta.license else None,
-            ).model_dump(mode="json")
+    try:
+        data = await _osv_query(payload, timeout=timeout, client=client)
+    except httpx.HTTPError as exc:
+        return PackageCheckResult(
+            **base,
+            checked=False,
+            verdict="error",
+            requires_review=True,
+            error=f"OSV API failure: {exc!s}",
+            cooldown=_evaluate_cooldown(meta, env_grade),
+            license_verdict=license_verdict(meta.license) if meta.license else None,
+        ).model_dump(mode="json")
 
     vulns = data.get("vulns", []) or []
     malicious_advisories = [v for v in vulns if str(v.get("id", "")).startswith("MAL-")]
