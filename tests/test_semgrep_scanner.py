@@ -207,3 +207,11 @@ def test_invocation_command_includes_required_flags(
     # The rules dir comes right after --config
     idx = cmd.index("--config")
     assert Path(cmd[idx + 1]).resolve() == fake_rules_dir.resolve()
+
+
+def test_looks_relevant_covers_mts_and_cts() -> None:
+    """scan_path 는 language=None 으로 넘기므로 확장자 목록이 유일한 관문이다.
+    `.mts`/`.cts` 가 빠지면 Semgrep 층만 조용히 이 파일들을 건너뛴다."""
+    assert sg._looks_relevant("mod.mts", None)
+    assert sg._looks_relevant("mod.cts", None)
+    assert not sg._looks_relevant("notes.md", None)

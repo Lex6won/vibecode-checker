@@ -298,7 +298,10 @@ def scan_file(path: str | Path, *, language: str | None = None, scenario: str | 
 
 DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".py", ".pyw",
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    # .mts/.cts 는 TypeScript 의 ESM/CJS 명시 확장자다. 실측(lexdiff)에서 이 두
+    # 확장자가 목록에 없어 2,271줄과 외부 연결 11건(국외 5건 포함)이 '검사조차
+    # 되지 않았다' — 발견 0이 안전으로 읽히는 가장 위험한 종류의 미탐이었다.
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
     ".java", ".kt", ".scala",
     ".go", ".rs",
     ".rb", ".php",
@@ -441,7 +444,12 @@ _MINIFIED_MAX_LINE = 2000   # 한 줄이 이 길이를 넘으면 사람이 읽�
 _MINIFIED_AVG_LINE = 400    # 평균 줄 길이가 이만큼 큰 다줄 번들도 미니파이드로 본다
 _MINIFIED_MIN_BYTES = 1000  # 너무 짧은 파일은 판정 제외(정상적인 한 줄 파일 보호)
 
-DEFAULT_MAX_FILES = 500
+# 소스 파일 상한 — 실측(lexdiff)에서 568개 저장소가 500에서 잘려 70개가
+# 검사되지 않았다. 걸린 시간은 전수 22초로, 아낀 2초와 맞바꾼 사각지대였다.
+# 500은 "빠르게 끝내기" 위한 값이었지만 이 도구의 목적은 **빠짐없이 보는 것**이다.
+# 20,000은 정상 저장소가 도달할 수 없는 값이면서(공공 프로젝트 실측 최대 수천),
+# 잘못 지정한 경로(예: 사용자 홈)에서 무한정 도는 것은 막는 안전판이다.
+DEFAULT_MAX_FILES = 20_000
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 
@@ -583,6 +591,7 @@ def scan_path(
         )
 
     files_to_scan: list[Path] = []
+    over_limit_count = 0        # 상한 초과로 검사되지 않은 '검사 대상' 파일 수
     is_dir = root.is_dir()
 
     if root.is_file():
@@ -611,7 +620,13 @@ def scan_path(
             dirnames[:] = kept_dirs
             for name in filenames:
                 if len(files_to_scan) >= max_files:
-                    break
+                    # 상한 도달 뒤에도 **세는 것은 계속한다** — 이전에는 즉시
+                    # break 해서, 잘려나간 70개 파일이 리포트에 '1건'으로만
+                    # 보였다(파일 목록도 순회 비용도 read 가 아니라 거의 공짜다).
+                    # 몇 개를 못 봤는지 모르면 사용자는 절단을 절단으로 못 읽는다.
+                    if Path(name).suffix.lower() in inc:
+                        over_limit_count += 1
+                    continue
                 p = Path(dirpath) / name
                 if name.lower() in _DEP_MANIFEST_NAMES:
                     skipped.append(SkippedFile(
@@ -666,9 +681,18 @@ def scan_path(
                 if size == 0:
                     continue
                 files_to_scan.append(p)
-            if len(files_to_scan) >= max_files:
-                skipped.append(SkippedFile(path=str(root), reason=f"max_files={max_files} reached"))
-                break
+            # 여기서 break 하지 않는다 — 남은 디렉터리도 끝까지 걸어야
+            # over_limit_count 가 실제 미검사 건수가 된다. os.walk 는 파일을
+            # 열지 않으므로 추가 비용은 디렉터리 목록 읽기뿐이다.
+
+    if over_limit_count:
+        skipped.append(SkippedFile(
+            path=str(root),
+            reason=(
+                f"max_files={max_files} reached — {over_limit_count}개 파일이 "
+                f"검사되지 않았습니다"
+            ),
+        ))
 
     all_findings: list[Finding] = []
     scanned: list[str] = []

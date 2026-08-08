@@ -26,7 +26,7 @@ from ..schema import Finding
 from .base import ScannerAdapter
 from .regex_scanner import _IGNORE_RE, build_finding, lookup_rule, redact_evidence
 
-_JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte")
+_JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte")
 _JS_LANGS = {"javascript", "typescript", "js", "ts"}
 
 # 할당: [const|let|var] name = RHS   (== 비교는 제외)
