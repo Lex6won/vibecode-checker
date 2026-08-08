@@ -10,6 +10,7 @@ Markdown 한 장 분량의 결론·요약·증거·수정 가이드·재현 절�
 from __future__ import annotations
 
 import html
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
@@ -1208,6 +1209,10 @@ def render_markdown(
     if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
         lines.append(f"> {_intel_banner}")
         lines.append("")
+    # 검사되지 않은 패키지는 '이상 없음'이 아니다 — 결론 근처에서 알린다.
+    if dep_audits and (_trunc_banner := _dep_truncation_banner(dep_audits)):
+        lines.append(f"> {_trunc_banner}")
+        lines.append("")
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
     ]
@@ -1906,6 +1911,8 @@ def render_html(
         p.append(f'<div class="depwarn">{_esc(_reg_banner).replace("**", "")}</div>')
     if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_intel_banner).replace("**", "")}</div>')
+    if dep_audits and (_trunc_banner := _dep_truncation_banner(dep_audits)):
+        p.append(f'<div class="depwarn">{_esc(_trunc_banner).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
     if not dep_audits and manifest_skips:
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
@@ -2569,6 +2576,38 @@ def _dep_stats(audits: list[dict]) -> tuple[int, int, int, bool, int]:
     return checked, unchecked, vuln, blocked, not_found
 
 
+def _dep_truncation_banner(audits: list[dict]) -> str | None:
+    """상한에 걸려 **검사되지 않은** 패키지가 있으면 알린다 — 한 줄만.
+
+    **왜 필요한가(실측 2026-08-08)**: ``lexdiff`` 의 `pnpm-lock.yaml` 은 전이 의존성이
+    906개인데 락파일 기본 상한이 500 이라 **406개가 잘렸다**. 그런데 이 사실이
+    보고서 어디에도 없었다 — ``truncated_count`` 를 ``report.py`` 가 한 번도 읽지
+    않았기 때문이다. 담당자는 "검사됨 500 · 판정불가 N" 이라는 **완결돼 보이는**
+    의존성 섹션을 그대로 결재에 올린다. 트리의 45% 를 안 봤다는 사실이 종이에 없다.
+
+    ``unchecked_count`` 와 다르다: 그쪽은 *검사했으나 판정하지 못한* 수이고,
+    이쪽은 *아예 보지 않은* 수다. 둘을 합쳐 적으면 "왜 못 봤는지"가 흐려진다.
+    """
+    total = 0
+    parsed = 0
+    for a in audits:
+        try:
+            total += int(a.get("truncated_count") or 0)
+            parsed += int(a.get("parsed_count") or 0)
+        except (TypeError, ValueError):  # pragma: no cover - 방어
+            continue
+    if total <= 0:
+        return None
+    checked = max(0, parsed - total)
+    pct = f"{total * 100 // parsed}%" if parsed else "일부"
+    return (
+        f"⚠ **의존성 {total}개가 검사되지 않았습니다** — 파싱한 {parsed}개 중 {checked}개만 "
+        f"검사했습니다(상한에 걸려 {pct} 누락). **이 결과는 의존성 트리 전체를 덮지 "
+        "않습니다.** 상한을 올려 다시 검사하세요"
+        "(MCP `scan_dependencies` 의 `limit`, CLI `--dep-limit`)."
+    )
+
+
 def _intel_cache_banner(audits: list[dict]) -> str | None:
     """인텔 캐시 열화 배너 — 매니페스트 전체에 **한 줄만**.
 
@@ -2810,34 +2849,74 @@ _ADVISORY_SEVERITY_KO = {
 _ADVISORY_SHOW_LIMIT = 12
 
 
-def _advisory_lines(check: dict) -> list[str]:
-    """패키지 1건의 개별 취약점 목록 — (ID · 심각도 · 고쳐진 버전 · 요약).
+_ADVISORY_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{1,14}-[A-Za-z0-9][A-Za-z0-9.\-]{2,60}$")
+
+
+def advisory_url(advisory_id: str) -> str | None:
+    """권고 ID → **원문 주소**. 형태가 확실할 때만 만든다.
+
+    OSV 는 GHSA·CVE·PYSEC·GO·RUSTSEC 을 한 주소 체계로 서비스하므로 규칙 하나면
+    전 생태계가 덮인다. 우리가 판정 근거를 OSV 에서 가져왔으니 근거를 확인할
+    자리도 거기가 맞다.
+
+    **왜 필요한가(실측 2026-08-08)**: 보고서가 ``GHSA-4r6h-8v6p-xvw6`` 이라는
+    문자열만 찍었다. 담당자는 그걸 직접 검색해야 했고, 결재 문서에 **검증할 수 없는
+    근거**가 올라갔다. ID 는 아는데 주소를 안 주는 건 근거를 반만 준 것이다.
+    """
+    aid = str(advisory_id or "").strip()
+    if not _ADVISORY_ID_RE.match(aid):
+        return None      # 형태가 이상하면 링크를 만들지 않는다 — 죽은 주소는 근거가 아니다
+    return f"https://osv.dev/vulnerability/{aid}"
+
+
+def _advisory_lines(check: dict) -> list[tuple[str, str | None]]:
+    """패키지 1건의 개별 취약점 — ``(설명, 원문 주소)``.
 
     **왜 필요한가(실측 질문)**: "취약·악성 3건인데 26건·8건·2건은 뭔가?" 3은 패키지
     수(조치 단위)이고 26은 그 패키지에 붙은 개별 취약점 수인데, 보고서가 숫자만
     적고 **내역을 한 줄도 보여주지 않아** 무엇이 26건인지 알 방법이 없었다.
+
+    주소를 문자열에 이어 붙이지 않고 따로 돌려주는 이유: HTML 은 ``_esc`` 를 거치므로
+    본문에 박아 넣으면 **클릭할 수 없는 글자**가 된다. 렌더러가 각자 링크를 만든다.
     """
     advisories = check.get("advisories") or []
     if not advisories:
         return []
-    out: list[str] = []
+    out: list[tuple[str, str | None]] = []
     for a in advisories[:_ADVISORY_SHOW_LIMIT]:
         sev = _ADVISORY_SEVERITY_KO.get(str(a.get("severity") or "").upper(), "미상")
         fixed = a.get("fixed_versions") or []
         fixed_txt = f" · 해결 {', '.join(fixed[:3])}" if fixed else " · 해결 버전 미상"
         summary = _oneline(str(a.get("summary") or ""), 110)
-        out.append(f"{a.get('id') or '(ID 미상)'} [{sev}]{fixed_txt} — {summary}")
+        aid = a.get("id") or "(ID 미상)"
+        out.append((f"{aid} [{sev}]{fixed_txt} — {summary}", advisory_url(aid)))
     hidden = len(advisories) - len(out)
     if hidden > 0:
-        out.append(f"… 외 {hidden}건 (전체 목록은 결과 JSON 의 advisories 참조)")
+        out.append((f"… 외 {hidden}건 (전체 목록은 결과 JSON 의 advisories 참조)", None))
     # 수집한 목록이 집계 수치보다 적으면 그 사실을 적는다 — 숫자만 크고 내역이
     # 없으면 읽는 사람은 나머지를 확인할 방법이 없다.
     total = int(check.get("vulnerability_count") or 0)
     if total and total > len(advisories):
-        out.append(
+        out.append((
             f"※ 집계 {total}건 중 {len(advisories)}건만 내역이 수집됐습니다 "
-            "— 나머지는 재검사(온라인)로 채워집니다."
-        )
+            "— 나머지는 재검사(온라인)로 채워집니다.", None))
+    # 권고 버전이 없을 때가 가장 막막하다 — "고칠 방법이 없다"로 읽히기 때문이다.
+    # 레지스트리 밖에 수정본이 있는 경우(xlsx → cdn.sheetjs.com)가 실제로 있으므로
+    # 제작사 권고 주소를 함께 준다.
+    if not check.get("recommended_version"):
+        seen: list[str] = []
+        for a in advisories:
+            for url in a.get("references") or []:
+                if url not in seen:
+                    seen.append(url)
+        if seen:
+            out.append((
+                "※ 레지스트리에 올릴 수 있는 수정 버전이 없습니다 — "
+                "제작사 권고에서 조치 방법을 확인하세요", seen[0]))
+            # 첫 주소가 NVD 로 잡히는 일이 흔한데, 실제 조치 안내는 제작사 쪽에
+            # 있는 경우가 많다(xlsx → cdn.sheetjs.com). 두 번째까지 보여준다.
+            for url in seen[1:2]:
+                out.append(("※ 참고", url))
     return out
 
 
@@ -2916,8 +2995,8 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
                 + f" — 개별 취약점 {c.get('vulnerability_count') or len(lines)}건"
             )
             out.append("")
-            for ln in lines:
-                out.append(f"- {ln}")
+            for ln, url in lines:
+                out.append(f"- {ln}" + (f"\n  - 원문: {url}" if url else ""))
             out.append("")
             out.append(f"→ {_pkg_upgrade_hint(c)}")
             out.append("")
@@ -2990,8 +3069,10 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
                 f"{c.get('vulnerability_count') or len(lines)}건</summary>"
                 '<div class="secbody"><ul>'
             )
-            for ln in lines:
-                out.append(f"<li>{_esc(ln)}</li>")
+            for ln, url in lines:
+                link = (f' <a href="{_esc(url)}" target="_blank" rel="noopener noreferrer">'
+                        "원문 확인 ↗</a>") if url else ""
+                out.append(f"<li>{_esc(ln)}{link}</li>")
             out.append("</ul>")
             out.append(
                 f'<div class="depwarn">→ {_esc(_pkg_upgrade_hint(c)).replace("**", "")}</div>'

@@ -13,6 +13,7 @@ import asyncio
 import os
 import re
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Literal
 
 import httpx
@@ -258,6 +259,53 @@ def _highest_version(versions: list[str]) -> str | None:
     return max(ranked, key=lambda kv: kv[0])[1]
 
 
+#: 프리릴리스 꼬리표. 운영에 올릴 버전으로 권고해서는 안 된다.
+_PRERELEASE_RE = re.compile(r"-(?:rc|alpha|beta|next|canary|dev|pre|preview|snapshot)", re.I)
+
+
+def _is_prerelease(version: str) -> bool:
+    """``8.0.0-rc.6`` 처럼 정식 출시 전 버전인가.
+
+    ``_version_key`` 는 ``-`` 앞만 보므로 ``8.0.0-rc.6`` 과 ``8.0.0`` 을 같은 값으로
+    읽는다. 그 결과 rc 가 안정판 ``7.29.6`` 을 이겨 **공공기관 운영에 alpha 를
+    올리라는 권고**가 나갔다(2026-08-08 실측). 비교 이전에 걸러야 한다.
+    """
+    return bool(_PRERELEASE_RE.search(str(version)))
+
+
+def _advisory_fix_ranges(vuln: dict, *, name: str, eco: str) -> list[tuple[str | None, str]]:
+    """``(도입 버전, 고쳐진 버전)`` 쌍 — 어느 브랜치의 수정인지 알아야 한다.
+
+    ``_advisory_fixed_versions`` 는 이 쌍을 평탄화해 ``fixed`` 만 남긴다. 그러면
+    ``[7.29.6, 8.0.0-rc.6]`` 이 "7.x 브랜치 수정"과 "8.x 브랜치 수정"이라는 사실이
+    사라져, 7.28.4 를 쓰는 사람에게 8.0.0-rc.6 을 권고하게 된다. 반대로 무턱대고
+    **낮은 쪽을 고르면 미탐**이 된다 — 내 버전이 그 브랜치가 아닐 수 있기 때문이다.
+    그래서 경계를 보존해 ``introduced <= 현재 < fixed`` 인 구간만 고른다.
+    """
+    from .installed_packages import _normalize
+
+    want = _normalize(name) if eco.lower() == "pypi" else name.lower()
+    out: list[tuple[str | None, str]] = []
+    for aff in vuln.get("affected") or []:
+        pkg = aff.get("package") or {}
+        pkg_name = str(pkg.get("name") or "")
+        norm = _normalize(pkg_name) if eco.lower() == "pypi" else pkg_name.lower()
+        if pkg_name and norm != want:
+            continue
+        if pkg.get("ecosystem") and str(pkg["ecosystem"]).lower() != eco.lower():
+            continue
+        for rng in aff.get("ranges") or []:
+            introduced: str | None = None
+            for ev in rng.get("events") or []:
+                if ev.get("introduced") is not None:
+                    introduced = str(ev["introduced"])
+                fixed = ev.get("fixed")
+                if fixed:
+                    out.append((introduced, str(fixed)))
+                    introduced = None  # 다음 쌍을 위해 초기화
+    return out
+
+
 def _advisory_fixed_versions(vuln: dict, *, name: str, eco: str) -> list[str]:
     """이 advisory 가 '어느 버전에서 고쳐졌는지' — OSV affected[].ranges[].events[].fixed.
 
@@ -289,6 +337,52 @@ def _advisory_fixed_versions(vuln: dict, *, name: str, eco: str) -> list[str]:
     return out
 
 
+#: 수정 방법을 담을 가능성이 높은 순서. WEB 은 뉴스·블로그가 섞이므로 뒤로 둔다.
+_REF_PRIORITY = ("ADVISORY", "FIX", "WEB", "PACKAGE", "REPORT")
+
+
+def _advisory_references(vuln: dict, limit: int = 2) -> list[str]:
+    """OSV ``references`` 중 **조치에 쓸 수 있는** 주소 몇 개.
+
+    **왜 필요한가(실측 2026-08-08)**: ``xlsx 0.18.5`` 는 권고 버전이 ``None`` 이었다.
+    npm 에 수정 버전이 없으니 그 자체는 옳다 — 그런데 **수정본은 존재한다**.
+    SheetJS 가 배포를 자체 CDN 으로 옮겼을 뿐이고, 그 안내가 OSV ``references`` 에
+    들어 있는데 우리가 이 필드를 저장하지 않아 전달하지 못했다. 담당자에게는
+    "권고 버전 없음"이 "고칠 방법 없음"으로 읽힌다.
+    """
+    refs = vuln.get("references") or []
+    picked: list[str] = []
+    for want in _REF_PRIORITY:
+        for r in refs:
+            if not isinstance(r, dict):
+                continue
+            url = str(r.get("url") or "").strip()
+            if not url.lower().startswith(("http://", "https://")):
+                continue
+            if str(r.get("type") or "").upper() == want and url not in picked:
+                picked.append(url)
+                if len(picked) >= limit:
+                    return picked
+    return picked
+
+
+def _advisory_cvss_vector(vuln: dict) -> str | None:
+    """OSV 가 준 CVSS 벡터를 **그대로** 옮긴다 — 우리가 점수를 계산하지 않는다.
+
+    ``max_cve`` 는 ``"HIGH"`` 같은 **라벨**이라 게이트가 "CVSS 7.0 이상 차단" 같은
+    정책을 쓸 수 없다. 그렇다고 벡터에서 점수를 직접 산출하면 **틀린 CVSS 를 우리
+    이름으로 내보내게** 된다 — 없는 것보다 나쁘다. 벡터는 표준이고 기계 판독이
+    되며 원문과 대조할 수 있으므로, 통과시키는 것이 정확하고 안전하다.
+    """
+    for s in vuln.get("severity") or []:
+        if not isinstance(s, dict):
+            continue
+        score = str(s.get("score") or "").strip()
+        if score.upper().startswith("CVSS:"):
+            return score
+    return None
+
+
 def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
     """보고서·프롬프트에 실을 advisory 목록.
 
@@ -303,23 +397,84 @@ def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
             "severity": _advisory_severity(v),
             "summary": (v.get("summary") or v.get("details") or "")[:200],
             "fixed_versions": _advisory_fixed_versions(v, name=name, eco=eco),
+            # 브랜치 경계를 보존한 원본 — 권고 버전 산출에만 쓴다(보고서 표시는
+            # 기존대로 fixed_versions). 평탄화된 목록만으로는 어느 수정이 내
+            # 브랜치의 것인지 알 수 없다.
+            "fixed_ranges": _advisory_fix_ranges(v, name=name, eco=eco),
+            # 원문·조치 안내 주소. 권고 버전이 없을 때 "그럼 어떻게 고치나"의 답이
+            # 여기 있다(레지스트리 밖 배포로 옮긴 패키지 등).
+            "references": _advisory_references(v),
+            # 표준 CVSS 벡터(있을 때만). 게이트가 자체 임계값으로 채점할 수 있게
+            # 원문 그대로 싣는다 — 우리가 점수를 만들지는 않는다.
+            "cvss_vector": _advisory_cvss_vector(v),
             "modified": v.get("modified"),
         })
     return rows
 
 
-def _recommended_version(rows: list[dict]) -> str | None:
-    """나열된 취약점을 모두 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'.
+def _advisory_target(row: dict, current: str | None) -> str | None:
+    """advisory 하나를 해소하는 **가장 가까운** 버전.
 
-    각 advisory 의 fixed 중 가장 높은 값을 고른다. 하나라도 fixed 를 모르면
-    그 취약점은 이 버전으로 해소된다고 말할 수 없으므로 **None** 을 돌려준다 —
-    '올리면 다 해결된다'는 잘못된 안심을 주지 않는다.
+    예전에는 advisory 안에서도 ``max`` 를 골랐다. 그런데 ``fixed_versions`` 는
+    브랜치별 수정본 목록이라, ``[7.29.6, 8.0.0-rc.6]`` 에서 최댓값을 고르면
+    7.28.4 사용자에게 **불필요한 메이저 업그레이드 + 프리릴리스**를 권고한다
+    (2026-08-08 실측: 취약 59건 중 16건이 이 형태였다). 담당자는 "이건 못 하겠다"
+    하고 **조치 자체를 포기**한다 — 오탐보다 나쁜 결과다.
+
+    반대로 무조건 최솟값을 고르면 **미탐**이 된다. 내 버전이 그 수정이 적용된
+    브랜치가 아닐 수 있기 때문이다. 그래서 순서는:
+
+    1. ``introduced <= 현재 < fixed`` 인 구간의 ``fixed`` (브랜치 일치 — 가장 정확)
+    2. 현재보다 높은 안정 버전 중 최소
+    3. 안정 버전이 하나도 없으면 프리릴리스라도 (정보를 잃지 않기 위해)
+    """
+    ranges = row.get("fixed_ranges") or []
+    cur = _version_key(current) if current else None
+
+    if cur is not None:
+        matched: list[str] = []
+        for introduced, fixed in ranges:
+            fk = _version_key(fixed)
+            if fk is None:
+                continue
+            ik = _version_key(introduced) if introduced else (0,)
+            if ik is None:
+                ik = (0,)
+            if ik <= cur < fk:
+                matched.append(fixed)
+        stable = [v for v in matched if not _is_prerelease(v)]
+        if stable:
+            return min(stable, key=lambda v: _version_key(v) or ())
+        if matched:
+            return min(matched, key=lambda v: _version_key(v) or ())
+
+    cands = [v for v in (row.get("fixed_versions") or []) if _version_key(v) is not None]
+    if not cands:
+        return None
+    if cur is not None:
+        ahead = [v for v in cands if (_version_key(v) or ()) > cur]
+        stable_ahead = [v for v in ahead if not _is_prerelease(v)]
+        if stable_ahead:
+            return min(stable_ahead, key=lambda v: _version_key(v) or ())
+        if ahead:
+            return min(ahead, key=lambda v: _version_key(v) or ())
+    stable = [v for v in cands if not _is_prerelease(v)]
+    return _highest_version(stable or cands)
+
+
+def _recommended_version(rows: list[dict], current: str | None = None) -> str | None:
+    """나열된 취약점을 **모두** 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'.
+
+    advisory 안에서는 내 브랜치에 가장 가까운 수정본을 고르고(``_advisory_target``),
+    advisory 사이에서는 **최댓값**을 고른다 — 하나라도 안 넘으면 남는 취약점이
+    생기기 때문이다. 하나라도 fixed 를 모르면 **None** 을 돌려준다: '올리면 다
+    해결된다'는 잘못된 안심을 주지 않는다.
     """
     if not rows:
         return None
     tops: list[str] = []
     for r in rows:
-        top = _highest_version(r.get("fixed_versions") or [])
+        top = _advisory_target(r, current)
         if top is None:
             return None
         tops.append(top)
@@ -781,8 +936,61 @@ def apply_registry_decision(local: dict, decision: dict) -> dict:
 
 # 규모 상수 — 락파일은 매니페스트와 자릿수가 다르다.
 _MANIFEST_DEFAULT_LIMIT = 20     # 직접 의존성만 — 사람이 훑어볼 규모
-_LOCKFILE_DEFAULT_LIMIT = 500    # 전이 의존성 포함 — 트리 전체
+# 락파일 기본 상한. 500 이던 시절 실측(2026-08-08)에서 `lexdiff` 의 pnpm-lock 은
+# 전이 의존성이 **906개**였고 406개가 조용히 잘렸다 — 트리의 45% 를 안 보고 "검사됨"
+# 이라 적은 것이다. 요즘 npm 프로젝트는 900개를 우습게 넘으므로 방어 상한
+# (`_MAX_PACKAGES`)까지 올린다. 잘리면 `truncated_count` 로 보고서에 드러난다.
+_LOCKFILE_DEFAULT_LIMIT = 2000   # 전이 의존성 포함 — 트리 전체
 _MAX_PACKAGES = 2000             # 방어 상한(무한 대기 방지)
+
+
+#: OSV 조회 재시도 — 일시 실패에만. 4xx 는 다시 물어도 같은 답이므로 재시도하지 않는다.
+_OSV_RETRIES = 2
+_OSV_BACKOFF = (0.5, 1.5)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """다시 시도하면 달라질 수 있는 실패인가.
+
+    **왜 필요한가(실측 2026-08-08)**: `kordoc` 의 패키지 375개 중 **117개(31%)** 가
+    ``error`` 로 확정됐는데, 그중 77건이 ``getaddrinfo failed`` — DNS 일시 실패였다.
+    한 번만 다시 물었으면 대부분 회수됐을 것을, 재시도 없이 '판정 불가'로 굳혔다.
+
+    반대로 4xx 는 재시도하면 안 된다. 같은 답이 오는데 서버만 괴롭히고, 무엇보다
+    **실패를 늦게 알게 된다.**
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500 or exc.response.status_code == 429
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout,
+                            httpx.ReadTimeout, httpx.WriteTimeout,
+                            httpx.PoolTimeout, httpx.RemoteProtocolError))
+
+
+async def _osv_query(payload: dict, *, timeout: float,
+                     client: "httpx.AsyncClient | None" = None) -> dict:
+    """OSV 질의 — 일시 실패는 물러났다가 다시 묻는다.
+
+    ``client`` 를 받으면 연결을 재사용한다. 예전에는 패키지마다 ``AsyncClient`` 를
+    새로 열어, 락파일 906개면 TLS 핸드셰이크도 906번이었다. 느린 것보다 나쁜 것은
+    연결이 많을수록 **일시 실패가 늘어난다**는 점이다.
+    """
+    last: Exception | None = None
+    for attempt in range(_OSV_RETRIES + 1):
+        try:
+            if client is not None:
+                resp = await client.post(OSV_QUERY_URL, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            async with httpx.AsyncClient(timeout=timeout) as own:
+                resp = await own.post(OSV_QUERY_URL, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPError as exc:
+            last = exc
+            if attempt >= _OSV_RETRIES or not _is_transient(exc):
+                raise
+            await asyncio.sleep(_OSV_BACKOFF[min(attempt, len(_OSV_BACKOFF) - 1)])
+    raise last  # pragma: no cover - 루프가 반드시 반환하거나 raise 한다
 
 
 def _concurrency() -> int:
@@ -803,6 +1011,7 @@ async def audit_manifest(
     limit: int | None = None,
     env_grade: str | None = None,
     filename: str = "",
+    on_progress: "Callable[[int, int, str], None] | None" = None,
 ) -> dict:
     """의존성 매니페스트·**락파일**을 파싱해 패키지별 취약·악성 검사를 수행한다.
 
@@ -851,15 +1060,25 @@ async def audit_manifest(
 
     # 순차 실행이면 락파일 800건이 곧 800회 왕복이다 — 동시 실행하되 상한을 둔다.
     sem = asyncio.Semaphore(_concurrency())
+    done = 0
+    total = len(limited)
 
-    async def _one(package: dict) -> dict:
+    async def _one(package: dict, client: "httpx.AsyncClient | None") -> dict:
+        nonlocal done
         async with sem:
             result = await check_package_impl(
                 name=str(package["name"]),
                 version=str(package["version"]) if package.get("version") else None,
                 ecosystem=ecosystem,
                 env_grade=env_grade,
+                client=client,
             )
+        done += 1
+        if on_progress is not None:
+            try:
+                on_progress(done, total, str(package.get("name") or ""))
+            except Exception:  # pragma: no cover - 진행 표시가 검사를 막으면 안 된다
+                pass
         # 경계값 검사는 남기되 **관측이 아니라 가정**임을 싣는다. `requests>=2.28` 을
         # 2.28 로 판정해 놓고 그것을 '이 프로젝트가 쓰는 버전의 사실'로 다루면,
         # 실제로 2.31.0 이 깔린 프로젝트에 2.28 의 취약점을 보고하게 된다.
@@ -886,7 +1105,16 @@ async def audit_manifest(
         if registry_on else None
     )
 
-    checks = list(await asyncio.gather(*(_one(p) for p in limited)))
+    # 연결을 하나로 모은다 — 906개면 예전에는 TLS 핸드셰이크도 906번이었고,
+    # 연결이 많을수록 일시 실패(getaddrinfo)가 늘었다. 오프라인 모드는 네트워크를
+    # 쓰지 않으므로 열지 않는다.
+    if _is_offline():
+        checks = list(await asyncio.gather(*(_one(p, None) for p in limited)))
+    else:
+        pool = httpx.Limits(max_connections=_concurrency(),
+                            max_keepalive_connections=_concurrency())
+        async with httpx.AsyncClient(timeout=10.0, limits=pool) as shared:
+            checks = list(await asyncio.gather(*(_one(p, shared) for p in limited)))
 
     # 판정마다 출처를 붙인다. 하네스 집행계약 §4-0 이 이 값으로 `unknown` 차단
     # 범위를 정하는데(사람이 고른 것만 차단), 일부 판정에만 붙어 있으면 같은
@@ -1006,6 +1234,7 @@ async def check_package_impl(
     version: str | None = None,
     timeout: float = 10.0,
     env_grade: str | None = None,
+    client: "httpx.AsyncClient | None" = None,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
@@ -1068,21 +1297,18 @@ async def check_package_impl(
     if version:
         payload["version"] = version
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            resp = await client.post(OSV_QUERY_URL, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPError as exc:
-            return PackageCheckResult(
-                **base,
-                checked=False,
-                verdict="error",
-                requires_review=True,
-                error=f"OSV API failure: {exc!s}",
-                cooldown=_evaluate_cooldown(meta, env_grade),
-                license_verdict=license_verdict(meta.license) if meta.license else None,
-            ).model_dump(mode="json")
+    try:
+        data = await _osv_query(payload, timeout=timeout, client=client)
+    except httpx.HTTPError as exc:
+        return PackageCheckResult(
+            **base,
+            checked=False,
+            verdict="error",
+            requires_review=True,
+            error=f"OSV API failure: {exc!s}",
+            cooldown=_evaluate_cooldown(meta, env_grade),
+            license_verdict=license_verdict(meta.license) if meta.license else None,
+        ).model_dump(mode="json")
 
     vulns = data.get("vulns", []) or []
     malicious_advisories = [v for v in vulns if str(v.get("id", "")).startswith("MAL-")]
@@ -1188,7 +1414,7 @@ async def check_package_impl(
         cooldown=cooldown,
         license_verdict=lic_verdict,
         advisories=advisory_rows,
-        recommended_version=_recommended_version(advisory_rows),
+        recommended_version=_recommended_version(advisory_rows, version),
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
         # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
         # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.

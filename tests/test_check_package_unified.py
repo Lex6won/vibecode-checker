@@ -248,7 +248,10 @@ def test_audit_manifest_counts_not_found_and_hold(monkeypatch) -> None:
                   "verdict": "checked_clean", "verdict_severity": "info", "requires_review": False},
     }
 
-    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0, env_grade=None):
+    async def fake_check(name, ecosystem="pypi", version=None, timeout=10.0,
+                         env_grade=None, **_kw):
+        # **_kw 로 받는다 — 실제 시그니처에 인자가 붙어도(예: 연결 재사용용 client)
+        # 더블이 먼저 깨져서 진짜 회귀를 가리지 않도록.
         return dict(results[name])
     monkeypatch.setattr(cp, "check_package_impl", fake_check)
 
@@ -333,6 +336,176 @@ def test_recommended_version_is_none_when_any_fix_unknown(monkeypatch, osv) -> N
     assert r["recommended_version"] is None
 
 
+def _osv_multi_branch(vid: str, ranges: list[tuple[str, str]], severity: str = "HIGH",
+                      name: str = "pillow", ecosystem: str = "PyPI") -> dict:
+    """브랜치별 수정본이 여러 개인 advisory — ``[(introduced, fixed), ...]``.
+
+    실제 OSV 는 이 형태가 흔하다(7.x 는 7.29.6 에서, 8.x 는 8.0.0-rc.6 에서 수정).
+    평탄화하면 어느 수정이 내 브랜치의 것인지 알 수 없어진다.
+    """
+    return {
+        "id": vid,
+        "summary": f"{vid} summary",
+        "modified": "2026-01-01T00:00:00Z",
+        "database_specific": {"severity": severity},
+        "affected": [{
+            "package": {"name": name, "ecosystem": ecosystem},
+            "ranges": [{
+                "type": "ECOSYSTEM",
+                "events": [e for intro, fixed in ranges
+                           for e in ({"introduced": intro}, {"fixed": fixed})],
+            }],
+        }],
+    }
+
+
+def test_recommendation_stays_on_my_branch(monkeypatch, osv) -> None:
+    """내 브랜치의 수정본을 권고한다 — 불필요한 메이저 업그레이드를 요구하지 않는다.
+
+    실측(2026-08-08): ``ajv 6.12.6`` 에 ``8.18.0`` 을 권고했다. 정작 ``6.14.0`` 이면
+    끝나는데 파괴적 마이그레이션을 요구한 것이다. 담당자는 "이건 못 하겠다" 하고
+    **조치를 포기**한다 — 오탐보다 나쁜 결과다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch("GHSA-a", [("0", "6.14.0"), ("7.0.0", "8.18.0")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="6.12.6"))
+    assert r["recommended_version"] == "6.14.0"
+
+
+def test_recommendation_does_not_drop_below_my_branch(monkeypatch, osv) -> None:
+    """**미탐 금지** — 내 브랜치가 아닌 낮은 수정본을 고르면 안 된다.
+
+    앞 테스트의 반대 방향이다. '가장 가까운 것'을 고르라고만 하면 8.0.1 사용자에게
+    7.29.6 을 권고해 취약점이 그대로 남는다. 구간 포함 여부로 판단해야 한다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch("GHSA-a", [("0", "7.29.6"), ("8.0.0", "8.2.0")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="8.0.1"))
+    assert r["recommended_version"] == "8.2.0"
+
+
+def test_recommendation_avoids_prerelease_when_stable_exists(monkeypatch, osv) -> None:
+    """안정판이 있으면 rc·alpha·beta 를 권고하지 않는다.
+
+    실측: ``multer 2.0.2`` 에 ``3.0.0-alpha.2`` 를 권고했다. 같은 권고문에 ``2.2.0``
+    이 있었다. 공공기관 운영에 alpha 를 올리라는 조언이 나간 것이다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch(
+        "GHSA-a", [("0", "2.2.0"), ("3.0.0-alpha.1", "3.0.0-alpha.2")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="2.0.2"))
+    assert r["recommended_version"] == "2.2.0"
+
+
+def test_recommendation_uses_prerelease_only_when_nothing_else(monkeypatch, osv) -> None:
+    """프리릴리스뿐이면 그것이라도 알려준다 — 정보를 버리지 않는다.
+
+    '안정판만' 을 원칙으로 삼으면 유일한 수정본이 rc 일 때 권고가 사라져,
+    고칠 방법이 있는데 없다고 말하게 된다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_multi_branch("GHSA-a", [("2.0.0", "3.0.0-rc.1")])]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="2.0.2"))
+    assert r["recommended_version"] == "3.0.0-rc.1"
+
+
+def test_recommendation_still_covers_every_advisory(monkeypatch, osv) -> None:
+    """advisory **사이**에서는 최댓값을 유지한다 — 하나라도 안 넘으면 남는다.
+
+    브랜치 안에서 최소를 고르는 수정이 이 성질을 깨뜨리면 미탐이 된다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [
+        _osv_multi_branch("GHSA-a", [("0", "7.29.6"), ("8.0.0", "8.1.0")]),
+        _osv_multi_branch("GHSA-b", [("0", "7.31.0"), ("8.0.0", "8.4.0")]),
+    ]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="7.28.4"))
+    assert r["recommended_version"] == "7.31.0"
+
+
+def test_osv_references_are_stored_for_remediation(monkeypatch, osv) -> None:
+    """OSV ``references`` 를 저장한다 — 권고 버전이 없을 때 유일한 조치 단서다.
+
+    실측: ``xlsx 0.18.5`` 는 npm 에 수정 버전이 없어 권고가 None 이었다. 그런데
+    수정본은 제작사 CDN 에 있었고 그 안내가 ``references`` 에 들어 있었는데,
+    이 필드를 버리고 있어 담당자에게 전달되지 못했다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    v = _osv_vuln("GHSA-a", "HIGH", "1.2.3")
+    v["references"] = [
+        {"type": "WEB", "url": "https://blog.example.invalid/post"},
+        {"type": "ADVISORY", "url": "https://nvd.nist.gov/vuln/detail/CVE-1"},
+        {"type": "FIX", "url": "https://cdn.vendor.invalid/advisories/CVE-1"},
+    ]
+    osv({"vulns": [v]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    refs = r["advisories"][0]["references"]
+    # ADVISORY·FIX 가 앞선다 — WEB 은 뉴스·블로그가 섞여 조치에 쓰기 어렵다.
+    assert refs == ["https://nvd.nist.gov/vuln/detail/CVE-1",
+                    "https://cdn.vendor.invalid/advisories/CVE-1"]
+
+
+def test_non_http_references_are_dropped(monkeypatch, osv) -> None:
+    """http(s) 가 아닌 주소는 버린다 — 보고서는 결재에 붙는 문서다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    v = _osv_vuln("GHSA-a", "HIGH", "1.2.3")
+    v["references"] = [{"type": "ADVISORY", "url": "javascript:alert(1)"},
+                       {"type": "FIX", "url": "ftp://x.invalid/patch"}]
+    osv({"vulns": [v]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["references"] == []
+
+
+def _row(ranges: list[tuple[str, str]]) -> dict:
+    """``_advisory_target`` 단위 시험용 advisory row."""
+    return {"fixed_ranges": ranges, "fixed_versions": [f for _, f in ranges]}
+
+
+# ── 아래 4건은 `_advisory_target` 을 **직접** 부른다.
+#
+# 파이프라인 전체로만 시험했더니 변이 검사에서 3건이 빠져나갔다: 구간 매칭이 죽어도
+# 폴백(현재보다 높은 최소 안정판)이 같은 답을 내서 테스트가 통과했다. 겹친 방어층은
+# 서로를 가린다 — 층마다 독립으로 고정해야 한다.
+
+def test_target_prefers_my_branch_over_a_lower_other_branch() -> None:
+    """다른 브랜치의 더 낮은 수정본을 집어오면 **미탐**이다.
+
+    1.5.0 은 ``[1.0.0, 3.0.0)`` 구간에 있으므로 3.0.0 으로 올려야 한다.
+    단순히 '현재보다 높은 최소'를 고르면 2.1.0 을 집는데, 그건 2.x 브랜치의
+    수정이라 1.x 사용자에게는 아무 소용이 없다.
+    """
+    row = _row([("1.0.0", "3.0.0"), ("2.0.0", "2.1.0")])
+    assert cp._advisory_target(row, "1.5.0") == "3.0.0"
+
+
+def test_target_skips_prerelease_inside_matched_ranges() -> None:
+    """구간이 여럿 걸릴 때, 낮다는 이유로 프리릴리스를 고르면 안 된다."""
+    row = _row([("0", "3.0.0-rc.1"), ("0", "3.1.0")])
+    assert cp._advisory_target(row, "2.0.2") == "3.1.0"
+
+
+def test_target_skips_prerelease_in_fallback_path() -> None:
+    """구간 정보가 없어 폴백으로 갈 때도 프리릴리스는 뒤로 미룬다."""
+    row = {"fixed_ranges": [], "fixed_versions": ["3.0.0-rc.1", "3.1.0"]}
+    assert cp._advisory_target(row, "2.0.2") == "3.1.0"
+
+
+def test_target_keeps_my_branch_prerelease_over_another_branch_stable() -> None:
+    """내 브랜치의 유일한 수정본이 rc 면, 무관한 상위 브랜치의 안정판으로 튀지 않는다.
+
+    2.0.2 는 ``[2.0.0, 3.0.0-rc.1)`` 구간이다. 안정판을 선호한다는 이유로 6.0.0 을
+    고르면 5.x 브랜치의 수정을 2.x 사용자에게 권고하는 셈이라 **미탐**이 된다.
+    """
+    row = _row([("2.0.0", "3.0.0-rc.1"), ("5.0.0", "6.0.0")])
+    assert cp._advisory_target(row, "2.0.2") == "3.0.0-rc.1"
+
+
+def test_target_returns_prerelease_when_it_is_the_only_fix_at_all() -> None:
+    """구간 정보 없이 후보가 rc 하나뿐이면 그것이라도 알려준다."""
+    assert cp._advisory_target(
+        {"fixed_ranges": [], "fixed_versions": ["3.0.0-rc.1"]}, "2.0.2") == "3.0.0-rc.1"
+
+
 def test_other_packages_fixed_versions_are_not_borrowed(monkeypatch, osv) -> None:
     """전이 의존성의 fixed 를 우리 패키지 권고로 내면 안 된다."""
     _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
@@ -340,3 +513,161 @@ def test_other_packages_fixed_versions_are_not_borrowed(monkeypatch, osv) -> Non
     r = _run(cp.check_package_impl("pillow", "pypi", version="12.2.0"))
     assert r["advisories"][0]["fixed_versions"] == []
     assert r["recommended_version"] is None
+
+
+def test_cvss_vector_is_passed_through_not_computed(monkeypatch, osv) -> None:
+    """OSV 가 준 CVSS 벡터를 그대로 싣는다 — 점수를 우리가 만들지 않는다.
+
+    `max_cve` 는 "HIGH" 같은 라벨이라 게이트가 임계값 정책을 쓸 수 없다. 그렇다고
+    벡터에서 점수를 산출하면 **틀린 CVSS 를 우리 이름으로** 내보내게 된다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    v = _osv_vuln("GHSA-a", "HIGH", "1.2.3")
+    v["severity"] = [{"type": "CVSS_V3",
+                      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]
+    osv({"vulns": [v]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["cvss_vector"] == \
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
+
+def test_cvss_vector_absent_is_none_not_guessed(monkeypatch, osv) -> None:
+    """벡터가 없으면 None — 라벨에서 역산해 지어내지 않는다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": [_osv_vuln("GHSA-a", "HIGH", "1.2.3")]})
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["advisories"][0]["cvss_vector"] is None
+
+
+# ---------------------------------------------------------------------------
+# ⑧ OSV 조회 신뢰성 — 일시 실패를 판정 불가로 굳히지 않는다
+# ---------------------------------------------------------------------------
+
+
+class _FlakyClient(_FakeAsyncClient):
+    """앞의 N 회는 지정한 예외를 던지고, 그다음 정상 응답."""
+
+    fail_times = 0
+    exc: Exception | None = None
+    attempts = 0
+
+    async def post(self, url, json=None):
+        type(self).attempts += 1
+        if type(self).attempts <= type(self).fail_times:
+            raise type(self).exc
+        return _FakeResponse(type(self).payload)
+
+
+def _flaky(monkeypatch, osv, exc: Exception, fail_times: int):
+    import httpx as _httpx
+
+    osv({"vulns": []})
+    _FlakyClient.attempts = 0
+    _FlakyClient.fail_times = fail_times
+    _FlakyClient.exc = exc
+    _FlakyClient.payload = {"vulns": []}
+    monkeypatch.setattr(cp.httpx, "AsyncClient", _FlakyClient)
+    monkeypatch.setattr(cp, "_OSV_BACKOFF", (0.0, 0.0))  # 테스트를 재우지 않는다
+    return _httpx
+
+
+def test_transient_dns_failure_is_retried(monkeypatch, osv) -> None:
+    """DNS 일시 실패는 다시 묻는다.
+
+    실측: `kordoc` 의 375개 중 **117개(31%)** 가 error 였고 그중 77건이
+    ``getaddrinfo failed`` 였다. 한 번만 다시 물었으면 대부분 회수됐을 것을
+    재시도 없이 '판정 불가'로 굳혔다.
+    """
+    import httpx as _httpx
+
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    _flaky(monkeypatch, osv, _httpx.ConnectError("getaddrinfo failed"), fail_times=1)
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["verdict"] == "checked_clean"      # 회수됐다
+    assert _FlakyClient.attempts == 2           # 1회 실패 + 1회 성공
+
+
+def test_client_error_is_not_retried(monkeypatch, osv) -> None:
+    """4xx 는 다시 물어도 같은 답이다 — 서버를 괴롭히고 실패를 늦게 알게 된다."""
+    import httpx as _httpx
+
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    resp = _httpx.Response(400, request=_httpx.Request("POST", cp.OSV_QUERY_URL))
+    _flaky(monkeypatch, osv, _httpx.HTTPStatusError("bad", request=resp.request,
+                                                    response=resp), fail_times=9)
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["verdict"] == "error"
+    assert _FlakyClient.attempts == 1           # 재시도 없음
+
+
+def test_retry_gives_up_and_reports_error(monkeypatch, osv) -> None:
+    """계속 실패하면 포기하되 '판정 불가'로 정직하게 남긴다 — 무한 재시도 금지."""
+    import httpx as _httpx
+
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    _flaky(monkeypatch, osv, _httpx.ConnectError("getaddrinfo failed"), fail_times=99)
+    slept: list[float] = []
+    real_sleep = cp.asyncio.sleep
+
+    async def counting_sleep(sec, *a, **kw):
+        slept.append(sec)
+        return await real_sleep(0)
+
+    monkeypatch.setattr(cp.asyncio, "sleep", counting_sleep)
+    r = _run(cp.check_package_impl("pillow", "pypi", version="1.0.0"))
+    assert r["verdict"] == "error"
+    assert r["requires_review"] is True
+    assert _FlakyClient.attempts == cp._OSV_RETRIES + 1
+    # 마지막 시도가 실패한 뒤에는 **기다리지 않는다** — 어차피 포기할 것이라
+    # 대기가 순수 낭비다. 락파일 수백 건이면 그 낭비가 분 단위로 쌓인다.
+    assert len(slept) == cp._OSV_RETRIES
+
+
+def test_server_error_and_timeout_are_transient(monkeypatch, osv) -> None:
+    """5xx·타임아웃도 일시 실패로 본다."""
+    import httpx as _httpx
+
+    req = _httpx.Request("POST", cp.OSV_QUERY_URL)
+    for exc in (_httpx.HTTPStatusError("500", request=req,
+                                       response=_httpx.Response(500, request=req)),
+                _httpx.HTTPStatusError("429", request=req,
+                                       response=_httpx.Response(429, request=req)),
+                _httpx.ReadTimeout("slow"), _httpx.ConnectTimeout("slow")):
+        assert cp._is_transient(exc), exc
+    resp404 = _httpx.Response(404, request=req)
+    assert not cp._is_transient(
+        _httpx.HTTPStatusError("404", request=req, response=resp404))
+
+
+def test_lockfile_limit_covers_real_world_trees() -> None:
+    """락파일 기본 상한이 실무 규모를 덮는다.
+
+    실측: `lexdiff` 의 pnpm-lock 은 전이 의존성 906개였는데 상한 500 이라 406개가
+    잘렸고, 그 사실이 보고서에 없었다.
+    """
+    assert cp._LOCKFILE_DEFAULT_LIMIT >= 906
+    assert cp._LOCKFILE_DEFAULT_LIMIT <= cp._MAX_PACKAGES   # 방어 상한을 넘지 않는다
+
+
+def test_progress_callback_reports_every_package(monkeypatch, osv) -> None:
+    """진행 표시는 전수 검사의 대가(시간)를 사용자가 견딜 수 있게 한다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": []})
+    seen: list[tuple[int, int, str]] = []
+    text = "a==1.0.0\nb==2.0.0\nc==3.0.0\n"
+    _run(cp.audit_manifest(text, ecosystem="pypi", on_progress=lambda *a: seen.append(a)))
+    assert [s[0] for s in seen] == [1, 2, 3]
+    assert all(s[1] == 3 for s in seen)
+    assert {s[2] for s in seen} == {"a", "b", "c"}
+
+
+def test_progress_callback_failure_does_not_break_scan(monkeypatch, osv) -> None:
+    """진행 표시가 터져도 검사는 계속된다 — 곁가지가 본체를 막으면 안 된다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=100))
+    osv({"vulns": []})
+
+    def boom(*_a):
+        raise RuntimeError("progress bar exploded")
+
+    r = _run(cp.audit_manifest("a==1.0.0\n", ecosystem="pypi", on_progress=boom))
+    assert r["checked_count"] == 1

@@ -516,3 +516,101 @@ def test_no_dependency_prompt_when_all_packages_are_clean() -> None:
     report.dependency_audit = _dep_audit(_check("requests", "2.34.0"))
     assert _dep_fix_prompt_text(report) is None
     assert "패키지 블록을 빠뜨리지 마세요" not in render_markdown(report)
+
+
+# ---------------------------------------------------------------------------
+# ⑨ 판정 근거를 원문에서 확인할 수 있는가 — ID 만으로는 검증이 불가능하다
+# ---------------------------------------------------------------------------
+
+
+def _xlsx_check(**over) -> dict:
+    """취약 판정 + advisory 1건짜리 체크 결과."""
+    base = _check(
+        "xlsx", "0.18.5",
+        verdict="vulnerable", vulnerability_count=1, max_cve="HIGH",
+        recommended_version=None,
+        advisories=[{
+            "id": "GHSA-4r6h-8v6p-xvw6", "severity": "HIGH",
+            "summary": "Prototype Pollution in sheetJS",
+            "fixed_versions": [], "references": ["https://cdn.sheetjs.com/advisories/x"],
+        }],
+    )
+    base.update(over)
+    return base
+
+
+def test_advisory_url_only_for_well_formed_ids() -> None:
+    """형태가 확실할 때만 링크를 만든다 — 죽은 주소는 근거가 아니다.
+
+    ID 를 그대로 URL 에 이어 붙이면 ``(ID 미상)`` 같은 자리표시자나 주입 시도가
+    그대로 주소가 된다. 보고서는 결재에 붙는 문서다.
+    """
+    from gvskb.report import advisory_url
+
+    assert advisory_url("GHSA-4r6h-8v6p-xvw6") == \
+        "https://osv.dev/vulnerability/GHSA-4r6h-8v6p-xvw6"
+    assert advisory_url("CVE-2023-30533") == "https://osv.dev/vulnerability/CVE-2023-30533"
+    assert advisory_url("PYSEC-2023-227") == "https://osv.dev/vulnerability/PYSEC-2023-227"
+    for bad in ("(ID 미상)", "", "  ", "javascript:alert(1)", "../../etc/passwd",
+                "GHSA", "http://evil.example/x"):
+        assert advisory_url(bad) is None, bad
+
+
+def test_report_links_each_advisory_to_its_source() -> None:
+    """보고서가 권고 ID 옆에 원문 주소를 함께 낸다 — MD 와 HTML 양쪽."""
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(_xlsx_check())
+    md, html = render_markdown(report), render_html(report)
+    url = "https://osv.dev/vulnerability/GHSA-4r6h-8v6p-xvw6"
+    assert url in md
+    # HTML 은 _esc 를 거치므로 본문에 박으면 클릭할 수 없는 글자가 된다.
+    assert f'href="{url}"' in html
+
+
+def test_no_recommended_version_still_points_at_a_fix() -> None:
+    """'권고 버전 없음'이 '고칠 방법 없음'으로 읽히면 안 된다.
+
+    실측: ``xlsx 0.18.5`` 는 npm 에 수정 버전이 없어 권고가 None 이지만, 제작사가
+    자체 CDN 으로 배포를 옮겼을 뿐 **수정본은 존재한다**.
+    """
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(_xlsx_check())
+    md = render_markdown(report)
+    assert "레지스트리에 올릴 수 있는 수정 버전이 없습니다" in md
+    assert "https://cdn.sheetjs.com/advisories/x" in md
+
+
+def test_recommended_version_present_means_no_vendor_fallback_noise() -> None:
+    """권고 버전이 있으면 제작사 안내 줄을 덧붙이지 않는다 — 과잉 교정 방지."""
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(_xlsx_check(recommended_version="0.20.2"))
+    md = render_markdown(report)
+    assert "레지스트리에 올릴 수 있는 수정 버전이 없습니다" not in md
+
+
+def test_truncated_dependencies_are_disclosed(_unused=None) -> None:
+    """상한에 걸려 **보지 않은** 패키지가 있으면 보고서가 말해야 한다.
+
+    실측: lexdiff 의 전이 의존성 906개 중 락파일 기본 상한 500 때문에 406개가
+    잘렸는데, `report.py` 가 `truncated_count` 를 한 번도 읽지 않아 보고서에
+    흔적이 없었다. 담당자는 "검사됨 500"이라는 **완결돼 보이는** 섹션을 결재에
+    올린다 — 트리의 45% 를 안 봤다는 사실이 종이에 없다.
+
+    `unchecked_count`(검사했으나 판정 못 함)와 구분해서 적어야 한다.
+    """
+    report = _multi_file_report()
+    audit = _dep_audit(_check("pillow", "12.2.0"))
+    audit["audits"][0].update({"truncated_count": 406, "parsed_count": 906})
+    report.dependency_audit = audit
+    for doc in (render_markdown(report), render_html(report)):
+        assert "406" in doc and "906" in doc
+        assert "검사되지 않았습니다" in doc
+
+
+def test_no_truncation_means_no_banner() -> None:
+    """다 봤으면 경고하지 않는다 — 없는 문제로 경고 피로를 만들지 않는다."""
+    report = _multi_file_report()
+    audit = _dep_audit(_check("pillow", "12.2.0"))
+    audit["audits"][0].update({"truncated_count": 0, "parsed_count": 906})
+    report.dependency_audit = audit
+    assert "검사되지 않았습니다" not in render_markdown(report)
