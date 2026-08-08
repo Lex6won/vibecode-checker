@@ -391,6 +391,23 @@ class ScanReport(BaseModel):
         default=None,
         description="이 결과가 생성된 시각(UTC ISO-8601). 스캐너가 생성 시 주입.",
     )
+    # 룰셋 신원 — 게이트의 재현성 전제. 판정을 재현하려면 **엔진과 룰셋 둘 다**
+    # 필요하다(엔진 코드가 바뀌어도 판정은 바뀐다). 한쪽만 적으면 재현 가능한
+    # 것처럼 보이는 착시가 생기므로 반드시 쌍으로 노출한다.
+    ruleset_version: str | None = Field(
+        default=None,
+        description="이 판정에 쓰인 룰셋 버전(rules/RULESET.lock). 선언이 없으면 None.",
+    )
+    ruleset_digest: str | None = Field(
+        default=None,
+        description="판정에 쓰이는 룰 필드만의 지문. 버전 선언이 없어도 비교에 쓸 수 있다.",
+    )
+    ruleset_drift: str | None = Field(
+        default=None,
+        description=(
+            "룰이 바뀌었는데 버전이 그대로일 때의 설명. None이면 선언과 실제가 일치."
+        ),
+    )
     intel_freshness: dict | None = Field(
         default=None,
         description="의존성·인텔 캐시 기준일(예: {'advisory_db': '2026-06-01'}). None이면 미표시.",

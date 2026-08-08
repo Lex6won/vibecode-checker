@@ -36,6 +36,175 @@ def _issue(rule_id: str, file: str, status: Status, code: str, detail: str) -> R
     return {"rule_id": rule_id, "file": file, "status": status, "code": code, "detail": detail}
 
 
+# ---------------------------------------------------------------------------
+# 오탐 archetype 린터 — 실측에서 실제로 뚫린 모양만 검사한다
+#
+# 라운드 10·13·14에서 나온 오탐을 하나씩 세지 않고 분해하니 소수의 **모양**으로
+# 모였다. 그 모양을 룰 작성 시점에 잡으면 같은 오탐이 다시 태어나지 않는다.
+#
+# 원칙: **실측으로 증명된 모양만** 넣는다. 시끄러운 린터는 꺼지고, 꺼진 린터는
+# 없는 것과 같다. 후보였다가 뺀 것도 아래에 이유와 함께 남긴다.
+# ---------------------------------------------------------------------------
+
+#: 짧고 흔한 **실행 sink** 이름. 이것들이 경계 없이 대안 목록에 들어가면
+#: `evaluate`·`execution` 같은 더 긴 단어 안에서 걸린다(실측 오탐 14건).
+_SINK_TOKENS = frozenset({
+    "eval", "exec", "execute", "system", "innerhtml", "unserialize", "deserialize",
+})
+
+#: 정화로 인정하는 이름들. **호출 형태**(`sanitize(`)여야 하고, 맨 단어면
+#: `sanitizeMaybe(h){return h.trim()}` 같은 가짜에 뚫린다(적대적 검증 2026-08-08).
+_SANITIZER_WORD_RE = re.compile(
+    r"(?i)\b(DOMPurify|sanitiz[a-z]*|escapeHtml[a-z]*|escapeHTML|purify[a-z]*|encodeHtml[a-z]*)")
+
+_GROUP_RE = re.compile(r"\((?:\?:)?([^()]*)\)")
+_LOOKAHEAD_RE = re.compile(r"\(\?!")
+
+
+def _has_boundary_guard(src: str, start: int, end: int) -> bool:
+    """그룹 좌우에 경계 장치가 있는가.
+
+    인정하는 것: 후방/전방탐색 · `\\b` · 호출 앵커 `\\s*\\(` · **따옴표 구분자**.
+    따옴표를 빼먹었더니 `["'](exec|eval|single)["']`(파이썬 `compile()` 의 모드
+    인자)가 걸렸다 — 따옴표 사이의 리터럴이라 더 긴 단어에 섞일 수 없는데도
+    경고가 났다. 린터의 오탐은 린터를 끄게 만든다.
+    """
+    left, right = src[max(0, start - 8):start], src[end:end + 10]
+    if "(?<" in left or left.endswith("\\b"):
+        return True
+    if right.startswith(("\\b", "(?!", "(?=")):
+        return True
+    if bool(re.match(r"\\+s\*\\+\(", right)):          # `\s*\(` 호출 앵커
+        return True
+    # 따옴표로 둘러싸인 리터럴: `["']( … )["']` · `'( … )'`
+    return bool(re.search(r"""(?:\["'\]|['"])\s*$""", left)) and \
+        bool(re.match(r"""\s*(?:\["'\]|['"])""", right))
+
+
+def _check_sink_token_boundaries(rule: Rule, rel_path: str) -> list[RuleIssue]:
+    """실행 sink 이름이 경계 없이 대안 목록에 있는가.
+
+    실측: `(execute|exec|eval|...)` 에 경계가 없어 `evaluate`·`evaluator` 안의
+    `eval` 이 걸렸다 — 한 룰의 차단 오탐 14건이 전부 이 하나였다.
+    """
+    out: list[RuleIssue] = []
+    if rule.detection is None:
+        return out
+    for i, src in enumerate(rule.detection.patterns):
+        for m in _GROUP_RE.finditer(src):
+            alts = {a.strip().lower() for a in m.group(1).split("|")}
+            hot = sorted(alts & _SINK_TOKENS)
+            if not hot or _has_boundary_guard(src, m.start(), m.end()):
+                continue
+            out.append(_issue(
+                rule.id, rel_path, "error", "sink-token-without-boundary",
+                f"patterns[{i}]: 실행 sink {hot} 가 경계 없이 대안 목록에 있습니다 — "
+                "`evaluate` 속 `eval` 처럼 더 긴 단어 안에서 걸립니다. "
+                r"좌측 `(?<![A-Za-z0-9])` · 우측 `(?!(?-i:[a-z]))` 또는 "
+                r"호출 앵커 `\s*\(` 를 붙이세요.",
+            ))
+            break                                   # 룰당 한 번만 말한다
+    return out
+
+
+def _check_sanitizer_allowlist_is_a_call(rule: Rule, rel_path: str) -> list[RuleIssue]:
+    """정화 화이트리스트가 **부분문자열**로 판정하는가.
+
+    실측(적대적 검증): `(?!.{0,120}(?:DOMPurify|sanitize|escapeHtml))` 은
+    `sanitizeMaybe(h){ return h.trim() }` 를 정화로 인정해 **발견을 통째로
+    삭제**했다. 이름은 아무것도 보장하지 않는다 — 최소한 호출 형태를 요구해야
+    하고, 더 나아가 함수 본문 판단은 엔진(html_sink_context)의 일이다.
+    """
+    out: list[RuleIssue] = []
+    if rule.detection is None:
+        return out
+    for i, src in enumerate(rule.detection.patterns):
+        for la in _LOOKAHEAD_RE.finditer(src):
+            body = src[la.start():_group_end(src, la.start())]
+            bare = [w.group(1) for w in _SANITIZER_WORD_RE.finditer(body)
+                    if not _followed_by_call(body, w.end())]
+            if not bare:
+                continue
+            out.append(_issue(
+                rule.id, rel_path, "error", "sanitizer-allowlist-substring",
+                f"patterns[{i}]: 정화 화이트리스트 {sorted(set(bare))} 가 "
+                "부분문자열로 판정합니다 — `sanitizeMaybe` 같은 **이름만 정화**인 "
+                "함수가 통과합니다(그리고 통과는 곧 발견 삭제입니다). "
+                r"호출 형태(`sanitiz\w*\s*\(`)를 요구하거나, 판단을 엔진으로 옮기세요.",
+            ))
+            break
+    return out
+
+
+def _check_ignorecase_lowercase_class(rule: Rule, rel_path: str) -> list[RuleIssue]:
+    """`(?i)` 아래의 `[a-z]` — 대문자까지 잡아 **진탐을 죽인다**.
+
+    실측: `(?i)…(?![a-z])` 로 쓰면 `executeTool(llmResponse)`(에이전트 도구
+    실행, OWASP ASI05)가 함께 죽는다. `(?-i:[a-z])` 로 대소문자 구분을 되살려야
+    한다. 오탐이 아니라 **미탐**을 만드는 모양이라 더 조용하다.
+    """
+    out: list[RuleIssue] = []
+    if rule.detection is None:
+        return out
+    ci_flag = "IGNORECASE" in (rule.detection.flags or [])
+    for i, src in enumerate(rule.detection.patterns):
+        if not (ci_flag or "(?i)" in src or "(?i:" in src):
+            continue
+        if re.search(r"\[a-z\]", re.sub(r"\(\?-i:[^)]*\)", "", src)):
+            out.append(_issue(
+                rule.id, rel_path, "error", "lowercase-class-under-ignorecase",
+                f"patterns[{i}]: `(?i)` 아래의 `[a-z]` 는 대문자도 잡습니다 — "
+                "`executeTool` 같은 camelCase 진짜 위험까지 함께 걸러집니다. "
+                "`(?-i:[a-z])` 로 대소문자 구분을 되살리세요.",
+            ))
+    return out
+
+
+def _group_end(src: str, start: int) -> int:
+    """`start` 위치의 `(` 에 대응하는 닫는 괄호 다음 위치(못 찾으면 문자열 끝)."""
+    depth = 0
+    i = start
+    while i < len(src):
+        c = src[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return len(src)
+
+
+def _followed_by_call(body: str, pos: int) -> bool:
+    """이 이름 뒤에 (같은 대안 안에서) 여는 괄호가 오는가 = 호출 형태인가."""
+    i = pos
+    while i < len(body):
+        c = body[i]
+        if c == "(":
+            return True
+        if c in "|)":                     # 대안이 끝났다 — 호출이 아니다
+            return False
+        if c == "\\" and i + 1 < len(body):
+            if body[i + 1] == "(":
+                return True
+            i += 2
+            continue
+        i += 1
+    return False
+
+
+# 후보였다가 **뺀** 검사: "그룹 사이의 무제한 `.*`".
+# GOV-LLM 이 산문 JSON 에서 181자 떨어진 토큰을 잡은 실제 모양이라 넣으려 했으나,
+# 324개 룰에 돌려 보니 유일한 적중이 `GOV-LLM-PII-PROMPT-001` 의 **정당한**
+# 줄 전체 전방탐색(`(?!.*(?:...))(?=.*(?:...))`)이었다. 적중 1건이 전부 오탐이면
+# 그 검사는 경고 피로만 만든다 — 진짜 경고까지 무시되게 한다. 거리 제한은
+# 개별 룰의 주석으로 남기고, 자동 검사는 하지 않는다.
+
+
 def _check_regex(rule: Rule, rel_path: str) -> list[RuleIssue]:
     out: list[RuleIssue] = []
     if rule.detection is None:
@@ -156,11 +325,32 @@ def validate_rules_dir(rules_dir: Path, *, today: date | None = None) -> dict:
         issues.extend(_check_review_due(r, rel, today))
         issues.extend(_check_schema_version(r, rel))
         issues.extend(_check_examples(r, rel))
+        # 오탐 archetype — 룰 작성 시점에 잡아 같은 오탐이 다시 태어나지 않게.
+        issues.extend(_check_sink_token_boundaries(r, rel))
+        issues.extend(_check_sanitizer_allowlist_is_a_call(r, rel))
+        issues.extend(_check_ignorecase_lowercase_class(r, rel))
+
+    # 룰셋 잠금 — "룰을 고쳤는데 버전은 그대로"를 여기서 막는다.
+    # 별도 명령으로만 두면 아무도 안 돌린다. CI 가 이미 부르는 자리에 붙여야
+    # '버전을 안 올리고 룰만 고치는' 경로가 실제로 닫힌다.
+    from . import ruleset as _ruleset
+    lock_verdict = _ruleset.verify_lock(rules, rules_dir)
+    if lock_verdict["status"] == "drift":
+        issues.append(_issue("<ruleset>", _ruleset.LOCK_FILENAME, "error",
+                             "ruleset-digest-drift", lock_verdict["message"]))
+    elif lock_verdict["status"] == "missing":
+        issues.append(_issue("<ruleset>", _ruleset.LOCK_FILENAME, "warn",
+                             "ruleset-lock-missing", lock_verdict["message"]))
 
     summary = {
         "rules_dir": str(rules_dir),
         "rules_loaded": len(rules),
         "load_errors": len(load_errors),
+        "ruleset": {
+            "status": lock_verdict["status"],
+            "version": lock_verdict["version"],
+            "digest": lock_verdict["actual"],
+        },
         "issues": {
             "error": sum(1 for i in issues if i["status"] == "error"),
             "warn": sum(1 for i in issues if i["status"] == "warn"),
@@ -178,7 +368,12 @@ def validate_rules_dir(rules_dir: Path, *, today: date | None = None) -> dict:
 
 def format_text_report(report: dict) -> str:
     lines = [f"gvskb validate-rules — {report['summary']['rules_dir']}",
-             f"로드된 룰: {report['summary']['rules_loaded']}건", ""]
+             f"로드된 룰: {report['summary']['rules_loaded']}건"]
+    rs = report["summary"].get("ruleset") or {}
+    if rs:
+        ver = rs.get("version") or "(선언 없음)"
+        lines.append(f"룰셋: {ver} · 지문 {(rs.get('digest') or '?')[:12]}… [{rs.get('status')}]")
+    lines.append("")
     if not report["issues"]:
         lines.append("문제 없음.")
     else:

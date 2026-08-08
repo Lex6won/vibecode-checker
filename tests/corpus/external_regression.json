@@ -1,0 +1,206 @@
+[
+ {
+  "id": "llm-eval-in-evaluate-json",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "docs/plans/prod-review-2026-06/2026-06-27-ux-review-data/currency-findings.json",
+   "line": 23,
+   "excerpt_start_line": 23
+  },
+  "filename": "currency-findings.json",
+  "code": "        \"trace\": \"quality-evaluator.ts:52-116 evaluateResponseQuality는 toolScore/contentScore/citationScore/answerScore만 계산 — [현행]/[연혁]/시행일 라벨을 전혀 보지 않음. 유일한 현행성 관련 가드는 :101-104 (retrievalCount===0 && citationCount>0 → score cap 25). 그러나 retrievalCount(:62)는 EVIDENCE_TOOLS(:20-37, get_law_history/compare_old_new/chain_amendment_track 모두 포함) 호출 수. TIER_0(tool-tiers.ts:3-8)가 매 질의 search_ai_law/search_law 등을 항상 로드하고 prompts.ts:231-235가 '도구 최소 1회 호출 필수'를 강제하므로 retrievalCount는 사실상 항상 >0 → cap 미발동. 따라서 연혁 evidence 도구로 답한 오답은 만점 통과. gemini-engine.ts:628-676 완료 경로가 이 평가를 쓰지만(:630) 현행성 갭을 못 메움.\",\n",
+  "must_not_fire": [
+   "GOV-LLM-OUTPUT-HANDLING-001"
+  ],
+  "must_fire": [],
+  "why": "`evaluateResponseQuality` 안의 eval — 라운드14 차단 오탐 14건의 단일 원인",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "llm-eval-in-evaluate-py",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "evaluation/legal_metrics.py",
+   "line": 317,
+   "excerpt_start_line": 317
+  },
+  "filename": "legal_metrics.py",
+  "code": "def evaluate_response(item: dict[str, Any], collected: dict[str, Any]) -> dict[str, Any]:\n",
+  "must_not_fire": [
+   "GOV-LLM-OUTPUT-HANDLING-001"
+  ],
+  "must_fire": [],
+  "why": "`def evaluate_response(...)` — 같은 원인, 파이썬 쪽",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "llm-evaluator-prose",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "docs/plans/prod-review-2026-06/2026-06-27-ux-review-data/currency-findings.json",
+   "line": 3,
+   "excerpt_start_line": 3
+  },
+  "filename": "currency-findings.json",
+  "code": "    \"area\": \"프롬프트 + LLM 행동 가드 (prompts.ts / gemini-engine.ts / quality-evaluator.ts / result-utils.ts / answer-cache.ts)\",\n",
+  "must_not_fire": [
+   "GOV-LLM-OUTPUT-HANDLING-001"
+  ],
+  "must_fire": [],
+  "why": "산문 안의 `LLM` + `quality-evaluator.ts` — 토큰이 55자 떨어진 문서 줄",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "regex-exec-literal",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/kordoc",
+   "commit": "8c9e805",
+   "path": "src/hwpx/equation-generate.ts",
+   "line": 225,
+   "excerpt_start_line": 225
+  },
+  "filename": "equation-generate.ts",
+  "code": "  const match = /^[A-Za-z]+/.exec(input.slice(idx + 1))\n",
+  "must_not_fire": [
+   "KISA-JS-INPUT-05"
+  ],
+  "must_fire": [],
+  "why": "`/^[A-Za-z]+/.exec(...)` — 정규식은 명령을 실행하지 않는다",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "regex-exec-variable",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "lib/impact-tracker/result-parser.ts",
+   "line": 219,
+   "excerpt_start_line": 219
+  },
+  "filename": "result-parser.ts",
+  "code": "    while ((dm = lineRegex.exec(sections[i + 1])) !== null) {\n",
+  "must_not_fire": [
+   "KISA-JS-INPUT-05"
+  ],
+  "must_fire": [],
+  "why": "`lineRegex.exec(...)` — 변수명이 정규식임을 말한다",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "cheerio-html-getter",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "app/api/law-html/route.ts",
+   "line": 134,
+   "excerpt_start_line": 134
+  },
+  "filename": "route.ts",
+  "code": "  return $(\"body\").html() || $.root().html() || fragmentHtml\n",
+  "must_not_fire": [
+   "KISA-JS-INPUT-04"
+  ],
+  "must_fire": [],
+  "why": "`$(\"body\").html()` — 인자가 없으면 읽기(getter)",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "admin-reset-with-role-guard",
+  "origin": {
+   "repo": "https://github.com/yonghwan86/noti.kpetro",
+   "commit": "ccebad1",
+   "path": "server/routes.ts",
+   "line": 344,
+   "excerpt_start_line": 341
+  },
+  "filename": "routes.ts",
+  "code": "    }\n  });\n\n  app.post(\"/api/users/:id/reset-password\", requireAuth(['admin']), async (req: Request, res: Response) => {\n    try {\n      const { resetUserPassword } = await import(\"./emailAuth\");\n      const updated = await resetUserPassword(req.params.id);\n",
+  "must_not_fire": [
+   "KISA-JS-SEC-01"
+  ],
+  "must_fire": [],
+  "why": "`requireAuth(['admin'])` — 관리자가 남의 비밀번호를 초기화하는 경로",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "sanitize-next-line",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "components/virtualized-full-article-view.tsx",
+   "line": 500,
+   "excerpt_start_line": 497
+  },
+  "filename": "virtualized-full-article-view.tsx",
+  "code": "                      lineHeight: \"1.7\",\n                    }}\n                    onClick={stableContentClick}\n                    dangerouslySetInnerHTML={{\n                      __html: sanitizeForRender(\n                        (item.article.content || '')\n                          .replace(/<br\\\\>/g, '<br />')  // <br\\> → <br />\n",
+  "must_not_fire": [
+   "KISA-JS-INPUT-04"
+  ],
+  "must_fire": [],
+  "why": "정화 호출이 **다음 줄**에 있는 다줄 JSX — 줄 단위 전방탐색으로는 못 본다",
+  "must_not_block": [],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "style-element-css",
+  "origin": {
+   "repo": "https://github.com/yonghwan86/noti.kpetro",
+   "commit": "ccebad1",
+   "path": "client/src/components/ui/chart.tsx",
+   "line": 79,
+   "excerpt_start_line": 73
+  },
+  "filename": "chart.tsx",
+  "code": "  if (!colorConfig.length) {\n    return null\n  }\n\n  return (\n    <style\n      dangerouslySetInnerHTML={{\n        __html: Object.entries(THEMES)\n          .map(\n            ([theme, prefix]) => `\n${prefix} [data-chart=${id}] {\n${colorConfig\n  .map(([key, itemConfig]) => {\n",
+  "must_not_fire": [],
+  "must_fire": [
+   "KISA-JS-INPUT-04"
+  ],
+  "why": "`<style dangerouslySetInnerHTML>` — 주입되는 것이 HTML 이 아니라 CSS",
+  "must_not_block": [
+   "KISA-JS-INPUT-04"
+  ],
+  "must_block": [],
+  "was_blocked_before_fix": true
+ },
+ {
+  "id": "real-unsanitized-innerhtml",
+  "origin": {
+   "repo": "https://github.com/chrisryugj/lexdiff",
+   "commit": "459db89",
+   "path": "components/virtualized-full-article-view.tsx",
+   "line": 50,
+   "excerpt_start_line": 45
+  },
+  "filename": "virtualized-full-article-view.tsx",
+  "code": "}) {\n  const html = useMemo(\n    () => getCachedArticleHtml(article, lawTitle),\n    [article.jo, article.content, lawTitle]\n  )\n  return <div onClick={onContentClick} dangerouslySetInnerHTML={{ __html: html }} />\n})\n\ninterface VirtualizedFullArticleViewProps {\n  articles: LawArticle[]\n  preambles: Array<{ content: string }>\n",
+  "must_not_fire": [],
+  "must_fire": [
+   "KISA-JS-INPUT-04"
+  ],
+  "why": "개발자가 **의도적으로 정화를 껐다**(주석에 명시). 감쇄가 이걸 지우면 안 된다",
+  "must_not_block": [],
+  "must_block": [
+   "KISA-JS-INPUT-04"
+  ],
+  "was_blocked_before_fix": true
+ }
+]

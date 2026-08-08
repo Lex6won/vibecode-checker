@@ -961,6 +961,34 @@ def _autopull_status_safe() -> dict:
 
 
 # Lightweight subset for MCP server_status — no network probes, never raises.
+def _ruleset_status_safe() -> dict:
+    """룰셋 버전·지문·드리프트 — 진단이 스캔이나 상태 조회를 막지 않게 감싼다.
+
+    ``expected`` 는 소비자가 `GVSKB_EXPECT_RULESET` 로 고정한 값이고,
+    ``pin_ok`` 는 실제와 맞는지다. 게이트를 붙인 쪽이 이 두 값만 보면
+    "내가 기준으로 잡은 룰셋으로 판정되고 있는가"에 바로 답할 수 있다.
+    """
+    try:
+        from . import ruleset as _ruleset
+        from .loader import load_all_rules
+        rules_dir, _ = _resolve_rules_dir()
+        verdict = _ruleset.verify_lock(load_all_rules(rules_dir), rules_dir)
+        expected = _ruleset.expected_from_env()
+        return {
+            "version": verdict["version"],
+            "digest": verdict["actual"],
+            "status": verdict["status"],
+            "rule_count": verdict["rule_count"],
+            "message": verdict["message"],
+            "expected": expected,
+            "pin_ok": _ruleset.pin_mismatch(verdict["version"], verdict["actual"]) is None,
+        }
+    except Exception as exc:  # pragma: no cover - 방어
+        return {"version": None, "digest": None, "status": "unavailable",
+                "rule_count": None, "message": f"룰셋 신원 확인 실패: {exc!s}",
+                "expected": None, "pin_ok": None}
+
+
 def runtime_status_for_mcp() -> dict:
     rules_dir, src = _resolve_rules_dir()
     mode = os.environ.get("GVSKB_MODE", "").lower()
@@ -976,6 +1004,10 @@ def runtime_status_for_mcp() -> dict:
         # 디스크가 아니라 **이 프로세스**가 최신인지. commit_id 만 보면 머지 뒤에도
         # 옛 룰로 돌고 있는 서버가 "최신"으로 보인다 — 반드시 함께 읽으세요.
         "runtime_freshness": freshness,
+        # 룰셋 신원 — 게이트 재현성. 연동 상대가 "우리가 기준으로 잡은 룰셋과
+        # 같은가"를 물을 수 있어야 한다. commit_id 로는 부족하다: 같은 커밋에서도
+        # GVSKB_RULES_DIR 로 다른 룰셋을 물릴 수 있기 때문이다.
+        "ruleset": _ruleset_status_safe(),
         "mcp_tools": inventory["tools"],
         "missing_tools": inventory["missing_tools"],
         "unlisted_tools": inventory["unlisted_tools"],
