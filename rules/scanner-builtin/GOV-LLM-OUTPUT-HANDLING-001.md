@@ -12,14 +12,29 @@ cwe: [CWE-79, CWE-94]
 severity: high
 decision_default: block
 domains: [llm-appsec]
-languages: [python, javascript, java]
+# typescript 누락은 적대적 검증(2026-08-08)에서 드러났다 — `.ts`/`.tsx` 는 언어가
+# typescript 로 추론되고, 언어 필터가 목록에 없는 언어를 걸러 내므로 이 룰이
+# **한 번도 돌지 않았다**. LLM 을 붙이는 웹앱은 대부분 Next.js/React = TypeScript 다.
+# 같은 계열의 KISA-JS-* 룰들은 모두 [javascript, typescript] 인데 여기만 달랐다.
+languages: [python, javascript, typescript, java]
 scenarios: [llm-integration, rag, agent, web-app]
 related_baseline: [OWASP-LLM-2025-01]
 verified_at: 2026-05-31
 review_due: 2026-08-31
 detection:
   patterns:
-    - "(?i)((llm|response|completion|model_output).*(execute|exec|eval|os\\.system|innerHTML|dangerouslySetInnerHTML)|(execute|exec|eval|os\\.system|innerHTML|dangerouslySetInnerHTML).*(llm|response|completion|model_output))"
+    # 실행 토큰(sink)에 **식별자 경계**를 건다. 실측(2026-08-08) 오탐 14건이
+    # 전부 `evaluate`·`evaluator` 안의 `eval` 이었다 — 예외 없이 하나의 원인.
+    #   · 왼쪽 `(?<![A-Za-z0-9])` : `retrieval` 속 eval 을 막는다
+    #   · 오른쪽 `(?!(?-i:[a-z]))`: `evaluate`/`execution`/`executed` 를 막는다.
+    #     `(?-i:)` 로 대소문자 구분을 되살리는 것이 핵심 — (?i) 아래서는 [a-z] 가
+    #     대문자까지 잡아 `executeTool(llmResponse)`(에이전트 도구 실행, ASI05)
+    #     같은 **진짜 위험**까지 함께 죽는다.
+    # 트리거 토큰(llm|response|…) 쪽에는 경계를 걸지 않는다. 실측 오탐이 그쪽에서
+    # 나온 적이 없고, `\b` 를 걸면 `llmResponse`·`llm_response`(이 룰의 positive
+    # 예시)가 통째로 미탐이 된다. 근거가 요구하는 곳만 좁힌다.
+    # `.*` → `.{0,120}`: 한 줄에 토큰이 181자 떨어져 있던 산문 JSON 이 실제로 걸렸다.
+    - "(?i)(?:(?:llm|response|completion|model_output).{0,120}(?<![A-Za-z0-9])(?:execute|exec|eval|os\\.system|innerHTML|dangerouslySetInnerHTML)(?!(?-i:[a-z]))|(?<![A-Za-z0-9])(?:execute|exec|eval|os\\.system|innerHTML|dangerouslySetInnerHTML)(?!(?-i:[a-z])).{0,120}(?:llm|response|completion|model_output))"
   category: llm-appsec
   why_it_matters: 공격자가 prompt injection으로 AI 응답을 조작하면 SQL, shell, HTML, 스크립트가 실행될 수 있습니다.
   public_sector_impact:

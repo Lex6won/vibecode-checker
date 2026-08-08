@@ -29,7 +29,7 @@ _FLAG_NAMES = {
 _EXT_TO_LANG = {
     ".py": "python", ".pyw": "python",
     ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
-    ".ts": "typescript", ".tsx": "typescript",
+    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
     ".java": "java", ".kt": "kotlin", ".scala": "scala",
     ".go": "go", ".rs": "rust",
     ".rb": "ruby", ".php": "php",
@@ -154,6 +154,9 @@ def _comment_lines(code: str, eff_lang: str | None, filename: str) -> set[int]:
     trailing comments — under-skipping is safer than hiding a real finding that
     shares a line with code. Mirrors the Python docstring/``#`` handling.
     """
+    # `.mts`/`.cts` 를 여기 더하지 않는 이유: _EXT_TO_LANG 이 이미 typescript 로
+    # 추론하므로 앞 조건에서 걸린다. 더해도 도달하지 않는 죽은 코드가 되고,
+    # 변이검사로 검증할 수 없는 줄은 다음 사람에게 '검증된 것'처럼 보인다.
     is_js = eff_lang in _JS_LANGS or filename.endswith(
         (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte"))
     is_html = eff_lang in {"html", "xml"} or filename.endswith((".html", ".htm", ".xml"))

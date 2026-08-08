@@ -262,6 +262,10 @@ def scan_code(
     findings = apply_profile(findings, profile_spec)
     # 프로파일 뒤에 감쇄한다 — 프로파일의 decision 상향이 감쇄를 되돌리지 못하게.
     findings = attenuate_test_path_findings(findings, filename)
+    # HTML sink 의 문맥(정화 헬퍼 경유 · <style> CSS)도 같은 원칙으로 낮춘다 —
+    # 삭제가 아니라 감쇄다. 판단이 틀렸을 때 위험이 사라지면 안 된다.
+    from .scanners.html_sink_context import attenuate_html_sink_findings
+    findings = attenuate_html_sink_findings(findings, code, filename)
     if collapse_duplicates:
         findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)
@@ -298,7 +302,10 @@ def scan_file(path: str | Path, *, language: str | None = None, scenario: str | 
 
 DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".py", ".pyw",
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    # .mts/.cts 는 TypeScript 의 ESM/CJS 명시 확장자다. 실측(lexdiff)에서 이 두
+    # 확장자가 목록에 없어 2,271줄과 외부 연결 11건(국외 5건 포함)이 '검사조차
+    # 되지 않았다' — 발견 0이 안전으로 읽히는 가장 위험한 종류의 미탐이었다.
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
     ".java", ".kt", ".scala",
     ".go", ".rs",
     ".rb", ".php",
@@ -343,24 +350,52 @@ _SECRET_VALUE_RE = re.compile(
 )
 _HEXLIKE_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
 
+# 경로처럼 보이는 값 — 실측(2026-08-08) `BACKOFF_FILE="/tmp/claude-token-refresh-backoff"`
+# 가 '32자 이상 무작위 값'으로 잡혔다. `/` 는 base64 알파벳이기도 해서 값 문자만
+# 보면 구별되지 않는다. 경로는 **머리 모양**으로 갈린다: `/`·`./`·`../`·`~/`·`C:\`.
+# base64 는 보통 `+` 나 `=` 를 동반하므로, 그 둘이 있으면 경로로 보지 않는다.
+_PATHLIKE_RE = re.compile(r"^(?:~|\.{1,2})?/|^[A-Za-z]:[\\/]")
 
-def _looks_like_secret_material(text: str) -> tuple[bool, str]:
-    """비밀 파일 내용이 '자격증명 값'으로 보이는가 → (판정, 근거 줄).
+# 이름이 **공개 식별자**임을 말하는 키 — 값이 무작위해 보여도 비밀이 아니다.
+# 실측: OAuth `CLIENT_ID="9d1c250a-…"`(UUID). client_id 는 브라우저 URL 에
+# 그대로 실려 나가는 공개값이다. `CLIENT_SECRET` 은 여기에 들지 않는다(끝의
+# `(?!...SECRET)` 가 아니라, 키 전체가 이 목록과 정확히 맞아야 한다).
+_PUBLIC_ID_KEY_RE = re.compile(
+    r"(?:^|[._-])(?:client[._-]?id|tenant[._-]?id|app[._-]?id|application[._-]?id|"
+    r"project[._-]?id|account[._-]?id|issuer|audience|"
+    r"\w*(?:file|path|dir|home|url|uri|endpoint))$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_secret_material(text: str) -> tuple[bool, int, str]:
+    """비밀 파일 내용이 '자격증명 값'으로 보이는가 → (판정, 줄번호, 근거 줄).
 
     파일명이 비밀을 뜻하는데 **내용이 긴 무작위 값 한 덩어리**면 그 값은 대개
     세션 서명키·API 키다. 주석·안내문만 있는 파일(예: "패스워드 없는 형태의
     인증서 파일입니다")은 제외해야 하므로 실제 값 형태만 본다.
+
+    줄번호를 함께 돌려준다 — 이전에는 호출부가 ``line_no=1`` 을 박아서, 담당자가
+    보고서를 보고 1행을 열면 아무것도 없었다. 근거 줄은 보여주면서 위치는 거짓인
+    상태였고, 그러면 그 발견은 확인 자체가 되지 않는다.
     """
-    for raw in text.splitlines()[:40]:      # 앞부분만 — 대용량 파일 방어
+    for line_no, raw in enumerate(text.splitlines()[:40], start=1):   # 앞부분만
         line = raw.strip().strip("\"'")
         if not line or line.startswith(("#", "//", ";", "--")):
             continue
-        # key=value 형태면 값 부분만 본다.
-        if "=" in line and len(line.split("=", 1)[1].strip()) >= 32:
-            line = line.split("=", 1)[1].strip().strip("\"'")
+        # key=value 형태면 값 부분만 본다. 키 이름이 공개 식별자를 뜻하면 건너뛴다.
+        if "=" in line:
+            key, _, rest = line.partition("=")
+            value = rest.strip().strip("\"'")
+            if len(value) >= 32:
+                if _PUBLIC_ID_KEY_RE.search(key.strip()):
+                    continue
+                line = value
+        if _PATHLIKE_RE.match(line) and not any(c in line for c in "+="):
+            continue
         if _HEXLIKE_RE.match(line) or _SECRET_VALUE_RE.match(line):
-            return True, raw
-    return False, ""
+            return True, line_no, raw
+    return False, 0, ""
 
 # 의존성 매니페스트/락파일 — regex 스캔으로는 취약 버전이 잡히지 않으므로
 # SCA(check-package / scan_dependencies)로 보내야 한다. 디렉터리 스캔 중
@@ -441,7 +476,12 @@ _MINIFIED_MAX_LINE = 2000   # 한 줄이 이 길이를 넘으면 사람이 읽�
 _MINIFIED_AVG_LINE = 400    # 평균 줄 길이가 이만큼 큰 다줄 번들도 미니파이드로 본다
 _MINIFIED_MIN_BYTES = 1000  # 너무 짧은 파일은 판정 제외(정상적인 한 줄 파일 보호)
 
-DEFAULT_MAX_FILES = 500
+# 소스 파일 상한 — 실측(lexdiff)에서 568개 저장소가 500에서 잘려 70개가
+# 검사되지 않았다. 걸린 시간은 전수 22초로, 아낀 2초와 맞바꾼 사각지대였다.
+# 500은 "빠르게 끝내기" 위한 값이었지만 이 도구의 목적은 **빠짐없이 보는 것**이다.
+# 20,000은 정상 저장소가 도달할 수 없는 값이면서(공공 프로젝트 실측 최대 수천),
+# 잘못 지정한 경로(예: 사용자 홈)에서 무한정 도는 것은 막는 안전판이다.
+DEFAULT_MAX_FILES = 20_000
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 
@@ -583,6 +623,7 @@ def scan_path(
         )
 
     files_to_scan: list[Path] = []
+    over_limit_count = 0        # 상한 초과로 검사되지 않은 '검사 대상' 파일 수
     is_dir = root.is_dir()
 
     if root.is_file():
@@ -611,7 +652,13 @@ def scan_path(
             dirnames[:] = kept_dirs
             for name in filenames:
                 if len(files_to_scan) >= max_files:
-                    break
+                    # 상한 도달 뒤에도 **세는 것은 계속한다** — 이전에는 즉시
+                    # break 해서, 잘려나간 70개 파일이 리포트에 '1건'으로만
+                    # 보였다(파일 목록도 순회 비용도 read 가 아니라 거의 공짜다).
+                    # 몇 개를 못 봤는지 모르면 사용자는 절단을 절단으로 못 읽는다.
+                    if Path(name).suffix.lower() in inc:
+                        over_limit_count += 1
+                    continue
                 p = Path(dirpath) / name
                 if name.lower() in _DEP_MANIFEST_NAMES:
                     skipped.append(SkippedFile(
@@ -666,9 +713,18 @@ def scan_path(
                 if size == 0:
                     continue
                 files_to_scan.append(p)
-            if len(files_to_scan) >= max_files:
-                skipped.append(SkippedFile(path=str(root), reason=f"max_files={max_files} reached"))
-                break
+            # 여기서 break 하지 않는다 — 남은 디렉터리도 끝까지 걸어야
+            # over_limit_count 가 실제 미검사 건수가 된다. os.walk 는 파일을
+            # 열지 않으므로 추가 비용은 디렉터리 목록 읽기뿐이다.
+
+    if over_limit_count:
+        skipped.append(SkippedFile(
+            path=str(root),
+            reason=(
+                f"max_files={max_files} reached — {over_limit_count}개 파일이 "
+                f"검사되지 않았습니다"
+            ),
+        ))
 
     all_findings: list[Finding] = []
     scanned: list[str] = []
@@ -719,12 +775,12 @@ def scan_path(
         # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
         # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
         if _is_secret_filename(f.name):
-            hit, evidence_line = _looks_like_secret_material(text)
+            hit, evidence_no, evidence_line = _looks_like_secret_material(text)
             if hit:
                 keyfile_rule = lookup_rule("GOV-SECRET-KEYFILE-001")
                 if keyfile_rule is not None:
                     all_findings.append(build_finding(
-                        keyfile_rule, filename=rel, line_no=1,
+                        keyfile_rule, filename=rel, line_no=evidence_no,
                         evidence=_redact_evidence(evidence_line),
                         engine="secret-file",
                     ))
