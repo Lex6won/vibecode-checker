@@ -373,6 +373,9 @@ def scan_code(
     # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
     # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
     findings = attenuate_prohibition_prose_findings(findings, code)
+    # 자원을 만들어 **호출자에게 넘기는** 함수에는 with 를 요구할 수 없다.
+    from .scanners.resource_owner import attenuate_returned_resource_findings
+    findings = attenuate_returned_resource_findings(findings, code, filename)
     if collapse_duplicates:
         findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)
