@@ -101,8 +101,13 @@ def _emit_doc_report(
     파일 저장(-o) 시에는 비전공 사용자가 바로 열어볼 수 있도록 항상 .md 와 .html
     을 함께 만든다. stdout 출력일 때만 선택한 형식 하나를 낸다.
     """
-    md = render_markdown(report, reproduce_command=reproduce_command)
-    html_doc = render_html(report, reproduce_command=reproduce_command)
+    # 저장할 때는 **저장될 경로를 문서 안에 새긴다.** stderr 한 줄은 놓치기 쉽고,
+    # 파일만 전달받은 사람은 원본이 어디 있는지 알 방법이 없다. 화면으로만
+    # 흘려보내는 경우(`--stdout`)에는 저장 경로가 없으므로 적지 않는다.
+    saved_md = str(Path(output).with_suffix(".md")) if output else None
+
+    md = render_markdown(report, reproduce_command=reproduce_command, saved_path=saved_md)
+    html_doc = render_html(report, reproduce_command=reproduce_command, saved_path=saved_md)
 
     if not output:
         text = html_doc if fmt == "html" else md
