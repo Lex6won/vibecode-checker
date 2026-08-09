@@ -329,6 +329,68 @@ async def scan_dependencies(
 
 
 @_tool()
+async def scan_sbom(
+    sbom_text: Annotated[
+        str,
+        Field(description="SBOM 파일 원문. CycloneDX JSON 또는 SPDX JSON "
+                          "(XML·tag-value 형식은 지원하지 않습니다)"),
+    ],
+    limit: Annotated[int, Field(description="검사할 최대 컴포넌트 수(기본 2000). 초과분은 truncated_count 로 표시")] = 2000,
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고. 감사 구분용")] = None,
+) -> dict:
+    """건네받은 **SBOM** 의 컴포넌트를 검사합니다 — 소스 코드가 없어도 됩니다.
+
+    조달·협력사가 SBOM 만 제출하는 경우, 또는 빌드 파이프라인이 이미 SBOM 을
+    만들어 두는 경우에 씁니다. `scan_dependencies` 가 매니페스트/락파일을 받는
+    것과 짝입니다.
+
+    **읽지 못한 컴포넌트는 버리지 않고 ``skipped`` 에 사유와 함께 돌려줍니다.**
+    purl 이 없거나 버전이 `NOASSERTION` 이면 취약점 판정이 불가능한데, 조용히
+    빼면 받는 쪽은 "그 컴포넌트는 안전하다"로 읽습니다 — 없는 것과 안 본 것은
+    다릅니다. ``truncated_count`` > 0 도 같은 뜻이니 limit 를 올려 재검사하세요.
+
+    반대 방향(우리 검사 결과를 SBOM 으로 **내보내기**)은 CLI 의
+    `gvskb scan --check-deps --sbom <경로>` 입니다.
+    """
+    from .sbom import SbomParseError, parse_sbom
+    from .tools.check_package import check_package_impl
+
+    try:
+        parsed = parse_sbom(sbom_text)
+    except SbomParseError as exc:
+        # 사용자가 고칠 수 없는 것을 고치라고 하지 않는다 — 무엇이 왜 안 되는지 말한다.
+        return {"error": "SBOM 을 읽지 못했습니다", "detail": str(exc)}
+
+    pkgs = parsed["packages"][:limit]
+    truncated = max(0, len(parsed["packages"]) - len(pkgs))
+    checks = [await check_package_impl(p["name"], version=p["version"],
+                                       ecosystem=p["ecosystem"]) for p in pkgs]
+    vuln = [c for c in checks if c.get("verdict") in ("vulnerable", "malicious")]
+    unchecked = [c for c in checks if not c.get("checked")]
+
+    caller = safe_caller(caller or "")
+    record_package_check(checks, tool="scan_sbom", caller=caller, scope="lockfile",
+                         summary={"checks": checks})
+    return {
+        "format": parsed["format"],
+        "spec_version": parsed["spec_version"],
+        "parsed_count": len(parsed["packages"]),
+        "checked_count": len(checks),
+        "vulnerable_count": len(vuln),
+        "unchecked_count": len(unchecked),
+        "truncated_count": truncated,
+        # 읽지 못한 컴포넌트 — '안전'이 아니라 '보지 못함'이다.
+        "skipped": parsed["skipped"],
+        "blocked": bool(vuln),
+        "checks": checks,
+        "disclaimer": (
+            "판정 불가·읽지 못한 컴포넌트는 '안전'을 뜻하지 않습니다. "
+            "SBOM 이 실제 배포물과 일치하는지는 이 도구가 확인하지 못합니다."
+        ),
+    }
+
+
+@_tool()
 async def scan_vendor_bundles(
     vendor_bundles: Annotated[
         list[dict],

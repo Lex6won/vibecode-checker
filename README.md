@@ -11,7 +11,7 @@
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-1191_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-1302_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-219개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -468,6 +468,22 @@ gvskb scan ./src --fail-on never        # 항상 0 (리포트만)
 꺼집니다.** `--fail-on dependency` 로 시작해 신뢰가 쌓인 뒤 `block` 으로 올리세요.
 결과 JSON·MCP 응답에는 `blocked_source` · `blocked_dependency` 가 따로 들어 있어
 직접 정책을 짤 수도 있습니다.
+
+#### SBOM — 만들기와 읽기
+
+공공 조달이 SBOM 제출을 요구하면 검사 결과를 그대로 내보낼 수 있습니다.
+
+```bash
+# 만들기 — 검사하면서 CycloneDX 1.6 저장 (--check-deps 와 함께)
+gvskb scan . --check-deps --sbom sbom.json
+
+# 읽기 — 건네받은 SBOM 을 검사 (소스 없이 컴포넌트만 있어도 됩니다)
+gvskb sbom vendor-sbom.json          # CycloneDX JSON · SPDX JSON
+```
+
+**판정하지 못한 것을 빼지 않습니다.** 조회 실패한 컴포넌트도 SBOM 에 싣고 사유를
+남기며, 읽지 못한 항목은 `skipped` 로 돌려줍니다 — 빠지면 "그 패키지는 안전하다"로
+읽히기 때문입니다. 엔진 버전과 룰셋 버전도 문서에 함께 각인됩니다.
 
 #### 판정을 재현하려면 룰셋을 고정하세요
 

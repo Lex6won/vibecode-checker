@@ -244,6 +244,7 @@ MCP_TOOL_MANIFEST: tuple[str, ...] = (
     "scan_dependencies",
     "scan_installed_packages",
     "scan_path",
+    "scan_sbom",
     "scan_vendor_bundles",
     "search_rules",
     "server_status",
