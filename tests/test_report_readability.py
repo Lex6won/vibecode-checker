@@ -205,7 +205,7 @@ def test_severity_table_splits_source_and_dependency_columns() -> None:
 def test_total_action_items_line_sums_source_and_packages() -> None:
     md = render_markdown(_report_with_deps())
     assert "총 조치 대상: 8건" in md       # 소스 6 + 패키지 2
-    assert "소스 코드 6건 · 패키지 2건" in md
+    assert "소스 코드 6건 · 패키지 2종" in md
     html = render_html(_report_with_deps())
     assert "총 조치 대상 8건" in html
 
@@ -404,7 +404,7 @@ def test_dependency_fix_prompt_lists_packages_and_reasons() -> None:
 def test_dependency_fix_prompt_rendered_in_both_formats_with_warning() -> None:
     report = _report_with_deps()
     for doc in (render_markdown(report), render_html(report)):
-        assert "취약·위험 패키지 2건" in doc
+        assert "취약·위험 패키지 2종" in doc
         assert "패키지를 빠뜨리지 마세요" in doc          # 조건부 승인 문구
         assert "패키지 블록을 빠뜨리지 마세요" not in doc   # 차단 문구는 안 나온다
 

@@ -61,7 +61,7 @@ def test_render_markdown_redacts_evidence(tmp_path: Path) -> None:
     # 보고서에 남는다. 표식을 바꿀 때마다 테스트를 고치면 테스트가 계약이 아니다.
     assert MASK_MARK in md
     assert "민감값 일부 가림" in md, "가렸다는 사실이 보고서에 없다"
-    assert "유출본을 한 벌 더" in md, "왜 가렸는지 담당자가 알 수 없다"
+    assert "또 하나의 유출 경로" in md, "왜 가렸는지 담당자가 알 수 없다"
 
 
 # ---------------------------------------------------------------------------
