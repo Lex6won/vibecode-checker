@@ -39,6 +39,7 @@ from .scanners.regex_scanner import (
 )
 from .scanners.semgrep_scanner import SemgrepScanner
 from .schema import (
+    EXPOSURE_CATEGORIES,
     Decision,
     ExternalConnection,
     Finding,
@@ -83,7 +84,11 @@ _TEST_FILE_RE = re.compile(
 
 # 값의 진위가 판정을 좌우하는 계열만 감쇄한다. 주입·XSS 같은 *코드 모양* 룰은
 # 테스트 코드에서도 그대로 둔다 — 모양이 잘못된 건 어디서든 잘못된 것이다.
-_VALUE_BASED_CATEGORIES = {"secret-scanning", "privacy-public-sector"}
+#
+# 목록을 여기 다시 적지 않는다(schema.EXPOSURE_CATEGORIES 참조). 예전에는
+# 같은 집합이 regex_scanner 에도 따로 적혀 있었고 둘 다 public-sector-internal
+# 이 빠져 있어, 테스트 픽스처의 사설 IP 48건이 차단으로 올라왔다.
+_VALUE_BASED_CATEGORIES = EXPOSURE_CATEGORIES
 
 _TEST_PATH_REASON = "테스트 코드 경로 — 값이 실제 자격증명·개인정보가 아닐 가능성이 높음"
 
@@ -116,6 +121,70 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
             "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
             "requires_approval_to_bypass": False,
             "severity_adjusted": f"{finding.severity.value} → low · {_TEST_PATH_REASON}",
+        }))
+    return adjusted
+
+
+#: "이렇게 하지 마세요"라고 **말하는** 줄. 보안 가이드·룰 설명·체크리스트·
+#: 인수인계 문서는 자기가 금지한 토큰을 문장 안에 그대로 담는다.
+#:
+#: 실측(2026-08-09, 사용자 제보): 룰 파일에 새로 쓴
+#: ``description: LLM 응답을 그대로 실행(execute)하지 말고 검증하세요`` 가
+#: **'LLM 출력 실행 위험'으로 차단**됐다. 도구가 자기가 하라고 쓴 문장을
+#: 막은 것이다. 제보자는 그 문장을 구조화 필드로 바꿔 없앴다 —
+#: **도구가 문서를 고치게 만든 것이 이 결함의 진짜 피해다.**
+_PROHIBITION_RE = re.compile(
+    r"(?i)("
+    r"하지\s*(?:말|마)|말\s*것|말고|금지|삼가|피하세요|피할\s*것|않도록|"
+    r"안\s*됩니다|안\s*된다|위험합니다|주의하세요|대신\s|권장하지|"
+    # 영문 토큰은 `\s` 가 아니라 `\b` 로 끊는다. `avoid\s` 로 두었더니
+    # 줄 **끝**에 온 `// avoid` 가 매치되지 않아, 같은 모양이 뒤 공백
+    # 유무로 다르게 판정됐다(적대적 검증에서 검출).
+    r"must\s+not|should\s+not|do\s+not|don't|never\b|avoid\b|"
+    r"forbidden|prohibited|deprecated|instead\s+of"
+    r")"
+)
+
+_PROHIBITION_REASON = (
+    "금지·주의 문구가 있는 안내문으로 보임 — 실행되는 코드가 아니라 "
+    "'이렇게 하지 말라'는 설명일 가능성이 높음"
+)
+
+
+def attenuate_prohibition_prose_findings(
+    findings: list[Finding], code: str,
+) -> list[Finding]:
+    """금지 문구가 같은 줄에 있는 **실행 위험** 발견을 low·warn 으로 낮춘다.
+
+    **삭제하지 않고 낮춘다.** 안내문처럼 보인다는 것은 확률이지 확신이 아니다.
+    ``os.system(cmd)  # 하지 말 것`` 처럼 진짜 코드에 반성문이 달린 경우가
+    있고, 그걸 조용히 지우면 놓친 사실이 아무 데도 남지 않는다.
+
+    **노출 위험(비밀값·개인정보·내부망)에는 적용하지 않는다.** "비밀번호를
+    하드코딩하지 마세요: password = hunter2" 라고 써 두면, 하지 말라고 적혀
+    있어도 비밀번호는 그대로 노출돼 있다. 의도가 위험을 지우지 못한다.
+
+    룰 파일 8개에 같은 제외 패턴을 흩뿌리지 않고 여기 한 곳에 둔다 — 같은
+    목록을 여러 곳에 적으면 언젠가 어긋난다(이 프로젝트가 세 번 겪었다).
+    """
+    lines = code.splitlines()
+    adjusted: list[Finding] = []
+    for finding in findings:
+        line_no = finding.location.line
+        if (
+            finding.category in EXPOSURE_CATEGORIES
+            or finding.severity == Severity.low
+            or not line_no
+            or line_no > len(lines)
+            or not _PROHIBITION_RE.search(lines[line_no - 1])
+        ):
+            adjusted.append(finding)
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_PROHIBITION_REASON}",
         }))
     return adjusted
 
@@ -301,6 +370,9 @@ def scan_code(
     # 삭제가 아니라 감쇄다. 판단이 틀렸을 때 위험이 사라지면 안 된다.
     from .scanners.html_sink_context import attenuate_html_sink_findings
     findings = attenuate_html_sink_findings(findings, code, filename)
+    # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
+    # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
+    findings = attenuate_prohibition_prose_findings(findings, code)
     if collapse_duplicates:
         findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)

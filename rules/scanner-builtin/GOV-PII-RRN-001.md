@@ -13,7 +13,12 @@ sources:
 severity: critical
 decision_default: block
 domains: [privacy-public-sector]
-languages: [python, javascript, java, sql]
+# 언어를 제한하지 않는다. 노출 위험은 **언어를 가리지 않는다** — 주민등록번호는
+# Go 로 적으나 Rust 로 적으나 주민등록번호다. 예전에는 여기에 목록이 있었고,
+# 그 목록에 typescript 가 없어 `.ts`/`.tsx` 에서 이 룰이 **한 번도 돌지 않았다**
+# (실측 2026-08-09). 공공 웹앱의 주력이 TypeScript 다. GOV-PII-PHONE-001 에서
+# 같은 구멍을 고쳤는데 형제 룰 셋에 그대로 남아 있었다.
+languages: []
 scenarios: [data-pipeline, llm-integration, web-app, agent]
 related_baseline: [OWASP-LLM-2025-02, MOIS-49-SW-17]
 verified_at: 2026-05-31

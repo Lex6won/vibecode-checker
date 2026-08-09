@@ -13,7 +13,12 @@ sources:
 severity: critical
 decision_default: block
 domains: [secret-scanning]
-languages: [python, javascript, java, yaml, toml]
+# 언어를 제한하지 않는다. 노출 위험은 **언어를 가리지 않는다** — 주민등록번호는
+# Go 로 적으나 Rust 로 적으나 주민등록번호다. 예전에는 여기에 목록이 있었고,
+# 그 목록에 typescript 가 없어 `.ts`/`.tsx` 에서 이 룰이 **한 번도 돌지 않았다**
+# (실측 2026-08-09). 공공 웹앱의 주력이 TypeScript 다. GOV-PII-PHONE-001 에서
+# 같은 구멍을 고쳤는데 형제 룰 셋에 그대로 남아 있었다.
+languages: []
 scenarios: [llm-integration, web-app, data-pipeline, agent]
 related_baseline: [OWASP-LLM-2025-02]
 verified_at: 2026-05-31
@@ -119,6 +124,10 @@ detection:
     - 'SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}'
     # PEM 개인키 블록 — 파일 확장자와 무관하게 소스 안에 붙여 넣은 경우
     - '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+  # 값이 키 이름 그 자체면 변수 참조지 비밀값이 아니다 — TypeScript 로 룰을
+  # 열자 객체 리터럴 `access_token: accessToken` 이 차단으로 올라왔다.
+  # 실제 비밀값이 자기 키 이름과 같을 수는 없어 진짜를 가릴 위험이 없다.
+  validators: [not_self_named_value]
   category: secret-scanning
   why_it_matters: 키가 저장소나 LLM 프롬프트에 노출되면 행정시스템, 클라우드, 외부 API가 탈취될 수 있습니다.
   public_sector_impact:

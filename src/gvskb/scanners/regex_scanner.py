@@ -16,7 +16,15 @@ from importlib import resources
 from pathlib import Path
 
 from ..loader import load_all_rules
-from ..schema import CodeLocation, Decision, Finding, Rule, Severity, Status
+from ..schema import (
+    EXPOSURE_CATEGORIES,
+    CodeLocation,
+    Decision,
+    Finding,
+    Rule,
+    Severity,
+    Status,
+)
 from .base import ScannerAdapter
 
 _FLAG_NAMES = {
@@ -46,15 +54,16 @@ _EXT_TO_LANG = {
 # are skipped for *all* rules — EXCEPT these categories, whose whole purpose is
 # to find secrets/credentials written *inside* comments (e.g. KISA-PY-SEC-13
 # "주석문 안에 포함된 시스템 주요정보", hardcoded keys). Those keep matching.
-_COMMENT_SKIP_EXEMPT_CATEGORIES = {
-    "secret-scanning",
-    # 개인정보도 같은 이유로 예외다(실측 2026-08-08). `# 테스트 대상자
-    # 900101-1234567` 이 주석이라는 이유로 통째로 빠져 있었다 — 주석에 적힌
-    # 주민등록번호는 **여전히 개인정보 유출**이고, 커밋되면 이력에 영구히 남는다.
-    # "주석은 살아있는 코드가 아니다"는 *실행 위험*에는 맞지만 *노출 위험*에는
-    # 맞지 않는다. 두 위험을 한 규칙으로 다루던 것이 문제였다.
-    "privacy-public-sector",
-}
+#
+# 개인정보도 같은 이유로 예외다(실측 2026-08-08). `# 테스트 대상자
+# 900101-1234567` 이 주석이라는 이유로 통째로 빠져 있었다 — 주석에 적힌
+# 주민등록번호는 **여전히 개인정보 유출**이고, 커밋되면 이력에 영구히 남는다.
+# "주석은 살아있는 코드가 아니다"는 *실행 위험*에는 맞지만 *노출 위험*에는
+# 맞지 않는다. 두 위험을 한 규칙으로 다루던 것이 문제였다.
+#
+# 목록을 여기 다시 적지 않는다 — 같은 집합을 scanner.py 에도 따로 적어 두었다가
+# 양쪽 모두 public-sector-internal 이 빠진 채로 남았다(실측 2026-08-09).
+_COMMENT_SKIP_EXEMPT_CATEGORIES = EXPOSURE_CATEGORIES
 
 _IGNORE_RE = re.compile(r"gvskb:\s*ignore(?:\s+([A-Za-z0-9_.:-]+))?", re.IGNORECASE)
 
@@ -115,9 +124,43 @@ def _luhn_ok(matched: str) -> bool:
     return total % 10 == 0
 
 
+_IDENT_NOISE_RE = re.compile(r"[^a-z0-9]")
+
+
+def _not_self_named_value(matched: str) -> bool:
+    """값이 **키 이름 그 자체**면 비밀값이 아니라 변수 참조다.
+
+    실측(2026-08-09): 시크릿 룰을 TypeScript 로 열자 객체 리터럴
+    ``access_token: accessToken`` 이 '치명·차단'으로 올라왔다. 값은 비밀이
+    아니라 같은 이름의 변수다. `key: value` 를 설정 대입으로 읽는 갈래가
+    JS/TS 객체 리터럴 문법과 겹치면서 생긴 자리다.
+
+    구분자 좌우를 정규화(소문자·기호 제거)해 같으면 후보에서 뺀다 —
+    ``access_token`` 과 ``accessToken`` 은 둘 다 ``accesstoken`` 이다.
+    **실제 비밀값이 자기 키 이름과 같을 수는 없으므로** 이 제외가 진짜 비밀을
+    가릴 위험은 없다. 유일한 손실은 ``PASSWORD=password`` 같은 자기반복 값인데,
+    그건 플레이스홀더 계열이라 어차피 제외 대상이다.
+
+    구분자가 없는 매치(``sk-…``·``AKIA…``·PEM 블록)에는 아무 영향이 없다.
+    한 룰의 검증기는 그 룰의 **모든** 패턴에 걸리므로, 해당 없는 모양은
+    조용히 통과시켜야 한다.
+    """
+    head, sep, tail = matched.partition(":")
+    if not sep:
+        head, sep, tail = matched.partition("=")
+    if not sep:
+        return True
+    key = _IDENT_NOISE_RE.sub("", head.lower())
+    value = _IDENT_NOISE_RE.sub("", tail.strip().strip("\"'").lower())
+    if not key or not value:
+        return True
+    return key != value
+
+
 _VALIDATORS: dict[str, "Callable[[str], bool]"] = {
     "rrn_checksum": _rrn_checksum_ok,
     "luhn": _luhn_ok,
+    "not_self_named_value": _not_self_named_value,
 }
 
 # 증거 문자열 — 매치 구간을 중심으로 잘라 낸다. 줄 전체를 넣으면 200자가 넘는
