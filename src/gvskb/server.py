@@ -617,8 +617,12 @@ def save_report(
         md_path = base.with_suffix(".md")
         html_path = base.with_suffix(".html")
         json_path = base.with_suffix(".json")
-        md_path.write_text(render_markdown_impl(parsed), encoding="utf-8")
-        html_path.write_text(render_html_impl(parsed), encoding="utf-8")
+        # 저장 경로를 **문서 안에** 새긴다. 반환값의 `saved` 를 에이전트가
+        # 사용자에게 옮겨 주지 않으면 원본이 어디 있는지 알 길이 없다.
+        md_path.write_text(
+            render_markdown_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
+        html_path.write_text(
+            render_html_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
         json_path.write_text(
             _json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",

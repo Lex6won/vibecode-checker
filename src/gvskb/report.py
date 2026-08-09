@@ -971,8 +971,19 @@ def _verdict_box_html(report: ScanReport) -> str:
     )
 
 
-def _meta_rows(report: ScanReport, ts: str) -> list[tuple[str, str]]:
+def _meta_rows(
+    report: ScanReport, ts: str, saved_path: str | None = None,
+) -> list[tuple[str, str]]:
+    """머리말 표. **이 보고서가 어디 저장됐는지**를 문서 안에 새긴다.
+
+    실사용 지적(2026-08-09): 저장 경로는 CLI 의 stderr 한 줄과 MCP 응답 필드로만
+    나갔다. 그 줄을 놓치거나 나중에 파일만 전달받은 사람은 **원본이 어디 있는지
+    알 방법이 없다.** 결재로 올라가고 감사에 인용되는 문서인데 자기 출처를
+    말하지 않고 있었다 — *"사용자들은 몰라, 기억을 못해."*
+    """
     rows = [("대상", report.target), ("검사일시", ts), ("프로파일", _profile_cell(report))]
+    if saved_path:
+        rows.append(("이 보고서 위치", saved_path))
     if report.scenario:
         rows.append(("시나리오", report.scenario))
     if report.language:
@@ -1016,19 +1027,24 @@ def _profile_cell(report: ScanReport) -> str:
     )
 
 
-def _meta_table_md(report: ScanReport, ts: str) -> list[str]:
+def _meta_table_md(
+    report: ScanReport, ts: str, saved_path: str | None = None,
+) -> list[str]:
     """문서 헤더 — 대상·검사일시·프로파일을 키-값 표로(긴 경로도 깔끔하게)."""
     out = ["| 항목 | 값 |", "|---|---|"]
-    for k, v in _meta_rows(report, ts):
+    for k, v in _meta_rows(report, ts, saved_path):
         val = f"`{v}`" if k in ("대상",) else v
         out.append(f"| {k} | {val} |")
     out.append("")
     return out
 
 
-def _meta_table_html(report: ScanReport, ts: str) -> str:
+def _meta_table_html(
+    report: ScanReport, ts: str, saved_path: str | None = None,
+) -> str:
     cells = "".join(
-        f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _meta_rows(report, ts)
+        f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>"
+        for k, v in _meta_rows(report, ts, saved_path)
     )
     return f'<table class="metatbl">{cells}</table>'
 
@@ -1062,6 +1078,7 @@ def render_markdown(
     *,
     generated_at: datetime | None = None,
     reproduce_command: str | None = None,
+    saved_path: str | None = None,
 ) -> str:
     """Render a ScanReport as a self-contained Korean Markdown document.
 
@@ -1098,7 +1115,7 @@ def render_markdown(
     # =====================================================================
 
     # --- ① 문서 헤더(대상·일시·프로파일 표) → 결론(승인/미승인 박스) --------
-    lines.extend(_meta_table_md(report, ts))
+    lines.extend(_meta_table_md(report, ts, saved_path))
     lines.append("## 결론")
     lines.append("")
     lines.extend(_verdict_box_md(report))
@@ -1779,6 +1796,7 @@ def render_html(
     *,
     generated_at: datetime | None = None,
     reproduce_command: str | None = None,
+    saved_path: str | None = None,
 ) -> str:
     """Render a ScanReport as a self-contained Korean HTML document (card style).
 
@@ -1810,7 +1828,7 @@ def render_html(
     # === Layer 1 — 공무원용: 문서 헤더 표 → 결론(승인/미승인 박스) ==========
     #   순서: 헤더표 → 결론 박스 → 한눈에 보기 → 조치 가이드 → Top 3 →
     #   정직성 배너 → 검토 범위·한계+면책. 상세는 Layer 2로. ================
-    p.append(_meta_table_html(report, ts))
+    p.append(_meta_table_html(report, ts, saved_path))
     p.append(_verdict_box_html(report))
 
     build_skips = _build_artifact_skips(report)
