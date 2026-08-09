@@ -298,7 +298,8 @@ def _action_order(findings: list[Finding]) -> list[dict]:
     tiers: list[dict] = [
         # "배포가 차단됩니다" 였다 — 소스 발견은 사다리에서 **조건부 승인**이므로
         # 배포를 막지 않는다. 단이 말해야 하는 것은 배포 결과가 아니라 조치 급함이다.
-        {"label": "지금 막아야 하는 것", "hint": "사유 기록으로 넘길 수 없는 등급", "groups": []},
+        {"label": "지금 막아야 하는 것", "hint": "필수 조치 — 사유 기록으로 넘길 수 없습니다",
+         "groups": []},
         {"label": "그다음", "hint": "치명·높음", "groups": []},
         {"label": "나머지", "hint": "보통·낮음 — 순서가 뒤일 뿐 조치 대상입니다", "groups": []},
     ]
@@ -398,7 +399,7 @@ _ACTION_LEAD_BLOCK = "지금 이대로 올리거나 배포하면 안 됩니다. 
 # (`**{lead}**`), HTML 은 `_esc` 로 그대로 내보낸다. 여기에 `**` 를 쓰면 MD 는
 # 굵게가 중첩돼 깨지고 HTML 은 별표가 화면에 그대로 나온다.
 _ACTION_LEAD_MUST = (
-    "⚠️ 사유 기록으로 넘길 수 없는 등급(차단)의 발견이 있습니다. "
+    "⚠️ 필수 조치 등급의 발견이 있습니다 — 사유 기록으로 넘길 수 없습니다. "
     "아래 3단계로 고친 뒤 다시 검사하세요."
 )
 _ACTION_LEAD_WARN = "⚠️ 운영에 반영하기 전에 고치는 것을 권합니다. 아래 3단계를 따르세요."
@@ -900,36 +901,10 @@ def _domain_has_blocker(findings: list[Finding]) -> bool:
     )
 
 
-def _hero_line(report: ScanReport) -> tuple[str, str]:
-    """판정 히어로 배너 — 비전문가가 첫 문장만 읽어도 되는 쉬운 결론. (문장, 색)."""
-    s = report.summary
-    if s.finding_count == 0 and not report.scanned_files:
-        return (
-            "⚠ 검사된 파일이 없습니다 — 경로·확장자를 확인해 다시 검사하세요. "
-            "이 결과를 '안전'으로 해석하면 안 됩니다.",
-            "#607d8b",
-        )
-    block_n = s.by_decision.get(Decision.block.value, 0)
-    if s.blocked or block_n:
-        danger = sum(
-            1 for f in report.findings
-            if f.decision == Decision.block or f.severity == Severity.critical
-        ) or block_n
-        return (
-            f"지금 이대로 배포하면 안 됩니다 — 치명·차단 위험 {danger}건. "
-            "아래를 고치고 다시 검사하세요.",
-            "#c0392b",
-        )
-    if s.finding_count:
-        return (
-            f"⚠️ 배포 전에 고칠 것이 있습니다 — 주의 필요 {s.finding_count}건. "
-            "아래 순서대로 고친 뒤 다시 검사하세요.",
-            "#e67e22",
-        )
-    return (
-        "심각한 위험은 발견되지 않았습니다 — 단, 아래 '검토 범위 및 한계'를 꼭 확인하세요.",
-        "#2e7d32",
-    )
+# `_hero_line` 을 여기서 지웠다(2026-08-09). `_verdict_line`·`_verdict_css_color`
+# 에 이어 **세 번째 죽은 판정 함수**였고, 역시 사다리 이전 기준
+# (`s.blocked or block_n` → "지금 이대로 배포하면 안 됩니다")을 담고 있었다.
+# 소스 발견만 있는 조건부 승인 보고서에도 배포 금지를 선언하는 문장이다.
 
 
 # 배포 승인/미승인 — 두괄식 결과 박스(초록=승인 · 빨강=미승인 · 주황=보류).
@@ -1251,7 +1226,10 @@ def render_markdown(
     # 위치 수보다 커지므로, 이중 계상으로 오해하지 않도록 두 수치를 같이 쓴다.
     uniq_locs = _unique_location_count(report.findings)
     lines.append(f"- 발견된 위험: **{summary.finding_count}건** · 고유 위치 **{uniq_locs}곳**")
-    lines.append(f"- 차단(block): **{summary.by_decision.get(Decision.block.value, 0)}건**")
+    lines.append(
+        f"- {_DECISION_LABEL_KO[Decision.block]}: "
+        f"**{summary.by_decision.get(Decision.block.value, 0)}건**"
+    )
     if summary.highest_severity:
         lines.append(
             f"- 최고 심각도: **{_SEVERITY_LABEL_KO[summary.highest_severity]} "
@@ -1634,7 +1612,8 @@ def render_markdown(
         "`scan_path` 를 호출합니다."
     )
     lines.append(
-        "- **수정 시 LLM 안내**: 처리 순서(차단 → 치명·높음 → 자동수정 → 나머지)를 "
+        f"- **수정 시 LLM 안내**: 처리 순서({_DECISION_LABEL_KO[Decision.block]} → "
+        "치명·높음 → 자동수정 → 나머지)를 "
         "그대로 LLM 프롬프트의 지시문으로 사용하면 우선순위가 어긋나지 않습니다."
     )
     lines.append("")
@@ -1666,8 +1645,17 @@ _DECISION_COLOR = {
     Decision.warn: "#e67e22",
     Decision.allow: "#2e7d32",
 }
+#: 발견 하나하나의 등급을 사람 말로. **'차단'이라 부르지 않는다.**
+#:
+#: 사다리(§gate)가 배포 판정의 '차단'을 다섯 가지로 좁힌 뒤, 소스 발견은
+#: 배포를 막지 않게 됐다. 그런데 요약에는 여전히 *"차단(block): 1건"* 이
+#: 찍혀 있어, 담당자가 **"조건부 승인"** 바로 옆에서 "차단 1건"을 읽었다 —
+#: 막혔다는 건지 아닌지 알 수 없다.
+#:
+#: 기계 값(`decision: "block"`, `--fail-on block`, SARIF)은 **그대로 둔다.**
+#: 바뀐 것은 사람이 읽는 이름표뿐이다.
 _DECISION_LABEL_KO = {
-    Decision.block: "차단",
+    Decision.block: "필수 조치",
     Decision.warn: "경고",
     Decision.allow: "허용",
 }
@@ -1987,7 +1975,7 @@ def render_html(
     p.append(
         f'<div class="stat"><div class="num" style="color:'
         f'{"#c0392b" if block_n else "#1f2937"}">{block_n}</div>'
-        '<div class="lab">차단(block)</div></div>'
+        f'<div class="lab">{_esc(_DECISION_LABEL_KO[Decision.block])}</div></div>'
     )
     p.append(
         f'<div class="stat"><div class="num" style="color:{sev_col}">{sev_label}</div>'
@@ -2354,7 +2342,11 @@ def render_html(
         '<li><b>MCP(IDE)</b>: 수정한 코드를 <code class="ev">scan_code</code>에 다시 넘기거나 '
         '파일은 <code class="ev">scan_path</code> 호출</li>'
     )
-    p.append("<li><b>LLM 안내</b>: 위 권장 처리 순서(차단→치명·높음→자동수정→나머지)를 그대로 지시문으로 사용</li>")
+    p.append(
+        f"<li><b>LLM 안내</b>: 위 권장 처리 순서"
+        f"({_esc(_DECISION_LABEL_KO[Decision.block])}→치명·높음→자동수정→나머지)를 "
+        "그대로 지시문으로 사용</li>"
+    )
     p.append("</ol>")
     p.append("</div></details>")
 
