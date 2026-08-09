@@ -15,6 +15,7 @@ from .loader import load_all_rules
 from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
 from .scanner import (
+    DEFAULT_MAX_FILES,
     detect_secrets_and_pii as detect_secrets_and_pii_impl,
     scan_code as scan_code_impl,
     scan_path as scan_path_impl,
@@ -460,7 +461,11 @@ def scan_path(
             "civil-complaint-chatbot | internal-db-query | web-civil-service"
         ),
     ] = "public-default-strict",
-    max_files: Annotated[int, Field(description="최대 검사 파일 수 (기본 500). 초과분은 skipped_files에 사유와 함께 기록")] = 500,
+    # 기본값을 여기 다시 적지 않는다 — 예전에 500 을 직접 박아 두었다가
+    # scanner.DEFAULT_MAX_FILES 만 올라가고 MCP 는 500 에 묶여 있었다.
+    max_files: Annotated[int, Field(description=(
+        f"최대 검사 파일 수 (기본 {DEFAULT_MAX_FILES:,}). 초과분은 skipped_files에 사유와 함께 기록"
+    ))] = DEFAULT_MAX_FILES,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
     """파일 또는 폴더를 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.

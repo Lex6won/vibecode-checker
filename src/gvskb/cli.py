@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .intel import DEFAULT_PROPOSED_DIR, promote_kev_to_rules
 from .report import render_html, render_markdown
-from .scanner import scan_path
+from .scanner import DEFAULT_MAX_FILES, scan_path
 from .schema import ScanReport
 
 EXIT_OK = 0
@@ -34,7 +34,11 @@ EXIT_USAGE = 64
 EXIT_NOT_FOUND = 66
 
 
-SCAN_MAX_FILES_DEFAULT = 500
+# 라이브러리 기본값을 **그대로** 쓴다. 예전에는 여기에 500 을 따로 적어 두었는데,
+# scanner.DEFAULT_MAX_FILES 를 20,000 으로 올렸을 때 이 줄이 남아 CLI 만 500 에
+# 묶여 있었다 — 실제로 사용자가 쓰는 경로가 조용히 절단되고 있었다.
+# 같은 숫자를 두 곳에 적으면 언젠가 어긋난다. 재선언하지 않는다.
+SCAN_MAX_FILES_DEFAULT = DEFAULT_MAX_FILES
 
 
 def _scan_reproduce_command(args: argparse.Namespace) -> str:

@@ -19,8 +19,8 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
-    - "(?i)(?:const|let|var)\\s+(?:password|passwd|pwd|api[_-]?key|secret|jwt[_-]?secret)\\s*=\\s*['\"][^'\"\\s$\\{`]{6,}['\"]"
-    - "(?i)(?:password|secret|jwt_secret|api_key)\\s*:\\s*['\"][^'\"\\s$\\{`]{6,}['\"]"
+    - "(?i)(?:const|let|var)\\s+(?:\\*\\*)?(?:password|passwd|pwd|api[_-]?key|secret|jwt[_-]?secret)(?:\\*\\*)?\\s*=\\s*['\"][^'\"\\s$\\{`]{6,}['\"]"
+    - "(?i)(?:password|secret|jwt_secret|api_key)(?:\\*\\*)?\\s*:\\s*['\"][^'\"\\s$\\{`]{6,}['\"]"
     - "(?:postgres|mysql|mongodb)://[^:]+:[^@]+@"
     - "Bearer\\s+[A-Za-z0-9._-]{20,}"
   category: secret-scanning

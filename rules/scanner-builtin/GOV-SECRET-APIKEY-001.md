@@ -45,7 +45,17 @@ detection:
     # 두 번째 전방탐색은 *테스트 픽스처*를 제외한다. test-only-key·join_new 처럼
     # 구분자로 끊긴 자리에 test/dummy/fake/mock/sample 등이 오는 값은 가짜다.
     # 구분자를 요구하므로 latest·contest 같은 단어에는 걸리지 않는다.
-    - '(?i)(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
+    #
+    # 키 이름을 감싼 **마크다운 강조**를 통과시킨다. AI 코딩 도구는 주석과
+    # 인수인계 문서에 `**password** = 값` 처럼 쓰는데, 강조 하나 때문에
+    # `키워드 다음 구분자` 모양이 깨져 **다섯 가지 형태가 통째로 미탐**이었다
+    # (실측: 주석·.env·.properties·YAML·따옴표 대입 전부). 강조를 떼면 전부
+    # 잡히던 것들이라, 새 탐지 영역을 여는 것이 아니라 같은 것을 마저 보는 것이다.
+    #
+    # `(\*\*)?` 로 열고 `(?(1)\*\*)` 로 **짝이 맞을 때만** 닫는다. 그냥
+    # `\*{0,2}` 로 열어 두면 파이썬 거듭제곱 대입 연산자 `password **= …` 가
+    # 걸린다 — 짝을 강제하면 그 자리는 애초에 후보가 되지 않는다.
+    - '(?i)(\*\*)?(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?(?(1)\*\*)\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
     # 따옴표 **없는** 설정 파일 대입 — `.env`·`.properties`·`.ini`·YAML.
     #
     # 실측(2026-08-08): 위 패턴을 포함해 비밀번호 룰 전부가 값에 따옴표를
@@ -83,7 +93,7 @@ detection:
     #   · 값이 대문자 상수 이름 하나뿐이면 제외 → `GEMINI_API_KEY` 는 참조다
     # 실제 비밀번호가 전부 대문자·숫자·밑줄로만 이뤄질 수 있지만, 그 미탐보다
     # **정상 코드를 차단하는 쪽이 훨씬 비싸다**(도구를 끄게 만든다).
-    - '(?i)^[ \t]*(?:(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)[ \t]*:[ \t]*|[\w\-]+(?:\.[\w\-]+)*\.(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)[ \t]*=[ \t]*|(?-i:[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN)|(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN))[ \t]*=[ \t]*|(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)=)(?!(?:\$\{[^}]+\}|\$[A-Za-z_]\w*|%[A-Za-z_]\w*%|\{\{[^}]+\}\})[ \t]*(?:[#;].*)?$)(?![^\s#;]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))(?![^\s#;]*[(),])(?!(?-i:[A-Z][A-Z0-9_]*)[ \t]*(?:[#;].*)?$)[^\s\"'',#;]{6,}[ \t]*(?:[#;].*)?$'
+    - '(?i)^[ \t]*(\*\*)?(?:(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)[ \t]*:[ \t]*|[\w\-]+(?:\.[\w\-]+)*\.(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)[ \t]*=[ \t]*|(?-i:[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN)|(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN))(?(1)\*\*)[ \t]*=[ \t]*|(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)=)(?!(?:\$\{[^}]+\}|\$[A-Za-z_]\w*|%[A-Za-z_]\w*%|\{\{[^}]+\}\})[ \t]*(?:[#;].*)?$)(?![^\s#;]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))(?![^\s#;]*[(),])(?!(?-i:[A-Z][A-Z0-9_]*)[ \t]*(?:[#;].*)?$)[^\s\"'',#;]{6,}[ \t]*(?:[#;].*)?$'
     - 'sk-[A-Za-z0-9_-]{20,}'
     # sk_<벤더>_<본문> 형태 — Stripe(sk_live_·sk_test_), 기관 발급 키 등.
     # `sk_` 만으로는 잡지 않는다: 하이픈과 달리 언더스코어는 식별자에 흔해

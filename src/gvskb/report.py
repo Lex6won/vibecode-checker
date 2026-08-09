@@ -43,6 +43,33 @@ def _confidence_label(value: str | None) -> str:
     return _CONFIDENCE_LABEL_KO.get(value or "pattern-only", "패턴 일치만")
 
 
+#: 증거 줄 라벨. 가려진 것이 **있을 때만** 가렸다고 말한다.
+#:
+#: 예전에는 모든 증거에 '자동 마스킹됨'을 붙였다. `eval(x)` 옆의 그 딱지를 본
+#: 담당자는 무엇이 가려졌는지 찾다가 지치고, 그러면 진짜 가려진 자리에서도
+#: 딱지를 읽지 않는다. 늘 켜져 있는 경고는 경고가 아니다.
+_EVIDENCE_LABEL_MASKED = "증거(민감값 일부 가림)"
+_EVIDENCE_LABEL_PLAIN = "증거"
+
+#: 마스킹 규칙 안내. 담당자가 "왜 다 안 보이나"를 묻기 전에 답한다.
+#: 마크다운 문법을 쓰지 않는다 — HTML 렌더러가 같은 문자열을 그대로 쓰기 때문이다.
+#: 한쪽만 예쁘게 만들려고 서식을 넣으면 다른 쪽에 `**` 가 날것으로 찍힌다.
+MASKING_NOTE = (
+    "증거의 민감값은 앞뒤 일부만 남기고 [마스킹] 으로 가립니다 "
+    "— 어느 키·번호가 노출됐는지 알아보되, 이 보고서가 유출본을 한 벌 더 "
+    "만들지 않게 하기 위해서입니다(보고서는 파일로 저장되고 결재·감사 기록에 "
+    "남습니다). 비밀번호는 통째로 가립니다 — 사람이 지은 값이라 앞 몇 자가 "
+    "추측을 실질적으로 도와주고, 어느 비밀번호인지는 변수명이 이미 말해 줍니다. "
+    "원문이 필요하면 보고서가 가리키는 파일·줄 번호를 직접 여세요."
+)
+
+
+def _evidence_label(evidence: str) -> str:
+    from .scanners.regex_scanner import evidence_is_masked
+
+    return _EVIDENCE_LABEL_MASKED if evidence_is_masked(evidence) else _EVIDENCE_LABEL_PLAIN
+
+
 def _skip_reason_group(reason: str) -> str:
     """제외 사유를 사람이 이해할 묶음으로 분류한다."""
     r = reason or ""
@@ -1296,6 +1323,11 @@ def render_markdown(
     # =====================================================================
     lines.append("## 상세 검토 결과")
     lines.append("")
+    # 가려진 증거가 하나라도 있을 때만 규칙을 설명한다. 아무것도 안 가린
+    # 보고서에 마스킹 안내를 실으면 없는 제약을 있다고 말하는 셈이다.
+    if any(_evidence_label(f.evidence) == _EVIDENCE_LABEL_MASKED for f in report.findings):
+        lines.append(f"> 🔒 {MASKING_NOTE}")
+        lines.append("")
 
     domains = _group_by_domain(report.findings)
 
@@ -2007,6 +2039,8 @@ def render_html(
         '<div class="kv">각 <b>보안 분야</b>를 클릭해 펼치면 위치·취약점 설명·대응방안·근거를 '
         "확인할 수 있습니다. (인쇄 시에는 모두 펼쳐집니다.)</div>"
     )
+    if any(_evidence_label(f.evidence) == _EVIDENCE_LABEL_MASKED for f in report.findings):
+        p.append(f'<div class="kv">🔒 {_esc(MASKING_NOTE)}</div>')
 
     domains = _group_by_domain(report.findings)
 
@@ -2419,7 +2453,7 @@ def _render_rule_group_html(group: dict) -> list[str]:
         )
     if f.evidence:
         out.append(
-            f'<div class="row"><span class="lab">증거(마스킹됨)</span>'
+            f'<div class="row"><span class="lab">{_esc(_evidence_label(f.evidence))}</span>'
             f'<span class="val"><code class="ev">{_esc(_oneline(f.evidence))}</code></span></div>'
         )
     if f.why_it_matters:
@@ -3277,7 +3311,7 @@ def _render_finding_group_md(group: dict) -> list[str]:
     if f.severity_adjusted:
         out.append(f"- **심각도 조정**: {f.severity_adjusted}")
     if f.evidence:
-        out.append(f"- **증거(자동 마스킹됨)**: `{_oneline(f.evidence)}`")
+        out.append(f"- **{_evidence_label(f.evidence)}**: `{_oneline(f.evidence)}`")
     if f.why_it_matters:
         out.append(f"- **왜 위험한가**: {f.why_it_matters.strip()}")
     if f.public_sector_impact:

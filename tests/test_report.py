@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from gvskb.report import render_html, render_markdown
+from gvskb.scanners.regex_scanner import MASK_MARK
 from gvskb.schema import (
     CodeLocation,
     Decision,
@@ -56,7 +57,11 @@ def test_render_markdown_redacts_evidence(tmp_path: Path) -> None:
     report = scan_path(tmp_path)
     md = render_markdown(report)
     assert "abcdefghijklmnopqrstuvwxyz" not in md
-    assert "REDACTED" in md or "***" in md
+    # 표식 문자열이 아니라 **불변식**을 고정한다 — 원문이 없고, 가렸다는 사실이
+    # 보고서에 남는다. 표식을 바꿀 때마다 테스트를 고치면 테스트가 계약이 아니다.
+    assert MASK_MARK in md
+    assert "민감값 일부 가림" in md, "가렸다는 사실이 보고서에 없다"
+    assert "유출본을 한 벌 더" in md, "왜 가렸는지 담당자가 알 수 없다"
 
 
 # ---------------------------------------------------------------------------
