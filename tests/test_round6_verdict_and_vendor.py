@@ -54,7 +54,9 @@ def test_blocked_package_forbids_green_verdict() -> None:
     for out in (render_markdown(report), render_html(report)):
         assert "배포 승인 가능" not in out
         assert "배포 미승인" in out
-        assert "취약·악성 패키지 1건" in out
+        # 단위는 `종` — 게이트 문장(`패키지 N종`) 뒤에 그대로 이어 붙는 조각이라
+        # 여기만 `건` 이면 한 문장에서 같은 수가 두 단위로 세어진다.
+        assert "취약·악성 패키지 1종" in out
 
 
 def test_high_only_package_is_conditional_not_blocked() -> None:
@@ -94,7 +96,7 @@ def test_undetermined_packages_forbid_green_verdict() -> None:
     )
     md = render_markdown(report)
     assert "배포 승인 가능" not in md
-    assert "판정 불가 1건" in md
+    assert "판정 불가 1종" in md
 
 
 def test_clean_packages_keep_green_verdict() -> None:
@@ -212,7 +214,7 @@ def test_undetermined_vendor_bundle_blocks_green_verdict() -> None:
 
     md = render_markdown(report)
     assert "배포 승인 가능" not in md
-    assert "판정 불가 1건" in md
+    assert "판정 불가 1종" in md
 
 
 def test_mcp_exposes_vendor_bundle_scan_tool() -> None:
@@ -258,7 +260,7 @@ def test_same_component_counted_once_with_both_sources() -> None:
     report.dependency_audit = _audit_pair("12.2.0", "12.2.0")
 
     md = render_markdown(report)
-    assert "취약 패키지: **1건**" in md
+    assert "취약 패키지: **1종**" in md
     assert "고유 1종" in md
     # 출처는 버리지 않는다 — 조치는 모든 사본에 함께 적용해야 한다.
     assert "requirements.txt · 설치본" in md
@@ -270,7 +272,7 @@ def test_different_versions_stay_separate_components() -> None:
     report.dependency_audit = _audit_pair("12.2.0", "12.3.0")
 
     md = render_markdown(report)
-    assert "취약 패키지: **2건**" in md
+    assert "취약 패키지: **2종**" in md
     assert "고유 2종" in md
 
 

@@ -56,11 +56,13 @@ _EVIDENCE_LABEL_PLAIN = "증거"
 #: 한쪽만 예쁘게 만들려고 서식을 넣으면 다른 쪽에 `**` 가 날것으로 찍힌다.
 MASKING_NOTE = (
     "증거의 민감값은 앞뒤 일부만 남기고 [마스킹] 으로 가립니다 "
-    "— 어느 키·번호가 노출됐는지 알아보되, 이 보고서가 유출본을 한 벌 더 "
-    "만들지 않게 하기 위해서입니다(보고서는 파일로 저장되고 결재·감사 기록에 "
-    "남습니다). 비밀번호는 통째로 가립니다 — 사람이 지은 값이라 앞 몇 자가 "
-    "추측을 실질적으로 도와주고, 어느 비밀번호인지는 변수명이 이미 말해 줍니다. "
-    "원문이 필요하면 보고서가 가리키는 파일·줄 번호를 직접 여세요."
+    "— 어느 키·번호가 노출됐는지는 알아보되, 이 보고서 자체가 또 하나의 유출 "
+    "경로가 되지 않도록 하기 위해서입니다(보고서는 파일로 저장되고 결재·감사 "
+    "기록에 남습니다). 비밀번호는 통째로 가립니다 — API 키와 달리 사람이 직접 "
+    "만든 값이라 앞 몇 자만 드러나도 공격자가 나머지를 좁힐 단서가 되기 "
+    "때문입니다. 통째로 가려도 어느 비밀번호인지는 변수명으로 알아볼 수 있어 "
+    "확인에는 지장이 없습니다. 원문이 필요하면 보고서가 가리키는 파일·줄 번호를 "
+    "직접 확인하세요."
 )
 
 
@@ -320,7 +322,7 @@ def _action_order_note(report: ScanReport) -> str:
     total = len(report.findings)
     dep_row = _dep_domain_row(report)
     dep_n = (dep_row or {}).get("count") or 0
-    scope = f"소스 코드 {total}건" + (f" · 패키지 {dep_n}건" if dep_n else "")
+    scope = f"소스 코드 {total}건" + (f" · 패키지 {dep_n}종" if dep_n else "")
     return (
         f"**{scope} 전부가 조치 대상입니다.** 아래는 '무엇부터' 손댈지의 순서일 뿐, "
         "일부만 고르라는 뜻이 아닙니다. 위에서부터 처리하세요."
@@ -735,7 +737,7 @@ def _domain_table_notes(
             "**의존성·공급망 행은 패키지 단위**입니다(파일이 아니라 고유 패키지 수). "
             "심각도는 소스 룰과 다른 기준으로 정해집니다 — 부록의 심각도 판정 기준 참조."
             + (
-                f" 판정 불가 {unknown}건은 확인하지 못한 것이라 등급 없이 별도로 셉니다."
+                f" 판정 불가 {unknown}종은 확인하지 못한 것이라 등급 없이 별도로 셉니다."
                 if unknown else ""
             )
         )
@@ -743,15 +745,24 @@ def _domain_table_notes(
 
 
 def _dep_verdict_clause(report: ScanReport) -> str:
-    """배포 판정 문장에 덧붙일 의존성 사유 한 조각 — 위험이 없으면 빈 문자열."""
+    """배포 판정 문장에 덧붙일 의존성 사유 한 조각 — 위험이 없으면 빈 문자열.
+
+    단위는 **게이트를 따라 `종`** 으로 적는다(`gate.py` 가 판정 문구의 원천이고,
+    이 조각은 그 문장 뒤에 그대로 이어 붙는다). 예전에는 여기만 `건` 이라
+    한 문장 안에서 같은 수가 "48종"과 "48건"으로 두 번 세어졌다.
+
+    "'안전'이 아니다" 는 여기서 말하지 않는다 — 게이트가 차단·경고 **두 분기 모두**
+    에서 이미 말한다(`gate.py` 의 blocked 분기와 tail). 같은 경고를 한 문단에서
+    두 번 읽으면 두 번째부터는 읽히지 않는다.
+    """
     vuln, unchecked, not_found, _blocked = _dep_risk(report)
     parts: list[str] = []
     if vuln:
-        parts.append(f"취약·악성 패키지 {vuln}건")
+        parts.append(f"취약·악성 패키지 {vuln}종")
     if not_found:
-        parts.append(f"레지스트리에 없는 패키지 {not_found}건")
+        parts.append(f"레지스트리에 없는 패키지 {not_found}종")
     if unchecked:
-        parts.append(f"판정 불가 {unchecked}건(‘안전’이 아닙니다)")
+        parts.append(f"판정 불가 {unchecked}종")
     if not parts:
         return ""
     return " 의존성: " + " · ".join(parts) + "."
@@ -1246,9 +1257,9 @@ def render_markdown(
     if _dep_audits_sum:
         _, _dep_unchecked, _dep_vuln, _, _dep_nf = _dep_stats(_dep_audits_sum)
         lines.append(
-            f"- 취약 패키지: **{_dep_vuln}건**"
-            + (f" · **미존재(가짜 이름 의심) {_dep_nf}건**" if _dep_nf else "")
-            + (f" · 판정 불가 {_dep_unchecked}건" if _dep_unchecked else "")
+            f"- 취약 패키지: **{_dep_vuln}종**"
+            + (f" · **미존재(가짜 이름 의심) {_dep_nf}종**" if _dep_nf else "")
+            + (f" · 판정 불가 {_dep_unchecked}종" if _dep_unchecked else "")
             + " (아래 '의존성(패키지) 취약점 검사')"
         )
     # 소스와 패키지를 합친 '실제 조치할 항목 수' — 둘을 따로만 적으면 담당자가
@@ -1257,7 +1268,7 @@ def render_markdown(
     if _dep_row_sum and _dep_row_sum["count"]:
         lines.append(
             f"- **총 조치 대상: {summary.finding_count + _dep_row_sum['count']}건** "
-            f"(소스 코드 {summary.finding_count}건 · 패키지 {_dep_row_sum['count']}건)"
+            f"(소스 코드 {summary.finding_count}건 · 패키지 {_dep_row_sum['count']}종)"
         )
     if suppressed:
         lines.append(f"- 승인된 예외(요약에서 제외): {len(suppressed)}건 (아래 '승인된 예외 내역')")
@@ -1299,7 +1310,7 @@ def render_markdown(
                 "> 심각도를 정하는 방식이 두 열에서 다릅니다 — 소스는 룰에 미리 정해진 등급, "
                 "패키지는 검사 시점의 취약점·악용 정보로 계산합니다(부록 '심각도 판정 기준'). "
                 + (
-                    f"판정 불가 {_dep_row_sum['unknown']}건은 **확인하지 못한 것**이라 "
+                    f"판정 불가 {_dep_row_sum['unknown']}종은 **확인하지 못한 것**이라 "
                     "등급을 매기지 않고 의존성 절에 따로 셉니다."
                     if _dep_row_sum and _dep_row_sum.get("unknown") else ""
                 )
@@ -2038,7 +2049,7 @@ def render_html(
         if dep_row["count"]:
             p.append(
                 f'<div class="kv"><b>총 조치 대상 {summary.finding_count + dep_row["count"]}건</b> '
-                f'(소스 코드 {summary.finding_count}건 · 패키지 {dep_row["count"]}건) — '
+                f'(소스 코드 {summary.finding_count}건 · 패키지 {dep_row["count"]}종) — '
                 "두 심각도는 서로 다른 기준으로 정해집니다(부록 '심각도 판정 기준').</div>"
             )
 
@@ -2400,7 +2411,7 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
     # 게이트와 어긋난다 — HIGH 취약점 하나에 `[차단]` 이 붙어, 판정 상자의
     # "조건부 승인" 과 같은 문서 안에서 충돌했다. 게이트에게 묻는다.
     head = "[차단]" if _deploy_blocked(report) else "[조치 필요]"
-    out = [f"{head} 취약·위험 패키지 {len(comps)}건 — 버전을 올려야 합니다"]
+    out = [f"{head} 취약·위험 패키지 {len(comps)}종 — 버전을 올려야 합니다"]
     for comp in comps:
         c = comp["check"]
         detail: list[str] = []
@@ -3026,26 +3037,26 @@ def _registry_banner(audits: list[dict]) -> str | None:
 def _dep_banner_text(audits: list[dict]) -> str:
     checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
     if not_found:
-        return (f"**의존성 검사 포함** — 저장소에 존재하지 않는 패키지 {not_found}건 발견"
+        return (f"**의존성 검사 포함** — 저장소에 존재하지 않는 패키지 {not_found}종 발견"
                 "(AI가 지어낸 이름 의심). 설치 전 반드시 이름을 확인하세요.")
     if blocked:
-        return (f"**의존성 검사 포함** — 악성·고위험 패키지 발견(취약·악성 {vuln}건). "
+        return (f"**의존성 검사 포함** — 악성·고위험 패키지 발견(취약·악성 {vuln}종). "
                 "아래 '의존성(패키지) 취약점 검사' 섹션을 확인하세요.")
     if vuln:
-        return (f"⚠️ **의존성 검사 포함** — 알려진 취약점 있는 패키지 {vuln}건. "
+        return (f"⚠️ **의존성 검사 포함** — 알려진 취약점 있는 패키지 {vuln}종. "
                 "아래 '의존성(패키지) 취약점 검사' 섹션을 확인하세요.")
     if unchecked:
-        return (f"⚠️ **의존성 일부 판정 불가** — {unchecked}건은 검사되지 못했습니다"
+        return (f"⚠️ **의존성 일부 판정 불가** — {unchecked}종은 검사되지 못했습니다"
                 "(캐시 없는 오프라인·API 실패·파싱 불가). **판정 불가는 '안전'이 아닙니다.**")
     # 경계값 판정은 조치가 하나(락파일·설치본 검사)이므로 여기서 한 줄로만 알린다.
     # 패키지마다 같은 문장을 달면 20건짜리 매니페스트에서 같은 안내가 20번 나온다.
     bounded = sum(int(a.get("bounded_version_count") or 0) for a in audits)
     if bounded:
-        return (f"**의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음. "
+        return (f"**의존성 검사 포함** — 패키지 {checked}종, 알려진 취약점 없음. "
                 f"다만 {bounded}건은 `>=`·`^` 같은 **범위 표기**라 실제 설치 버전이 "
                 "아닐 수 있습니다 — 정확히 보려면 락파일을 쓰거나 `--include-installed` "
                 "로 다시 검사하세요.")
-    return f"**의존성 검사 포함** — 패키지 {checked}건, 알려진 취약점 없음(검사 시점 기준)."
+    return f"**의존성 검사 포함** — 패키지 {checked}종, 알려진 취약점 없음(검사 시점 기준)."
 
 
 def _pkg_verdict_label(check: dict) -> str:
@@ -3105,13 +3116,36 @@ def _pkg_note(check: dict) -> str:
     return " · ".join(bits)
 
 
-#: 의존성 절 머리에 붙는 단위 설명. 두 숫자가 같은 화면에 있는데 세는 단위가 달라
-#: 실제로 "3건인데 26건은 뭐냐"는 질문이 나왔다.
-_DEP_UNIT_NOTE = (
-    "> **숫자의 단위** — `취약·악성 N건` 은 **패키지 수**(조치 단위: 업그레이드할 대상)이고, "
-    "표의 `개별 취약점 N건` 은 **그 패키지 하나에 붙은 보안 권고 수**입니다. "
-    "패키지 하나를 올리면 그 패키지의 취약점이 한꺼번에 해소됩니다."
-)
+def _dep_unit_note(vuln: int, components: list[dict]) -> str:
+    """의존성 절 머리에 붙는 단위 설명 — **이 보고서의 실제 숫자로** 만든다.
+
+    두 숫자가 같은 화면에 있는데 세는 단위가 달라 실제로 "3건인데 26건은 뭐냐"는
+    질문이 나왔다. 그래서 설명을 붙였는데, 예전에는 그 설명이
+    ``취약·악성 N건`` 처럼 자리표시자 ``N`` 을 그대로 적었다. 실제 숫자로 가득한
+    보고서에서 ``N`` 만 남아 있으면 **치환에 실패한 템플릿으로 읽힌다** — 도구를
+    설명하려던 문장이 도리어 도구를 못 믿게 만든다.
+
+    예시는 취약점이 가장 많이 붙은 컴포넌트에서 뽑는다. 두 단위의 차이가 가장
+    크게 벌어지는 자리라 한 번에 이해된다(실측: 패키지 40 vs next 31).
+    """
+    best: tuple[str, int] | None = None
+    for comp in components:
+        check = comp.get("check") or {}
+        n = check.get("vulnerability_count") or 0
+        if n > (best[1] if best else 0):
+            best = (str(check.get("name") or "?"), n)
+    note = (
+        f"> **숫자의 단위** — 위의 `취약·악성 {vuln}종` 은 **패키지 수**"
+        "(조치 단위: 업그레이드할 대상)이고, "
+    )
+    if best:
+        note += (
+            f"아래 표의 `개별 취약점 {best[1]}건`(`{best[0]}`) 은 **그 패키지 "
+            "하나에 붙은 보안 권고 수**입니다. "
+        )
+    else:
+        note += "아래 표의 `개별 취약점` 은 **패키지 하나에 붙은 보안 권고 수**입니다. "
+    return note + "패키지 하나를 올리면 그 패키지의 취약점이 한꺼번에 해소됩니다."
 
 _ADVISORY_SEVERITY_KO = {
     "CRITICAL": "치명", "HIGH": "높음", "MEDIUM": "보통", "LOW": "낮음",
@@ -3214,14 +3248,16 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
     if not audits:
         return []
     checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
+    # 단위 설명이 실제 숫자를 쓰므로 컴포넌트 병합을 머리말보다 먼저 한다.
+    components = _dep_merged_components(audits)
     out: list[str] = ["## 의존성(패키지) 취약점 검사", ""]
-    out.append(f"> 검사 {checked}건 · 판정 불가 {unchecked}건 · 취약·악성 {vuln}건"
-               + (f" · **미존재(가짜 이름 의심) {not_found}건**" if not_found else "")
+    out.append(f"> 검사 {checked}종 · 판정 불가 {unchecked}종 · 취약·악성 {vuln}종"
+               + (f" · **미존재(가짜 이름 의심) {not_found}종**" if not_found else "")
                # `blocked`(감사 자체 플래그) 가 아니라 게이트 판정을 적는다.
                + (" · **차단 권고**" if _deploy_blocked(report)
                   else (" · **업그레이드 필요(조건부 승인)**" if blocked else "")))
     out.append("")
-    out.append(_DEP_UNIT_NOTE)
+    out.append(_dep_unit_note(vuln, components))
     out.append("")
 
     # 검사한 곳 목록 — 어디를 봤는지는 남기되, 표는 컴포넌트 단위로 한 번만 낸다.
@@ -3234,7 +3270,6 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
             out.append(f"  - ⚠ {a.get('note', '파싱하지 못했습니다.')} **파싱 0건은 '안전'이 아닙니다.**")
     out.append("")
 
-    components = _dep_merged_components(audits)
     if components:
         # 조치할 것부터 위로 — 악성·미존재 > 취약 > 판정 불가 > 이상 없음.
         components.sort(
@@ -3289,11 +3324,14 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
         return []
     checked, unchecked, vuln, blocked, not_found = _dep_stats(audits)
     nf = f" · 미존재 {not_found}" if not_found else ""
+    # 단위 설명이 실제 숫자를 쓰므로 컴포넌트 병합을 머리말보다 먼저 한다.
+    components = _dep_merged_components(audits)
     out: list[str] = [
         '<details class="sec"><summary>의존성(패키지) 취약점 검사 — '
         f"검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}{nf}</summary>"
         '<div class="secbody">',
-        f'<div class="depwarn">{_md_inline_to_html(_DEP_UNIT_NOTE.lstrip("> "))}</div>',
+        '<div class="depwarn">'
+        f'{_md_inline_to_html(_dep_unit_note(vuln, components).lstrip("> "))}</div>',
     ]
     for a in audits:
         title = a.get("manifest") or a.get("ecosystem", "manifest")
@@ -3303,7 +3341,6 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
             out.append(f'<div class="depwarn">⚠ {_esc(str(a.get("note", "파싱하지 못했습니다.")))} '
                        "<b>파싱 0건은 '안전'이 아닙니다.</b></div>")
 
-    components = _dep_merged_components(audits)
     if components:
         components.sort(
             key=lambda comp: (

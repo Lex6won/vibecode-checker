@@ -45,6 +45,48 @@ def test_export_produces_valid_cyclonedx_skeleton() -> None:
     assert comp["type"] == "library" and comp["version"] == "4.17.21"
 
 
+def test_local_path_never_reaches_the_sbom() -> None:
+    """SBOM 은 **반출 문서**다 — 검사한 PC 의 경로가 실리면 안 된다.
+
+    실측(2026-08-09) `lexdiff` SBOM 에 이렇게 나갔다::
+
+        "name": "C:\\Users\\<사용자명>\\AppData\\Local\\Temp\\...\\lexdiff"
+
+    반입 번들은 경로를 허용목록으로 막아 두는데 SBOM 에는 그 방어가 없었다 —
+    더 멀리 나가는 쪽이 더 헐거웠다. 이름과 `bom-ref` **둘 다** 본다(한쪽만
+    고치고 다른 쪽으로 새던 결함이 이 저장소에 이미 있었다).
+
+    픽스처의 사용자명·프로젝트명은 **전부 가상값**이다(`testuser`·`devuser`).
+    이 저장소는 공개다 — 경로 유출을 막는 테스트가 정작 실제 사용자명을 공개
+    이력에 남기면 같은 결함을 저지르는 것이다(이 커밋 작성 중 실제로 그럴 뻔했다).
+    """
+    win = r"C:\Users\testuser\AppData\Local\Temp\claude\sess-abc123\scratchpad\myapp"
+    for target, expected in (
+        (win, "myapp"),
+        ("/home/devuser/works/민원챗봇/", "민원챗봇"),
+        ("./sub/dir", "dir"),
+        ("plain-name", "plain-name"),
+        ("C:\\", "project"),          # 드라이브 문자는 이름이 아니다
+        ("", "project"),
+    ):
+        doc = to_cyclonedx(_audit(_check("lodash", "4.17.21")), target=target)
+        comp = doc["metadata"].get("component") or {"name": "project", "bom-ref": "root:project"}
+        assert comp["name"] == expected, target
+        assert comp["bom-ref"] == f"root:{expected}", target
+        blob = json.dumps(doc, ensure_ascii=False)
+        for leak in ("AppData", "testuser", "sess-abc123", "scratchpad", "devuser"):
+            assert leak not in blob, f"{leak} 가 SBOM 에 남았다 ({target})"
+
+
+def test_explicit_project_name_wins() -> None:
+    """`--project-name` 은 사용자가 직접 고른 이름이므로 쪼개지 않는다."""
+    doc = to_cyclonedx(
+        _audit(_check("lodash", "4.17.21")),
+        target=r"C:\Users\testuser\works\myapp", name="경기도/법령비교",
+    )
+    assert doc["metadata"]["component"]["name"] == "경기도/법령비교"
+
+
 def test_serial_number_is_deterministic() -> None:
     """난수 UUID 면 같은 입력에 매번 다른 문서가 나와 **두 SBOM 을 비교할 수
     없다.** 조달·감사에 필요한 것은 유일성보다 재현성이다."""

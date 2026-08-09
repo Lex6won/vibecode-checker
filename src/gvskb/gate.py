@@ -281,7 +281,7 @@ def _reason(
         more = f" 외 {len(block_reasons) - 3}종" if len(block_reasons) > 3 else ""
         head = (
             f"배포 불가 — {' · '.join(labels)}에 해당하는 패키지가 있습니다"
-            f"({names}{more}). 사유 기록으로 넘어갈 수 없는 등급입니다."
+            f"({names}{more}). 사유 기록으로 넘길 수 없는 등급입니다."
         )
         if block_count:
             head += (

@@ -177,7 +177,7 @@ def test_masking_note_renders_in_html_without_raw_markdown() -> None:
     """같은 문자열을 두 렌더러가 쓴다. 한쪽에 맞춘 서식은 다른 쪽에 날것으로 찍힌다."""
     html_doc = render_html(scan_code(f'API_KEY = "{_OPENAI}"', filename="a.py"))
     assert "민감값 일부 가림" in html_doc
-    assert "유출본을 한 벌 더" in html_doc
+    assert "또 하나의 유출 경로" in html_doc
     assert "**" not in MASKING_NOTE and "`" not in MASKING_NOTE
 
 

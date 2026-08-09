@@ -55,6 +55,38 @@ _PURL_RE = re.compile(r"^pkg:(?P<eco>[^/]+)/(?P<rest>.+)$")
 # 만들기 — 검사 결과 → CycloneDX
 # ---------------------------------------------------------------------------
 
+_PATH_SEP_RE = re.compile(r"[\\/]+")
+
+
+def project_name(target: str, explicit: str | None = None) -> str:
+    """SBOM 에 실을 프로젝트 이름 — **경로는 싣지 않는다**.
+
+    SBOM 은 조달처·발주처로 나가는 **반출 문서**다. 반입 번들은 코드 조각과 파일
+    경로를 허용목록으로 막아 두는데(`tools/registry_bundle.py`) SBOM 에는 그
+    방어가 없었다 — 더 멀리 나가는 쪽에 방어가 없었으니 방향이 뒤집혀 있었다.
+    실측(2026-08-09)에서 이렇게 나갔다::
+
+        "name": "C:\\\\Users\\\\<사용자명>\\\\AppData\\\\Local\\\\Temp\\\\...\\\\lexdiff"
+
+    사용자명·세션 ID·디렉터리 구조가 문서에 남는다. 여러 기관의 SBOM 이 한 곳에
+    모이면 **남의 기관 내부 구조**까지 함께 모인다.
+
+    막는 자리를 CLI 가 아니라 **문서 생성기**로 잡는다 — 호출자가 늘어도(MCP·웹)
+    방어가 따라온다. 값을 고르는 책임은 소비자가 아니라 생산자에게 있다.
+
+    ``explicit`` (``--project-name``)은 그대로 쓴다 — 사용자가 직접 고른 이름이고,
+    구분자를 포함한 정식 명칭(예: ``경기도/법령비교``)을 쪼개면 뜻이 상한다.
+    """
+    if explicit and explicit.strip():
+        return explicit.strip()
+    raw = (target or "").strip().rstrip("\\/")
+    if not raw:
+        return "project"
+    name = _PATH_SEP_RE.split(raw)[-1]
+    # `C:` 만 남는 경우(드라이브 루트를 검사) — 드라이브 문자는 이름이 아니다.
+    return name if name and not name.endswith(":") else "project"
+
+
 def _purl(check: dict) -> str:
     eco = str(check.get("ecosystem") or "generic")
     name = str(check.get("name") or "")
@@ -170,10 +202,14 @@ def to_cyclonedx(
     ruleset_version: str | None = None,
     ruleset_digest: str | None = None,
     generated_at: str | None = None,
+    name: str | None = None,
 ) -> dict:
     """의존성 검사 결과 → CycloneDX 1.6 문서(dict).
 
     `dependency_audit` 은 `{"audits": [...]}` 묶음 또는 단일 감사 결과를 받는다.
+
+    `target` 은 검사 경로라 **그대로 싣지 않는다** — `project_name` 이 마지막
+    구간만 남긴다. `name`(CLI `--project-name`)을 주면 그 값을 쓴다.
     """
     audits = _audit_list(dependency_audit)
     checks: list[dict] = []
@@ -239,9 +275,10 @@ def to_cyclonedx(
         },
         "components": components,
     }
-    if target:
+    if target or name:
+        label = project_name(target, name)
         doc["metadata"]["component"] = {
-            "type": "application", "name": target, "bom-ref": f"root:{target}",
+            "type": "application", "name": label, "bom-ref": f"root:{label}",
         }
     if vulns:
         doc["vulnerabilities"] = vulns

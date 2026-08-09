@@ -500,6 +500,7 @@ def _emit_sbom(args: argparse.Namespace, report: ScanReport) -> None:
         ruleset_version=report.ruleset_version,
         ruleset_digest=report.ruleset_digest,
         generated_at=report.generated_at,
+        name=getattr(args, "project_name", None),
     )
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1079,6 +1080,12 @@ def build_parser() -> argparse.ArgumentParser:
              "`--check-deps` 와 함께 쓰세요 — 의존성을 검사하지 않으면 컴포넌트 0개짜리 "
              "문서가 되어 '의존성이 없다'로 읽힙니다(그래서 그 경우 쓰지 않고 알립니다). "
              "판정 불가·상한 절단도 문서에 그대로 기록됩니다",
+    )
+    scan.add_argument(
+        "--project-name", metavar="이름", default=None,
+        help="SBOM 에 실을 프로젝트 이름. 미지정 시 검사 경로의 **마지막 구간만** 씁니다 "
+             "— SBOM 은 조달처로 나가는 문서라 전체 경로(사용자명·디렉터리 구조)를 "
+             "싣지 않습니다. 기관 정식 명칭이 따로 있으면 여기에 주세요",
     )
     scan.add_argument(
         "--include-installed", action="store_true",
