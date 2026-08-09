@@ -213,7 +213,34 @@ def test_prose_and_code_quotes_in_comments_are_not_flagged(code: str, why: str) 
     ('old_phone = "011-234-5678"', "구 식별번호"),
 ])
 def test_contact_pii_is_detected(code: str, why: str) -> None:
-    assert "GOV-PII-CONTACT-001" in _hits(code, "a.py"), why
+    assert "GOV-PII-PHONE-001" in _hits(code, "a.py"), why
+
+
+@pytest.mark.parametrize("ext", ["py", "ts", "mts", "js", "java", "sql", "md", "yaml"])
+def test_phone_rule_runs_in_every_language(ext: str) -> None:
+    """언어 목록에 구멍이 있으면 그 확장자에서는 룰이 **아예 돌지 않는다**.
+
+    실제로 이 룰의 ``languages`` 에 typescript 가 없어 ``.ts`` 프로젝트에서
+    한 건도 걸리지 않았고, 그 빈자리를 메우려고 만든 중복 룰이 같은 줄에
+    두 건씩 발행하고 있었다. 개인정보는 언어를 가리지 않는다.
+    """
+    assert "GOV-PII-PHONE-001" in _hits('phone = "010-9876-5432"', f"a.{ext}"), ext
+
+
+def test_phone_rule_has_no_duplicate_twin() -> None:
+    """같은 일을 하는 룰이 둘이면 담당자는 한 줄을 두 번 고친다.
+
+    ``GOV-PII-CONTACT-001`` 은 이 룰과 완전히 겹쳐 삭제했다. 되살아나면
+    실패한다 — 룰 린터의 중복 커버리지 검사와 짝을 이루는 명시적 못이다.
+    """
+    from gvskb.scanners.regex_scanner import RULES
+
+    ids = {r["rule_id"] for r in RULES}
+    assert "GOV-PII-CONTACT-001" not in ids, "삭제한 중복 룰이 되살아났다"
+
+    hits = _hits('phone = "010-9876-5432"', "a.ts")
+    phone_rules = [r for r in hits if "PHONE" in r or "CONTACT" in r]
+    assert phone_rules == ["GOV-PII-PHONE-001"], f"전화번호를 보는 룰이 둘 이상: {phone_rules}"
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +273,11 @@ def test_phone_rule_does_not_require_luhn() -> None:
 
     by_id = {r["rule_id"]: r for r in RULES}
     assert _luhn_ok in by_id["GOV-PII-CARD-001"]["validators"], "카드 룰에 Luhn 이 없다"
-    assert _luhn_ok not in by_id["GOV-PII-CONTACT-001"]["validators"], \
+    assert _luhn_ok not in by_id["GOV-PII-PHONE-001"]["validators"], \
         "전화번호 룰에 Luhn 이 걸리면 정상 번호의 90%를 놓친다"
     # Luhn 을 통과하지 못하는 평범한 전화번호도 잡혀야 한다
     assert not _luhn_ok("01098765432")
-    assert "GOV-PII-CONTACT-001" in _hits('phone = "010-9876-5432"', "a.py")
+    assert "GOV-PII-PHONE-001" in _hits('phone = "010-9876-5432"', "a.py")
 
 
 @pytest.mark.parametrize("code, why", [
@@ -263,16 +290,36 @@ def test_phone_rule_does_not_require_luhn() -> None:
 ])
 def test_contact_pii_placeholders_are_not_flagged(code: str, why: str) -> None:
     """대표 예시 번호까지 잡으면 README·기획서마다 경고가 뜬다."""
-    assert "GOV-PII-CONTACT-001" not in _hits(code, "a.py"), why
+    assert "GOV-PII-PHONE-001" not in _hits(code, "a.py"), why
 
 
-def test_contact_pii_is_warn_not_block() -> None:
-    """형태만으로는 실제 개인정보인지 더미인지 알 수 없다. 주민번호는 검증식까지
-    통과해야 하므로 block 이지만 이쪽은 근거가 약해 **검토 요청**으로 둔다 —
-    확신 없이 배포를 막으면 담당자가 도구를 끈다."""
-    fs = [f for f in scan_code('phone = "010-9876-5432"', filename="a.py").findings
-          if f.rule_id == "GOV-PII-CONTACT-001"]
-    assert fs and all(str(f.decision.value) == "warn" for f in fs)
+def test_phone_pii_blocks_in_production_code() -> None:
+    """운영 코드의 휴대전화번호는 **차단**한다.
+
+    한때 ``warn`` 으로 낮추자는 안이 있었다 — "형태만으로는 더미인지 알 수 없다".
+    채택하지 않은 이유는 이 패턴이 대표번호(02·1588)가 아니라 **이동통신
+    식별번호만** 본다는 것이다. 운영 코드에 박힌 010 번호는 거의 언제나 실존
+    개인의 번호이고, 커밋되면 Git 이력에 영구히 남는다.
+    """
+    fs = [f for f in scan_code('CONTACT = "010-9876-5432"', filename="app.py").findings
+          if f.rule_id == "GOV-PII-PHONE-001"]
+    assert fs, "운영 코드의 실제 형태 번호를 놓쳤다"
+    assert all(str(f.decision.value) == "block" for f in fs)
+
+
+def test_phone_pii_is_attenuated_inside_tests() -> None:
+    """오탐이 몰리는 자리는 테스트 픽스처다. 거기서는 차단이 아니라 검토 요청.
+
+    ``block`` 을 유지할 수 있는 근거가 이것이다 — 확신 없이 배포를 막으면
+    담당자가 도구를 끄는데, 그 상황을 감쇄가 대신 받아 준다.
+    """
+    fs = [f for f in scan_code('const phone = "010-9876-5432"',
+                               filename="tests/fill.test.ts").findings
+          if f.rule_id == "GOV-PII-PHONE-001"]
+    assert fs, "테스트 경로라고 발견을 지우면 안 된다 — 낮출 뿐이다"
+    assert all(str(f.decision.value) == "warn" for f in fs)
+    assert all(str(f.severity.value) == "low" for f in fs)
+    assert all(f.severity_adjusted for f in fs), "낮춘 사실을 보고서에 남겨야 한다"
 
 
 # ---------------------------------------------------------------------------

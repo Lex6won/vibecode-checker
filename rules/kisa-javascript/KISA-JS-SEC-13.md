@@ -41,10 +41,10 @@ detection:
     # `admin / 비번` 처럼 슬래시로 구분한 자격증명 패턴은 **넣지 않았다.**
     # 파이썬 룰에는 있지만 JS 주석에는 경로(`Root/BodyText`)와 산문(`over/root/of`)이
     # 흔해 구분이 되지 않는다. 적중보다 오경고가 많을 검사는 넣지 않는 편이 낫다.
-    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\b(?:password|passwd|pw|비밀번호|암호)\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))(?![A-Za-z_]\\w*(?:\\.\\w+)+(?:\\s|$))[^\\s`'\\\"(){}]{4,}"
-    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\b(?:userid|username|user_id|admin_id|admin_pw)\\s*[:=]\\s*(?![A-Za-z_]\\w*(?:\\.\\w+)+(?:\\s|$))[^\\s`'\\\"(){}]{4,}"
-    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\bid\\s*[:=]\\s*(?:admin|administrator|root|sa|sys)\\b"
-    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|signing[_-]?key|jwt[_-]?secret)\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))(?![A-Za-z_]\\w*(?:\\.\\w+)+(?:\\s|$))[^\\s`'\\\"(){}]{4,}"
+    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\b(?:password|passwd|pw|비밀번호|암호)(?:\\*\\*)?\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))(?![A-Za-z_]\\w*(?:\\.\\w+)+(?:\\s|$))[^\\s`'\\\"(){}]{4,}"
+    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\b(?:userid|username|user_id|admin_id|admin_pw)(?:\\*\\*)?\\s*[:=]\\s*(?![A-Za-z_]\\w*(?:\\.\\w+)+(?:\\s|$))[^\\s`'\\\"(){}]{4,}"
+    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\bid(?:\\*\\*)?\\s*[:=]\\s*(?:admin|administrator|root|sa|sys)\\b"
+    - "(?i)^\\s*(?://|/\\*+|\\*)[^`(){}\\[\\]]{0,60}?\\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|signing[_-]?key|jwt[_-]?secret)(?:\\*\\*)?\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))(?![A-Za-z_]\\w*(?:\\.\\w+)+(?:\\s|$))[^\\s`'\\\"(){}]{4,}"
   category: secret-scanning
   confidence: likely
   why_it_matters: >-

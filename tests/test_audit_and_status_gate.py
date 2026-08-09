@@ -165,7 +165,8 @@ def test_audit_records_scan_and_findings_hash_only(
     assert all(e.rule_id and e.finding_id for e in finding_events)
     # hash-centric 원칙: 원문 비밀값은 절대 저장되지 않는다(마스킹 증거만)
     assert "SuperSecretValue123" not in raw
-    assert "REDACTED" in raw
+    from gvskb.scanners.regex_scanner import MASK_MARK
+    assert MASK_MARK in raw
 
 
 def test_audit_appends_across_scans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

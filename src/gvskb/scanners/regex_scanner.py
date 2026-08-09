@@ -387,19 +387,79 @@ def _finding_id(rule_id: str, filename: str, line_no: int, evidence: str) -> str
     return f"{rule_id}:{digest}"
 
 
+#: 가려진 자리에 남기는 표식. 담당자가 "여기가 원문이 아니다"를 **문자열 안에서**
+#: 알 수 있어야 한다. 보고서 라벨만으로는 증거를 복사해 붙인 순간 사라진다.
+#:
+#: 마크다운에서 안전한 모양을 골랐다. 이전 표식 `***REDACTED***` 는 별 넷이
+#: 굵게+기울임으로 렌더돼 보고서마다 서식이 깨졌고, 영어라 비전공 담당자에게
+#: 아무것도 알려주지 않았다.
+MASK_MARK = "[마스킹]"
+
+#: 이 함수가 만들어 내는 마스킹 모양들. "정말 가려졌는가"를 되묻기 위한 것이다.
+#: 보고서가 모든 증거에 '마스킹됨' 딱지를 붙이면 그 딱지는 정보가 아니다 —
+#: `eval(x)` 옆의 '마스킹됨'을 본 담당자는 무엇이 가려졌는지 찾다가 지친다.
+_MASKED_SHAPE_RE = re.compile(
+    r"\[마스킹\]|\d{6}-[1-4]\*{6}|01[016789]-\*{4}-\d{4}",
+)
+
+
+def evidence_is_masked(text: str) -> bool:
+    """증거 문자열에 실제로 가려진 부분이 있는가."""
+    return bool(text) and bool(_MASKED_SHAPE_RE.search(text))
+
+
+def _partial(token: str) -> str:
+    """앞뒤 일부만 남기고 가린다 — **식별은 되고 사용은 불가**하게.
+
+    담당자는 유출된 키를 폐기·재발급해야 하는데, 통째로 가리면 한 파일에
+    키가 여러 개일 때 **어느 것인지 구분할 수 없다**. 그렇다고 원문을 실으면
+    보고서가 유출본을 한 벌 더 만든다 — 이 보고서는 파일로 저장되고 결재로
+    올라가고 감사로그에 남는다.
+
+    노출 비율을 길이에 비례시킨다(앞 ¼·뒤 ⅛, 각각 8자·4자 상한). 짧은 값은
+    비율로 따져도 남는 부분이 너무 커지므로 통째로 가린다.
+    """
+    n = len(token)
+    head, tail = min(8, n // 4), min(4, n // 8)
+    if head + tail < 6:
+        return MASK_MARK
+    return f"{token[:head]}{MASK_MARK}{token[n - tail:]}"
+
+
+#: **비밀번호는 부분 노출하지 않는다.** API 키는 기계가 만든 고엔트로피 값이라
+#: 앞 몇 자를 봐도 나머지를 좁히지 못하지만, 비밀번호는 사람이 지어 저엔트로피다
+#: — `P@ss…` 넉 자가 추측을 실질적으로 도와준다. 게다가 어느 비밀번호인지는
+#: 변수명(`DB_PASSWORD`)이 이미 말해 주므로 부분 노출로 얻는 것도 없다.
+_FULL_MASK_KEYS = re.compile(r"(?i)^(password|passwd|pwd)$")
+
+
+def _mask_quoted_value(m: re.Match[str]) -> str:
+    lead, key, value, close = m.group(1), m.group(2), m.group(3), m.group(4)
+    # 앞 단계(sk-·AKIA)가 이미 가린 값을 다시 가리면 남겨 둔 식별 정보가 사라진다.
+    if _MASKED_SHAPE_RE.search(value):
+        return m.group(0)
+    return f"{lead}{MASK_MARK if _FULL_MASK_KEYS.match(key) else _partial(value)}{close}"
+
+
 def redact_evidence(text: str) -> str:
-    """Mask Korean PII, secrets, AWS/sk-* keys, and credential-shaped strings."""
+    """Mask Korean PII, secrets, AWS/sk-* keys, and credential-shaped strings.
+
+    가리되 **통째로 가리지는 않는다.** 무엇이 노출됐는지 담당자가 알아보지
+    못하면 보고서는 조치로 이어지지 않는다. 국내 관행대로 주민등록번호는
+    생년월일·성별자리를, 휴대전화는 뒷 네 자리를 남기고, 나머지 비밀값은
+    길이에 비례해 앞뒤 일부만 남긴다. 비밀번호만 예외로 통째로 가린다.
+    """
     text = re.sub(r"\b(\d{6})-?([1-4])\d{6}\b", r"\1-\2******", text)
     text = re.sub(r"\b(01[016789])-?\d{3,4}-?(\d{4})\b", r"\1-****-\2", text)
     # 탐지 룰보다 **일부러 느슨하게** 잡는다. 여기서 못 가리면 토큰이 보고서·
     # 로그·오류 메시지에 그대로 찍히지만, 넓게 가려서 생기는 손해는 증거 문자열이
     # 조금 덜 읽히는 것뿐이다. 비대칭이 명백하므로 과잉 마스킹 쪽을 택한다.
     # (실측: sk- 만 가려서 sk_ggtrust_… 형식 기관 API 키가 무방비였다.)
-    text = re.sub(r"sk([-_])[A-Za-z0-9_-]{8,}", r"sk\1***REDACTED***", text)
-    text = re.sub(r"AKIA[0-9A-Z]{16}", "AKIA***REDACTED***", text)
+    text = re.sub(r"sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
+    text = re.sub(r"AKIA[0-9A-Z]{16}", lambda m: _partial(m.group(0)), text)
     text = re.sub(
-        r"(?i)((api[_-]?key|secret|password|passwd|token)\s*[:=]\s*[\"'])[^\"']+([\"'])",
-        r"\1***REDACTED***\3",
+        r"(?i)((api[_-]?key|secret|password|passwd|pwd|token)\s*[:=]\s*[\"'])([^\"']+)([\"'])",
+        _mask_quoted_value,
         text,
     )
     return text.strip()[:240]

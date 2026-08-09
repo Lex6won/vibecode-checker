@@ -24,9 +24,9 @@ detection:
     # `PASSWORD = "YOUR_PASSWORD_HERE"` 가 **치명·차단**으로 잡혔다(실측
     # 2026-08-08). 안내용 템플릿을 배포 차단하면 담당자는 도구를 끈다 —
     # 같은 일을 하는 형제 룰끼리 가드가 어긋난 자리를 맞춘다.
-    - "(?i)(?:password|passwd|pwd|비밀번호|암호)\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))[^'\"\\s$\\{]{4,}['\"]"
-    - "(?i)(?:secret|secret_key|signing_key|jwt_secret)\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))[^'\"\\s$\\{]{8,}['\"]"
-    - "(?i)(?:db_pass|db_password|database_password)\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))[^'\"\\s$\\{]{4,}['\"]"
+    - "(?i)(?:password|passwd|pwd|비밀번호|암호)(?:\\*\\*)?\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))[^'\"\\s$\\{]{4,}['\"]"
+    - "(?i)(?:secret|secret_key|signing_key|jwt_secret)(?:\\*\\*)?\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))[^'\"\\s$\\{]{8,}['\"]"
+    - "(?i)(?:db_pass|db_password|database_password)(?:\\*\\*)?\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))[^'\"\\s$\\{]{4,}['\"]"
     - "(?:postgres|mysql|mongodb)://[^:]+:[^@]+@"
   category: secret-scanning
   why_it_matters: >-

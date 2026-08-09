@@ -18,13 +18,17 @@ from pathlib import Path
 
 import pytest
 
-from gvskb.cli import _scan_reproduce_command
+from gvskb.cli import SCAN_MAX_FILES_DEFAULT, _scan_reproduce_command
 
 
 def _args(**kw) -> argparse.Namespace:
+    # max_files 는 **상수를 그대로** 쓴다. 예전에 500 을 박아 뒀더니 기본값이
+    # 20,000 으로 올라간 순간 "기본값만 쓴 실행"이 아니게 돼, 재현 명령이
+    # 짧아야 할 자리에서 `--max-files 500` 을 달고 나왔다.
     base = {
         "path": "./proj", "profile": "public-default-strict", "scenario": None,
-        "max_files": 500, "check_deps": False, "include_installed": False,
+        "max_files": SCAN_MAX_FILES_DEFAULT, "check_deps": False,
+        "include_installed": False,
         "env": None, "fail_on": "warn", "registry_bundle": None,
     }
     base.update(kw)

@@ -17,7 +17,7 @@ decision_default: block
 domains: [privacy]
 languages: []
 scenarios: [web-app, data-pipeline, llm-integration]
-related_baseline: [GOV-PII-RRN-001, GOV-PII-CONTACT-001]
+related_baseline: [GOV-PII-RRN-001, GOV-PII-PHONE-001]
 verified_at: 2026-08-09
 review_due: 2027-02-28
 detection:
@@ -30,7 +30,7 @@ detection:
   # 형태가 같아, 형태만 보면 오탐이 쏟아진다. Luhn 은 임의 숫자열의 90%를
   # 떨어뜨린다.
   #
-  # 전화번호(GOV-PII-CONTACT-001)와 **룰을 나눈 이유가 이것**이다: 검증기는
+  # 전화번호(GOV-PII-PHONE-001)와 **룰을 나눈 이유가 이것**이다: 검증기는
   # 룰 단위로 걸리므로 한 룰에 두면 전화번호에도 Luhn 이 적용돼 정상 번호의
   # 90%를 놓친다. 처음에 한 룰로 묶었다가 검증기가 아무 데도 안 걸리는
   # **죽은 코드**가 됐고, 테스트가 그것을 드러냈다.
