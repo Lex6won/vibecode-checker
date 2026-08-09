@@ -296,7 +296,9 @@ def _action_order(findings: list[Finding]) -> list[dict]:
 
     groups = sorted(_rule_groups(findings), key=key)
     tiers: list[dict] = [
-        {"label": "지금 막아야 하는 것", "hint": "배포가 차단됩니다", "groups": []},
+        # "배포가 차단됩니다" 였다 — 소스 발견은 사다리에서 **조건부 승인**이므로
+        # 배포를 막지 않는다. 단이 말해야 하는 것은 배포 결과가 아니라 조치 급함이다.
+        {"label": "지금 막아야 하는 것", "hint": "사유 기록으로 넘길 수 없는 등급", "groups": []},
         {"label": "그다음", "hint": "치명·높음", "groups": []},
         {"label": "나머지", "hint": "보통·낮음 — 순서가 뒤일 뿐 조치 대상입니다", "groups": []},
     ]
@@ -392,6 +394,13 @@ _ACTION_STEPS: tuple[tuple[str, str, str], ...] = (
 )
 
 _ACTION_LEAD_BLOCK = "지금 이대로 올리거나 배포하면 안 됩니다. 아래 3단계로 고친 뒤 다시 검사하세요."
+# 세 리드 모두 **마크업을 넣지 않는다** — MD 는 호출부가 통째로 굵게 감싸고
+# (`**{lead}**`), HTML 은 `_esc` 로 그대로 내보낸다. 여기에 `**` 를 쓰면 MD 는
+# 굵게가 중첩돼 깨지고 HTML 은 별표가 화면에 그대로 나온다.
+_ACTION_LEAD_MUST = (
+    "⚠️ 사유 기록으로 넘길 수 없는 등급(차단)의 발견이 있습니다. "
+    "아래 3단계로 고친 뒤 다시 검사하세요."
+)
 _ACTION_LEAD_WARN = "⚠️ 운영에 반영하기 전에 고치는 것을 권합니다. 아래 3단계를 따르세요."
 _ACTION_CAVEAT = (
     "코드만으론 안 끝나는 것 — API 키·비밀번호가 노출됐다면 코드에서 지우는 것만으론 "
@@ -399,11 +408,57 @@ _ACTION_CAVEAT = (
 )
 
 
+def _deploy_blocked(report: ScanReport) -> bool:
+    """배포가 실제로 막혔는가 — **게이트에게만 묻는다**.
+
+    **왜 이 함수가 있는가(실측 2026-08-09)**: 판정 사다리를 셋으로 나눌 때
+    ``gate.py`` 만 고치고 본문 문구를 두고 왔다. 그래서 `koica-reg-mcp` 보고서가
+    한 화면 안에서 "차단 사유는 없습니다"(판정 상자)와 "배포 차단이 풀리지
+    않습니다"(조치 순서)를 **동시에** 말했다. 담당자는 둘 중 무엇을 믿어야 하는지
+    알 수 없다.
+
+    원인은 판정을 세 군데서 따로 계산한 것이다 — 게이트, ``summary.blocked``,
+    그리고 의존성 감사가 자체로 들고 있는 옛 ``blocked`` 플래그. 뒤의 둘은
+    사다리 이전 기준(취약하면 곧 차단)이라 이제 게이트와 어긋난다.
+    **배포 결과를 말하는 문장은 이 함수만 거친다.**
+
+    발견 하나하나의 ``decision=block`` 은 다른 개념이다 — "이 발견은 사유
+    기록으로 넘길 수 없는 등급"이라는 룰의 판단이지, 배포가 막혔다는 뜻이 아니다.
+    """
+    from .gate import gate_status
+
+    return bool(gate_status(report)["blocked"])
+
+
 def _action_lead(report: ScanReport) -> str:
-    block_count = report.summary.by_decision.get(Decision.block.value, 0)
-    if report.summary.blocked or block_count:
+    if _deploy_blocked(report):
         return _ACTION_LEAD_BLOCK
+    if report.summary.by_decision.get(Decision.block.value, 0):
+        return _ACTION_LEAD_MUST
     return _ACTION_LEAD_WARN
+
+
+def _dep_also_note(report: ScanReport) -> str:
+    """"소스만 고치면 끝이 아니다" 한 문장 — MD·HTML 이 **같은 문자열**을 쓴다.
+
+    두 렌더러가 각자 적어 두었던 탓에 사다리 변경이 한쪽만 따라갔다.
+    """
+    if _deploy_blocked(report):
+        return "소스 코드만 고치면 **배포 차단이 풀리지 않습니다** — 패키지도 함께 올리세요."
+    return "소스 코드만 고쳐서는 **조치가 끝나지 않습니다** — 패키지도 함께 올리세요."
+
+
+def _dep_prompt_warn(report: ScanReport) -> str:
+    """수정 프롬프트 앞에 붙는 경고 — 역시 MD·HTML 공용."""
+    if _deploy_blocked(report):
+        return (
+            "⚠ **패키지 블록을 빠뜨리지 마세요** — 소스 코드만 고치면 의존성 차단이 "
+            "그대로 남아 다시 검사해도 배포 판정이 바뀌지 않습니다."
+        )
+    return (
+        "⚠ **패키지를 빠뜨리지 마세요** — 소스 코드만 고치면 패키지 항목이 그대로 남아 "
+        "다시 검사해도 조치 대상이 남습니다."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -462,31 +517,10 @@ def _cat_ko(cat: str) -> str:
     return _CATEGORY_LABEL_KO.get(cat, cat)
 
 
-def _verdict_line(report: ScanReport) -> str:
-    """One sentence an executive can read without scrolling."""
-    summary = report.summary
-    if summary.finding_count == 0:
-        # 검사 대상 파일이 0개면 "위험 없음"이 아니라 "검사 안 됨" — 저장된
-        # 리포트만 보고 안전하다고 오해하지 않도록 결론에서 분명히 구분한다.
-        if not report.scanned_files:
-            return (
-                "⚠ 검사된 파일 없음 — 스캔 대상 파일이 0개입니다. 경로·지원 확장자·"
-                "제외 설정을 확인하세요. 이 결과를 '안전'으로 해석하지 마세요."
-            )
-        return "위험 없음 — 본 검사에서 발견된 위반 사항이 없습니다."
-    block_count = summary.by_decision.get(Decision.block.value, 0)
-    warn_count = summary.by_decision.get(Decision.warn.value, 0)
-    top_sev = summary.highest_severity
-    sev_ko = _SEVERITY_LABEL_KO[top_sev] if top_sev else "보통"
-    if summary.blocked or block_count:
-        return (
-            f"차단 권고 — {sev_ko} 등급 포함 총 {summary.finding_count}건 발견, "
-            f"이 중 차단(block) {block_count}건. 커밋·배포 전 수정 또는 보안담당자 승인 필요."
-        )
-    return (
-        f"수정 권고 — {sev_ko} 등급 포함 총 {summary.finding_count}건 발견, "
-        f"경고(warn) {warn_count}건. 운영 반영 전 우선 검토하세요."
-    )
+# `_verdict_line`·`_verdict_css_color` 를 여기서 지웠다(2026-08-09). 두 함수 모두
+# **어디서도 호출되지 않으면서** 사다리 이전 기준(`summary.blocked or block_count`
+# → 차단)을 문장과 색으로 담고 있었다. 죽은 코드가 옛 정책을 들고 있으면 다음
+# 사람이 그걸 보고 되살린다. 판정 문구는 `gate_status` 와 `_deploy_blocked` 뿐이다.
 
 
 # ---------------------------------------------------------------------------
@@ -1338,9 +1372,7 @@ def render_markdown(
                 f"— {_dep_row_order['count']}건 (아래 '의존성(패키지) 취약점 검사')"
             )
             lines.append("")
-            lines.append(
-                "> 소스 코드만 고치면 **배포 차단이 풀리지 않습니다** — 패키지도 함께 올리세요."
-            )
+            lines.append(f"> {_dep_also_note(report)}")
             lines.append("")
         lines.append(
             "> 📌 **각 항목의 정확한 위치·취약점·대응 방법은 아래 '상세 검토 결과'의 "
@@ -1521,10 +1553,7 @@ def render_markdown(
         )
         lines.append("")
         if dep_prompt:
-            lines.append(
-                "> ⚠ **패키지 블록을 빠뜨리지 마세요** — 소스 코드만 고치면 의존성 차단이 "
-                "그대로 남아 다시 검사해도 배포 판정이 바뀌지 않습니다."
-            )
+            lines.append(f"> {_dep_prompt_warn(report)}")
             lines.append("")
         for g in _rule_groups(report.findings):
             lines.append("```text")
@@ -1879,14 +1908,13 @@ def _esc(text: str) -> str:
     return html.escape(str(text), quote=True)
 
 
-def _verdict_css_color(report: ScanReport) -> str:
-    summary = report.summary
-    if summary.finding_count == 0:
-        return "#607d8b" if not report.scanned_files else "#2e7d32"
-    block_count = summary.by_decision.get(Decision.block.value, 0)
-    if summary.blocked or block_count:
-        return "#c0392b"
-    return "#e67e22"
+def _md_bold_to_html(text: str) -> str:
+    """`**강조**` 를 `<b>` 로. 두 렌더러가 같은 문장을 쓰게 하려고 있다.
+
+    HTML 쪽 관행이던 ``.replace("**", "")`` 는 강조를 **지운다** — 같은 문장이
+    MD 에서는 굵고 HTML 에서는 밋밋해져, 문구를 고칠 때 한쪽만 고치게 된다.
+    """
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", _esc(text))
 
 
 def render_html(
@@ -2073,8 +2101,8 @@ def render_html(
                     f'{dep_row_top["count"]}건</div>'
                 )
                 p.append(
-                    '<div class="depwarn">소스 코드만 고치면 <b>배포 차단이 풀리지 않습니다</b> '
-                    "— 패키지도 함께 올리세요(아래 '의존성(패키지) 취약점 검사').</div>"
+                    f'<div class="depwarn">{_md_bold_to_html(_dep_also_note(report))}'
+                    " (아래 '의존성(패키지) 취약점 검사')</div>"
                 )
         p.append(
             '<div class="jumpnote">📌 <b>각 항목의 정확한 위치·취약점·대응 방법은 아래 '
@@ -2261,10 +2289,7 @@ def render_html(
             "</div></div>"
         )
         if dep_prompt:
-            p.append(
-                '<div class="depwarn">⚠ <b>패키지 블록을 빠뜨리지 마세요</b> — 소스 코드만 '
-                "고치면 의존성 차단이 그대로 남아 다시 검사해도 배포 판정이 바뀌지 않습니다.</div>"
-            )
+            p.append(f'<div class="depwarn">{_md_bold_to_html(_dep_prompt_warn(report))}</div>')
         # ② 유형별 수정 프롬프트 — 각 블록마다 복사 버튼
         for g in _rule_groups(report.findings):
             text = _fix_prompt_text(g)
@@ -2371,8 +2396,10 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
         row["components"],
         key=lambda c: (-_SEVERITY_RANK[c["severity"]], str(c["check"].get("name") or "").lower()),
     )
-    blocked = any(a.get("blocked") for a in _dep_audits(report))
-    head = "[차단]" if blocked else "[경고]"
+    # 감사 자체의 `blocked` 는 사다리 이전 기준(취약하면 곧 차단)이라 이제
+    # 게이트와 어긋난다 — HIGH 취약점 하나에 `[차단]` 이 붙어, 판정 상자의
+    # "조건부 승인" 과 같은 문서 안에서 충돌했다. 게이트에게 묻는다.
+    head = "[차단]" if _deploy_blocked(report) else "[조치 필요]"
     out = [f"{head} 취약·위험 패키지 {len(comps)}건 — 버전을 올려야 합니다"]
     for comp in comps:
         c = comp["check"]
@@ -3190,7 +3217,9 @@ def _render_dependency_audit_md(report: ScanReport) -> list[str]:
     out: list[str] = ["## 의존성(패키지) 취약점 검사", ""]
     out.append(f"> 검사 {checked}건 · 판정 불가 {unchecked}건 · 취약·악성 {vuln}건"
                + (f" · **미존재(가짜 이름 의심) {not_found}건**" if not_found else "")
-               + (" · **차단 권고**" if blocked else ""))
+               # `blocked`(감사 자체 플래그) 가 아니라 게이트 판정을 적는다.
+               + (" · **차단 권고**" if _deploy_blocked(report)
+                  else (" · **업그레이드 필요(조건부 승인)**" if blocked else "")))
     out.append("")
     out.append(_DEP_UNIT_NOTE)
     out.append("")
