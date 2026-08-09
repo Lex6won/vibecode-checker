@@ -48,6 +48,12 @@ _EXT_TO_LANG = {
 # "주석문 안에 포함된 시스템 주요정보", hardcoded keys). Those keep matching.
 _COMMENT_SKIP_EXEMPT_CATEGORIES = {
     "secret-scanning",
+    # 개인정보도 같은 이유로 예외다(실측 2026-08-08). `# 테스트 대상자
+    # 900101-1234567` 이 주석이라는 이유로 통째로 빠져 있었다 — 주석에 적힌
+    # 주민등록번호는 **여전히 개인정보 유출**이고, 커밋되면 이력에 영구히 남는다.
+    # "주석은 살아있는 코드가 아니다"는 *실행 위험*에는 맞지만 *노출 위험*에는
+    # 맞지 않는다. 두 위험을 한 규칙으로 다루던 것이 문제였다.
+    "privacy-public-sector",
 }
 
 _IGNORE_RE = re.compile(r"gvskb:\s*ignore(?:\s+([A-Za-z0-9_.:-]+))?", re.IGNORECASE)
@@ -86,8 +92,32 @@ def _rrn_checksum_ok(matched: str) -> bool:
     return (11 - total % 11) % 10 == digits[12]
 
 
+def _luhn_ok(matched: str) -> bool:
+    """카드번호 검증식(Luhn, mod 10).
+
+    16자리 숫자 뭉치는 주문번호·타임스탬프·해시 조각과 형태가 같다. Luhn 은
+    **임의 숫자열의 90%를 떨어뜨려** 이 룰을 쓸 만하게 만든다(1/10 만 통과).
+
+    주민번호 검증기와 달리 하이픈 유무로 갈라 주지 않는다. 카드번호는
+    `4111-1111-1111-1111` 처럼 하이픈이 있어도 여전히 그냥 16자리 숫자와
+    형태가 같아, 하이픈이 "의도 신호"가 되지 못하기 때문이다.
+    """
+    digits = [int(ch) for ch in matched if ch.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
 _VALIDATORS: dict[str, "Callable[[str], bool]"] = {
     "rrn_checksum": _rrn_checksum_ok,
+    "luhn": _luhn_ok,
 }
 
 # 증거 문자열 — 매치 구간을 중심으로 잘라 낸다. 줄 전체를 넣으면 200자가 넘는
