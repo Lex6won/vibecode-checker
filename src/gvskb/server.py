@@ -609,7 +609,10 @@ def save_report(
     explicit = None
     if output_dir:
         from .report_store import default_report_basename
-        explicit = str(Path(output_dir) / default_report_basename(parsed.target))
+        # 공용 폴더로 모으면 파일명에 사업 이름을 넣는다 — 날짜만으로는 어느
+        # 사업 보고서인지 알 수 없어 여러 부서가 한 폴더를 쓰는 순간 못 찾는다.
+        explicit = str(
+            Path(output_dir) / default_report_basename(parsed.target, shared=True))
     base, fallback_note = ensure_writable(resolve_report_path(parsed.target, explicit=explicit))
 
     written: dict[str, str] = {}

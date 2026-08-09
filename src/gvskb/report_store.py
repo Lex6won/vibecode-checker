@@ -21,6 +21,7 @@ MCP ``render_report`` 는 문자열만 돌려줬다. 그래서 공무원이 AI �
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import datetime
@@ -29,8 +30,62 @@ from pathlib import Path
 REPORT_DIR_NAME = ".check-reports"
 REPORT_DIR_ENV = "GVSKB_REPORT_DIR"
 
+#: 사용자 설정 파일. 환경변수는 **공무원이 쓸 수 있는 방법이 아니다** —
+#: 실사용 지적(2026-08-09): *"점검 파일을 다운 받는 위치에 저장하는거지?
+#: 근데 찾기가 너무 어려워. 별도로 폴더를 지정하게 해주면 좋겠어."*
+#: `GVSKB_REPORT_DIR` 은 있었지만 Windows 에서 환경변수를 설정하려면
+#: 시스템 속성 창을 열어야 한다. 사실상 없는 기능이었다.
+CONFIG_FILENAME = "config.json"
+CONFIG_KEY_REPORT_DIR = "report_dir"
+
 # 파일명에 쓸 수 없는 문자(Windows 기준) — 프로젝트명이 들어갈 때 대비.
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def config_path() -> Path:
+    """사용자 설정 파일 위치. Windows 는 ``%APPDATA%\\gvskb\\config.json``."""
+    override = os.environ.get("GVSKB_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override) / CONFIG_FILENAME
+    appdata = os.environ.get("APPDATA", "").strip()
+    base = Path(appdata) if appdata else Path.home() / ".config"
+    return base / "gvskb" / CONFIG_FILENAME
+
+
+def read_config() -> dict:
+    """설정을 읽는다. 없거나 깨졌으면 **조용히 빈 설정**으로 둔다.
+
+    설정 파일이 깨졌다고 검사가 실패하면 안 된다 — 보고서를 어디 둘지는
+    검사 결과의 정확성과 무관하다.
+    """
+    try:
+        return json.loads(config_path().read_text(encoding="utf-8-sig")) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_config(values: dict) -> Path:
+    """설정을 저장하고 그 경로를 돌려준다."""
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def configured_report_dir() -> tuple[Path | None, str]:
+    """설정된 보고서 폴더와 **그 근거**를 함께 돌려준다.
+
+    근거를 함께 주는 이유: "왜 여기 저장됐지?"를 사용자가 되물을 수 있어야 한다.
+    우선순위는 급한 것부터 — 일회성 지정 > 환경변수 > 설정 파일 > 규약 기본값.
+    """
+    env = os.environ.get(REPORT_DIR_ENV, "").strip()
+    if env:
+        return Path(env), f"환경변수 {REPORT_DIR_ENV}"
+    saved = str(read_config().get(CONFIG_KEY_REPORT_DIR, "") or "").strip()
+    if saved:
+        return Path(saved), f"설정 파일({config_path()})"
+    return None, f"기본값 — 검사한 폴더 안 {REPORT_DIR_NAME}/"
 
 
 def _stamp(now: datetime | None = None) -> str:
@@ -42,11 +97,18 @@ def _safe(name: str) -> str:
     return cleaned or "project"
 
 
+def project_label(target: str | Path) -> str:
+    """검사 대상을 가리키는 짧은 이름(폴더명 또는 파일명)."""
+    p = Path(target)
+    name = p.name if p.name else p.resolve().name
+    return _safe(name)[:40]
+
+
 def report_dir_for(target: str | Path) -> Path:
-    """이 검사 대상의 보고서를 둘 폴더. 기관 지정(env)이 있으면 그쪽이 우선."""
-    override = os.environ.get(REPORT_DIR_ENV, "").strip()
-    if override:
-        return Path(override)
+    """이 검사 대상의 보고서를 둘 폴더. 지정이 있으면 그쪽이 우선."""
+    configured, _ = configured_report_dir()
+    if configured is not None:
+        return configured
     p = Path(target)
     base = p if p.is_dir() else p.parent
     if str(base) in ("", "."):
@@ -54,9 +116,29 @@ def report_dir_for(target: str | Path) -> Path:
     return base / REPORT_DIR_NAME
 
 
-def default_report_basename(target: str | Path, now: datetime | None = None) -> str:
-    """``2026-07-31_1530_보안점검`` — 확장자 없는 기본 파일명."""
-    return f"{_stamp(now)}_보안점검"
+def default_report_basename(
+    target: str | Path,
+    now: datetime | None = None,
+    *,
+    shared: bool | None = None,
+) -> str:
+    """확장자 없는 기본 파일명.
+
+    - 프로젝트 옆(`.check-reports/`)이면 ``2026-07-31_1530_보안점검``
+    - **공용 폴더로 모으면** ``2026-07-31_1530_사업이름_보안점검``
+
+    공용 폴더에서 프로젝트 이름을 빼면 **어느 사업 보고서인지 파일명만 보고
+    알 수 없다.** 여러 부서가 한 폴더에 쌓으면 그 순간 쓸모없어진다.
+    프로젝트 옆에 둘 때는 폴더가 이미 맥락이므로 넣지 않는다(기존 이름 유지).
+
+    ``shared`` 를 주면 그 값을 따른다 — ``--report-dir`` 처럼 **설정과 무관하게**
+    한 번만 공용 폴더로 보내는 경우가 있고, 그때도 이름이 붙어야 한다.
+    """
+    if shared is None:
+        shared = configured_report_dir()[0] is not None
+    if not shared:
+        return f"{_stamp(now)}_보안점검"
+    return f"{_stamp(now)}_{project_label(target)}_보안점검"
 
 
 def resolve_report_path(

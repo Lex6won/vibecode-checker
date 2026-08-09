@@ -440,12 +440,26 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         # 기존에는 화면에 흘려보내 사라졌고, 결재에 첨부할 파일이 남지 않았다.
         output = args.output
         if not output and not getattr(args, "stdout", False):
-            from .report_store import ensure_writable, gitignore_hint, resolve_report_path
-            base, fallback_note = ensure_writable(resolve_report_path(args.path))
+            from .report_store import (
+                REPORT_DIR_NAME,
+                default_report_basename,
+                ensure_writable,
+                gitignore_hint,
+                resolve_report_path,
+            )
+            # `--report-dir` 은 이번 한 번만 — 설정·환경변수보다 우선한다.
+            once = getattr(args, "report_dir", None)
+            explicit = (
+                str(Path(once).expanduser()
+                    / default_report_basename(args.path, shared=True))
+                if once else None
+            )
+            base, fallback_note = ensure_writable(
+                resolve_report_path(args.path, explicit=explicit))
             output = str(base)
             if fallback_note:
                 print(f"[gvskb] ⚠ {fallback_note}", file=sys.stderr)
-            else:
+            elif REPORT_DIR_NAME in str(base).replace("\\", "/"):
                 print(f"[gvskb] {gitignore_hint()}", file=sys.stderr)
         _emit_doc_report(
             report,
@@ -674,6 +688,61 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         for m in report.per_rule
     )
     return EXIT_FINDINGS_WARN if has_miss else EXIT_OK
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """보고서 저장 폴더를 보고·지정·해제한다.
+
+    **어디에 저장되는지 항상 말한다.** 지정한 뒤에도, 지우고 난 뒤에도,
+    아무것도 안 했을 때도 — 실제로 쓰일 경로와 그 근거를 함께 찍는다.
+    설정만 바꾸고 결과를 안 보여주면 사용자는 또 어디에 저장되는지 모른다.
+    """
+    from .report_store import (
+        CONFIG_KEY_REPORT_DIR,
+        REPORT_DIR_ENV,
+        config_path,
+        configured_report_dir,
+        read_config,
+        write_config,
+    )
+
+    values = read_config()
+    changed = False
+
+    if args.clear_report_dir:
+        values.pop(CONFIG_KEY_REPORT_DIR, None)
+        changed = True
+    if args.report_dir:
+        target = Path(args.report_dir).expanduser()
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"[gvskb] 폴더를 만들 수 없습니다: {target} — {exc.strerror or exc}",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        # 상대경로로 저장하면 실행 위치에 따라 딴 데 생긴다. 절대경로로 못 박는다.
+        values[CONFIG_KEY_REPORT_DIR] = str(target.resolve())
+        changed = True
+
+    if changed:
+        saved_to = write_config(values)
+        print(f"[gvskb] 설정 저장: {saved_to}")
+
+    configured, reason = configured_report_dir()
+    print("보고서 저장 위치")
+    if configured is None:
+        print("  현재  : 검사한 폴더 안 .check-reports/  (검사할 때마다 그 폴더 옆에 생깁니다)")
+    else:
+        print(f"  현재  : {configured}")
+    print(f"  근거  : {reason}")
+    print(f"  설정  : {config_path()}")
+    if os.environ.get(REPORT_DIR_ENV, "").strip():
+        print(f"  참고  : 환경변수 {REPORT_DIR_ENV} 가 설정 파일보다 우선합니다")
+    print()
+    print("  바꾸려면 :  gvskb config --report-dir \"D:\\보안점검\"")
+    print("  되돌리려면:  gvskb config --clear-report-dir")
+    print("  한 번만  :  gvskb scan <경로> --report-dir \"D:\\임시\"")
+    return EXIT_OK
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -987,6 +1056,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdout", action="store_true",
         help="파일로 저장하지 않고 화면에만 출력(파이프 연결용)",
     )
+    scan.add_argument(
+        "--report-dir", metavar="폴더",
+        help="이번 검사만 이 폴더에 저장 (매번 쓰려면 `gvskb config --report-dir`)",
+    )
     scan.add_argument("--scenario", help="시나리오 힌트 (예: data-pipeline, llm-integration)")
     scan.add_argument(
         "--profile", default="public-default-strict",
@@ -1086,6 +1159,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="결과 저장 경로. 미지정 시 stdout",
     )
     eva.set_defaults(func=_cmd_evaluate)
+
+    # 보고서를 어디 둘지 **기억시킨다.** 예전에는 환경변수뿐이라 Windows 에서
+    # 시스템 속성 창을 열어야 했고, 실사용에서 "찾기가 너무 어렵다"는 말이 나왔다.
+    cfg = sub.add_parser(
+        "config",
+        help="보고서 저장 폴더 등 설정 — 인자 없이 실행하면 현재 설정을 보여줍니다",
+    )
+    cfg.add_argument(
+        "--report-dir", metavar="경로",
+        help=r'보고서를 모아 둘 폴더 (예: "D:\보안점검" · "\\파일서버\점검보고서")',
+    )
+    cfg.add_argument("--clear-report-dir", action="store_true",
+                     help="지정을 지우고 기본값(검사한 폴더 안 .check-reports/)으로 되돌립니다")
+    cfg.set_defaults(func=_cmd_config)
 
     doctor = sub.add_parser("doctor", help="실행 환경·룰·MCP·네트워크 진단")
     doctor.add_argument("--json", action="store_true", help="JSON 출력 (자동화용)")

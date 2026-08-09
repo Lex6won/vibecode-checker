@@ -11,7 +11,7 @@
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-1524_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-1538_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-recall_100%25-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-219개-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -213,7 +213,7 @@ AI 코딩 도구에서 **자연어로** 쓰려면 MCP 설정에 서버를 등록
 
 ```bash
 gvskb doctor                                  # 1) 내 환경 점검(룰 수·인코딩·MCP·인텔 캐시)
-gvskb scan ./my-project                        # 2) 내 폴더 검사 → 화면에 한국어 리포트
+gvskb scan ./my-project                        # 2) 내 폴더 검사 → .check-reports/ 에 자동 저장
 gvskb scan ./my-project -o 보안점검.md          # 3) 결과를 파일로 저장(-o=output) → .md + .html 함께
 gvskb scan ./my-project --check-deps -o 보안점검.md   # 4) 취약·악성 패키지 검사까지 리포트에 병합
 
@@ -223,7 +223,32 @@ git clone --depth 1 https://github.com/owner/repo /tmp/repo && gvskb scan /tmp/r
 
 > `--check-deps`는 requirements.txt·package.json의 패키지를 취약점 DB로 검사해 **코드+패키지 위험을 보고서 한 장**에 담습니다(전송되는 것은 패키지명·버전뿐). 망분리에서는 반입한 인텔 캐시 기준으로 판정하며, **판정 불가는 '안전'이 아니라고 표시**됩니다.
 
-여기서 `-o`는 **output(출력 파일)** 옵션입니다 — `-o 파일이름`을 붙이면 결과를 화면 대신 그 이름의 파일로 저장합니다. 마크다운/HTML 형식이면 텍스트 `파일이름.md`와 인쇄→PDF 결재용 `파일이름.html`이 **함께** 만들어집니다. (`-o`를 빼면 결과가 화면에만 출력됩니다.)
+여기서 `-o`는 **output(출력 파일)** 옵션입니다 — `-o 파일이름`을 붙이면 그 이름으로 저장합니다. 마크다운/HTML 형식이면 텍스트 `파일이름.md`와 인쇄→PDF 결재용 `파일이름.html`이 **함께** 만들어집니다.
+
+#### 보고서는 어디에 저장되나요
+
+**`-o` 를 안 붙여도 저장됩니다.** 기본은 검사한 폴더 안 `.check-reports/` 입니다.
+
+```
+./my-project/.check-reports/2026-08-09_1745_보안점검.md
+                                              .html   ← 인쇄하면 PDF 결재문서
+```
+
+**한곳에 모으고 싶다면** 폴더를 지정해 두세요. 그다음부터는 모든 검사 결과가 거기 쌓입니다.
+
+```bash
+gvskb config --report-dir "D:\보안점검"        # 한 번만 지정하면 계속 적용
+gvskb config                                    # 지금 어디에 저장되는지 확인
+gvskb config --clear-report-dir                 # 기본값으로 되돌리기
+
+gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳에
+```
+
+공용 폴더로 모으면 **파일명에 사업 이름이 붙습니다** — `2026-08-09_1745_my-project_보안점검.md`. 여러 부서가 한 폴더를 써도 어느 사업 것인지 구분됩니다.
+
+> 저장 위치는 **보고서 머리말에도 적힙니다**(`이 보고서 위치` 행). 파일만 전달받은 사람도 원본이 어디 있는지 알 수 있습니다. `gvskb doctor` 로도 확인할 수 있습니다.
+>
+> 우선순위: `-o` → `--report-dir` → 환경변수 `GVSKB_REPORT_DIR` → `gvskb config` 설정 → 기본값. 화면으로만 보려면 `--stdout` 을 쓰세요.
 
 #### B. AI 코딩 도구에서 — 그냥 말로 (VS Code·Claude Desktop·Cursor)
 
