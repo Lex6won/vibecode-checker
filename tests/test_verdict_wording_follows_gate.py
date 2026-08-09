@@ -17,16 +17,20 @@
 """
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 
+import gvskb.report
 from gvskb.gate import gate_status
 from gvskb.report import (
     _ACTION_LEAD_BLOCK,
     _ACTION_LEAD_MUST,
     _ACTION_LEAD_WARN,
     _action_lead,
+    _action_order,
     _dep_also_note,
     _dep_prompt_warn,
     _md_inline_to_html,
@@ -120,15 +124,22 @@ def _report(*findings: Finding, deps: dict | None = None) -> ScanReport:
 # ① 조건부 승인 보고서는 "차단"을 주장하지 않는다
 # ---------------------------------------------------------------------------
 
-# 배포 결과를 단정하는 표현들. 발견 하나하나의 등급 표시("치명·차단",
-# "차단(block): 1건")는 다른 개념이라 여기 넣지 않는다.
+# 배포 결과를 단정하는 표현들.
+#
+# 목록을 두 번 늘렸다. 처음엔 그때 고친 문장만 담았는데, 죽은 함수
+# `_hero_line` 이 "지금 이대로 배포하면 안 됩니다 — 치명·차단 위험 N건" 을
+# 들고 있는 것을 스윕이 지나쳤다. **방금 고친 자리만 담은 목록은 다음 자리를
+# 못 잡는다** — 배포를 단정하는 어법 자체를 넣는다.
 _BLOCK_CLAIMS = (
     "배포 차단이 풀리지 않습니다",
     "패키지 블록을 빠뜨리지 마세요",
     "배포가 차단됩니다",
     "지금 이대로 올리거나 배포하면 안 됩니다",
+    "지금 이대로 배포하면 안 됩니다",
     "차단 권고",
     "[차단] 취약",
+    "배포 미승인",
+    "배포 불가",
 )
 
 
@@ -177,7 +188,43 @@ def test_dep_sentences_switch_on_gate_not_on_audit_flag() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ③ 차단 등급 발견은 조건부에서도 약해지지 않는다 — 완화는 삭제가 아니다
+# ②-2 발견 등급은 '차단'이라 부르지 않는다 — 배포 판정과 말이 겹쳤다
+# ---------------------------------------------------------------------------
+
+
+def test_finding_grade_is_labelled_required_action_not_blocked() -> None:
+    """요약의 "차단(block): 1건" 이 "조건부 승인" 옆에 찍혀 있었다.
+
+    담당자는 막힌 건지 아닌지 알 수 없다. 사람이 읽는 이름표만 바꾸고
+    기계 값(`decision: "block"`)은 그대로 둔다.
+    """
+    report = _report(_finding(Decision.block, Severity.critical))
+    assert gate_status(report)["verdict"] == "conditional"
+    for fmt, doc in (("MD", render_markdown(report)), ("HTML", render_html(report))):
+        assert "필수 조치" in doc, fmt
+        assert "차단(block)" not in doc, f"{fmt}: 옛 이름표가 남아 있다"
+        assert "치명·차단" not in doc, f"{fmt}: 발견 뱃지가 아직 '차단' 이라고 한다"
+        assert "치명/차단" not in doc, f"{fmt}: 수정 프롬프트 머리가 아직 '차단' 이다"
+        # 처리 순서 안내도 같은 이름표를 써야 한다 — 한 문서 안에서 같은 것을
+        # 두 이름으로 부르면, 읽는 사람은 서로 다른 것으로 읽는다.
+        assert "순서(차단" not in doc, f"{fmt}: LLM 처리 순서가 아직 '차단' 이라고 한다"
+    # 기계 계약은 건드리지 않는다 — 하네스·레지스트리가 읽는 값이다.
+    assert report.findings[0].decision.value == "block"
+    assert report.summary.by_decision["block"] == 1
+
+
+def test_machine_fields_still_say_block(tmp_path) -> None:
+    """SARIF·JSON 은 사람 이름표를 따라가지 않는다."""
+    (tmp_path / "app.py").write_text('exec(input())\n', encoding="utf-8")
+    rep = scan_path(str(tmp_path))
+    dumped = rep.model_dump(mode="json")
+    assert set(dumped["summary"]["by_decision"]) <= {"block", "warn", "allow"}
+    for f in dumped["findings"]:
+        assert f["decision"] in {"block", "warn", "allow"}
+
+
+# ---------------------------------------------------------------------------
+# ③ 필수 조치 등급 발견은 조건부에서도 약해지지 않는다 — 완화는 삭제가 아니다
 # ---------------------------------------------------------------------------
 
 
@@ -190,6 +237,21 @@ def test_block_grade_finding_still_gets_a_stronger_lead_than_plain_warning() -> 
                                 deps=_dep("CRITICAL"))) == _ACTION_LEAD_BLOCK
     # 셋이 서로 다른 말을 해야 구분이 의미가 있다.
     assert len({_ACTION_LEAD_BLOCK, _ACTION_LEAD_MUST, _ACTION_LEAD_WARN}) == 3
+    # 내용까지 본다. `== _ACTION_LEAD_MUST` 는 상수를 통째로 바꿔도 통과하고,
+    # "문서에 '필수 조치' 가 있는가" 는 요약 줄·단 이름표에 가려 통과한다
+    # (변이 검사에서 실제로 둘 다 빠져나갔다).
+    assert "필수 조치" in _ACTION_LEAD_MUST
+    assert "사유 기록으로 넘길 수 없" in _ACTION_LEAD_MUST
+
+
+def test_action_order_top_tier_is_named_required_action() -> None:
+    """단 이름표도 같은 이름을 쓴다 — 문서 전체 검색으로는 가려진다."""
+    tiers = _action_order([_finding(Decision.block, Severity.critical),
+                           _finding(Decision.warn, Severity.low)])
+    top = tiers[0]
+    assert top["label"] == "지금 막아야 하는 것"
+    assert "필수 조치" in top["hint"], top["hint"]
+    assert "차단" not in top["hint"], top["hint"]
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +329,34 @@ def test_the_sweep_actually_inspects_something() -> None:
     assert len(visible) > 3000
     assert "배포 미승인" in visible          # 판정 상자가 훑기 대상에 들어 있다
     assert "해소 방안" in visible
+
+
+# ---------------------------------------------------------------------------
+# ⑤ 리포트는 배포 판정을 **스스로 계산하지 않는다** — 구조로 못 박는다
+# ---------------------------------------------------------------------------
+
+
+def test_report_module_never_reads_summary_blocked() -> None:
+    """`report.py` 안에서 `.blocked` 를 읽는 곳이 하나도 없어야 한다.
+
+    같은 결함을 세 번 만났다 — `_verdict_line`·`_verdict_css_color`·`_hero_line`
+    이 전부 `summary.blocked or block_count` 로 배포 판정을 **다시 계산**하고
+    있었다. 셋 다 죽은 코드였지만, 죽은 코드는 되살아난다.
+
+    출력만 훑는 테스트로는 못 잡는다(불리지 않으니 화면에 안 나온다). 그래서
+    **소스 구조**를 본다: 판정은 `gate_status(report)["blocked"]` 로만 얻는다.
+    """
+    src = Path(gvskb.report.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    hits = [
+        f"line {n.lineno}: ....{n.attr}"
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Attribute) and n.attr == "blocked"
+    ]
+    assert not hits, (
+        "report.py 가 배포 판정을 다시 계산하고 있다 — gate_status 에 물어야 한다:\n"
+        + "\n".join(hits)
+    )
 
 
 def test_md_inline_to_html_converts_and_escapes() -> None:
