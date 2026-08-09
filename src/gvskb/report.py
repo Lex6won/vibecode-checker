@@ -725,53 +725,31 @@ def _dep_verdict_clause(report: ScanReport) -> str:
 def _deploy_verdict(report: ScanReport) -> tuple[str, str]:
     """운영서버 배포 판정 한 줄 + 표시 색 — 보안팀이 승인 근거로 쓰는 결론.
 
+    **문구는 게이트가 만든다.** 예전에는 여기서 따로 조립해 `gate_status` 의
+    판정과 어긋날 수 있었다 — 같은 문서가 사람과 기계에게 다른 답을 주던 결함이
+    바로 그 모양이었다. 여기서는 표시(색·꼬리말)만 붙인다.
+
     항상 '잔여 위험' 개념을 함께 언급해 도구 미탐지 영역이 남아 있음을 알린다.
-    소스 발견과 **의존성 감사 결과를 함께** 반영한다(둘 중 하나만 위험해도 초록 금지).
     """
-    s = report.summary
+    from .gate import gate_status
+
     status = _deploy_status(report)
     color = _VERDICT_COLOR[status]
-    block_n = s.by_decision.get(Decision.block.value, 0)
-    warn_n = s.by_decision.get(Decision.warn.value, 0)
-    dep_clause = _dep_verdict_clause(report)
-    _vuln, _unchecked, _nf, dep_blocked = _dep_risk(report)
+    head = gate_status(report)["reason"]
 
     if status == "none":
-        return (
-            "판정 불가 — 검사된 파일이 0개라 배포 가부를 판단할 수 없습니다. "
-            "경로·확장자를 확인해 다시 검사하세요.",
-            color,
-        )
+        return (head + " 검사되지 않은 것은 '안전'이 아닙니다.", color)
     if status == "block":
-        if block_n and dep_blocked:
-            head = (
-                f"배포 불가 — 차단(block) {block_n}건과 차단 기준에 걸린 패키지를 "
-                "해소하거나 보안담당자 승인이 필요합니다."
-            )
-        elif dep_blocked:
-            head = (
-                "배포 불가 — 차단 기준에 걸린 패키지가 있습니다. 해당 패키지를 "
-                "안전한 버전으로 올린 뒤 다시 검사하세요."
-            )
-        else:
-            head = (
-                f"배포 불가 — 차단(block) {block_n}건을 해소하거나 보안담당자 승인이 "
-                "필요합니다."
-            )
-        return (head + dep_clause + " 미해소 항목은 잔여 위험으로 남습니다.", color)
+        return (head + _dep_verdict_clause(report) + " 미해소 항목은 잔여 위험으로 남습니다.", color)
     if status == "warn":
-        if s.finding_count:
-            head = f"⚠ 조건부 — 경고 {warn_n}건을 검토한 후 배포하세요."
-        else:
-            head = "⚠ 조건부 — 소스코드 발견은 없으나 의존성을 먼저 확인해야 합니다."
         return (
-            head + dep_clause + " 수정하지 않기로 한 항목은 잔여 위험으로 "
-            "기록·관리해야 합니다.",
+            head + _dep_verdict_clause(report)
+            + " 수정하지 않기로 한 항목은 잔여 위험으로 기록·관리해야 합니다.",
             color,
         )
     return (
-        "심각 위험 미발견 — 단, 아래 '검토 범위 및 한계' 고지를 참조하세요. "
-        "본 도구가 탐지하지 못하는 영역은 잔여 위험으로 남습니다.",
+        head + " 단, 아래 '검토 범위 및 한계' 고지를 참조하세요 — 본 도구가 "
+        "탐지하지 못하는 영역은 잔여 위험으로 남습니다.",
         color,
     )
 
@@ -925,9 +903,99 @@ def _hero_line(report: ScanReport) -> tuple[str, str]:
 _VERDICT_LABEL = {
     "ok": "배포 승인 가능",
     "block": "배포 미승인 (차단)",
-    "warn": "배포 보류 (확인 필요)",
+    "warn": "조건부 승인 (검토 후 배포)",
     "none": "판정 불가",
 }
+
+#: 판정 기준표 — **결론 박스 안에** 싣는다.
+#:
+#: 예전 박스는 *"차단 기준에 걸린 패키지가 있습니다"* 라고만 적었다. 읽는 사람은
+#: **어떤 기준인지 알 수 없었고**, 그래서 "왜 막혔는지"를 물으러 다녀야 했다.
+#: 판정을 내리는 문서는 그 판정의 자를 함께 보여야 한다.
+_CRITERIA_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("block", "차단",
+     "악성 패키지 · 기관 레지스트리 거부 · 레지스트리에 없는 이름 · "
+     "CISA KEV 등재 · CVSS CRITICAL"),
+    ("warn", "조건부 승인",
+     "CVSS HIGH 이하 취약점 · 발행 직후 버전 · 판정 불가 · 소스 코드 발견"),
+    ("ok", "승인", "조치할 항목 없음"),
+)
+
+
+def _criteria_table_md(tone: str) -> list[str]:
+    out = ["> | 판정 | 기준 |", "> |---|---|"]
+    for key, name, desc in _CRITERIA_ROWS:
+        here = " ← **이 보고서**" if key == tone else ""
+        label = f"**{name}**" if key == tone else name
+        out.append(f"> | {label} | {desc}{here} |")
+    return out
+
+
+def _criteria_table_html(tone: str) -> str:
+    rows = ""
+    for key, name, desc in _CRITERIA_ROWS:
+        mark = ' class="vhit"' if key == tone else ""
+        here = " ← <b>이 보고서</b>" if key == tone else ""
+        rows += f"<tr{mark}><th>{_esc(name)}</th><td>{_esc(desc)}{here}</td></tr>"
+    return f'<table class="vcriteria">{rows}</table>'
+
+
+def _vulnerable_upgrades(report: ScanReport) -> list[tuple[str, str, str | None]]:
+    """취약 패키지를 (이름, 현재버전, 권고버전) 로 — 조치 문장을 만들기 위한 최소 정보."""
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    out: list[tuple[str, str, str | None]] = []
+    for comp in _dep_merged_components(audits):
+        c = comp.get("check") or {}
+        if not (c.get("vulnerability_count") or c.get("is_malicious_package")):
+            continue
+        out.append((str(c.get("name")), str(c.get("version") or ""),
+                    c.get("recommended_version")))
+    return out
+
+
+def _remedy_lines(report: ScanReport) -> list[str]:
+    """**무엇을 하면 해소되는가** — 판정만 주고 방법을 안 주면 조치가 안 된다."""
+    from .gate import gate_status
+
+    g = gate_status(report)
+    out: list[str] = []
+    for r in g["block_reasons"][:5]:
+        pkg = f"{r['package']} {r['version'] or ''}".strip()
+        rec = r.get("recommended_version")
+        fix = (f"**{rec} 이상**으로 올린 뒤 다시 검사하세요"
+               if rec else "**대체 패키지를 검토하세요** — 안전한 상위 버전이 없습니다")
+        out.append(f"`{pkg}` ({' · '.join(r['labels'])}) → {fix}")
+    if len(g["block_reasons"]) > 5:
+        out.append(f"외 {len(g['block_reasons']) - 5}종 — 아래 의존성 섹션 참조")
+
+    if not g["blocked"]:
+        for name, ver, rec in _vulnerable_upgrades(report)[:5]:
+            fix = (f"**{rec} 이상**으로 올리세요" if rec
+                   else "안전한 상위 버전이 없습니다 — 대체 패키지를 검토하세요")
+            out.append(f"`{name} {ver}` → {fix}")
+        extra = g["dependency_vulnerable"] - len(_vulnerable_upgrades(report)[:5])
+        if extra > 0:
+            out.append(f"외 취약 패키지 {extra}종 — 아래 '의존성(패키지) 취약점 검사' 참조")
+        if g["dependency_unchecked"]:
+            out.append(
+                f"판정 불가 **{g['dependency_unchecked']}종** — 온라인 환경에서 "
+                "다시 검사하거나 인텔 캐시를 갱신하세요")
+        if g["source_block_count"]:
+            out.append(
+                f"소스 높은 위험 **{g['source_block_count']}건** — 아래 '상세 검토 "
+                "결과'의 안전한 수정 방향을 적용하세요")
+    if g["exposure"]["secret"]:
+        out.append(
+            f"⚠ **비밀값 노출 {g['exposure']['secret']}건** — 코드에서 지우는 것만으로 "
+            "끝나지 않습니다. Git 이력에 남으므로 **해당 키·비밀번호를 반드시 "
+            "재발급(폐기)** 하고, 유출이 의심되면 보안담당자에게 알리세요.")
+    if g["exposure"]["pii"]:
+        out.append(
+            f"⚠ **개인정보 {g['exposure']['pii']}건** — 값을 제거하고, 외부로 나간 "
+            "이력이 있는지 기관 지침에 따라 확인하세요.")
+    return out
 
 
 def _deploy_status(report: ScanReport) -> str:
@@ -937,38 +1005,56 @@ def _deploy_status(report: ScanReport) -> str:
     취약·미존재·판정 불가가 남아 있으면 초록불을 주지 않는다. 반대로 의존성이 전부
     '이상 없음'이면 기존과 같이 초록을 유지한다(과잉 교정 방지).
     """
-    s = report.summary
-    dep_vuln, dep_unchecked, dep_nf, dep_blocked = _dep_risk(report)
-    dep_risky = bool(dep_vuln or dep_unchecked or dep_nf)
-    if s.blocked or s.by_decision.get(Decision.block.value, 0) or dep_blocked:
-        return "block"
-    if s.finding_count == 0 and not report.scanned_files:
-        # 소스를 한 건도 보지 못했다. 의존성에 위험이 있으면 그것을 말하고,
-        # 없으면 '안전'이 아니라 '판정 불가'로 남긴다.
-        return "warn" if dep_risky else "none"
-    if s.finding_count or dep_risky:
-        return "warn"
-    return "ok"
+    from .gate import gate_status
+
+    # 판정은 **게이트 한 곳에서만** 계산한다. 예전에는 여기서 따로 계산해
+    # `gate_status` 와 어긋날 수 있었다 — 같은 문서가 사람과 기계에게 다른
+    # 답을 주던 결함이 바로 그 모양이었다.
+    return {
+        "blocked": "block",
+        "conditional": "warn",
+        "approved": "ok",
+        "undetermined": "none",
+    }[gate_status(report)["verdict"]]
 
 
 def _verdict_box_md(report: ScanReport) -> list[str]:
-    """결론 = 승인/미승인 박스(Markdown). 색은 HTML에서만 — MD는 문구로."""
-    label = _VERDICT_LABEL[_deploy_status(report)]
+    """결론 박스(Markdown) — **판정 · 해소 방안 · 판정 기준** 세 덩어리.
+
+    판정만 주고 방법을 안 주면 담당자는 무엇을 해야 할지 모르고, 기준을 안 주면
+    왜 이렇게 됐는지 물으러 다녀야 한다. 셋을 한 자리에 둔다.
+    """
+    tone = _deploy_status(report)
     deploy_text, _ = _deploy_verdict(report)
-    return [f"> ### {label}", ">", f"> **배포 판정** · {deploy_text}", ""]
+    out = [f"> ### {_VERDICT_LABEL[tone]}", ">", f"> **배포 판정** · {deploy_text}"]
+
+    remedies = _remedy_lines(report)
+    if remedies:
+        out += [">", "> **해소 방안**"]
+        out += [f"> - {line}" for line in remedies]
+    out += [">", "> **이 판정의 기준**", ">"]
+    out += _criteria_table_md(tone)
+    out.append("")
+    return out
 
 
 def _verdict_box_html(report: ScanReport) -> str:
-    """결론 = 승인(초록)/미승인(빨강) 박스(HTML). 두괄식으로 가장 크게."""
+    """결론 박스(HTML) — 두괄식으로 가장 크게. 내용은 Markdown 과 같다."""
     tone = _deploy_status(report)
-    label = _VERDICT_LABEL[tone]
     deploy_text, _ = _deploy_verdict(report)
-    return (
-        f'<div class="verdict v-{tone}">'
-        f'<div class="vstatus">{_esc(label)}</div>'
-        f'<div class="vdetail">배포 판정 · {_esc(deploy_text)}</div>'
-        "</div>"
-    )
+    parts = [
+        f'<div class="verdict v-{tone}">',
+        f'<div class="vstatus">{_esc(_VERDICT_LABEL[tone])}</div>',
+        f'<div class="vdetail">배포 판정 · {_esc(deploy_text)}</div>',
+    ]
+    remedies = _remedy_lines(report)
+    if remedies:
+        items = "".join(f"<li>{_esc(line)}</li>" for line in remedies)
+        parts.append(f'<div class="vhead">해소 방안</div><ul class="vlist">{items}</ul>')
+    parts.append('<div class="vhead">이 판정의 기준</div>')
+    parts.append(_criteria_table_html(tone))
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def _meta_rows(
@@ -1695,6 +1781,18 @@ tr.w td{background:#fff7ed}
   page-break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .verdict .vstatus{font-size:22px;font-weight:800;margin-bottom:6px}
 .verdict .vdetail{font-size:14px;line-height:1.55}
+/* 해소 방안 · 판정 기준 — 결론 박스 안에 함께 둔다. 판정만 주고 방법을 안 주면
+   담당자는 무엇을 해야 할지 모르고, 기준을 안 주면 왜 이렇게 됐는지 모른다. */
+.verdict .vhead{font-size:12px;font-weight:700;letter-spacing:.02em;
+  margin:12px 0 4px;opacity:.85}
+.verdict .vlist{margin:0;padding-left:20px;font-size:13px;line-height:1.6}
+.verdict .vlist li{margin:2px 0}
+.verdict .vcriteria{width:100%;border-collapse:collapse;font-size:12px;
+  line-height:1.5;background:rgba(255,255,255,.55)}
+.verdict .vcriteria th,.verdict .vcriteria td{border:1px solid rgba(0,0,0,.12);
+  padding:5px 8px;text-align:left;vertical-align:top}
+.verdict .vcriteria th{white-space:nowrap;width:1%;font-weight:600}
+.verdict .vcriteria tr.vhit{font-weight:700;background:rgba(255,255,255,.9)}
 .v-ok{background:#ecfdf5;border-color:#16a34a;color:#065f46}
 .v-block{background:#fef2f2;border-color:#dc2626;color:#991b1b}
 .v-warn{background:#fffbeb;border-color:#d97706;color:#92400e}

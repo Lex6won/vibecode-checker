@@ -89,9 +89,11 @@ def test_render_markdown_includes_one_line_verdict() -> None:
     assert "배포 판정" in head
     assert (
         "배포 미승인" in head
-        or "배포 보류" in head
+        or "조건부 승인" in head
         or "배포 승인 가능" in head
     )
+    # 판정만 주고 기준을 안 주면 "왜 이렇게 됐나"를 물으러 다녀야 한다.
+    assert "이 판정의 기준" in head
 
 
 def test_render_markdown_empty_findings_verdict_is_clean() -> None:
@@ -536,13 +538,21 @@ def test_no_multi_rule_note_when_lines_unique() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_verdict_block_when_block_findings() -> None:
-    report = _report_with_findings()  # SQLi → block 포함
+def test_deploy_verdict_conditional_when_source_findings() -> None:
+    """**소스는 더 이상 차단하지 않는다**(2026-08-09 개정).
+
+    소스 룰은 추론이라 맥락을 타므로, 의존성 차단을 악성·KEV·CRITICAL 로
+    좁히면서 소스까지 막으면 "소스는 보조, 의존성은 게이트" 원칙이 뒤집힌다.
+    대신 조건부 승인으로 두고 **무엇을 하면 되는지**를 함께 준다.
+    """
+    report = _report_with_findings()  # SQLi → block 등급 포함
     md = render_markdown(report)
     html = render_html(report)
     for out in (md, html):
         assert "배포 판정" in out
-        assert "배포 불가" in out
+        assert "조건부 승인" in out
+        assert "배포 미승인" not in out
+        assert "해소 방안" in out
         assert "잔여 위험" in out
 
 
@@ -551,7 +561,8 @@ def test_deploy_verdict_clean_references_limits() -> None:
     md = render_markdown(clean)
     html = render_html(clean)
     for out in (md, html):
-        assert "심각 위험 미발견" in out
+        assert "배포 승인 가능" in out
+        assert "조치할 항목이 없습니다" in out
         assert "잔여 위험" in out
         assert "검토 범위 및 한계" in out  # 판정문이 한계 고지를 참조
 

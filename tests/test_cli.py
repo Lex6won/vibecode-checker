@@ -21,7 +21,10 @@ def test_cli_scan_markdown_outputs_to_file(tmp_path: Path, capsys: pytest.Captur
 
     rc = cli.main(["scan", str(src), "-o", str(out)])
 
-    assert rc == cli.EXIT_FINDINGS_BLOCK
+    # 소스 발견은 **차단이 아니라 경고**다(2026-08-09 개정) — 기본
+    # `--fail-on warn` 이므로 CI 는 여전히 선다. 차단(2)은 악성·KEV·CRITICAL
+    # 패키지에만 쓴다.
+    assert rc == cli.EXIT_FINDINGS_WARN
     text = out.read_text(encoding="utf-8")
     assert "코드 보안 검사 결과" in text
     assert "GOV-SQL-INJECTION-001" in text
