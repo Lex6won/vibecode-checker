@@ -714,6 +714,24 @@ def check_mode() -> list[CheckResult]:
                    note="알려지지 않은 모드 — online | online-restricted | offline 중 하나 권장")]
 
 
+def check_report_dir() -> list[CheckResult]:
+    """보고서가 어디 저장되는지 **진단에서도 말한다.**
+
+    실사용 지적(2026-08-09): *"점검 파일을 다운 받는 위치에 저장하는거지?
+    근데 찾기가 너무 어려워."* 저장 위치는 검사할 때만 stderr 한 줄로 지나갔다.
+    "내 보고서가 어디로 가지?"는 검사 전에 물어볼 수 있어야 하는 질문이다.
+    """
+    from .report_store import REPORT_DIR_NAME, config_path, configured_report_dir
+
+    configured, reason = configured_report_dir()
+    value = str(configured) if configured else f"<검사한 폴더>/{REPORT_DIR_NAME}/"
+    return [
+        _check("보고서 저장 위치", _OK, value, note=reason),
+        _check("설정 파일", _OK, str(config_path()),
+               note="바꾸려면: gvskb config --report-dir \"D:\보안점검\""),
+    ]
+
+
 def check_package() -> list[CheckResult]:
     return [
         _check("Package", _OK, _package_version(), note=PKG_NAME),
@@ -908,6 +926,7 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     checks.extend(check_mcp_import())
     checks.extend(check_semgrep())
     checks.extend(check_intel_cache())
+    checks.extend(check_report_dir())
     # GVSKB_MODE=offline implies no network checks regardless of --offline flag
     offline_env = os.environ.get("GVSKB_MODE", "").lower() == "offline"
     if network and not offline_env:
