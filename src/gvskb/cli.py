@@ -446,7 +446,114 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         )
         _emit_registry_bundle(args, report.dependency_audit, Path(output) if output else None)
 
+    _emit_sbom(args, report)
     return _scan_exit_code(report, args.fail_on)
+
+
+def _emit_sbom(args: argparse.Namespace, report: ScanReport) -> None:
+    """`--sbom <경로>` 로 CycloneDX 를 저장한다.
+
+    의존성 검사 없이 SBOM 만 달라고 하면 **빈 문서를 조용히 쓰지 않는다** —
+    컴포넌트 0개짜리 SBOM 은 "의존성이 없다"로 읽히는데, 실제로는 안 본 것이다.
+    """
+    path = getattr(args, "sbom", None)
+    if not path:
+        return
+    from .sbom import to_cyclonedx
+
+    audit = report.dependency_audit
+    if not audit or not any((a.get("checks") or []) for a in _sbom_audits(audit)):
+        print(
+            "[gvskb] ⚠ --sbom: 의존성 검사 결과가 없어 SBOM 을 쓰지 않았습니다. "
+            "`--check-deps` 를 함께 주세요 — 컴포넌트 0개짜리 SBOM 은 "
+            "'의존성이 없다'로 읽힙니다.",
+            file=sys.stderr,
+        )
+        return
+    doc = to_cyclonedx(
+        audit,
+        target=str(report.target),
+        engine_version=report.engine_version,
+        ruleset_version=report.ruleset_version,
+        ruleset_digest=report.ruleset_digest,
+        generated_at=report.generated_at,
+    )
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    n_vuln = len(doc.get("vulnerabilities") or [])
+    print(f"[gvskb] SBOM(CycloneDX {doc['specVersion']}) 저장: {out} "
+          f"— 컴포넌트 {len(doc['components'])}개 · 취약점 {n_vuln}건", file=sys.stderr)
+
+
+def _sbom_audits(audit: dict) -> list[dict]:
+    inner = audit.get("audits")
+    return [a for a in inner if isinstance(a, dict)] if isinstance(inner, list) else [audit]
+
+
+def _cmd_sbom(args: argparse.Namespace) -> int:
+    """건네받은 SBOM 을 그대로 검사한다 — 소스가 없어도 컴포넌트는 볼 수 있다."""
+    import asyncio as _asyncio
+
+    from .sbom import SbomParseError, parse_sbom
+    from .tools.check_package import check_package_impl
+
+    try:
+        text = Path(args.file).read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        print(f"[gvskb] SBOM 파일을 읽지 못했습니다: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    try:
+        parsed = parse_sbom(text)
+    except SbomParseError as exc:
+        print(f"[gvskb] {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    pkgs = parsed["packages"][: args.limit]
+    dropped = len(parsed["packages"]) - len(pkgs)
+
+    async def _run() -> list[dict]:
+        return [await check_package_impl(p["name"], version=p["version"],
+                                         ecosystem=p["ecosystem"])
+                for p in pkgs]
+
+    checks = _asyncio.run(_run()) if pkgs else []
+    vuln = [c for c in checks if c.get("verdict") in ("vulnerable", "malicious")]
+    unchecked = [c for c in checks if not c.get("checked")]
+
+    if args.json:
+        sys.stdout.write(json.dumps({
+            "format": parsed["format"], "spec_version": parsed["spec_version"],
+            "checked_count": len(checks), "vulnerable_count": len(vuln),
+            "unchecked_count": len(unchecked),
+            "skipped": parsed["skipped"], "truncated_count": max(0, dropped),
+            "checks": checks,
+        }, ensure_ascii=False, indent=2) + "\n")
+    else:
+        print(f"SBOM: {parsed['format']} {parsed['spec_version'] or ''}".rstrip())
+        print(f"  컴포넌트 {len(parsed['packages'])}개 중 {len(checks)}개 검사 · "
+              f"취약 {len(vuln)}종 · 판정 불가 {len(unchecked)}종")
+        for c in vuln:
+            print(f"  [{c.get('max_cve') or '?'}] {c['name']} {c.get('version')} "
+                  f"— 취약점 {c.get('vulnerability_count')}건"
+                  + (f" · 권고 {c['recommended_version']}" if c.get("recommended_version") else ""))
+        # 건너뛴 것과 잘린 것은 **반드시** 말한다. 조용히 빠지면 "안전"으로 읽힌다.
+        if parsed["skipped"]:
+            print(f"  ⚠ SBOM 에서 읽지 못한 컴포넌트 {len(parsed['skipped'])}개 "
+                  "— '안전'이 아니라 '보지 못함'입니다:")
+            for s in parsed["skipped"][:5]:
+                print(f"      · {s['name']}: {s['reason']}")
+            if len(parsed["skipped"]) > 5:
+                print(f"      · 외 {len(parsed['skipped']) - 5}개")
+        if dropped > 0:
+            print(f"  ⚠ 상한(--limit {args.limit})에 걸려 {dropped}개를 검사하지 "
+                  "않았습니다 — 상한을 올려 다시 검사하세요.")
+        if unchecked:
+            print("  ⚠ 판정 불가는 '안전'이 아닙니다 — 온라인 환경에서 다시 검사하세요.")
+
+    if vuln:
+        return EXIT_FINDINGS_BLOCK
+    return EXIT_FINDINGS_WARN if (unchecked or parsed["skipped"] or dropped > 0) else EXIT_OK
 
 
 def _cmd_check_package(args: argparse.Namespace) -> int:
@@ -885,6 +992,13 @@ def build_parser() -> argparse.ArgumentParser:
              "오프라인: 로컬 인텔 캐시. 판정 불가는 '안전'이 아님)",
     )
     scan.add_argument(
+        "--sbom", metavar="경로",
+        help="검사 결과를 CycloneDX 1.6 SBOM 으로 저장 (조달 제출·자산 대장용). "
+             "`--check-deps` 와 함께 쓰세요 — 의존성을 검사하지 않으면 컴포넌트 0개짜리 "
+             "문서가 되어 '의존성이 없다'로 읽힙니다(그래서 그 경우 쓰지 않고 알립니다). "
+             "판정 불가·상한 절단도 문서에 그대로 기록됩니다",
+    )
+    scan.add_argument(
         "--include-installed", action="store_true",
         help="의존성 검사 범위를 **설치 흔적까지** 확대(.venv의 dist-info·*.whl·node_modules). "
              "매니페스트에 없는 전이 의존성의 취약점까지 잡습니다. --check-deps 와 함께 사용",
@@ -969,6 +1083,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--offline", action="store_true",
                         help="네트워크 점검 건너뛰기 (망분리 환경)")
     doctor.set_defaults(func=_cmd_doctor)
+
+    sb = sub.add_parser(
+        "sbom",
+        help="건네받은 SBOM(CycloneDX·SPDX JSON)의 컴포넌트를 검사 — 소스가 없어도 됩니다",
+    )
+    sb.add_argument("file", help="SBOM 파일 경로 (.json)")
+    sb.add_argument("--limit", type=int, default=2000,
+                    help="검사할 최대 컴포넌트 수 (기본 2000). 초과분은 건수를 알려 줍니다")
+    sb.add_argument("--json", action="store_true", help="JSON 출력")
+    sb.set_defaults(func=_cmd_sbom)
 
     rs = sub.add_parser("ruleset", help="룰셋 버전·지문 확인(게이트 재현성) · --bump 로 갱신")
     rs.add_argument("--rules-dir", help="대상 룰 디렉토리 (기본: 자동 해석)")
