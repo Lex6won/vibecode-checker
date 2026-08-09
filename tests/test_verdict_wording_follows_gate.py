@@ -29,10 +29,11 @@ from gvskb.report import (
     _action_lead,
     _dep_also_note,
     _dep_prompt_warn,
-    _md_bold_to_html,
+    _md_inline_to_html,
     render_html,
     render_markdown,
 )
+from gvskb.scanner import scan_path
 from gvskb.schema import (
     CodeLocation,
     Decision,
@@ -40,6 +41,7 @@ from gvskb.schema import (
     ScanReport,
     ScanSummary,
     Severity,
+    SkippedFile,
 )
 
 
@@ -97,6 +99,17 @@ def _report(*findings: Finding, deps: dict | None = None) -> ScanReport:
         ),
         findings=list(findings),
         scanned_files=["app.py"],
+        # 제외 사유는 스캐너가 만든 문장이고 **백틱 표기를 담고 있다**. 픽스처에
+        # 이걸 안 넣었더니 화면 훑기가 그 자리를 지나쳐, 실제 보고서에서 백틱
+        # 4개가 그대로 나온 뒤에야 알았다 — 픽스처가 얇으면 스윕도 얇다.
+        skipped_files=[
+            SkippedFile(
+                path="requirements.txt",
+                reason="의존성 매니페스트 — 취약점은 `gvskb check-package` 또는 "
+                       "MCP `scan_dependencies`로 검사하세요",
+            ),
+            SkippedFile(path="README.md", reason="검사 대상 확장자 아님(.md) — 검사되지 않았습니다"),
+        ],
     )
     if deps is not None:
         rep.dependency_audit = deps
@@ -194,19 +207,68 @@ def test_action_leads_carry_no_markdown_markup() -> None:
         assert "**" not in lead, lead
 
 
-def test_rendered_documents_do_not_leak_raw_asterisks_into_html() -> None:
-    for report in (
-        _report(_finding(Decision.block, Severity.critical)),
-        _report(_finding(Decision.warn, Severity.medium), deps=_dep("HIGH")),
-        _report(_finding(Decision.block, Severity.critical), deps=_dep("CRITICAL")),
-    ):
-        html_doc = render_html(report)
-        for div in re.findall(r'<div class="(?:lead|depwarn)">(.*?)</div>', html_doc, re.S):
-            assert "**" not in div, f"HTML 에 마크다운 별표가 그대로 나왔다: {div[:120]}"
-        md_doc = render_markdown(report)
-        assert "****" not in md_doc
+# 복사용 프롬프트는 **AI 도구에 그대로 붙여넣는 평문**이라 마크다운이 의도된
+# 것이다. 그 블록만 걷어내고 나머지 화면 텍스트를 전부 훑는다 — 처음엔
+# `lead`·`depwarn` 두 클래스만 봤다가, 정작 가장 중요한 **판정 상자의 해소
+# 방안**에 `` `mcp 1.8` → **1.28.1 이상** `` 이 그대로 나와 있는 것을 놓쳤다.
+_COPY_BLOCKS = re.compile(
+    r'data-copy="[^"]*"|<pre[^>]*>.*?</pre>|<div class="fixprompt">.*?</div>', re.S
+)
 
 
-def test_md_bold_to_html_converts_and_escapes() -> None:
-    out = _md_bold_to_html("**위험** <script>")
+def _visible_html(doc: str) -> str:
+    return _COPY_BLOCKS.sub("", doc)
+
+
+@pytest.mark.parametrize(
+    "name,report",
+    [
+        ("소스만", _report(_finding(Decision.block, Severity.critical))),
+        ("HIGH패키지", _report(_finding(Decision.warn, Severity.medium), deps=_dep("HIGH"))),
+        ("차단", _report(_finding(Decision.block, Severity.critical), deps=_dep("CRITICAL"))),
+    ],
+)
+def test_rendered_html_never_shows_raw_markdown(name: str, report: ScanReport) -> None:
+    """화면에 별표·백틱이 그대로 나오면 안 된다 — 문서 전체를 훑는다."""
+    visible = _visible_html(render_html(report))
+    assert "**" not in visible, f"{name}: HTML 에 별표가 그대로 나왔다"
+    assert "`" not in visible, f"{name}: HTML 에 백틱이 그대로 나왔다"
+    assert "****" not in render_markdown(report)
+
+
+def test_real_scan_report_shows_no_raw_markdown(tmp_path) -> None:
+    """합성 픽스처가 아니라 **실제 스캔 결과**를 훑는다.
+
+    픽스처는 렌더 경로를 다 지나가지 않는다 — 제외 파일 표를 안 만들어서
+    백틱 누출을 놓쳤다. 진짜 스캔은 우리가 예상하지 못한 문장까지 만든다.
+    """
+    (tmp_path / "app.py").write_text(
+        'API_KEY = "sk-live-abcdef0123456789abcdef"\n'
+        "import sqlite3\n"
+        'conn = sqlite3.connect("x.db")\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# 문서\n", encoding="utf-8")
+
+    report = scan_path(str(tmp_path))
+    assert report.skipped_files, "제외 파일이 0개면 이 스윕은 그 표를 안 본다"
+    visible = _visible_html(render_html(report))
+    assert "**" not in visible
+    assert "`" not in visible
+
+
+def test_the_sweep_actually_inspects_something() -> None:
+    """복사 블록을 걷어내고도 볼 것이 남아 있는가 — 빈 문자열을 훑고 '이상
+    없음'을 내는 것이 가장 나쁜 통과다."""
+    visible = _visible_html(render_html(
+        _report(_finding(Decision.block, Severity.critical), deps=_dep("CRITICAL"))
+    ))
+    assert len(visible) > 3000
+    assert "배포 미승인" in visible          # 판정 상자가 훑기 대상에 들어 있다
+    assert "해소 방안" in visible
+
+
+def test_md_inline_to_html_converts_and_escapes() -> None:
+    out = _md_inline_to_html("**위험** <script>")
     assert out == "<b>위험</b> &lt;script&gt;"

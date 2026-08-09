@@ -1079,11 +1079,11 @@ def _verdict_box_html(report: ScanReport) -> str:
     parts = [
         f'<div class="verdict v-{tone}">',
         f'<div class="vstatus">{_esc(_VERDICT_LABEL[tone])}</div>',
-        f'<div class="vdetail">배포 판정 · {_esc(deploy_text)}</div>',
+        f'<div class="vdetail">배포 판정 · {_md_inline_to_html(deploy_text)}</div>',
     ]
     remedies = _remedy_lines(report)
     if remedies:
-        items = "".join(f"<li>{_esc(line)}</li>" for line in remedies)
+        items = "".join(f"<li>{_md_inline_to_html(line)}</li>" for line in remedies)
         parts.append(f'<div class="vhead">해소 방안</div><ul class="vlist">{items}</ul>')
     parts.append('<div class="vhead">이 판정의 기준</div>')
     parts.append(_criteria_table_html(tone))
@@ -1908,13 +1908,19 @@ def _esc(text: str) -> str:
     return html.escape(str(text), quote=True)
 
 
-def _md_bold_to_html(text: str) -> str:
-    """`**강조**` 를 `<b>` 로. 두 렌더러가 같은 문장을 쓰게 하려고 있다.
+def _md_inline_to_html(text: str) -> str:
+    """`**강조**`·`` `코드` `` 를 태그로. 두 렌더러가 같은 문장을 쓰게 하려고 있다.
 
-    HTML 쪽 관행이던 ``.replace("**", "")`` 는 강조를 **지운다** — 같은 문장이
-    MD 에서는 굵고 HTML 에서는 밋밋해져, 문구를 고칠 때 한쪽만 고치게 된다.
+    HTML 쪽 관행이던 ``.replace("**", "")``·``.replace("`", "")`` 는 표기를
+    **지운다** — 같은 문장이 MD 에서는 굵고 HTML 에서는 밋밋해져, 문구를 고칠 때
+    한쪽만 고치게 된다. 게다가 지우는 것을 잊은 자리에서는 별표·백틱이 화면에
+    그대로 나온다(실측: 판정 상자의 해소 방안 ``\\`mcp 1.8\\` → **1.28.1 이상**``).
     """
-    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", _esc(text))
+    return re.sub(
+        r"`([^`]+)`",
+        r"<code>\1</code>",
+        re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", _esc(text)),
+    )
 
 
 def render_html(
@@ -2101,7 +2107,7 @@ def render_html(
                     f'{dep_row_top["count"]}건</div>'
                 )
                 p.append(
-                    f'<div class="depwarn">{_md_bold_to_html(_dep_also_note(report))}'
+                    f'<div class="depwarn">{_md_inline_to_html(_dep_also_note(report))}'
                     " (아래 '의존성(패키지) 취약점 검사')</div>"
                 )
         p.append(
@@ -2289,7 +2295,7 @@ def render_html(
             "</div></div>"
         )
         if dep_prompt:
-            p.append(f'<div class="depwarn">{_md_bold_to_html(_dep_prompt_warn(report))}</div>')
+            p.append(f'<div class="depwarn">{_md_inline_to_html(_dep_prompt_warn(report))}</div>')
         # ② 유형별 수정 프롬프트 — 각 블록마다 복사 버튼
         for g in _rule_groups(report.findings):
             text = _fix_prompt_text(g)
@@ -2323,7 +2329,9 @@ def render_html(
     if non_build_skips:
         p.append('<div class="subh">생략된 파일</div><table><tr><th>경로</th><th>이유</th></tr>')
         for sf in non_build_skips[:30]:
-            p.append(f"<tr><td>{_esc(sf.path)}</td><td>{_esc(sf.reason)}</td></tr>")
+            # 제외 사유는 스캐너가 만든 문장이라 `gvskb check-package` 처럼
+            # 백틱 표기를 담고 있다 — 그대로 이스케이프하면 화면에 백틱이 뜬다.
+            p.append(f"<tr><td>{_esc(sf.path)}</td><td>{_md_inline_to_html(sf.reason)}</td></tr>")
         p.append("</table>")
         if len(non_build_skips) > 30:
             p.append(f'<div class="kv">… 외 {len(non_build_skips) - 30}건</div>')
@@ -2338,7 +2346,7 @@ def render_html(
     p.append('<div class="kv">같은 결과를 다시 만들거나 다른 환경에서 검증하려면 다음을 실행합니다.</div>')
     p.append(f"<pre>{_esc(repro)}</pre>")
     if (_env := _env_grade_line(report)) is not None:
-        p.append(f'<div class="kv">{_esc(_env.replace("`", ""))}</div>')
+        p.append(f'<div class="kv">{_md_inline_to_html(_env)}</div>')
     p.append('<div class="subh">수정 후 다시 검증</div>')
     p.append('<ol class="steps">')
     p.append('<li><b>CLI</b>: 위 재현 명령(<code class="ev">gvskb scan ...</code>)을 다시 실행</li>')
@@ -2963,7 +2971,7 @@ def _render_severity_criteria_html(report: ScanReport) -> list[str]:
     for kind, sev, desc in rows:
         out.append(
             f"<tr><td>{_esc(kind)}</td><td>{_esc(sev)}</td>"
-            f"<td>{_esc(desc).replace('**', '')}</td></tr>"
+            f"<td>{_md_inline_to_html(desc)}</td></tr>"
         )
     out.append("</table>")
     return out
@@ -3293,7 +3301,7 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
         '<details class="sec"><summary>의존성(패키지) 취약점 검사 — '
         f"검사 {checked} · 판정불가 {unchecked} · 취약·악성 {vuln}{nf}</summary>"
         '<div class="secbody">',
-        f'<div class="depwarn">{_esc(_DEP_UNIT_NOTE.lstrip("> ")).replace("**", "")}</div>',
+        f'<div class="depwarn">{_md_inline_to_html(_DEP_UNIT_NOTE.lstrip("> "))}</div>',
     ]
     for a in audits:
         title = a.get("manifest") or a.get("ecosystem", "manifest")
