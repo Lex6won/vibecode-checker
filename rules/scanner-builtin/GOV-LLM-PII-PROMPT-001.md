@@ -16,7 +16,10 @@ sources:
 severity: critical
 decision_default: block
 domains: [llm-appsec]
-languages: [python, javascript]
+# typescript 를 빼면 이 룰은 `.ts`/`.tsx` 에서 한 번도 돌지 않는다. TS 는 JS 의
+# 상위집합이라 'JS 에는 맞고 TS 에는 안 맞는' 룰은 없다 — 목록에 javascript 만
+# 있으면 그건 의도가 아니라 빠뜨린 것이다(같은 구멍이 다섯 번 났다).
+languages: [python, javascript, typescript]
 scenarios: [llm-integration, rag, agent]
 related_baseline: [OWASP-LLM-2025-02]
 verified_at: 2026-05-31
