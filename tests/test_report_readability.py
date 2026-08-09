@@ -313,14 +313,29 @@ def test_action_order_is_rendered_in_both_formats() -> None:
 
 
 def test_package_step_is_listed_in_action_order() -> None:
-    """소스만 고치면 차단이 안 풀린다는 사실을 조치 순서에서 말한다."""
-    report = _tiered_report()
-    report.dependency_audit = _dep_audit(
+    """소스만 고쳐서는 끝이 아니라는 사실을 조치 순서에서 말한다.
+
+    **문구는 판정을 따라야 한다(실측 2026-08-09)**: HIGH 취약점은 사다리에서
+    조건부 승인인데, 이 자리는 판정과 무관하게 "배포 차단이 풀리지 않습니다"
+    라고 말했다. 같은 보고서의 판정 상자는 "차단 사유는 없습니다" 였다 —
+    담당자는 둘 중 무엇을 믿어야 할지 알 수 없다. 양방향을 모두 고정한다.
+    """
+    cond = _tiered_report()
+    cond.dependency_audit = _dep_audit(
         _check("pillow", "12.2.0", verdict="vulnerable", vulnerability_count=26, max_cve="HIGH"),
+        blocked=True,   # 감사 자체의 옛 플래그 — 게이트가 이걸 따라가면 안 된다
+    )
+    for doc in (render_markdown(cond), render_html(cond)):
+        assert "패키지 업그레이드" in doc
+        assert "조치가 끝나지 않습니다" in doc
+        assert "배포 차단이 풀리지 않습니다" not in doc
+
+    blocked = _tiered_report()
+    blocked.dependency_audit = _dep_audit(
+        _check("evil", "1.0", verdict="vulnerable", vulnerability_count=1, max_cve="CRITICAL"),
         blocked=True,
     )
-    for doc in (render_markdown(report), render_html(report)):
-        assert "패키지 업그레이드" in doc
+    for doc in (render_markdown(blocked), render_html(blocked)):
         assert "배포 차단이 풀리지 않습니다" in doc
 
 
@@ -377,7 +392,8 @@ def test_domain_file_column_double_count_is_disclosed() -> None:
 def test_dependency_fix_prompt_lists_packages_and_reasons() -> None:
     text = _dep_fix_prompt_text(_report_with_deps())
     assert text is not None
-    assert text.startswith("[차단]")
+    # HIGH·MEDIUM 뿐이므로 사다리에서 조건부 승인 — 프롬프트 머리도 그렇게 적는다.
+    assert text.startswith("[조치 필요]")
     assert "pillow 12.2.0" in text and "취약점 26건" in text and "최고 HIGH" in text
     assert "pip 25.3" in text
     assert "requests" not in text          # 이상 없는 패키지는 조치 대상이 아니다
@@ -389,6 +405,20 @@ def test_dependency_fix_prompt_rendered_in_both_formats_with_warning() -> None:
     report = _report_with_deps()
     for doc in (render_markdown(report), render_html(report)):
         assert "취약·위험 패키지 2건" in doc
+        assert "패키지를 빠뜨리지 마세요" in doc          # 조건부 승인 문구
+        assert "패키지 블록을 빠뜨리지 마세요" not in doc   # 차단 문구는 안 나온다
+
+
+def test_dependency_fix_prompt_says_block_only_when_actually_blocked() -> None:
+    """차단 문구는 **진짜 차단일 때만**. 머리표도 판정을 따라간다."""
+    report = _multi_file_report()
+    report.dependency_audit = _dep_audit(
+        _check("evil", "1.0", verdict="vulnerable", vulnerability_count=1, max_cve="CRITICAL"),
+        blocked=True,
+    )
+    text = _dep_fix_prompt_text(report)
+    assert text is not None and text.startswith("[차단]")
+    for doc in (render_markdown(report), render_html(report)):
         assert "패키지 블록을 빠뜨리지 마세요" in doc
 
 
@@ -515,7 +545,9 @@ def test_no_dependency_prompt_when_all_packages_are_clean() -> None:
     report = _multi_file_report()
     report.dependency_audit = _dep_audit(_check("requests", "2.34.0"))
     assert _dep_fix_prompt_text(report) is None
-    assert "패키지 블록을 빠뜨리지 마세요" not in render_markdown(report)
+    # 두 변종(차단·조건부) 모두 나오면 안 된다 — 앞말만 검사하면 조건부 변종이
+    # 새어 나가도 통과한다.
+    assert "빠뜨리지 마세요" not in render_markdown(report)
 
 
 # ---------------------------------------------------------------------------
