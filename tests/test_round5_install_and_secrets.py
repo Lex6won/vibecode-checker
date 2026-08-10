@@ -16,6 +16,7 @@ import pytest
 
 from gvskb.report import render_markdown
 from gvskb.scanner import scan_path
+from gvskb.scanners.regex_scanner import MASK_MARK
 from gvskb.scanners.external_surface import _file_context, extract_api_connections
 
 # ---------------------------------------------------------------------------
@@ -87,13 +88,71 @@ def test_version_is_single_source_of_truth() -> None:
 def test_secret_keyfile_with_high_entropy_value_is_flagged(tmp_path: Path) -> None:
     """실측: `.secret_key` 의 64자 hex 값이 아무 룰에도 걸리지 않았다."""
     (tmp_path / ".secret_key").write_text(
-        "77fec85613b823cd9b6e3bdb41dfd1fc492fdf2463fd01ce7bc8cf3e1606cfac\n",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
         encoding="utf-8",
     )
     report = scan_path(tmp_path)
     hits = [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
     assert hits, "비밀 파일의 자격증명 값을 탐지하지 못했다"
     assert hits[0].severity.value == "high"
+
+
+#: 비밀 파일 픽스처 — **가상값**이다(한눈에 알아보게 반복 패턴).
+#: 예전에는 실측에서 얻은 운영 키를 그대로 썼고, 그 값이 공개 저장소 이력에
+#: 남았다. 값을 탐지하는 테스트가 값을 퍼뜨리면 안 된다.
+_FAKE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+
+def test_secret_keyfile_value_is_masked_in_the_report(tmp_path: Path) -> None:
+    """탐지하고서 **그 값을 보고서에 통째로 실으면** 보고서가 유출본이 된다.
+
+    실측(2026-08-10, 지자체 재난대응 웹앱): 세션 서명키 64자가 `.check-reports/` 에
+    저장되는 결재 문서에 그대로 실렸다. `redact_evidence` 는 `키="값"` 꼴이나
+    `sk-`·`AKIA` 접두사를 단서로 삼는데, 비밀 파일의 내용은 **맨 토큰**이라
+    어느 단서에도 걸리지 않았다 — 맨 비밀값을 찾으라고 만든 룰의 증거만 유일하게
+    안 가려졌다.
+
+    식별은 되고 사용은 불가해야 하므로 **앞뒤 일부는 남는다**(어느 키를 폐기할지
+    담당자가 알아야 한다). 값 전체가 남지 않는 것만 고정한다.
+    """
+    (tmp_path / ".secret_key").write_text(_FAKE_KEY + "\n", encoding="utf-8")
+    report = scan_path(tmp_path)
+    (hit,) = [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+
+    assert _FAKE_KEY not in hit.evidence, "비밀값이 증거에 통째로 남았다"
+    assert MASK_MARK in hit.evidence
+    assert _FAKE_KEY[:8] in hit.evidence, "어느 키인지 알아볼 수 없으면 폐기도 못 한다"
+
+    md = render_markdown(report)
+    assert _FAKE_KEY not in md, "보고서 본문에 비밀값이 실렸다"
+    assert "민감값 일부 가림" in md, "가렸다는 사실이 보고서에 없다"
+
+
+def test_key_value_form_keeps_the_key_name_and_masks_only_the_value(tmp_path: Path) -> None:
+    """한 파일에 값이 여럿이면 **어느 것을 폐기할지는 키 이름이 말해 준다.**"""
+    (tmp_path / "secret.conf").write_text(
+        f"SESSION_SIGNING_KEY={_FAKE_KEY}\n", encoding="utf-8")
+    report = scan_path(tmp_path)
+    (hit,) = [f for f in report.findings if f.rule_id == "GOV-SECRET-KEYFILE-001"]
+    assert "SESSION_SIGNING_KEY" in hit.evidence
+    assert _FAKE_KEY not in hit.evidence
+
+
+def test_masking_stays_out_of_ordinary_evidence(tmp_path: Path) -> None:
+    """**과잉 마스킹 금지** — 이 판단은 비밀 파일 안에서만 유효하다.
+
+    줄만 봐서는 64자 hex 가 해시인지 키인지 구분할 수 없다(룰 정의가 적어 둔
+    그대로다). 전역에 적용하면 커밋 해시·체크섬까지 가려 '늘 켜진 마스킹'이 되고,
+    그러면 딱지가 정보이기를 멈춘다.
+    """
+    from gvskb.scanners.regex_scanner import redact_evidence
+
+    for ordinary in (
+        f'EXPECTED_SHA256 = "{_FAKE_KEY}"',   # 무결성 해시 — 비밀이 아니다
+        "eval(user_input)",
+        "-----BEGIN CERTIFICATE-----",
+    ):
+        assert MASK_MARK not in redact_evidence(ordinary), ordinary
 
 
 def test_secret_named_file_with_only_prose_is_not_flagged(tmp_path: Path) -> None:
@@ -310,7 +369,7 @@ def test_secret_keyfile_points_at_the_real_line(tmp_path: Path) -> None:
     (tmp_path / ".secret_key").write_text(
         "# 이 값은 기동 시 생성됩니다\n"
         "\n"
-        "77fec85613b823cd9b6e3bdb41dfd1fc492fdf2463fd01ce7bc8cf3e1606cfac\n",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
         encoding="utf-8",
     )
     report = scan_path(tmp_path)
