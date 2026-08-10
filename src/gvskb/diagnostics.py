@@ -1103,9 +1103,22 @@ def runtime_status_for_mcp() -> dict:
         info.update({"rules_loaded_ok": False, "rule_load_error": str(exc)})
     rules = in_memory if in_memory is not None else disk_rules
     if rules is not None:
+        # 탐지 패턴이 있는 룰과 없는 룰을 **나눠서** 보고한다.
+        #
+        # `total_rules` 만 보면 능력이 과장된다(실측 2026-08-10: 326 중 패턴 보유는 99).
+        # 나머지 227(인텔 106 · MOIS-49 50 · NIS-AI 45 · OWASP 20 · 기타 6)은 다른 룰의
+        # `references` 로 인용되거나 카탈로그 역할을 하며, 실제 보고서에 발행된 이력이 없다.
+        # 이 프로젝트가 반복해서 경계해 온 '조용한 초록불'과 같은 계열이라 표기를 나눈다.
+        detection_rules = sum(1 for r in rules if r.detection and r.detection.patterns)
         info.update({
             "total_rules": len(rules),
-            "runtime_detection_rules": sum(1 for r in rules if r.detection and r.detection.patterns),
+            "runtime_detection_rules": detection_rules,
+            "reference_only_rules": len(rules) - detection_rules,
+            "rule_count_note": (
+                f"총 {len(rules)}개 중 **탐지 패턴 보유 {detection_rules}개**. "
+                f"나머지 {len(rules) - detection_rules}개는 참조·카탈로그용으로 "
+                "직접 발행되지 않습니다 — 총계를 탐지 능력으로 읽지 마세요."
+            ),
             "realtime_rules": sum(1 for r in rules if r.source_layer.value == "realtime"),
             "rules_loaded_ok": info.get("rules_loaded_ok", True),
             "rule_count_source": (
