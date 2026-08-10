@@ -508,6 +508,36 @@ def redact_evidence(text: str) -> str:
     return text.strip()[:240]
 
 
+def redact_secret_material(text: str) -> str:
+    """**비밀 파일의 내용 한 줄**을 가린다 — 파일명이 이미 비밀임을 말하는 자리용.
+
+    `redact_evidence` 는 `키 = "값"` 꼴이나 `sk-`·`AKIA` 접두사를 단서로 삼는다.
+    그런데 비밀 파일(`.secret_key`·`password.txt`)의 내용은 **접두사도 변수명도
+    없는 맨 토큰**이라 그 어느 단서에도 걸리지 않는다. 결과적으로 *맨 비밀값을
+    찾으라고 만든 룰*(`GOV-SECRET-KEYFILE-001`)의 증거만 유일하게 안 가려졌다 —
+    실측(2026-08-10) 지자체 재난대응 웹앱 검사에서 세션 서명키 64자가 보고서에 통째로
+    실렸다. 그 보고서는 `.check-reports/` 에 저장되고 결재로 올라간다.
+
+    같은 판단을 `redact_evidence` 에 넣지 않는 이유는 룰 정의가 적어 둔 그대로다:
+    **줄만 봐서는 64자 hex 가 해시인지 키인지 구분할 수 없다.** 전역에 적용하면
+    커밋 해시·체크섬·무결성 값까지 가려 '늘 켜진 마스킹'이 되고, 그러면 딱지가
+    정보이기를 멈춘다. 여기서는 호출부가 `_is_secret_filename` 을 이미 통과했고
+    값 모양(`_HEXLIKE_RE`·`_SECRET_VALUE_RE`)까지 확인한 뒤라 문맥이 확정돼 있다.
+
+    `키=값` 줄이면 **키는 남긴다** — 한 파일에 값이 여럿일 때 어느 것을 폐기해야
+    하는지는 키 이름이 말해 준다.
+    """
+    base = redact_evidence(text)
+    if not base or evidence_is_masked(base):
+        return base
+    key, sep, value = base.partition("=")
+    if sep:
+        stripped = value.strip().strip("\"'")
+        if len(stripped) >= 8:
+            return f"{key}={_partial(stripped)}"
+    return _partial(base)
+
+
 _SEVERITY_RANK = {
     Severity.critical: 4, Severity.high: 3, Severity.medium: 2, Severity.low: 1,
 }

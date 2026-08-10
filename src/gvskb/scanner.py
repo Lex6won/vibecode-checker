@@ -35,6 +35,7 @@ from .scanners.regex_scanner import (
     dedupe_by_group,
     lookup_rule,
     redact_evidence as _redact_evidence,
+    redact_secret_material as _redact_secret_material,
     reload_rules as _reload_runtime_rules,
 )
 from .scanners.semgrep_scanner import SemgrepScanner
@@ -891,7 +892,10 @@ def scan_path(
                 if keyfile_rule is not None:
                     all_findings.append(build_finding(
                         keyfile_rule, filename=rel, line_no=evidence_no,
-                        evidence=_redact_evidence(evidence_line),
+                        # 여기 증거는 **맨 자격증명 값**이다. `_redact_evidence`
+                        # 는 접두사·변수명을 단서로 삼아 이 모양을 못 가린다 —
+                        # 실측에서 세션 서명키가 보고서에 통째로 실렸다.
+                        evidence=_redact_secret_material(evidence_line),
                         engine="secret-file",
                     ))
         scanned.append(rel)
