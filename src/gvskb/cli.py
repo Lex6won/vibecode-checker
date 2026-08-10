@@ -8,6 +8,7 @@ Subcommands:
     gvskb check-package <name>   PyPI/npm 패키지 단건 검사 (OSV.dev)
     gvskb report <findings.json> 저장된 ScanReport JSON을 Markdown으로 변환
     gvskb rules                  로드된 룰 수와 ID 목록
+    gvskb status --json          설치 신원·커밋을 자동화용 JSON으로 출력
     gvskb doctor                 실행 환경·룰·MCP·네트워크 진단
     gvskb validate-rules         룰 frontmatter·중복·regex·만료 검증
     gvskb update-intel           CISA KEV·OSV 등 외부 보안 피드를 로컬 캐시에 갱신
@@ -640,6 +641,36 @@ def _cmd_version(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Return a small, stable installation-identity contract for local portals.
+
+    ``doctor --json`` is intentionally broad and can include environment warnings
+    that are irrelevant to a version comparison.  A portal needs one narrower
+    answer: which package is executing, where did pip obtain it, and which git
+    commit (if any) identifies it.  This command performs no network probe and
+    must stay safe to call before an install or update decision.
+    """
+    from . import __version__
+    from . import diagnostics
+
+    payload = {
+        "schema_version": 1,
+        "installed": True,
+        "version": __version__,
+        "install_identity": diagnostics.install_identity(),
+        "runtime_freshness": diagnostics.runtime_freshness(),
+    }
+    if args.json:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+        sys.stdout.write("\n")
+    else:
+        identity = payload["install_identity"]
+        print(f"vibecode-checker {payload['version']}")
+        print(f"commit: {identity.get('short_commit') or '확인 불가'}")
+        print(f"source: {identity.get('commit_source') or '확인 불가'}")
+    return EXIT_OK
+
+
 def _cmd_rules(_args: argparse.Namespace) -> int:
     from .scanner import RULES as RUNTIME_RULES
 
@@ -1145,6 +1176,10 @@ def build_parser() -> argparse.ArgumentParser:
     ver = sub.add_parser("version", help="설치된 버전 출력")
     ver.set_defaults(func=_cmd_version)
 
+    status = sub.add_parser("status", help="설치 신원·커밋 상태 (자동화용)")
+    status.add_argument("--json", action="store_true", help="안정된 JSON 계약으로 출력")
+    status.set_defaults(func=_cmd_status)
+
     eva = sub.add_parser(
         "evaluate",
         help="룰 examples 기반 precision/recall/F1 메트릭 출력",
@@ -1275,7 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     # 구버전 사본이 현재 코드를 가리는 상태면 결과를 믿기 전에 사용자가 보게 한다.
     # (doctor 는 자체 진단에 이미 포함하므로 중복 출력하지 않는다)
-    if getattr(args, "command", None) != "doctor":
+    if getattr(args, "command", None) not in {"doctor", "status"}:
         try:
             from .diagnostics import warn_if_install_broken
             warn_if_install_broken()
