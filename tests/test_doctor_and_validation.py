@@ -26,6 +26,28 @@ def test_diagnostics_runtime_status_for_mcp() -> None:
     assert "disclaimer" in status
 
 
+def test_rule_count_does_not_overstate_detection_capability() -> None:
+    """**총 룰 수를 탐지 능력으로 읽게 두지 않는다.**
+
+    실측(2026-08-10): 룰 326개 중 탐지 패턴 보유는 99개였다. 나머지 227개는 다른 룰의
+    `references` 로 인용되거나 카탈로그 역할이며 실제 보고서에 발행된 이력이 없다.
+    그런데 진단은 `total_rules` 만 크게 보여 주고 있었다 — 이 프로젝트가 반복해서
+    경계해 온 '조용한 초록불'과 같은 계열이라, 둘을 나눠 세고 안내 문구까지 고정한다.
+    """
+    status = diagnostics.runtime_status_for_mcp()
+    total = status["total_rules"]
+    detect = status["runtime_detection_rules"]
+
+    assert status["reference_only_rules"] == total - detect
+    assert detect <= total
+    # 참조용 룰이 실제로 존재한다(0 이면 이 구분 자체가 의미를 잃는다)
+    assert status["reference_only_rules"] > 0
+
+    note = status["rule_count_note"]
+    assert str(total) in note and str(detect) in note
+    assert "탐지 능력으로 읽지 마세요" in note
+
+
 def test_doctor_cli_offline_text(capsys: pytest.CaptureFixture[str]) -> None:
     rc = cli.main(["doctor", "--offline"])
     out = capsys.readouterr().out
@@ -433,6 +455,19 @@ def test_doctor_reports_install_identity() -> None:
     report = diagnostics.run_diagnostics(network=False, expected_minimum=20)
     names = {c["name"] for c in report["checks"]}
     assert {"Install commit", "MCP tools"} <= names
+
+
+def test_cli_status_json_has_a_stable_install_identity_contract(capsys: pytest.CaptureFixture[str]) -> None:
+    """포털은 사람용 doctor 출력이 아니라 이 좁은 계약만으로 설치본을 비교한다."""
+    from gvskb import cli
+
+    assert cli.main(["status", "--json"]) == cli.EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == 1
+    assert payload["installed"] is True
+    assert payload["version"]
+    assert {"package_version", "commit_id", "commit_source", "install_url", "editable"} <= set(payload["install_identity"])
+    assert "process_stale" in payload["runtime_freshness"]
 
 
 # ---------------------------------------------------------------------------
