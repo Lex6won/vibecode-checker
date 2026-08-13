@@ -104,6 +104,28 @@ class RuleDetection(BaseModel):
 CURRENT_RULE_SCHEMA_VERSION = 1
 
 
+#: **노출 위험** 카테고리 — 값이 거기 적혀 있다는 사실 자체가 위험인 룰들.
+#:
+#: 이 프로젝트는 위험을 두 갈래로 나눈다.
+#:
+#: - **실행 위험**(주입·XSS·코드 실행) — 그 코드가 *돌아야* 위험하다.
+#:   그래서 주석·데이터 파일처럼 실행되지 않는 자리에서는 의미가 없다.
+#: - **노출 위험**(비밀값·개인정보·내부망 주소) — *적혀 있는 것만으로* 위험하다.
+#:   주석이든 설정 파일이든 커밋되면 Git 이력에 영구히 남는다.
+#:
+#: 이 구분은 세 곳에서 쓰인다 — 주석 줄 건너뛰기 예외, 테스트 경로 감쇄 대상,
+#: 데이터·설정 파일에서 계속 볼 룰. **한 곳에서 정의한다.**
+#: 예전에는 같은 집합이 두 모듈에 따로 적혀 있었고, 둘 다 똑같이
+#: ``public-sector-internal`` 이 빠져 있었다(실측 2026-08-09) — 내부망 IP 가
+#: 테스트 픽스처에서 48건이 **차단**으로 올라왔다. 같은 목록을 두 곳에 적으면
+#: 언젠가 어긋나고, 어긋난 쪽이 조용히 잘못된 판정을 낸다.
+EXPOSURE_CATEGORIES: frozenset[str] = frozenset({
+    "secret-scanning",
+    "privacy-public-sector",
+    "public-sector-internal",
+})
+
+
 class RuleExamples(BaseModel):
     """Code samples that pin per-rule precision / recall.
 

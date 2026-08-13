@@ -17,7 +17,12 @@ from typing import Iterable
 
 from ..schema import Finding
 from .base import ScannerAdapter
-from .py_const import ConstEnv, collect_constants, expr_is_constant
+from .py_const import (
+    ConstEnv,
+    collect_constants,
+    expr_is_constant,
+    literal_only_parameters,
+)
 from .regex_scanner import build_finding, lookup_rule, redact_evidence
 
 
@@ -392,19 +397,73 @@ def _call_passes_dynamic_prompt(call: ast.Call, tainted: set[str]) -> bool:
     return False
 
 
+def _scope_env(
+    stmts: list[ast.stmt],
+    const_params: set[str],
+) -> ConstEnv:
+    """스코프 상수 환경에 **호출부에서 증명된 매개변수**를 얹는다.
+
+    매개변수는 스코프 안만 봐서는 출처를 알 수 없어 늘 동적으로 취급됐다.
+    모듈 안 모든 호출부가 리터럴을 넘긴다는 것이 증명된 이름만 상수로 올린다
+    (증명 조건은 ``literal_only_parameters`` 참조).
+    """
+    env = collect_constants(stmts)
+    if const_params:
+        env.names |= const_params
+    return env
+
+
+def _dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: ConstEnv) -> bool:
+    """동적으로 판정된 부분이 **이 함수의 매개변수**뿐인가.
+
+    매개변수의 값이 어디서 오는지는 이 스코프 밖의 일이라 **추적한 적이 없다.**
+    그런데도 판정 근거를 `confirmed`(확인됨 · 데이터 흐름 추적)로 찍고 있었다 —
+    보고서를 읽는 담당자에게는 "흐름을 따라가 확인했다"로 읽힌다.
+
+    같은 스코프 안에서 조립된 문자열은 실제로 대입을 따라가 확인한 것이므로
+    `confirmed` 가 맞다. 둘을 갈라 각자에게 맞는 이름을 붙인다.
+    """
+    if not params:
+        return False
+    found_param = False
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Name) or isinstance(n.ctx, ast.Store):
+            continue
+        if expr_is_constant(n, env):
+            continue
+        if n.id in params:
+            found_param = True
+        else:
+            return False   # 매개변수 아닌 동적 이름이 섞였다 → 스코프 안에서 추적된 것
+    return found_param
+
+
 def _process_scope(
     stmts: list[ast.stmt],
     tainted: set[str],
-    hits: list[tuple[str, int, str]],
+    hits: list[tuple, ...] | list,
     source_lines: list[str],
     env: ConstEnv | None = None,
+    literal_params: dict[str, set[str]] | None = None,
+    scope_params: set[str] | None = None,
 ) -> None:
+    literal_params = literal_params or {}
+    scope_params = scope_params or set()
     if env is None:
         env = collect_constants(stmts)
     for stmt in stmts:
         # Nested def/class opens a new scope; its parameters start untainted.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            _process_scope(stmt.body, set(), hits, source_lines, collect_constants(stmt.body))
+            proven = literal_params.get(getattr(stmt, "name", ""), set())
+            inner = _scope_env(stmt.body, proven)
+            inner_params: set[str] = set()
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = stmt.args
+                inner_params = {
+                    p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)
+                } - proven
+            _process_scope(stmt.body, set(), hits, source_lines, inner,
+                           literal_params, inner_params)
             continue
         # 1) sinks read the taint state established by earlier statements.
         for call in _sink_calls(stmt):
@@ -418,7 +477,10 @@ def _process_scope(
             src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
             if _is_ignored(src, rule_id):
                 continue
-            hits.append((rule_id, line_no, redact_evidence(src)))
+            # 값의 출처를 실제로 추적했는지에 따라 근거 강도를 나눈다.
+            conf = ("likely" if _dynamic_part_is_a_parameter(arg0, scope_params, env)
+                    else _CONFIDENCE_BY_RULE.get(rule_id, "likely"))
+            hits.append((rule_id, line_no, redact_evidence(src), conf))
         # 1b) LLM prompt-injection sinks: a dynamically-built prompt string
         #     reaching an LLM SDK call (OWASP LLM01).
         for call in _llm_sink_calls(stmt):
@@ -431,7 +493,7 @@ def _process_scope(
             hits.append(("GOV-LLM-PROMPT-INJECTION-001", line_no, redact_evidence(src)))
         # 2) recurse into compound bodies with the same (flow-insensitive) taint.
         for body in _sub_statement_bodies(stmt):
-            _process_scope(body, tainted, hits, source_lines, env)
+            _process_scope(body, tainted, hits, source_lines, env, literal_params, scope_params)
         # 3) update taint from this statement's assignment (post-use).
         if isinstance(stmt, ast.Assign):
             is_dyn = _expr_builds_dynamic_sql(stmt.value, tainted, env)
@@ -455,7 +517,12 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
     that catches multi-line SQL injection also catches a prompt assembled by
     concatenation that reaches an LLM SDK call (prompt injection)."""
     hits: list[tuple[str, int, str]] = []
-    _process_scope(getattr(tree, "body", []), set(), hits, source_lines)
+    # 모듈 전체를 먼저 훑어 '호출부가 전부 리터럴인 매개변수'를 증명해 둔다 —
+    # 스코프 안만 보는 상수 판정으로는 매개변수의 출처를 알 수 없다.
+    _process_scope(
+        getattr(tree, "body", []), set(), hits, source_lines,
+        literal_params=literal_only_parameters(tree),
+    )
     return hits
 
 
@@ -469,7 +536,11 @@ def _looks_like_python(filename: str, language: str | None) -> bool:
 # confirmed: 값의 흐름(테인트)이나 문장 구조를 실제로 확인한 것.
 # likely   : 구조 분석 기반이지만 문맥(의도)까지는 단정하지 못하는 것.
 _CONFIDENCE_BY_RULE: dict[str, str] = {
-    # 상수 바인딩을 배제한 뒤 남은 동적 SQL — 값의 출처를 추적해 확인했다.
+    # 같은 스코프 안에서 대입을 따라가 조립을 확인한 동적 SQL.
+    # **주의**: 동적 부분이 함수 매개변수뿐이면 출처가 스코프 밖이라 추적한 적이
+    # 없다. 그런 발견은 여기 값이 아니라 `likely` 로 내려 보낸다
+    # (_dynamic_part_is_a_parameter). 예전에는 구분 없이 confirmed 를 찍어
+    # "데이터 흐름 추적"을 하지 않고도 했다고 말하고 있었다.
     "GOV-SQL-INJECTION-001": "confirmed",
     "GOV-LLM-PROMPT-INJECTION-001": "confirmed",
     # DDL 은 조립 사실만 확인했을 뿐, 값이 외부 입력인지는 사람이 봐야 한다.
@@ -513,7 +584,10 @@ class PythonAstScanner(ScannerAdapter):
         )
 
         findings: list[Finding] = []
-        for rule_id, line_no, evidence in all_hits:
+        for hit in all_hits:
+            # 3-튜플(룰별 기본 근거) 과 4-튜플(현장에서 판정한 근거)을 함께 받는다.
+            rule_id, line_no, evidence = hit[0], hit[1], hit[2]
+            confidence = hit[3] if len(hit) > 3 else _CONFIDENCE_BY_RULE.get(rule_id, "likely")
             rule = lookup_rule(rule_id)
             if rule is None:
                 continue  # rule not loaded (e.g. testing with empty repo)
@@ -522,7 +596,7 @@ class PythonAstScanner(ScannerAdapter):
             findings.append(build_finding(
                 rule, filename=filename, line_no=line_no,
                 evidence=evidence, engine=self.name,
-                confidence=_CONFIDENCE_BY_RULE.get(rule_id, "likely"),
+                confidence=confidence,
             ))
         return findings
 

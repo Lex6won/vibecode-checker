@@ -53,6 +53,11 @@ def test_real_resident_number_still_detected_with_hyphen() -> None:
     assert "GOV-PII-RRN-001" in _rule_ids('rrn = "900101-1234567"', language="python")
 
 
+def test_documentation_placeholder_is_not_a_resident_number() -> None:
+    """체커 자신의 설명도 실제 개인정보처럼 보이는 값을 남기지 않는다."""
+    assert "GOV-PII-RRN-001" not in _rule_ids("# 예시 번호: YYMMDD-XXXXXXX", language="python")
+
+
 def test_real_resident_number_still_detected_without_hyphen() -> None:
     # 하이픈이 없으면 검증식(mod 11)까지 통과해야 한다.
     assert "GOV-PII-RRN-001" in _rule_ids('rrn = 8203154567890', language="python")

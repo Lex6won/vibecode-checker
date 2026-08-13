@@ -15,6 +15,7 @@ from .loader import load_all_rules
 from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
 from .scanner import (
+    DEFAULT_MAX_FILES,
     detect_secrets_and_pii as detect_secrets_and_pii_impl,
     scan_code as scan_code_impl,
     scan_path as scan_path_impl,
@@ -329,6 +330,68 @@ async def scan_dependencies(
 
 
 @_tool()
+async def scan_sbom(
+    sbom_text: Annotated[
+        str,
+        Field(description="SBOM 파일 원문. CycloneDX JSON 또는 SPDX JSON "
+                          "(XML·tag-value 형식은 지원하지 않습니다)"),
+    ],
+    limit: Annotated[int, Field(description="검사할 최대 컴포넌트 수(기본 2000). 초과분은 truncated_count 로 표시")] = 2000,
+    caller: Annotated[str | None, Field(description="호출 주체 자율 신고. 감사 구분용")] = None,
+) -> dict:
+    """건네받은 **SBOM** 의 컴포넌트를 검사합니다 — 소스 코드가 없어도 됩니다.
+
+    조달·협력사가 SBOM 만 제출하는 경우, 또는 빌드 파이프라인이 이미 SBOM 을
+    만들어 두는 경우에 씁니다. `scan_dependencies` 가 매니페스트/락파일을 받는
+    것과 짝입니다.
+
+    **읽지 못한 컴포넌트는 버리지 않고 ``skipped`` 에 사유와 함께 돌려줍니다.**
+    purl 이 없거나 버전이 `NOASSERTION` 이면 취약점 판정이 불가능한데, 조용히
+    빼면 받는 쪽은 "그 컴포넌트는 안전하다"로 읽습니다 — 없는 것과 안 본 것은
+    다릅니다. ``truncated_count`` > 0 도 같은 뜻이니 limit 를 올려 재검사하세요.
+
+    반대 방향(우리 검사 결과를 SBOM 으로 **내보내기**)은 CLI 의
+    `gvskb scan --check-deps --sbom <경로>` 입니다.
+    """
+    from .sbom import SbomParseError, parse_sbom
+    from .tools.check_package import check_package_impl
+
+    try:
+        parsed = parse_sbom(sbom_text)
+    except SbomParseError as exc:
+        # 사용자가 고칠 수 없는 것을 고치라고 하지 않는다 — 무엇이 왜 안 되는지 말한다.
+        return {"error": "SBOM 을 읽지 못했습니다", "detail": str(exc)}
+
+    pkgs = parsed["packages"][:limit]
+    truncated = max(0, len(parsed["packages"]) - len(pkgs))
+    checks = [await check_package_impl(p["name"], version=p["version"],
+                                       ecosystem=p["ecosystem"]) for p in pkgs]
+    vuln = [c for c in checks if c.get("verdict") in ("vulnerable", "malicious")]
+    unchecked = [c for c in checks if not c.get("checked")]
+
+    caller = safe_caller(caller or "")
+    record_package_check(checks, tool="scan_sbom", caller=caller, scope="lockfile",
+                         summary={"checks": checks})
+    return {
+        "format": parsed["format"],
+        "spec_version": parsed["spec_version"],
+        "parsed_count": len(parsed["packages"]),
+        "checked_count": len(checks),
+        "vulnerable_count": len(vuln),
+        "unchecked_count": len(unchecked),
+        "truncated_count": truncated,
+        # 읽지 못한 컴포넌트 — '안전'이 아니라 '보지 못함'이다.
+        "skipped": parsed["skipped"],
+        "blocked": bool(vuln),
+        "checks": checks,
+        "disclaimer": (
+            "판정 불가·읽지 못한 컴포넌트는 '안전'을 뜻하지 않습니다. "
+            "SBOM 이 실제 배포물과 일치하는지는 이 도구가 확인하지 못합니다."
+        ),
+    }
+
+
+@_tool()
 async def scan_vendor_bundles(
     vendor_bundles: Annotated[
         list[dict],
@@ -398,7 +461,11 @@ def scan_path(
             "civil-complaint-chatbot | internal-db-query | web-civil-service"
         ),
     ] = "public-default-strict",
-    max_files: Annotated[int, Field(description="최대 검사 파일 수 (기본 500). 초과분은 skipped_files에 사유와 함께 기록")] = 500,
+    # 기본값을 여기 다시 적지 않는다 — 예전에 500 을 직접 박아 두었다가
+    # scanner.DEFAULT_MAX_FILES 만 올라가고 MCP 는 500 에 묶여 있었다.
+    max_files: Annotated[int, Field(description=(
+        f"최대 검사 파일 수 (기본 {DEFAULT_MAX_FILES:,}). 초과분은 skipped_files에 사유와 함께 기록"
+    ))] = DEFAULT_MAX_FILES,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
     """파일 또는 폴더를 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
@@ -542,7 +609,10 @@ def save_report(
     explicit = None
     if output_dir:
         from .report_store import default_report_basename
-        explicit = str(Path(output_dir) / default_report_basename(parsed.target))
+        # 공용 폴더로 모으면 파일명에 사업 이름을 넣는다 — 날짜만으로는 어느
+        # 사업 보고서인지 알 수 없어 여러 부서가 한 폴더를 쓰는 순간 못 찾는다.
+        explicit = str(
+            Path(output_dir) / default_report_basename(parsed.target, shared=True))
     base, fallback_note = ensure_writable(resolve_report_path(parsed.target, explicit=explicit))
 
     written: dict[str, str] = {}
@@ -550,8 +620,12 @@ def save_report(
         md_path = base.with_suffix(".md")
         html_path = base.with_suffix(".html")
         json_path = base.with_suffix(".json")
-        md_path.write_text(render_markdown_impl(parsed), encoding="utf-8")
-        html_path.write_text(render_html_impl(parsed), encoding="utf-8")
+        # 저장 경로를 **문서 안에** 새긴다. 반환값의 `saved` 를 에이전트가
+        # 사용자에게 옮겨 주지 않으면 원본이 어디 있는지 알 길이 없다.
+        md_path.write_text(
+            render_markdown_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
+        html_path.write_text(
+            render_html_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
         json_path.write_text(
             _json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
