@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -293,7 +294,16 @@ def test_bundled_mcp_config_uses_installed_console_script() -> None:
 
 
 def test_readme_mcp_snippets_do_not_regress_to_bare_python() -> None:
-    """README 의 MCP 스니펫이 세 군데 있어, 한 곳만 고치면 나머지가 되살아난다."""
+    """README 의 **모든** MCP 스니펫이 gvskb-server 를 쓴다 — bare python 회귀 방지.
+
+    스니펫 개수는 고정하지 않는다. 원래 `count >= 3` 으로 박아 두었는데, 이는
+    '몇 개인가'가 아니라 '전부 고쳤는가'를 재려던 것이었고, 2026-08-13 README
+    개편(중복 스니펫 3→2 정리)에서 문서 개선을 막는 오탐이 됐다. 지키려는
+    불변식은 두 가지다: ① 스니펫이 최소 하나는 있다(안내 자체가 사라지면 안
+    된다) ② 존재하는 모든 `"command"` 값이 gvskb-server 다(Windows Store 스텁
+    python 으로 조용히 안 뜨는 회귀 방지).
+    """
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert '"command": "python"' not in text
-    assert text.count('"command": "gvskb-server"') >= 3
+    commands = re.findall(r'"command":\s*"([^"]+)"', text)
+    assert commands, "README 에 MCP 설정 스니펫이 최소 하나는 있어야 한다"
+    assert all(c == "gvskb-server" for c in commands), commands
