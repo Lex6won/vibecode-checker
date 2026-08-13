@@ -7,7 +7,10 @@
 ## 방법 1. 명령어로 바로 (가장 간단)
 
 ```bash
+# 설치 — git 이 있는 PC
 pip install git+https://github.com/Lex6won/vibecode-checker.git
+# 설치 — git 이 없는 PC (zip 주소를 그대로)
+pip install https://github.com/Lex6won/vibecode-checker/archive/refs/heads/main.zip
 
 # 내 프로젝트 폴더를 점검 → 화면에 한국어 보고서
 gvskb scan ./my-project
@@ -15,6 +18,10 @@ gvskb scan ./my-project
 # 보고서를 파일로 저장 (.md 와 보기 좋은 .html 이 함께 생성됩니다)
 gvskb scan ./my-project -o 보안점검.md
 ```
+
+> 💬 **설치도 AI에게 맡길 수 있습니다.** Claude Code·Cursor처럼 터미널을 쓰는 도구에는
+> *"https://github.com/Lex6won/vibecode-checker 설치하고 이 폴더 보안검사해줘"* 라고
+> 요청하면 설치·확인·검사까지 진행합니다.
 
 `보안점검.md`(텍스트)와 `보안점검.html`(색깔 카드, 인쇄하면 PDF 결재 문서)이
 **함께** 만들어집니다. HTML은 인터넷 없이 열리고 이메일로 보낼 수 있습니다.
@@ -62,13 +69,16 @@ gvskb scan repo-main
 {
   "mcpServers": {
     "vibecode-checker": {
-      "command": "python",
-      "args": ["-m", "gvskb.server"],
+      "command": "gvskb-server",
+      "args": [],
       "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" }
     }
   }
 }
 ```
+
+> 저장 후 **AI 도구를 재시작**해야 연결됩니다. VS Code는 설정 형식이 조금 달라
+> [리드미의 MCP 연결 절](../README.md#ai-코딩-도구에-연결-선택--mcp)을 참고하세요.
 
 > ⚠️ **신뢰하는 환경에서만 연결하세요.** 점검 도구는 지정한 폴더의 파일을
 > 읽습니다. 자세한 내용은 [SECURITY.md](../SECURITY.md) 참고.
@@ -85,40 +95,51 @@ gvskb scan repo-main
 - 🟢 *"고쳤어, **다시 검사**해줘"*  (수정 후 재검증)
 
 > 💡 잘 안 불러오면 한마디만 덧붙이세요: *"vibecode-checker로 점검해줘."*
-> Claude·Cursor에서는 `/보안점검` 명령으로도 한 번에 실행할 수 있습니다.
 
 ---
 
 ## 3단계 — 보고서 읽는 법
 
-보고서는 **무엇이 위험한지 · 왜 위험한지 · 어떻게 고치는지(safe_fix) · 근거 출처**를
-항목마다 알려줍니다. 색깔만 알면 우선순위를 잡을 수 있습니다:
+보고서 **맨 위 결론 박스**만 보면 배포해도 되는지 알 수 있습니다. 결론은 내 코드와
+사용 중인 패키지를 **함께** 보고 정해집니다.
 
-| 표시 | 뜻 | 무엇을 하나요 |
+| 결론 박스 | 뜻 | 무엇을 하나요 |
 |---|---|---|
-| 🔴 `block` | 그대로 배포하면 위험 | 먼저 고치거나 보안 담당자 검토 |
-| 🟡 `warn` | 확인이 필요 | 코드 맥락 보고 판단 |
-| 🟢 `allow` | 현재 기준 허용 | 참고만 |
+| 🟢 **배포 승인 가능** | 심각한 위험 미발견 | '검토 범위·한계' 확인 후 진행 |
+| 🔴 **배포 미승인 (차단)** | 그대로 배포하면 위험 | 결론 박스의 '해소 방안'대로 고치거나 보안담당자 승인 |
+| 🟡 **배포 보류 (확인 필요)** | 확인할 항목 있음 | 확인·수정 후 배포 |
 
-주의할 두 가지:
+항목마다 **무엇이 위험한지 · 왜 위험한지 · 안전한 수정 방향 · 근거 출처**가 함께
+나옵니다. 심각도는 `치명 → 높음 → 보통`, 조치 등급은 `필수 조치 → 경고 → 허용`입니다.
+
+주의할 세 가지:
 
 - ⚠️ **"검사된 파일 0개"** = *안전하다는 뜻이 아니라* 경로·확장자를 확인하라는 뜻입니다.
-- ⚠️ **"판정 불가(requires_review)"** = 안전이 아니라, 오프라인 등으로 판단하지 못했다는 뜻입니다.
+- ⚠️ **"판정 불가"** = 안전이 아니라, 오프라인 등으로 판단하지 못했다는 뜻입니다.
+- ⚠️ **판정 근거가 "패턴 일치만"** 인 항목은 값의 출처를 사람이 직접 확인해야 합니다.
 
 ---
 
 ## 망분리(인터넷 없는) 환경
 
+코드 검사(정적 분석)는 인터넷 없이 그대로 동작합니다. 패키지 취약점까지 보려면
+외부망에서 위협 정보 번들을 받아 반입합니다.
+
 ```bash
-gvskb update-intel --all      # (외부망 PC) 보안 피드 캐시를 미리 받기
-# 캐시 폴더를 망분리 PC로 옮긴 뒤:
-gvskb scan ./my-project       # 외부 통신 없이 로컬 룰·캐시로만 점검
+# (외부망 PC) 매일 갱신되는 공식 번들 + 해시를 내려받아 확인
+curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip
+curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip.sha256
+sha256sum -c gvskb-intel-bundle.zip.sha256
+
+# (망분리 PC) 반입 후 검증하며 등록 — 해시가 다르면 전체 거부됩니다
+gvskb intel-bundle import gvskb-intel-bundle.zip
+gvskb scan ./my-project --check-deps     # 외부 통신 없이 로컬 룰·캐시로만 점검
 ```
 
-정적 분석 룰은 외부 통신 없이 동작합니다. `GVSKB_MODE=offline`로 외부 통신을
-완전히 차단할 수 있습니다.
+`GVSKB_MODE=offline` 을 설정하면 외부 통신을 완전히 차단합니다. 자세한 절차는
+[리드미의 망분리 절](../README.md#망분리폐쇄망-환경에서-쓰기)을 참고하세요.
 
 ---
 
-> 이 도구는 **공식 보안적합성 검토를 대체하지 않는 1차 보안 린터**입니다.
-> `critical`·`high` 항목은 보안 담당자 검토를 권장합니다.
+> 이 도구는 **공식 보안적합성 검토를 대체하지 않는 1차 점검 도구**입니다.
+> `치명`·`높음` 항목은 보안담당자 검토를 권장합니다.
