@@ -160,15 +160,20 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 > **PyPI에는 배포하지 않습니다**(공공기관·망분리 환경의 공급망 보안 고려). GitHub 소스에서 설치합니다.
 
 ```bash
-# 한 줄 설치
+# 한 줄 설치 (git 이 설치된 PC)
 pip install git+https://github.com/Lex6won/vibecode-checker.git
 
-# 또는 소스를 받아 설치 (수정·기여하려면 -e 권장)
+# git 이 없는 PC — zip 주소를 그대로 넣으면 됩니다 (기관 표준 PC에 git 이 없는 경우)
+pip install https://github.com/Lex6won/vibecode-checker/archive/refs/heads/main.zip
+
+# 소스를 받아 설치 (수정·기여하려면 -e 권장)
 git clone https://github.com/Lex6won/vibecode-checker.git
 cd vibecode-checker && pip install -e .
 ```
 
 > 망분리(인터넷 없는) PC라면, 외부망에서 위 소스를 받아(또는 `pip download`로 의존성까지) 옮긴 뒤 오프라인 설치하세요.
+
+> **AI 코딩 도구에 맡겨도 됩니다.** Claude Code·Cursor처럼 터미널을 쓸 수 있는 도구에는 *"https://github.com/Lex6won/vibecode-checker 설치하고 이 폴더 보안검사해줘"* 라고 요청하면 설치·확인·검사까지 진행합니다. Claude Desktop처럼 터미널이 없는 도구는 설치 방법만 안내하므로, 위 명령을 직접 실행하세요.
 
 ### 2단계 — 설치 확인
 
