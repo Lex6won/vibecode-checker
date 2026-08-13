@@ -8,6 +8,7 @@ Subcommands:
     gvskb check-package <name>   PyPI/npm 패키지 단건 검사 (OSV.dev)
     gvskb report <findings.json> 저장된 ScanReport JSON을 Markdown으로 변환
     gvskb rules                  로드된 룰 수와 ID 목록
+    gvskb status --json          설치 신원·커밋을 자동화용 JSON으로 출력
     gvskb doctor                 실행 환경·룰·MCP·네트워크 진단
     gvskb validate-rules         룰 frontmatter·중복·regex·만료 검증
     gvskb update-intel           CISA KEV·OSV 등 외부 보안 피드를 로컬 캐시에 갱신
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from .intel import DEFAULT_PROPOSED_DIR, promote_kev_to_rules
 from .report import render_html, render_markdown
-from .scanner import scan_path
+from .scanner import DEFAULT_MAX_FILES, scan_path
 from .schema import ScanReport
 
 EXIT_OK = 0
@@ -34,7 +35,11 @@ EXIT_USAGE = 64
 EXIT_NOT_FOUND = 66
 
 
-SCAN_MAX_FILES_DEFAULT = 500
+# 라이브러리 기본값을 **그대로** 쓴다. 예전에는 여기에 500 을 따로 적어 두었는데,
+# scanner.DEFAULT_MAX_FILES 를 20,000 으로 올렸을 때 이 줄이 남아 CLI 만 500 에
+# 묶여 있었다 — 실제로 사용자가 쓰는 경로가 조용히 절단되고 있었다.
+# 같은 숫자를 두 곳에 적으면 언젠가 어긋난다. 재선언하지 않는다.
+SCAN_MAX_FILES_DEFAULT = DEFAULT_MAX_FILES
 
 
 def _scan_reproduce_command(args: argparse.Namespace) -> str:
@@ -97,8 +102,13 @@ def _emit_doc_report(
     파일 저장(-o) 시에는 비전공 사용자가 바로 열어볼 수 있도록 항상 .md 와 .html
     을 함께 만든다. stdout 출력일 때만 선택한 형식 하나를 낸다.
     """
-    md = render_markdown(report, reproduce_command=reproduce_command)
-    html_doc = render_html(report, reproduce_command=reproduce_command)
+    # 저장할 때는 **저장될 경로를 문서 안에 새긴다.** stderr 한 줄은 놓치기 쉽고,
+    # 파일만 전달받은 사람은 원본이 어디 있는지 알 방법이 없다. 화면으로만
+    # 흘려보내는 경우(`--stdout`)에는 저장 경로가 없으므로 적지 않는다.
+    saved_md = str(Path(output).with_suffix(".md")) if output else None
+
+    md = render_markdown(report, reproduce_command=reproduce_command, saved_path=saved_md)
+    html_doc = render_html(report, reproduce_command=reproduce_command, saved_path=saved_md)
 
     if not output:
         text = html_doc if fmt == "html" else md
@@ -431,12 +441,26 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         # 기존에는 화면에 흘려보내 사라졌고, 결재에 첨부할 파일이 남지 않았다.
         output = args.output
         if not output and not getattr(args, "stdout", False):
-            from .report_store import ensure_writable, gitignore_hint, resolve_report_path
-            base, fallback_note = ensure_writable(resolve_report_path(args.path))
+            from .report_store import (
+                REPORT_DIR_NAME,
+                default_report_basename,
+                ensure_writable,
+                gitignore_hint,
+                resolve_report_path,
+            )
+            # `--report-dir` 은 이번 한 번만 — 설정·환경변수보다 우선한다.
+            once = getattr(args, "report_dir", None)
+            explicit = (
+                str(Path(once).expanduser()
+                    / default_report_basename(args.path, shared=True))
+                if once else None
+            )
+            base, fallback_note = ensure_writable(
+                resolve_report_path(args.path, explicit=explicit))
             output = str(base)
             if fallback_note:
                 print(f"[gvskb] ⚠ {fallback_note}", file=sys.stderr)
-            else:
+            elif REPORT_DIR_NAME in str(base).replace("\\", "/"):
                 print(f"[gvskb] {gitignore_hint()}", file=sys.stderr)
         _emit_doc_report(
             report,
@@ -446,7 +470,115 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         )
         _emit_registry_bundle(args, report.dependency_audit, Path(output) if output else None)
 
+    _emit_sbom(args, report)
     return _scan_exit_code(report, args.fail_on)
+
+
+def _emit_sbom(args: argparse.Namespace, report: ScanReport) -> None:
+    """`--sbom <경로>` 로 CycloneDX 를 저장한다.
+
+    의존성 검사 없이 SBOM 만 달라고 하면 **빈 문서를 조용히 쓰지 않는다** —
+    컴포넌트 0개짜리 SBOM 은 "의존성이 없다"로 읽히는데, 실제로는 안 본 것이다.
+    """
+    path = getattr(args, "sbom", None)
+    if not path:
+        return
+    from .sbom import to_cyclonedx
+
+    audit = report.dependency_audit
+    if not audit or not any((a.get("checks") or []) for a in _sbom_audits(audit)):
+        print(
+            "[gvskb] ⚠ --sbom: 의존성 검사 결과가 없어 SBOM 을 쓰지 않았습니다. "
+            "`--check-deps` 를 함께 주세요 — 컴포넌트 0개짜리 SBOM 은 "
+            "'의존성이 없다'로 읽힙니다.",
+            file=sys.stderr,
+        )
+        return
+    doc = to_cyclonedx(
+        audit,
+        target=str(report.target),
+        engine_version=report.engine_version,
+        ruleset_version=report.ruleset_version,
+        ruleset_digest=report.ruleset_digest,
+        generated_at=report.generated_at,
+        name=getattr(args, "project_name", None),
+    )
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    n_vuln = len(doc.get("vulnerabilities") or [])
+    print(f"[gvskb] SBOM(CycloneDX {doc['specVersion']}) 저장: {out} "
+          f"— 컴포넌트 {len(doc['components'])}개 · 취약점 {n_vuln}건", file=sys.stderr)
+
+
+def _sbom_audits(audit: dict) -> list[dict]:
+    inner = audit.get("audits")
+    return [a for a in inner if isinstance(a, dict)] if isinstance(inner, list) else [audit]
+
+
+def _cmd_sbom(args: argparse.Namespace) -> int:
+    """건네받은 SBOM 을 그대로 검사한다 — 소스가 없어도 컴포넌트는 볼 수 있다."""
+    import asyncio as _asyncio
+
+    from .sbom import SbomParseError, parse_sbom
+    from .tools.check_package import check_package_impl
+
+    try:
+        text = Path(args.file).read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        print(f"[gvskb] SBOM 파일을 읽지 못했습니다: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    try:
+        parsed = parse_sbom(text)
+    except SbomParseError as exc:
+        print(f"[gvskb] {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    pkgs = parsed["packages"][: args.limit]
+    dropped = len(parsed["packages"]) - len(pkgs)
+
+    async def _run() -> list[dict]:
+        return [await check_package_impl(p["name"], version=p["version"],
+                                         ecosystem=p["ecosystem"])
+                for p in pkgs]
+
+    checks = _asyncio.run(_run()) if pkgs else []
+    vuln = [c for c in checks if c.get("verdict") in ("vulnerable", "malicious")]
+    unchecked = [c for c in checks if not c.get("checked")]
+
+    if args.json:
+        sys.stdout.write(json.dumps({
+            "format": parsed["format"], "spec_version": parsed["spec_version"],
+            "checked_count": len(checks), "vulnerable_count": len(vuln),
+            "unchecked_count": len(unchecked),
+            "skipped": parsed["skipped"], "truncated_count": max(0, dropped),
+            "checks": checks,
+        }, ensure_ascii=False, indent=2) + "\n")
+    else:
+        print(f"SBOM: {parsed['format']} {parsed['spec_version'] or ''}".rstrip())
+        print(f"  컴포넌트 {len(parsed['packages'])}개 중 {len(checks)}개 검사 · "
+              f"취약 {len(vuln)}종 · 판정 불가 {len(unchecked)}종")
+        for c in vuln:
+            print(f"  [{c.get('max_cve') or '?'}] {c['name']} {c.get('version')} "
+                  f"— 취약점 {c.get('vulnerability_count')}건"
+                  + (f" · 권고 {c['recommended_version']}" if c.get("recommended_version") else ""))
+        # 건너뛴 것과 잘린 것은 **반드시** 말한다. 조용히 빠지면 "안전"으로 읽힌다.
+        if parsed["skipped"]:
+            print(f"  ⚠ SBOM 에서 읽지 못한 컴포넌트 {len(parsed['skipped'])}개 "
+                  "— '안전'이 아니라 '보지 못함'입니다:")
+            for s in parsed["skipped"][:5]:
+                print(f"      · {s['name']}: {s['reason']}")
+            if len(parsed["skipped"]) > 5:
+                print(f"      · 외 {len(parsed['skipped']) - 5}개")
+        if dropped > 0:
+            print(f"  ⚠ 상한(--limit {args.limit})에 걸려 {dropped}개를 검사하지 "
+                  "않았습니다 — 상한을 올려 다시 검사하세요.")
+        if unchecked:
+            print("  ⚠ 판정 불가는 '안전'이 아닙니다 — 온라인 환경에서 다시 검사하세요.")
+
+    if vuln:
+        return EXIT_FINDINGS_BLOCK
+    return EXIT_FINDINGS_WARN if (unchecked or parsed["skipped"] or dropped > 0) else EXIT_OK
 
 
 def _cmd_check_package(args: argparse.Namespace) -> int:
@@ -509,6 +641,36 @@ def _cmd_version(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Return a small, stable installation-identity contract for local portals.
+
+    ``doctor --json`` is intentionally broad and can include environment warnings
+    that are irrelevant to a version comparison.  A portal needs one narrower
+    answer: which package is executing, where did pip obtain it, and which git
+    commit (if any) identifies it.  This command performs no network probe and
+    must stay safe to call before an install or update decision.
+    """
+    from . import __version__
+    from . import diagnostics
+
+    payload = {
+        "schema_version": 1,
+        "installed": True,
+        "version": __version__,
+        "install_identity": diagnostics.install_identity(),
+        "runtime_freshness": diagnostics.runtime_freshness(),
+    }
+    if args.json:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+        sys.stdout.write("\n")
+    else:
+        identity = payload["install_identity"]
+        print(f"vibecode-checker {payload['version']}")
+        print(f"commit: {identity.get('short_commit') or '확인 불가'}")
+        print(f"source: {identity.get('commit_source') or '확인 불가'}")
+    return EXIT_OK
+
+
 def _cmd_rules(_args: argparse.Namespace) -> int:
     from .scanner import RULES as RUNTIME_RULES
 
@@ -558,6 +720,61 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         for m in report.per_rule
     )
     return EXIT_FINDINGS_WARN if has_miss else EXIT_OK
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """보고서 저장 폴더를 보고·지정·해제한다.
+
+    **어디에 저장되는지 항상 말한다.** 지정한 뒤에도, 지우고 난 뒤에도,
+    아무것도 안 했을 때도 — 실제로 쓰일 경로와 그 근거를 함께 찍는다.
+    설정만 바꾸고 결과를 안 보여주면 사용자는 또 어디에 저장되는지 모른다.
+    """
+    from .report_store import (
+        CONFIG_KEY_REPORT_DIR,
+        REPORT_DIR_ENV,
+        config_path,
+        configured_report_dir,
+        read_config,
+        write_config,
+    )
+
+    values = read_config()
+    changed = False
+
+    if args.clear_report_dir:
+        values.pop(CONFIG_KEY_REPORT_DIR, None)
+        changed = True
+    if args.report_dir:
+        target = Path(args.report_dir).expanduser()
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"[gvskb] 폴더를 만들 수 없습니다: {target} — {exc.strerror or exc}",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        # 상대경로로 저장하면 실행 위치에 따라 딴 데 생긴다. 절대경로로 못 박는다.
+        values[CONFIG_KEY_REPORT_DIR] = str(target.resolve())
+        changed = True
+
+    if changed:
+        saved_to = write_config(values)
+        print(f"[gvskb] 설정 저장: {saved_to}")
+
+    configured, reason = configured_report_dir()
+    print("보고서 저장 위치")
+    if configured is None:
+        print("  현재  : 검사한 폴더 안 .check-reports/  (검사할 때마다 그 폴더 옆에 생깁니다)")
+    else:
+        print(f"  현재  : {configured}")
+    print(f"  근거  : {reason}")
+    print(f"  설정  : {config_path()}")
+    if os.environ.get(REPORT_DIR_ENV, "").strip():
+        print(f"  참고  : 환경변수 {REPORT_DIR_ENV} 가 설정 파일보다 우선합니다")
+    print()
+    print("  바꾸려면 :  gvskb config --report-dir \"D:\\보안점검\"")
+    print("  되돌리려면:  gvskb config --clear-report-dir")
+    print("  한 번만  :  gvskb scan <경로> --report-dir \"D:\\임시\"")
+    return EXIT_OK
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -871,6 +1088,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdout", action="store_true",
         help="파일로 저장하지 않고 화면에만 출력(파이프 연결용)",
     )
+    scan.add_argument(
+        "--report-dir", metavar="폴더",
+        help="이번 검사만 이 폴더에 저장 (매번 쓰려면 `gvskb config --report-dir`)",
+    )
     scan.add_argument("--scenario", help="시나리오 힌트 (예: data-pipeline, llm-integration)")
     scan.add_argument(
         "--profile", default="public-default-strict",
@@ -883,6 +1104,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="의존성 매니페스트(requirements*.txt·package.json)의 취약·악성 패키지 검사를 "
              "함께 수행해 리포트에 병합 (온라인: OSV.dev 조회 — 패키지명·버전만 전송 / "
              "오프라인: 로컬 인텔 캐시. 판정 불가는 '안전'이 아님)",
+    )
+    scan.add_argument(
+        "--sbom", metavar="경로",
+        help="검사 결과를 CycloneDX 1.6 SBOM 으로 저장 (조달 제출·자산 대장용). "
+             "`--check-deps` 와 함께 쓰세요 — 의존성을 검사하지 않으면 컴포넌트 0개짜리 "
+             "문서가 되어 '의존성이 없다'로 읽힙니다(그래서 그 경우 쓰지 않고 알립니다). "
+             "판정 불가·상한 절단도 문서에 그대로 기록됩니다",
+    )
+    scan.add_argument(
+        "--project-name", metavar="이름", default=None,
+        help="SBOM 에 실을 프로젝트 이름. 미지정 시 검사 경로의 **마지막 구간만** 씁니다 "
+             "— SBOM 은 조달처로 나가는 문서라 전체 경로(사용자명·디렉터리 구조)를 "
+             "싣지 않습니다. 기관 정식 명칭이 따로 있으면 여기에 주세요",
     )
     scan.add_argument(
         "--include-installed", action="store_true",
@@ -942,6 +1176,10 @@ def build_parser() -> argparse.ArgumentParser:
     ver = sub.add_parser("version", help="설치된 버전 출력")
     ver.set_defaults(func=_cmd_version)
 
+    status = sub.add_parser("status", help="설치 신원·커밋 상태 (자동화용)")
+    status.add_argument("--json", action="store_true", help="안정된 JSON 계약으로 출력")
+    status.set_defaults(func=_cmd_status)
+
     eva = sub.add_parser(
         "evaluate",
         help="룰 examples 기반 precision/recall/F1 메트릭 출력",
@@ -964,11 +1202,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eva.set_defaults(func=_cmd_evaluate)
 
+    # 보고서를 어디 둘지 **기억시킨다.** 예전에는 환경변수뿐이라 Windows 에서
+    # 시스템 속성 창을 열어야 했고, 실사용에서 "찾기가 너무 어렵다"는 말이 나왔다.
+    cfg = sub.add_parser(
+        "config",
+        help="보고서 저장 폴더 등 설정 — 인자 없이 실행하면 현재 설정을 보여줍니다",
+    )
+    cfg.add_argument(
+        "--report-dir", metavar="경로",
+        help=r'보고서를 모아 둘 폴더 (예: "D:\보안점검" · "\\파일서버\점검보고서")',
+    )
+    cfg.add_argument("--clear-report-dir", action="store_true",
+                     help="지정을 지우고 기본값(검사한 폴더 안 .check-reports/)으로 되돌립니다")
+    cfg.set_defaults(func=_cmd_config)
+
     doctor = sub.add_parser("doctor", help="실행 환경·룰·MCP·네트워크 진단")
     doctor.add_argument("--json", action="store_true", help="JSON 출력 (자동화용)")
     doctor.add_argument("--offline", action="store_true",
                         help="네트워크 점검 건너뛰기 (망분리 환경)")
     doctor.set_defaults(func=_cmd_doctor)
+
+    sb = sub.add_parser(
+        "sbom",
+        help="건네받은 SBOM(CycloneDX·SPDX JSON)의 컴포넌트를 검사 — 소스가 없어도 됩니다",
+    )
+    sb.add_argument("file", help="SBOM 파일 경로 (.json)")
+    sb.add_argument("--limit", type=int, default=2000,
+                    help="검사할 최대 컴포넌트 수 (기본 2000). 초과분은 건수를 알려 줍니다")
+    sb.add_argument("--json", action="store_true", help="JSON 출력")
+    sb.set_defaults(func=_cmd_sbom)
 
     rs = sub.add_parser("ruleset", help="룰셋 버전·지문 확인(게이트 재현성) · --bump 로 갱신")
     rs.add_argument("--rules-dir", help="대상 룰 디렉토리 (기본: 자동 해석)")
@@ -1048,7 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     # 구버전 사본이 현재 코드를 가리는 상태면 결과를 믿기 전에 사용자가 보게 한다.
     # (doctor 는 자체 진단에 이미 포함하므로 중복 출력하지 않는다)
-    if getattr(args, "command", None) != "doctor":
+    if getattr(args, "command", None) not in {"doctor", "status"}:
         try:
             from .diagnostics import warn_if_install_broken
             warn_if_install_broken()

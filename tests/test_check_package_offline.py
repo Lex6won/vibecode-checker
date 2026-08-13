@@ -440,6 +440,63 @@ def test_kev_only_cache_is_not_clearance(offline_with_cache: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 커버리지 공백 안내문 — 판정이 맞아도 안내가 틀리면 담당자가 엉뚱한 조치를 한다
+# ---------------------------------------------------------------------------
+
+
+def test_missing_osv_cache_note_does_not_tell_pypi_user_to_enable_npm(
+    offline_with_cache: Path,
+) -> None:
+    """osv 캐시가 없어서 대조 못 한 PyPI 조회에 npm 환경변수를 안내하면 안 된다.
+
+    PyPI 는 항상 기본 수집 대상이므로 GVSKB_OSV_INCLUDE_NPM 은 원인도 해법도
+    아니다. 담당자가 그 변수를 켜도 공백은 그대로 남는다.
+    """
+    _write_cache(offline_with_cache, "cisa-kev", [])  # osv-malicious 없음
+    result = asyncio.run(check_package_impl(name="requests", ecosystem="pypi"))
+    note = result["note"] or ""
+    assert "GVSKB_OSV_INCLUDE_NPM" not in note
+    assert "npm" not in note
+    assert "캐시가 없습니다" in note
+    assert "update-intel" in note and "intel-bundle" in note
+
+
+def test_tampered_osv_cache_note_says_integrity_failure(
+    offline_with_cache: Path,
+) -> None:
+    """무결성 실패로 버려진 캐시는 '없음'과 다른 사유로 안내해야 한다.
+
+    파일이 있는데도 '캐시가 없습니다'라고만 하면 담당자가 파일 존재를 확인하고
+    안내를 신뢰하지 않게 된다 — 실제로는 다시 받아야 하는 상황이다.
+    """
+    _write_cache(
+        offline_with_cache, "osv-malicious",
+        [{"id": "MAL-9", "affected": [{"package": "evilpkg", "ecosystem": "PyPI"}]}],
+        sha256="0" * 64,  # 변조 시뮬레이션 — load()가 거부한다
+        ecosystems=["PyPI"],
+    )
+    _write_cache(offline_with_cache, "cisa-kev", [])
+    result = asyncio.run(check_package_impl(name="evilpkg", ecosystem="pypi"))
+    # 버려진 캐시로 악성 판정이 나와서도 안 되고, '깨끗함'이 나와서도 안 된다.
+    assert result["verdict"] == "unknown"
+    assert result["is_malicious_package"] is False
+    note = result["note"] or ""
+    assert "무결성" in note
+    assert "GVSKB_OSV_INCLUDE_NPM" not in note
+
+
+def test_npm_gap_note_still_points_at_the_opt_in_variable(
+    offline_with_cache: Path,
+) -> None:
+    """반대 방향 — npm 은 opt-in 이므로 그 안내가 사라지면 안 된다(과교정 방지)."""
+    _write_cache(offline_with_cache, "osv-malicious", [], ecosystems=["PyPI"])
+    result = asyncio.run(check_package_impl(name="left-pad", ecosystem="npm"))
+    note = result["note"] or ""
+    assert "GVSKB_OSV_INCLUDE_NPM=1" in note
+    assert "기본 수집 대상이 아닙니다" in note
+
+
+# ---------------------------------------------------------------------------
 # EPSS·NVD 병기 — 매일 수집되는 점수 캐시가 KEV 신호의 우선순위 근거로 쓰인다
 # ---------------------------------------------------------------------------
 

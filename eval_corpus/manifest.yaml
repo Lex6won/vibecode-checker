@@ -65,6 +65,32 @@ cases:
   - {id: H-08, file: h_hard_variants/UserController.java, line: 10, kind: hard_variant, category: secret, expect_detected: false, expected_rule_ids: [GOV-SECRET-APIKEY-001, KISA-PY-SEC-06], sink: "P@ssw0rdFAKE"}
   - {id: H-09, file: h_hard_variants/UserController.java, line: 14, kind: hard_variant, category: injection, expect_detected: false, expected_rule_ids: [GOV-SQL-INJECTION-001], sink: "WHERE id = \" + id"}
 
+  # ---------- (I) 안내서 취약점 유형 코퍼스 ----------
+  # NIS/NSR 「공공부문 프런티어 AI 활용 보안점검 안내서」(2026.8) p.12-13 유형별 샘플.
+  # kind: known_gap = 안내서가 요구하나 **현재 탐지하지 못하는 것**(2026-08-10 실측).
+  - {id: I-01, file: i_guide_types/b02_pwreset.py, line: 6, kind: vulnerability, category: crypto, expect_detected: true, expected_rule_ids: [KISA-PY-SEC-08], sink: "random.randint(100000, 999999)", guide_item: "비밀번호 재설정"}
+  - {id: I-02, file: i_guide_types/c_cmdi.py, line: 6, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [GOV-CMD-INJECTION-001, KISA-PY-INPUT-05], sink: "os.system(\"convert /data/\"", guide_item: "명령어 인젝션"}
+  - {id: I-03, file: i_guide_types/c_crypto.py, line: 4, kind: vulnerability, category: crypto, expect_detected: true, expected_rule_ids: [KISA-PY-SEC-04], sink: "hashlib.md5(pw.encode())", guide_item: "취약한 암호화"}
+  - {id: I-04, file: i_guide_types/c_deser.py, line: 5, kind: vulnerability, category: deserialization, expect_detected: true, expected_rule_ids: [KISA-PY-CODE-03], sink: "pickle.loads(request.data)", guide_item: "취약한 역직렬화"}
+  - {id: I-05, file: i_guide_types/c_redirect.py, line: 4, kind: vulnerability, category: open-redirect, expect_detected: true, expected_rule_ids: [KISA-PY-INPUT-07, KISA-PY-INPUT-13], sink: "redirect(request.args[\"next\"])", guide_item: "오픈 리다이렉트"}
+  - {id: I-06, file: i_guide_types/c_sqli.py, line: 5, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [GOV-SQL-INJECTION-001], sink: "cur.execute(\"SELECT * FROM 민원", guide_item: "SQL 인젝션"}
+  - {id: I-07, file: i_guide_types/c_xss.js, line: 2, kind: vulnerability, category: xss, expect_detected: true, expected_rule_ids: [KISA-JS-INPUT-04], sink: "innerHTML = userInput", guide_item: "XSS"}
+  - {id: I-08, file: i_guide_types/b01_tenant.py, line: 5, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "org = request.args.get(\"org_id\")", guide_item: "테넌트 격리"}
+  - {id: I-09, file: i_guide_types/c_csrf.py, line: 3, kind: known_gap, category: misconfig, expect_detected: false, expected_rule_ids: [], sink: "app.config[\"WTF_CSRF_ENABLED\"] = False", guide_item: "CSRF"}
+  - {id: I-10, file: i_guide_types/c_logging.py, line: 6, kind: known_gap, category: logging, expect_detected: false, expected_rule_ids: [], sink: "logging.info(\"login attempt pw=%s\", pw)", guide_item: "민감정보 로깅"}
+  - {id: I-11, file: i_guide_types/c_path.py, line: 5, kind: known_gap, category: path-traversal, expect_detected: false, expected_rule_ids: [], sink: "send_file(\"/data/upload/\" + fn)", guide_item: "경로 탐색"}
+  - {id: I-12, file: i_guide_types/c_race.py, line: 10, kind: known_gap, category: race, expect_detected: false, expected_rule_ids: [], sink: "if balance(acc) >= amt:", guide_item: "경쟁 조건"}
+  - {id: I-13, file: i_guide_types/c_ratelimit.py, line: 5, kind: known_gap, category: rate-limit, expect_detected: false, expected_rule_ids: [], sink: "if check_password(request.form[\"id\"]", guide_item: "요청 제한 우회"}
+  - {id: I-14, file: i_guide_types/c_ssrf.py, line: 6, kind: known_gap, category: ssrf, expect_detected: false, expected_rule_ids: [], sink: "requests.get(url, timeout=5)", guide_item: "SSRF"}
+  - {id: I-15, file: i_guide_types/c_ssti.py, line: 5, kind: known_gap, category: injection, expect_detected: false, expected_rule_ids: [], sink: "render_template_string(tpl)", guide_item: "템플릿 인젝션"}
+  - {id: I-16, file: i_guide_types/c_upload.py, line: 6, kind: known_gap, category: upload, expect_detected: false, expected_rule_ids: [], sink: "f.save(\"/var/www/html/uploads/\"", guide_item: "파일 업로드"}
+  - {id: I-17, file: i_guide_types/s01_auth_bypass.py, line: 19, kind: known_gap, category: authn, expect_detected: false, expected_rule_ids: [], sink: "if request.form.get(\"bypass\") == \"1\"", guide_item: "인증 우회"}
+  - {id: I-18, file: i_guide_types/s04_privesc.py, line: 8, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "setattr(user, k, v)", guide_item: "권한 상승"}
+  - {id: I-19, file: i_guide_types/s05_idor.py, line: 4, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "doc_id = request.args.get(\"id\")", guide_item: "IDOR/BOLA"}
+  - {id: I-20, file: i_guide_types/s15_cors.js, line: 5, kind: known_gap, category: misconfig, expect_detected: false, expected_rule_ids: [], sink: "cors({ origin: true, credentials: true })", guide_item: "CORS 설정 오류"}
+  - {id: I-21, file: i_guide_types/s15_cors.py, line: 5, kind: known_gap, category: misconfig, expect_detected: false, expected_rule_ids: [], sink: "resources={r\"/api/*\": {\"origins\": \"*\"}}", guide_item: "CORS 설정 오류"}
+  - {id: I-22, file: i_guide_types/s23_logic.py, line: 7, kind: known_gap, category: business-logic, expect_detected: false, expected_rule_ids: [], sink: "total = price * qty", guide_item: "비즈니스 로직"}
+
 # 의존성 트랙 (gvskb scan 은 .txt 미스캔 → check-package 경로로 별도 측정)
 dependency_track:
   pypi:
@@ -75,3 +101,4 @@ dependency_track:
     file: f_dependencies/package.json
     vulnerable: [lodash, minimist]
     typosquat: [expresss]
+

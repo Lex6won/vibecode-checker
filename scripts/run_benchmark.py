@@ -128,6 +128,17 @@ def main() -> int:
 
     vuln_cases = [c for c in cases if c["kind"] == "vulnerability"]
     hard_cases = [c for c in cases if c["kind"] == "hard_variant"]
+    # `known_gap` — 외부 지침이 요구하나 **현재 탐지하지 못한다고 확인된** 항목.
+    # recall 에 넣지 않는다(못 잡는 것이 사실이므로 탐지율을 왜곡한다).
+    # 대신 따로 세고, **탐지되기 시작하면 알린다** — ground truth 를 갱신해야 한다는 신호다.
+    gap_cases = [c for c in cases if c["kind"] == "known_gap"]
+
+    known_kinds = {"vulnerability", "hard_variant", "known_gap"}
+    unknown = [c for c in cases if c["kind"] not in known_kinds]
+    if unknown:
+        # 조용히 버리지 않는다 — 모르는 kind 는 집계에서 빠지므로 반드시 드러낸다.
+        print(f"[경고] 알 수 없는 kind {len(unknown)}건이 집계에서 빠집니다: "
+              f"{sorted({c['kind'] for c in unknown})}")
 
     # 1) 취약점 탐지율
     per_cat = defaultdict(lambda: [0, 0])   # category -> [detected, total]
@@ -160,6 +171,17 @@ def main() -> int:
         )
     hard_detected = sum(r["detected"] for r in hard_rows)
 
+    # 2-b) 알려진 공백 — 못 잡는 것이 사실. 잡히기 시작하면 그것이 뉴스다.
+    gap_rows = []
+    for c in gap_cases:
+        m = match(c, findings)
+        gap_rows.append(
+            {"id": c["id"], "file": c["file"], "line": c["line"], "category": c["category"],
+             "guide_item": c.get("guide_item", ""),
+             "detected": m is not None, "matched_rule": m["rule_id"] if m else None}
+        )
+    gap_now_detected = sum(r["detected"] for r in gap_rows)
+
     # 3) 음성 대조군 FP
     fp_rows = [f for f in findings if f["file"] in nc_files]
 
@@ -181,6 +203,8 @@ def main() -> int:
             "vuln_recall": round(vuln_detected / len(vuln_cases), 3),
             "hard_total": len(hard_cases),
             "hard_detected": hard_detected,
+            "known_gap_total": len(gap_cases),
+            "known_gap_now_detected": gap_now_detected,
             "fp_findings": len(fp_rows),
             "negative_control_files": len(nc_files),
             "unexpected_extras": len(extras),
@@ -191,6 +215,7 @@ def main() -> int:
         "per_project": {k: {"detected": v[0], "total": v[1]} for k, v in sorted(per_proj.items())},
         "vuln_rows": vuln_rows,
         "hard_rows": hard_rows,
+        "gap_rows": gap_rows,
         "fp_rows": fp_rows,
         "extras": extras,
     }
@@ -207,7 +232,10 @@ def main() -> int:
     md.append(f"- 경계 프로브 탐지: {s['hard_detected']}/{s['hard_total']} (미탐이 정상 — 한계 측정)")
     md.append(f"- 음성 대조군 오탐(FP): **{s['fp_findings']}건** "
               f"(대조군 {s['negative_control_files']}개 파일)")
-    md.append(f"- 라벨 외 추가 발견: {s['unexpected_extras']}건 / 전체 발견 {s['total_findings']}건\n")
+    md.append(f"- 라벨 외 추가 발견: {s['unexpected_extras']}건 / 전체 발견 {s['total_findings']}건")
+    md.append(f"- **알려진 공백(known_gap)**: {s['known_gap_total']}건 — 현재 탐지 "
+              f"{s['known_gap_now_detected']}건 "
+              "(외부 지침이 요구하나 못 잡는다고 **확인된** 항목. recall 에 포함하지 않는다)\n")
 
     def tbl(title, d):
         md.append(f"## {title}\n")
@@ -230,6 +258,16 @@ def main() -> int:
             md.append(f"| {r['id']} | {r['file']}:{r['line']} | {r['category']} |")
     md.append("")
 
+    md.append("## 알려진 공백 — 외부 지침 요구 대비 미탐\n")
+    md.append("> 못 잡는 것이 **확인된 사실**이라 탐지율에 넣지 않는다. "
+              "`탐지됨` 으로 바뀌면 ground truth 를 갱신해야 한다는 신호다.\n")
+    md.append("| ID | 지침 항목 | 위치 | 현재 |")
+    md.append("|---|---|---|---|")
+    for r in gap_rows:
+        md.append(f"| {r['id']} | {r['guide_item'] or r['category']} | {r['file']}:{r['line']} | "
+                  f"{'**탐지됨 — 갱신 필요**' if r['detected'] else '미탐'} |")
+    md.append("")
+
     md.append("## 음성 대조군 오탐(FP) 상세\n")
     md.append("| 파일 | 라인 | 룰 | 카테고리 |")
     md.append("|---|---:|---|---|")
@@ -248,7 +286,10 @@ def main() -> int:
     (RESULTS / "benchmark_results.md").write_text("\n".join(md), encoding="utf-8")
 
     print(f"[완료] recall={s['vuln_recall']*100:.1f}%  FP={s['fp_findings']}  "
-          f"hard_detected={s['hard_detected']}/{s['hard_total']}")
+          f"hard_detected={s['hard_detected']}/{s['hard_total']}  "
+          f"known_gap={s['known_gap_now_detected']}/{s['known_gap_total']}")
+    if gap_now_detected:
+        print(f"  ※ 알려진 공백 {gap_now_detected}건이 이제 탐지됩니다 — manifest 를 갱신하세요.")
     print(f"  → {RESULTS / 'benchmark_results.md'}")
     return 0
 

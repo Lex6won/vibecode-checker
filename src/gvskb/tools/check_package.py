@@ -547,6 +547,52 @@ def _evaluate_cooldown(
     )
 
 
+def _coverage_gap_note(
+    ecosystem_label: str,
+    covered_ecosystems: list[str],
+    *,
+    osv_file_present: bool,
+) -> str:
+    """악성 피드 커버리지 공백의 **원인별** 안내문.
+
+    담당자가 그대로 따라 하면 공백이 실제로 닫히는 문장이어야 한다. 세 갈래:
+      (a) osv 캐시 자체가 없음/버려짐 → 캐시를 만들어 반입 (파일이 있으면 무결성 실패)
+      (b) 캐시는 있으나 이 생태계가 opt-in → 해당 환경변수를 켜고 다시 받기
+      (c) 그 외(기본 수집 대상인데 안 담김) → 원인 미상, 갱신 후 커버리지 재확인
+    """
+    from ..intel.sources.osv import OPT_IN_ECOSYSTEMS
+
+    coverage = f"(캐시 커버리지: {covered_ecosystems or '없음'})"
+
+    if not covered_ecosystems:
+        cause = (
+            "악성 패키지 피드(osv-malicious) 캐시가 무결성 검증에 실패해 무시되었습니다"
+            if osv_file_present else
+            "악성 패키지 피드(osv-malicious) 캐시가 없습니다"
+        )
+        return (
+            f"{cause} — {ecosystem_label} 패키지의 악성 등록 여부를 대조하지 못했습니다"
+            f"('이상 없음'이 아닙니다). 외부망에서 `gvskb update-intel --all` 로 캐시를 "
+            "만든 뒤 `gvskb intel-bundle export` → (반입) → `gvskb intel-bundle import` "
+            "로 옮기세요."
+        )
+
+    if ecosystem_label in OPT_IN_ECOSYSTEMS:
+        return (
+            f"오프라인 캐시가 {ecosystem_label} 생태계를 포함하지 않습니다{coverage}. "
+            f"{ecosystem_label} 은 용량이 커서 기본 수집 대상이 아닙니다 — 외부망에서 "
+            "GVSKB_OSV_INCLUDE_NPM=1 을 설정하고 `gvskb update-intel --all` 을 실행한 뒤 "
+            "캐시를 반입하세요."
+        )
+
+    return (
+        f"오프라인 캐시가 {ecosystem_label} 생태계를 포함하지 않습니다{coverage}. "
+        f"{ecosystem_label} 은 기본 수집 대상이므로 캐시가 불완전한 상태입니다 — 외부망에서 "
+        "`gvskb update-intel --all` 을 다시 실행하고 `gvskb doctor` 로 커버리지를 확인한 뒤 "
+        "반입하세요."
+    )
+
+
 def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dict:
     """Consult the local intel cache and return a unified PackageCheckResult dict.
 
@@ -653,17 +699,22 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
 
     if not osv_covers:
         # 이 생태계의 악성 피드가 캐시에 없다 → '깨끗함'이 아니라 '판정 불가'.
+        #
+        # 안내는 원인별로 갈라야 한다. 전부 "GVSKB_OSV_INCLUDE_NPM=1 을 설정하라"로
+        # 보내면 **PyPI 를 물어본 담당자가 npm 을 켜라는 엉뚱한 지시를 받는다** —
+        # PyPI 는 항상 기본 수집 대상이라 그 변수와 무관하고, 실제 원인은 osv 캐시가
+        # 없거나 무결성 검증에 걸려 버려진 것이다(실측 발견). 판정은 맞아도 안내가
+        # 틀리면 담당자가 엉뚱한 조치를 하고 공백은 그대로 남는다.
+        note = _coverage_gap_note(
+            ecosystem_label, covered_ecosystems,
+            osv_file_present=cache.path_for("osv-malicious").exists(),
+        )
         return PackageCheckResult(
             **base,
             checked=False,
             verdict="unknown",
             requires_review=True,
-            note=(
-                f"오프라인 캐시가 {ecosystem_label} 생태계를 포함하지 않습니다"
-                f"(캐시 커버리지: {covered_ecosystems or '없음'}). "
-                "외부망에서 `gvskb update-intel --all` 실행 시 npm까지 받으려면 "
-                "GVSKB_OSV_INCLUDE_NPM=1 을 설정한 뒤 캐시를 반입하세요."
-            ),
+            note=note,
         ).model_dump(mode="json")
 
     if stale_sources:

@@ -16,7 +16,15 @@ from importlib import resources
 from pathlib import Path
 
 from ..loader import load_all_rules
-from ..schema import CodeLocation, Decision, Finding, Rule, Severity, Status
+from ..schema import (
+    EXPOSURE_CATEGORIES,
+    CodeLocation,
+    Decision,
+    Finding,
+    Rule,
+    Severity,
+    Status,
+)
 from .base import ScannerAdapter
 
 _FLAG_NAMES = {
@@ -46,9 +54,16 @@ _EXT_TO_LANG = {
 # are skipped for *all* rules — EXCEPT these categories, whose whole purpose is
 # to find secrets/credentials written *inside* comments (e.g. KISA-PY-SEC-13
 # "주석문 안에 포함된 시스템 주요정보", hardcoded keys). Those keep matching.
-_COMMENT_SKIP_EXEMPT_CATEGORIES = {
-    "secret-scanning",
-}
+#
+# 개인정보도 같은 이유로 예외다(실측 2026-08-08). `# 테스트 대상자
+# YYMMDD-XXXXXXX` 같은 실제 값이 아닌 표기를 써야 하며, 주석에 적힌
+# 주민등록번호는 **여전히 개인정보 유출**이고, 커밋되면 이력에 영구히 남는다.
+# "주석은 살아있는 코드가 아니다"는 *실행 위험*에는 맞지만 *노출 위험*에는
+# 맞지 않는다. 두 위험을 한 규칙으로 다루던 것이 문제였다.
+#
+# 목록을 여기 다시 적지 않는다 — 같은 집합을 scanner.py 에도 따로 적어 두었다가
+# 양쪽 모두 public-sector-internal 이 빠진 채로 남았다(실측 2026-08-09).
+_COMMENT_SKIP_EXEMPT_CATEGORIES = EXPOSURE_CATEGORIES
 
 _IGNORE_RE = re.compile(r"gvskb:\s*ignore(?:\s+([A-Za-z0-9_.:-]+))?", re.IGNORECASE)
 
@@ -86,8 +101,66 @@ def _rrn_checksum_ok(matched: str) -> bool:
     return (11 - total % 11) % 10 == digits[12]
 
 
+def _luhn_ok(matched: str) -> bool:
+    """카드번호 검증식(Luhn, mod 10).
+
+    16자리 숫자 뭉치는 주문번호·타임스탬프·해시 조각과 형태가 같다. Luhn 은
+    **임의 숫자열의 90%를 떨어뜨려** 이 룰을 쓸 만하게 만든다(1/10 만 통과).
+
+    주민번호 검증기와 달리 하이픈 유무로 갈라 주지 않는다. 카드번호는
+    `4111-1111-1111-1111` 처럼 하이픈이 있어도 여전히 그냥 16자리 숫자와
+    형태가 같아, 하이픈이 "의도 신호"가 되지 못하기 때문이다.
+    """
+    digits = [int(ch) for ch in matched if ch.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+_IDENT_NOISE_RE = re.compile(r"[^a-z0-9]")
+
+
+def _not_self_named_value(matched: str) -> bool:
+    """값이 **키 이름 그 자체**면 비밀값이 아니라 변수 참조다.
+
+    실측(2026-08-09): 시크릿 룰을 TypeScript 로 열자 객체 리터럴
+    ``access_token: accessToken`` 이 '치명·차단'으로 올라왔다. 값은 비밀이
+    아니라 같은 이름의 변수다. `key: value` 를 설정 대입으로 읽는 갈래가
+    JS/TS 객체 리터럴 문법과 겹치면서 생긴 자리다.
+
+    구분자 좌우를 정규화(소문자·기호 제거)해 같으면 후보에서 뺀다 —
+    ``access_token`` 과 ``accessToken`` 은 둘 다 ``accesstoken`` 이다.
+    **실제 비밀값이 자기 키 이름과 같을 수는 없으므로** 이 제외가 진짜 비밀을
+    가릴 위험은 없다. 유일한 손실은 ``PASSWORD=password`` 같은 자기반복 값인데,
+    그건 플레이스홀더 계열이라 어차피 제외 대상이다.
+
+    구분자가 없는 매치(``sk-…``·``AKIA…``·PEM 블록)에는 아무 영향이 없다.
+    한 룰의 검증기는 그 룰의 **모든** 패턴에 걸리므로, 해당 없는 모양은
+    조용히 통과시켜야 한다.
+    """
+    head, sep, tail = matched.partition(":")
+    if not sep:
+        head, sep, tail = matched.partition("=")
+    if not sep:
+        return True
+    key = _IDENT_NOISE_RE.sub("", head.lower())
+    value = _IDENT_NOISE_RE.sub("", tail.strip().strip("\"'").lower())
+    if not key or not value:
+        return True
+    return key != value
+
+
 _VALIDATORS: dict[str, "Callable[[str], bool]"] = {
     "rrn_checksum": _rrn_checksum_ok,
+    "luhn": _luhn_ok,
+    "not_self_named_value": _not_self_named_value,
 }
 
 # 증거 문자열 — 매치 구간을 중심으로 잘라 낸다. 줄 전체를 넣으면 200자가 넘는
@@ -357,22 +430,112 @@ def _finding_id(rule_id: str, filename: str, line_no: int, evidence: str) -> str
     return f"{rule_id}:{digest}"
 
 
+#: 가려진 자리에 남기는 표식. 담당자가 "여기가 원문이 아니다"를 **문자열 안에서**
+#: 알 수 있어야 한다. 보고서 라벨만으로는 증거를 복사해 붙인 순간 사라진다.
+#:
+#: 마크다운에서 안전한 모양을 골랐다. 이전 표식 `***REDACTED***` 는 별 넷이
+#: 굵게+기울임으로 렌더돼 보고서마다 서식이 깨졌고, 영어라 비전공 담당자에게
+#: 아무것도 알려주지 않았다.
+MASK_MARK = "[마스킹]"
+
+#: 이 함수가 만들어 내는 마스킹 모양들. "정말 가려졌는가"를 되묻기 위한 것이다.
+#: 보고서가 모든 증거에 '마스킹됨' 딱지를 붙이면 그 딱지는 정보가 아니다 —
+#: `eval(x)` 옆의 '마스킹됨'을 본 담당자는 무엇이 가려졌는지 찾다가 지친다.
+_MASKED_SHAPE_RE = re.compile(
+    r"\[마스킹\]|\d{6}-[1-4]\*{6}|01[016789]-\*{4}-\d{4}",
+)
+
+
+def evidence_is_masked(text: str) -> bool:
+    """증거 문자열에 실제로 가려진 부분이 있는가."""
+    return bool(text) and bool(_MASKED_SHAPE_RE.search(text))
+
+
+def _partial(token: str) -> str:
+    """앞뒤 일부만 남기고 가린다 — **식별은 되고 사용은 불가**하게.
+
+    담당자는 유출된 키를 폐기·재발급해야 하는데, 통째로 가리면 한 파일에
+    키가 여러 개일 때 **어느 것인지 구분할 수 없다**. 그렇다고 원문을 실으면
+    보고서가 유출본을 한 벌 더 만든다 — 이 보고서는 파일로 저장되고 결재로
+    올라가고 감사로그에 남는다.
+
+    노출 비율을 길이에 비례시킨다(앞 ¼·뒤 ⅛, 각각 8자·4자 상한). 짧은 값은
+    비율로 따져도 남는 부분이 너무 커지므로 통째로 가린다.
+    """
+    n = len(token)
+    head, tail = min(8, n // 4), min(4, n // 8)
+    if head + tail < 6:
+        return MASK_MARK
+    return f"{token[:head]}{MASK_MARK}{token[n - tail:]}"
+
+
+#: **비밀번호는 부분 노출하지 않는다.** API 키는 기계가 만든 고엔트로피 값이라
+#: 앞 몇 자를 봐도 나머지를 좁히지 못하지만, 비밀번호는 사람이 지어 저엔트로피다
+#: — `P@ss…` 넉 자가 추측을 실질적으로 도와준다. 게다가 어느 비밀번호인지는
+#: 변수명(`DB_PASSWORD`)이 이미 말해 주므로 부분 노출로 얻는 것도 없다.
+_FULL_MASK_KEYS = re.compile(r"(?i)^(password|passwd|pwd)$")
+
+
+def _mask_quoted_value(m: re.Match[str]) -> str:
+    lead, key, value, close = m.group(1), m.group(2), m.group(3), m.group(4)
+    # 앞 단계(sk-·AKIA)가 이미 가린 값을 다시 가리면 남겨 둔 식별 정보가 사라진다.
+    if _MASKED_SHAPE_RE.search(value):
+        return m.group(0)
+    return f"{lead}{MASK_MARK if _FULL_MASK_KEYS.match(key) else _partial(value)}{close}"
+
+
 def redact_evidence(text: str) -> str:
-    """Mask Korean PII, secrets, AWS/sk-* keys, and credential-shaped strings."""
+    """Mask Korean PII, secrets, AWS/sk-* keys, and credential-shaped strings.
+
+    가리되 **통째로 가리지는 않는다.** 무엇이 노출됐는지 담당자가 알아보지
+    못하면 보고서는 조치로 이어지지 않는다. 국내 관행대로 주민등록번호는
+    생년월일·성별자리를, 휴대전화는 뒷 네 자리를 남기고, 나머지 비밀값은
+    길이에 비례해 앞뒤 일부만 남긴다. 비밀번호만 예외로 통째로 가린다.
+    """
     text = re.sub(r"\b(\d{6})-?([1-4])\d{6}\b", r"\1-\2******", text)
     text = re.sub(r"\b(01[016789])-?\d{3,4}-?(\d{4})\b", r"\1-****-\2", text)
     # 탐지 룰보다 **일부러 느슨하게** 잡는다. 여기서 못 가리면 토큰이 보고서·
     # 로그·오류 메시지에 그대로 찍히지만, 넓게 가려서 생기는 손해는 증거 문자열이
     # 조금 덜 읽히는 것뿐이다. 비대칭이 명백하므로 과잉 마스킹 쪽을 택한다.
     # (실측: sk- 만 가려서 sk_ggtrust_… 형식 기관 API 키가 무방비였다.)
-    text = re.sub(r"sk([-_])[A-Za-z0-9_-]{8,}", r"sk\1***REDACTED***", text)
-    text = re.sub(r"AKIA[0-9A-Z]{16}", "AKIA***REDACTED***", text)
+    text = re.sub(r"sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
+    text = re.sub(r"AKIA[0-9A-Z]{16}", lambda m: _partial(m.group(0)), text)
     text = re.sub(
-        r"(?i)((api[_-]?key|secret|password|passwd|token)\s*[:=]\s*[\"'])[^\"']+([\"'])",
-        r"\1***REDACTED***\3",
+        r"(?i)((api[_-]?key|secret|password|passwd|pwd|token)\s*[:=]\s*[\"'])([^\"']+)([\"'])",
+        _mask_quoted_value,
         text,
     )
     return text.strip()[:240]
+
+
+def redact_secret_material(text: str) -> str:
+    """**비밀 파일의 내용 한 줄**을 가린다 — 파일명이 이미 비밀임을 말하는 자리용.
+
+    `redact_evidence` 는 `키 = "값"` 꼴이나 `sk-`·`AKIA` 접두사를 단서로 삼는다.
+    그런데 비밀 파일(`.secret_key`·`password.txt`)의 내용은 **접두사도 변수명도
+    없는 맨 토큰**이라 그 어느 단서에도 걸리지 않는다. 결과적으로 *맨 비밀값을
+    찾으라고 만든 룰*(`GOV-SECRET-KEYFILE-001`)의 증거만 유일하게 안 가려졌다 —
+    실측(2026-08-10) 지자체 재난대응 웹앱 검사에서 세션 서명키 64자가 보고서에 통째로
+    실렸다. 그 보고서는 `.check-reports/` 에 저장되고 결재로 올라간다.
+
+    같은 판단을 `redact_evidence` 에 넣지 않는 이유는 룰 정의가 적어 둔 그대로다:
+    **줄만 봐서는 64자 hex 가 해시인지 키인지 구분할 수 없다.** 전역에 적용하면
+    커밋 해시·체크섬·무결성 값까지 가려 '늘 켜진 마스킹'이 되고, 그러면 딱지가
+    정보이기를 멈춘다. 여기서는 호출부가 `_is_secret_filename` 을 이미 통과했고
+    값 모양(`_HEXLIKE_RE`·`_SECRET_VALUE_RE`)까지 확인한 뒤라 문맥이 확정돼 있다.
+
+    `키=값` 줄이면 **키는 남긴다** — 한 파일에 값이 여럿일 때 어느 것을 폐기해야
+    하는지는 키 이름이 말해 준다.
+    """
+    base = redact_evidence(text)
+    if not base or evidence_is_masked(base):
+        return base
+    key, sep, value = base.partition("=")
+    if sep:
+        stripped = value.strip().strip("\"'")
+        if len(stripped) >= 8:
+            return f"{key}={_partial(stripped)}"
+    return _partial(base)
 
 
 _SEVERITY_RANK = {

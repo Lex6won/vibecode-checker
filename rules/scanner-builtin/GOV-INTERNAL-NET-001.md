@@ -12,7 +12,12 @@ sources:
 severity: high
 decision_default: block
 domains: [public-sector-internal]
-languages: [python, javascript, java, yaml, toml, shell]
+# 언어를 제한하지 않는다. 노출 위험은 **언어를 가리지 않는다** — 주민등록번호는
+# Go 로 적으나 Rust 로 적으나 주민등록번호다. 예전에는 여기에 목록이 있었고,
+# 그 목록에 typescript 가 없어 `.ts`/`.tsx` 에서 이 룰이 **한 번도 돌지 않았다**
+# (실측 2026-08-09). 공공 웹앱의 주력이 TypeScript 다. GOV-PII-PHONE-001 에서
+# 같은 구멍을 고쳤는데 형제 룰 셋에 그대로 남아 있었다.
+languages: []
 scenarios: [data-pipeline, web-app, agent, llm-integration]
 verified_at: 2026-05-31
 review_due: 2026-11-30
@@ -25,6 +30,10 @@ detection:
     - '(?i)\b(?:e\.?g\.?|예시|예\)|보기|for example|sample|샘플|placeholder|형식|format)\b'
     - '(?i)(?:입력\s*(?:하세요|해주세요|예)|enter\s+.*\bip\b|type\s+.*\bip\b|usage\s*:)'
     - '(?i)0\.0\.0\.0|<[^>]*ip[^>]*>|\{\{?\s*ip\s*\}?\}|xxx\.xxx'
+    # IPv4-mapped IPv6 표기(`::ffff:10.0.0.1`). 실제 설정에는 맨몸 IPv4 로 적지
+    # 이 표기를 쓰지 않는다 — 소스에 이 모양으로 나오면 주소가 아니라 **표기법을
+    # 설명하는 문장**이다. 실측 오탐: `// IPv4-mapped IPv6 (::ffff:10.0.0.1) → …`
+    - '::ffff:'
   flags: [IGNORECASE]
   category: public-sector-internal
   why_it_matters: >-

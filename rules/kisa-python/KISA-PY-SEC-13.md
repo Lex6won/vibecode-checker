@@ -24,14 +24,14 @@ detection:
   patterns:
     # 1) 주석문 안에 password / passwd / pwd / 비밀번호 / 암호 = 값
     #    (값이 명백한 플레이스홀더면 실제 자격증명이 아니므로 제외)
-    - "(?i)^\\s*#.*\\b(?:password|passwd|pwd|비밀번호|암호)\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))\\S+"
+    - "(?i)^\\s*#.*\\b(?:password|passwd|pwd|비밀번호|암호)(?:\\*\\*)?\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))\\S+"
     # 2) 주석문 안에 id/username/userid + admin-스럽거나 비밀번호스러운 값
-    - "(?i)^\\s*#.*\\b(?:userid|username|user_id|admin_id|admin_pw)\\s*[:=]\\s*\\S+"
+    - "(?i)^\\s*#.*\\b(?:userid|username|user_id|admin_id|admin_pw)(?:\\*\\*)?\\s*[:=]\\s*\\S+"
     # 2b) 주석문 안 'id = admin/root/...' — KISA 가이드 원문 예시 형태
-    - "(?i)^\\s*#\\s*id\\s*[:=]\\s*(?:admin|administrator|root|sa|sys)\\b"
+    - "(?i)^\\s*#\\s*(?:\\*\\*)?id(?:\\*\\*)?\\s*[:=]\\s*(?:admin|administrator|root|sa|sys)\\b"
     # 3) 주석문 안에 API key / secret / token / 서명키 + 값
     #    (값이 명백한 플레이스홀더면 실제 자격증명이 아니므로 제외)
-    - "(?i)^\\s*#.*\\b(?:api[_-]?key|secret(?:_key)?|access[_-]?token|signing[_-]?key|jwt[_-]?secret)\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))\\S+"
+    - "(?i)^\\s*#.*\\b(?:api[_-]?key|secret(?:_key)?|access[_-]?token|signing[_-]?key|jwt[_-]?secret)(?:\\*\\*)?\\s*[:=]\\s*(?![^\\s]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|예시|여기))\\S+"
     # 4) 주석문 안에 'admin / password' 같이 슬래시 구분 자격증명 한 줄
     - "(?i)^\\s*#.*\\b(?:admin|root|test_?user)\\s*/\\s*\\S{3,}"
     # 5) 주석문 안 DB 접속 문자열

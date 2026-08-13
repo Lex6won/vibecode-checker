@@ -27,7 +27,9 @@ def test_detect_secrets_and_pii_redacts_evidence():
     joined = "\n".join(f.evidence for f in report.findings)
     assert "abcdefghijklmnopqrstuvwxyz" not in joined
     assert "1234567" not in joined
-    assert "***REDACTED***" in joined or "******" in joined
+    from gvskb.scanners.regex_scanner import MASK_MARK, evidence_is_masked
+    assert MASK_MARK in joined or "******" in joined
+    assert all(evidence_is_masked(f.evidence) for f in report.findings)
 
 
 # ── sk_ 계열 키(언더스코어) ──────────────────────────────────────────────
@@ -41,9 +43,13 @@ def test_underscore_sk_key_is_masked_even_without_a_variable_name():
     """값만 인자로 넘겨도 마스킹돼야 한다 — 변수명 기반 규칙이 놓치는 자리."""
     from gvskb.scanners.regex_scanner import redact_evidence
 
+    from gvskb.scanners.regex_scanner import MASK_MARK
+
     out = redact_evidence(f'client = RegistryClient(base_url, "{_SK_UNDERSCORE_KEY}")')
     assert _SK_UNDERSCORE_KEY not in out
-    assert "REDACTED" in out
+    assert MASK_MARK in out
+    # 부분 노출은 **식별용**이다 — 남은 조각으로 원문을 복원할 수 없어야 한다.
+    assert _SK_UNDERSCORE_KEY[8:-4] not in out, "가운데가 그대로 남았다"
 
 
 def test_underscore_sk_key_is_masked_in_free_text():

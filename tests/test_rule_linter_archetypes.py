@@ -190,3 +190,134 @@ def test_validate_rules_fail_on_error_ignores_calendar_warnings(
     assert _run("warn") != 0, "만료 경고가 warn 모드에서는 잡혀야 한다"
     assert _run("error") == 0, "달력 경고가 CI 를 세우면 안 된다"
     capsys.readouterr()
+
+
+# ---------------------------------------------------------------------------
+# 중복 커버리지 — 룰 하나만 봐서는 절대 보이지 않는 결함
+# ---------------------------------------------------------------------------
+
+_PAIR = """---
+id: {rid}
+title_ko: 린터 테스트 룰
+status: approved
+source_layer: baseline
+sources:
+  - publisher: 테스트
+    document: 테스트
+    item: "제1절"
+cwe: [CWE-359]
+severity: high
+decision_default: warn
+languages: {langs}
+verified_at: 2026-01-01
+detection:
+  patterns:
+    - {pattern}
+  category: {category}
+{extra}  why_it_matters: 테스트
+  safe_fix: 테스트
+examples:
+  language: python
+  positive:
+{positives}  negative:
+    - "안전한 줄"
+---
+
+## 본문
+"""
+
+
+def _pair_codes(tmp_path: Path, specs: list[dict]) -> list[dict]:
+    d = tmp_path / "rules"
+    d.mkdir(parents=True, exist_ok=True)
+    for spec in specs:
+        body = _PAIR.format(
+            rid=spec["rid"],
+            langs=spec.get("langs", "[]"),
+            pattern=spec["pattern"],
+            category=spec.get("category", "privacy-public-sector"),
+            extra=spec.get("extra", ""),
+            positives="".join(f'    - "{p}"\n' for p in spec["positives"]),
+        )
+        (d / f"{spec['rid']}.md").write_text(body, encoding="utf-8")
+    report = validation.validate_rules_dir(d, today=date(2026, 1, 2))
+    assert report["summary"]["rules_loaded"] == len(specs), "픽스처 룰이 로드되지 않았습니다"
+    return [i for i in report["issues"] if i["code"] == "duplicate-coverage"]
+
+
+def test_duplicate_coverage_is_flagged(tmp_path: Path) -> None:
+    """실제로 벌어진 일 — 전화번호 룰이 이미 있는 줄 모르고 하나 더 만들었다.
+
+    같은 줄에 두 건이 발행돼 담당자가 한 번 고칠 것을 두 번 봤다.
+    """
+    dupes = _pair_codes(tmp_path, [
+        {"rid": "TEST-DUP-001", "pattern": r"'01[016789]-?\d{3,4}-?\d{4}'",
+         "positives": ["phone = 010-9876-5432", "tel = 01087654321"]},
+        {"rid": "TEST-DUP-002", "pattern": r"'(?<![\d.])01[016789][-. ]?\d{3,4}[-. ]?\d{4}'",
+         "positives": ["contact = 010-1111-2222", "hp = 01033334444"]},
+    ])
+    assert {i["rule_id"] for i in dupes} == {"TEST-DUP-001", "TEST-DUP-002"}
+    assert all(i["status"] == "error" for i in dupes)
+
+
+def test_duplicate_coverage_survives_a_languages_gap(tmp_path: Path) -> None:
+    """겹침이 가려진 진짜 원인이 이것이었다.
+
+    기존 룰의 ``languages`` 에 typescript 가 없어 ``.ts`` 회귀 코퍼스에서
+    두 룰이 애초에 만나지 않았다. 린터가 언어 필터를 존중하면 같은 구멍에
+    같은 방식으로 빠진다 — 그래서 **일부러 무시한다**.
+    """
+    dupes = _pair_codes(tmp_path, [
+        {"rid": "TEST-DUP-001", "langs": "[python, javascript, java, sql]",
+         "pattern": r"'01[016789]-?\d{3,4}-?\d{4}'",
+         "positives": ["phone = 010-9876-5432", "tel = 01087654321"]},
+        {"rid": "TEST-DUP-002", "langs": "[]",
+         "pattern": r"'(?<![\d.])01[016789][-. ]?\d{3,4}[-. ]?\d{4}'",
+         "positives": ["contact = 010-1111-2222", "hp = 01033334444"]},
+    ])
+    assert len(dupes) == 2, "언어 목록이 다르다고 겹침을 놓치면 이번 결함을 또 놓친다"
+
+
+@pytest.mark.parametrize("specs, why", [
+    ([{"rid": "TEST-DUP-001", "pattern": r"'01[016789]-?\d{3,4}-?\d{4}'",
+       "positives": ["phone = 010-9876-5432", "tel = 01087654321"]},
+      {"rid": "TEST-DUP-002", "pattern": r"'eval\s*\('",
+       "positives": ["eval(x)", "eval (y)"]}],
+     "서로 다른 것을 본다"),
+    ([{"rid": "TEST-DUP-001", "pattern": r"'01[016789]-?\d{3,4}-?\d{4}'",
+       "positives": ["phone = 010-9876-5432", "tel = 01087654321"]},
+      {"rid": "TEST-DUP-002", "category": "secret-scanning",
+       "pattern": r"'(?<![\d.])01[016789][-. ]?\d{3,4}[-. ]?\d{4}'",
+       "positives": ["contact = 010-1111-2222", "hp = 01033334444"]}],
+     "카테고리가 다르면 관점이 다른 것 — 합칠 대상이 아니다"),
+    ([{"rid": "TEST-DUP-001", "pattern": r"'01[016789]-?\d{3,4}-?\d{4}'",
+       "positives": ["phone = 010-9876-5432", "tel = 01087654321"],
+       "extra": "  dedup_group: phone\n"},
+      {"rid": "TEST-DUP-002", "pattern": r"'(?<![\d.])01[016789][-. ]?\d{3,4}[-. ]?\d{4}'",
+       "positives": ["contact = 010-1111-2222", "hp = 01033334444"],
+       "extra": "  dedup_group: phone\n"}],
+     "같은 dedup_group = 겹침을 알고 있고 보고 단계에서 묶는다는 선언"),
+    ([{"rid": "TEST-DUP-001", "pattern": r"'sk-[A-Za-z0-9]{8,}'",
+       "positives": ["key = sk-abcdefghijkl", "k2 = sk-mnopqrstuvwx"]},
+      {"rid": "TEST-DUP-002", "pattern": r"'[A-Za-z0-9]{8,}'",
+       "positives": ["token = abcdefghijkl", "hash = 0123456789ab"]}],
+     "한쪽만 덮는 것은 정상 — 넓은 룰과 좁은 룰의 공존"),
+    ([{"rid": "TEST-DUP-001", "pattern": r"'01[016789]-?\d{3,4}-?\d{4}'",
+       "positives": ["phone = 010-9876-5432"]},
+      {"rid": "TEST-DUP-002", "pattern": r"'(?<![\d.])01[016789][-. ]?\d{3,4}[-. ]?\d{4}'",
+       "positives": ["contact = 010-1111-2222"]}],
+     "예시 1개로는 '같다'고 말할 수 없다"),
+])
+def test_duplicate_coverage_does_not_cry_wolf(
+    tmp_path: Path, specs: list[dict], why: str,
+) -> None:
+    """**린터 자신의 오탐이 가장 큰 위험이다.** 시끄러우면 꺼지고, 꺼지면 없다."""
+    assert _pair_codes(tmp_path, specs) == [], why
+
+
+def test_shipped_ruleset_has_no_duplicate_coverage() -> None:
+    """실제 룰셋에 중복이 없는지 — 픽스처가 아니라 배포되는 326개를 본다."""
+    rules_dir = Path(__file__).resolve().parent.parent / "rules"
+    report = validation.validate_rules_dir(rules_dir)
+    dupes = [i for i in report["issues"] if i["code"] == "duplicate-coverage"]
+    assert dupes == [], f"중복 커버리지 룰 쌍: {[i['detail'] for i in dupes]}"

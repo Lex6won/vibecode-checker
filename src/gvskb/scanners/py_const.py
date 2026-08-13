@@ -267,3 +267,113 @@ def expr_is_constant(node: ast.AST, env: ConstEnv) -> bool:
                 expr_is_constant(a, env) for a in node.args
             )
     return False
+
+
+# ---------------------------------------------------------------------------
+# 모듈 단위 매개변수 상수 증명 — 스코프 안만 봐서는 절대 알 수 없는 것
+# ---------------------------------------------------------------------------
+#
+# 실측(2026-08-09, koica-reg-mcp):
+#
+#     def _bump(conn, table, key_col, key, now):
+#         conn.execute(f"INSERT INTO {table}({key_col}, ...) VALUES(?, ?, ?)", (key, now, now))
+#     ...
+#     _bump(conn, "tool_usage", "tool", tool, now)      # 호출부 넷 전부 리터럴
+#
+# 값(`key`·`now`)은 전부 `?` 바인딩이고 f-string 이 끼워 넣는 것은 **테이블·컬럼
+# 이름뿐**인데, 그 둘은 모듈 안 모든 호출부에서 문자열 리터럴이다. 스코프 안만
+# 보는 상수 판정으로는 매개변수의 출처를 알 수 없어 '치명·차단'이 됐다.
+#
+# SQL 식별자는 파라미터 바인딩으로 넘길 수 없으므로 f-string 조립 자체는
+# 정당한 패턴이다. 위험한 것은 **거기에 들어오는 값이 외부 입력일 때**뿐이다.
+
+
+def _param_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    a = fn.args
+    return [p.arg for p in (*a.posonlyargs, *a.args)]
+
+
+def literal_only_parameters(tree: ast.AST) -> dict[str, set[str]]:
+    """모듈 내 **모든 호출부가 문자열 리터럴을 넘기는** 매개변수를 함수별로 모은다.
+
+    반환: ``{함수이름: {매개변수이름, ...}}``
+
+    소리(soundness)를 지키기 위해 아래를 전부 요구한다.
+
+    - 함수 이름이 ``_`` 로 시작한다(모듈 사설). 공개 함수는 다른 모듈에서
+      부를 수 있어 이 모듈만 봐서는 증명이 되지 않는다.
+    - 같은 이름의 함수 정의가 모듈에 **하나뿐**이다(재정의·오버라이드 배제).
+    - 함수 이름이 호출 이외의 자리에 **값으로 등장하지 않는다**
+      (``h = _bump`` · ``register(_bump)`` 처럼 넘겨지면 간접 호출을 놓친다).
+    - 호출부가 **한 곳 이상** 있고, 그 전부가 해당 자리에 문자열 리터럴을 준다.
+    - ``*args``/``**kwargs`` 로 넘기는 호출부가 하나라도 있으면 그 함수는 통째로
+      포기한다 — 무엇이 어디로 가는지 알 수 없다.
+
+    조건을 하나라도 못 채우면 그 매개변수는 **증명 실패**로 두고 예전처럼
+    동적으로 본다. 증명하지 못한 것을 안전하다고 말하지 않는다.
+    """
+    defs: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs.setdefault(node.name, []).append(node)
+
+    candidates = {
+        name: fns[0] for name, fns in defs.items()
+        if name.startswith("_") and len(fns) == 1
+    }
+    if not candidates:
+        return {}
+
+    # 이름이 값으로 새어 나가면 포기한다.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or isinstance(node.ctx, ast.Store):
+            continue
+        if node.id not in candidates:
+            continue
+        parent_is_callee = False
+        for outer in ast.walk(tree):
+            if isinstance(outer, ast.Call) and outer.func is node:
+                parent_is_callee = True
+                break
+        if not parent_is_callee:
+            candidates.pop(node.id, None)
+
+    result: dict[str, set[str]] = {}
+    for name, fn in candidates.items():
+        params = _param_names(fn)
+        if not params:
+            continue
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+        ]
+        if not calls:
+            continue
+        if any(
+            any(isinstance(a, ast.Starred) for a in c.args)
+            or any(kw.arg is None for kw in c.keywords)
+            for c in calls
+        ):
+            continue
+
+        literal: set[str] = set()
+        for idx, param in enumerate(params):
+            ok = True
+            for call in calls:
+                if idx < len(call.args):
+                    given = call.args[idx]
+                else:
+                    given = next((kw.value for kw in call.keywords if kw.arg == param), None)
+                    if given is None:
+                        # 기본값에 기댄 호출 — 기본값이 리터럴이어야 인정한다.
+                        defaults = fn.args.defaults
+                        offset = len(params) - len(defaults)
+                        given = defaults[idx - offset] if idx >= offset else None
+                if not (isinstance(given, ast.Constant) and isinstance(given.value, str)):
+                    ok = False
+                    break
+            if ok:
+                literal.add(param)
+        if literal:
+            result[name] = literal
+    return result

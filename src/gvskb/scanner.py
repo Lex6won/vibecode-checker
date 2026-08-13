@@ -35,10 +35,12 @@ from .scanners.regex_scanner import (
     dedupe_by_group,
     lookup_rule,
     redact_evidence as _redact_evidence,
+    redact_secret_material as _redact_secret_material,
     reload_rules as _reload_runtime_rules,
 )
 from .scanners.semgrep_scanner import SemgrepScanner
 from .schema import (
+    EXPOSURE_CATEGORIES,
     Decision,
     ExternalConnection,
     Finding,
@@ -83,7 +85,11 @@ _TEST_FILE_RE = re.compile(
 
 # 값의 진위가 판정을 좌우하는 계열만 감쇄한다. 주입·XSS 같은 *코드 모양* 룰은
 # 테스트 코드에서도 그대로 둔다 — 모양이 잘못된 건 어디서든 잘못된 것이다.
-_VALUE_BASED_CATEGORIES = {"secret-scanning", "privacy-public-sector"}
+#
+# 목록을 여기 다시 적지 않는다(schema.EXPOSURE_CATEGORIES 참조). 예전에는
+# 같은 집합이 regex_scanner 에도 따로 적혀 있었고 둘 다 public-sector-internal
+# 이 빠져 있어, 테스트 픽스처의 사설 IP 48건이 차단으로 올라왔다.
+_VALUE_BASED_CATEGORIES = EXPOSURE_CATEGORIES
 
 _TEST_PATH_REASON = "테스트 코드 경로 — 값이 실제 자격증명·개인정보가 아닐 가능성이 높음"
 
@@ -116,6 +122,70 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
             "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
             "requires_approval_to_bypass": False,
             "severity_adjusted": f"{finding.severity.value} → low · {_TEST_PATH_REASON}",
+        }))
+    return adjusted
+
+
+#: "이렇게 하지 마세요"라고 **말하는** 줄. 보안 가이드·룰 설명·체크리스트·
+#: 인수인계 문서는 자기가 금지한 토큰을 문장 안에 그대로 담는다.
+#:
+#: 실측(2026-08-09, 사용자 제보): 룰 파일에 새로 쓴
+#: ``description: LLM 응답을 그대로 실행(execute)하지 말고 검증하세요`` 가
+#: **'LLM 출력 실행 위험'으로 차단**됐다. 도구가 자기가 하라고 쓴 문장을
+#: 막은 것이다. 제보자는 그 문장을 구조화 필드로 바꿔 없앴다 —
+#: **도구가 문서를 고치게 만든 것이 이 결함의 진짜 피해다.**
+_PROHIBITION_RE = re.compile(
+    r"(?i)("
+    r"하지\s*(?:말|마)|말\s*것|말고|금지|삼가|피하세요|피할\s*것|않도록|"
+    r"안\s*됩니다|안\s*된다|위험합니다|주의하세요|대신\s|권장하지|"
+    # 영문 토큰은 `\s` 가 아니라 `\b` 로 끊는다. `avoid\s` 로 두었더니
+    # 줄 **끝**에 온 `// avoid` 가 매치되지 않아, 같은 모양이 뒤 공백
+    # 유무로 다르게 판정됐다(적대적 검증에서 검출).
+    r"must\s+not|should\s+not|do\s+not|don't|never\b|avoid\b|"
+    r"forbidden|prohibited|deprecated|instead\s+of"
+    r")"
+)
+
+_PROHIBITION_REASON = (
+    "금지·주의 문구가 있는 안내문으로 보임 — 실행되는 코드가 아니라 "
+    "'이렇게 하지 말라'는 설명일 가능성이 높음"
+)
+
+
+def attenuate_prohibition_prose_findings(
+    findings: list[Finding], code: str,
+) -> list[Finding]:
+    """금지 문구가 같은 줄에 있는 **실행 위험** 발견을 low·warn 으로 낮춘다.
+
+    **삭제하지 않고 낮춘다.** 안내문처럼 보인다는 것은 확률이지 확신이 아니다.
+    ``os.system(cmd)  # 하지 말 것`` 처럼 진짜 코드에 반성문이 달린 경우가
+    있고, 그걸 조용히 지우면 놓친 사실이 아무 데도 남지 않는다.
+
+    **노출 위험(비밀값·개인정보·내부망)에는 적용하지 않는다.** "비밀번호를
+    하드코딩하지 마세요: password = hunter2" 라고 써 두면, 하지 말라고 적혀
+    있어도 비밀번호는 그대로 노출돼 있다. 의도가 위험을 지우지 못한다.
+
+    룰 파일 8개에 같은 제외 패턴을 흩뿌리지 않고 여기 한 곳에 둔다 — 같은
+    목록을 여러 곳에 적으면 언젠가 어긋난다(이 프로젝트가 세 번 겪었다).
+    """
+    lines = code.splitlines()
+    adjusted: list[Finding] = []
+    for finding in findings:
+        line_no = finding.location.line
+        if (
+            finding.category in EXPOSURE_CATEGORIES
+            or finding.severity == Severity.low
+            or not line_no
+            or line_no > len(lines)
+            or not _PROHIBITION_RE.search(lines[line_no - 1])
+        ):
+            adjusted.append(finding)
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_PROHIBITION_REASON}",
         }))
     return adjusted
 
@@ -301,6 +371,12 @@ def scan_code(
     # 삭제가 아니라 감쇄다. 판단이 틀렸을 때 위험이 사라지면 안 된다.
     from .scanners.html_sink_context import attenuate_html_sink_findings
     findings = attenuate_html_sink_findings(findings, code, filename)
+    # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
+    # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
+    findings = attenuate_prohibition_prose_findings(findings, code)
+    # 자원을 만들어 **호출자에게 넘기는** 함수에는 with 를 요구할 수 없다.
+    from .scanners.resource_owner import attenuate_returned_resource_findings
+    findings = attenuate_returned_resource_findings(findings, code, filename)
     if collapse_duplicates:
         findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)
@@ -376,6 +452,16 @@ def _is_secret_filename(name: str) -> bool:
     """이름만으로 비밀 자재로 봐야 하는 파일인가(password.txt, id_rsa 등)."""
     stem = name.rsplit(".", 1)[0] if "." in name else name
     return bool(_SECRET_FILENAME_RE.search(name) or _SECRET_FILENAME_RE.search(stem))
+
+
+# 제외 디렉터리 안에서도 **끝까지 찾아내야 하는** 자재의 확장자.
+# `DEFAULT_INCLUDE_EXTS` 전체가 아니라 개인키·키스토어로 좁힌다 — 넓히면
+# `.venv/…/certifi/cacert.pem`(공개 CA 번들) 같은 것이 프로젝트마다 딸려 온다.
+# `.crt`·`.cer`·`.der` 는 공개 인증서라 제외한다. `.pem` 은 개인키일 수도
+# 인증서일 수도 있어 포함하되, 심각도는 내용(PEM 헤더)이 가른다.
+_SECRET_MATERIAL_EXTS: frozenset[str] = frozenset({
+    ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk", ".kdbx",
+})
 
 
 # 비밀 파일에 담긴 "값처럼 보이는 것" — 긴 hex / base64 / 무작위 문자열.
@@ -468,10 +554,20 @@ DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset({
 _BUILD_OUTPUT_DIR_NAMES: frozenset[str] = frozenset({
     "dist", "build", "out", "target",
     ".next", ".nuxt",
-    ".puppeteer-cache", ".tmp", "tmp", ".turbo", ".parcel-cache",
+    ".puppeteer-cache", ".turbo", ".parcel-cache",
     ".svelte-kit", ".astro", ".vercel", ".netlify", ".output",
     ".angular", ".docusaurus", "storybook-static",
 })
+
+# 임시·업로드 스테이징 디렉터리. **빌드 산출물이 아니다.**
+# 예전에는 `tmp`·`.tmp` 를 `_BUILD_OUTPUT_DIR_NAMES` 에 넣어 "빌드 산출물(압축/번들)
+# — 원본 소스 아님"으로 기록했다. 그러나 일반명 `tmp/` 는 빌드 캐시가 아니라
+# **파일 업로드를 받는 앱이 남의 데이터를 쌓아 두는** 관례적 위치다.
+# 실측(2026-08-10): 보안 포털의 `tmp/scan-targets/` 에 업로드된 타 기관 프로젝트
+# 3벌(8,522개 파일)이 남아 있었고, 그 안에 유효한 와일드카드 TLS **개인키 6사본**과
+# 세션 서명키 3사본이 있었다. 보고서는 그것을 "원본 소스 아님" 한 줄로 적었다.
+# 즉 이 도구가 **가장 위험한 자재가 쌓이는 곳을 골라서** 보지 않고 있었다.
+_DATA_STAGING_DIR_NAMES: frozenset[str] = frozenset({"tmp", ".tmp"})
 
 # 다중 세그먼트 빌드 출력 경로 — os.walk 는 디렉터리 *이름* 만 보므로
 # "public/assets" 처럼 경로로만 식별되는 산출물은 상대경로 suffix 로 매칭한다.
@@ -489,6 +585,79 @@ DEFAULT_EXCLUDE_PATH_SUFFIXES: tuple[str, ...] = (
 # "빌드 산출물 N건 제외" 한 줄을 집계한다(scanner→report 결합도 최소화).
 BUILD_ARTIFACT_SKIP_REASON = "빌드 산출물(압축/번들) — 원본 소스 아님"
 
+
+def build_output_dir_skip_reason(file_count: int) -> str:
+    """빌드 출력 **디렉터리** 제외 사유 — 몇 개를 안 봤는지 함께 적는다.
+
+    디렉터리를 1건으로 세면 규모가 사라진다. 파일 단위로는 "검사 제외 N건"을
+    사유별로 정직하게 분해하면서, 디렉터리 뒤에 숨은 수천 건은 1줄로 보이던
+    비대칭을 없앤다. 부분 문자열 "빌드 산출물"은 리포트 집계가 쓰므로 유지한다.
+    """
+    return f"{BUILD_ARTIFACT_SKIP_REASON} · 디렉터리 — {file_count}개 파일 미검사"
+
+
+def staging_dir_skip_reason(file_count: int, secret_count: int) -> str:
+    """임시·업로드 디렉터리 제외 사유.
+
+    '빌드 산출물'이라는 표현을 쓰지 않는다 — 사실이 아니고, 읽는 사람이
+    "생성물이니 안 봐도 되는 것"으로 읽는다. 여기 쌓이는 것은 대개 **남이 올린
+    실제 데이터**다.
+    """
+    tail = (
+        f" · 비밀 자재 {secret_count}건은 검사했습니다"
+        if secret_count
+        else " · 비밀 자재로 보이는 파일은 없었습니다"
+    )
+    return f"임시·업로드 디렉터리 — {file_count}개 파일 미검사{tail}"
+
+
+# 제외 디렉터리에서 끌어올릴 비밀 자재 파일 수 상한. 여기 걸릴 정도면 이미
+# "이 폴더에 키가 쌓여 있다"는 판정에 필요한 증거는 충분하고, 그 뒤로는 같은
+# 사실을 되풀이하며 리포트만 길어진다.
+_MAX_SWEPT_SECRET_FILES = 200
+
+
+def _sweep_excluded_dir(
+    dir_path: Path, exc: frozenset[str]
+) -> tuple[int, list[Path]]:
+    """제외 디렉터리를 **열지 않고** 걸어 (전체 파일 수, 비밀 자재 파일)을 돌려준다.
+
+    제외의 목적은 '남의 코드·생성물을 룰로 검사하지 않는 것'이지 **'거기 무엇이
+    있는지 모르는 것'이 아니다.**
+
+    파일 단위에서는 이미 같은 실패를 겪고 고쳤다(확장자 목록 밖의 개인키가
+    사라진 건 — `_is_secret_filename` 우회, 아래 786행 부근 주석). 그러나
+    ``os.walk`` 는 ``dirnames`` 를 **먼저** 쳐내므로 그 안전장치가 디렉터리
+    프루닝을 이기지 못했다. 실측(2026-08-10)에서 똑같은 ``ssl/`` 개인키가
+    똑같이 사라졌다 — 이번엔 한 단계 위에서.
+
+    중첩된 의존성·인프라 디렉터리(``.venv``·``node_modules``·``.git``)의 파일은
+    **세되 비밀 자재 후보로는 보지 않는다.** 그쪽에는 `certifi/cacert.pem` 처럼
+    프로젝트마다 딸려 오는 공개 CA 번들이 있어, 넣으면 노이즈가 실제 신호를 덮는다.
+    """
+    file_count = 0
+    secrets: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(dir_path):
+        try:
+            rel_parts = Path(dirpath).relative_to(dir_path).parts
+        except ValueError:                                  # pragma: no cover
+            rel_parts = ()
+        inside_vendor = any(part in exc for part in rel_parts)
+        for name in filenames:
+            file_count += 1
+            if inside_vendor or len(secrets) >= _MAX_SWEPT_SECRET_FILES:
+                continue
+            p = Path(dirpath) / name
+            if p.suffix.lower() not in _SECRET_MATERIAL_EXTS and not _is_secret_filename(name):
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if 0 < size <= DEFAULT_MAX_FILE_BYTES:
+                secrets.append(p)
+    return file_count, secrets
+
 # 벤더링된 서드파티 라이브러리(`static/xlsx.full.min.js` 같은 것). 빌드 산출물과
 # **성격이 다르다** — 빌드 출력은 원본 소스가 따로 있지만, 벤더 번들은 그 자체가
 # 프로젝트가 실제로 실행하는 남의 코드이고 알려진 취약점이 붙는다.
@@ -498,6 +667,47 @@ BUILD_ARTIFACT_SKIP_REASON = "빌드 산출물(압축/번들) — 원본 소스 
 VENDOR_BUNDLE_SKIP_REASON = (
     "벤더 번들(외부 라이브러리) — 소스 룰 검사 제외, 컴포넌트 취약점 검사 대상"
 )
+
+SELF_REPORT_SKIP_REASON = (
+    "이 도구가 만든 점검 보고서 — 자기 참조 방지를 위해 검사하지 않습니다"
+)
+
+
+def _looks_like_gvskb_report(text: str, suffix: str) -> bool:
+    """이 파일이 gvskb 가 만든 점검 보고서인가(폴더 이름과 무관하게).
+
+    보고서에는 발견 사항의 **증거 문구가 인용**돼 있다(예: PEM 헤더). 그래서
+    보고서를 다시 스캔하면 자기가 쓴 글을 새 위험으로 잡는다. 이 문제는 이미
+    알려져 ``.check-reports`` 를 제외 목록에 넣어 막아 두었지만, 가드가
+    **디렉터리 이름 하나**에만 걸려 있었다.
+
+    실측(2026-08-10): 산출물을 ``reports/`` 에 쓰는 포털을 검사하자 전체 발견
+    49건 중 **24건(49%)이 과거 보고서에서 나온 에코**였고, 그중 CRITICAL 이
+    16건이었다. 최고 심각도 판정의 절반이 자기 출력물이었다는 뜻이다.
+
+    이름 대신 **내용**으로 판단하면 폴더를 뭐라 부르든 막힌다.
+    """
+    if suffix == ".json":
+        # ScanReport JSON — 이 세 개가 함께 있으면 다른 도구 산출물과 겹치지 않는다.
+        # **앞부분만 보면 안 된다**: 필드 순서상 거대한 ``findings`` 배열이 먼저 나와
+        # 마커가 한참 뒤로 밀린다(실측: 131KB 보고서에서 72,070자 지점). 앞 4,000자만
+        # 보던 첫 구현이 바로 그 큰 보고서 하나를 놓쳐 에코 15건이 그대로 남았다.
+        # 이미 메모리에 올라온 문자열의 부분 문자열 검색이라 추가 I/O 는 없다.
+        return (
+            '"ruleset_digest"' in text
+            and '"engine_version"' in text
+            and ('"findings"' in text or '"scanned_files"' in text)
+        )
+    if suffix in {".md", ".html", ".htm"}:
+        # 제목은 구조상 문서 맨 앞(<title>·h1)에 온다. 본문 전체를 뒤지면 이 문구를
+        # **화면에 띄우는 UI 소스**까지 보고서로 오인해 진짜 사각지대가 생긴다.
+        return _REPORT_TITLE_MARKER in text[:4000]
+    return False
+
+
+# 보고서 제목 — Markdown 은 `# 코드 보안 검사 결과`, HTML 은 같은 문구가 <title>·
+# <h1> 에 실린다. report.py 가 이 문구를 바꾸면 여기도 함께 바꿔야 한다.
+_REPORT_TITLE_MARKER = "코드 보안 검사 결과"
 
 # 콘텐츠 해시가 박힌 빌드 파일명: app-3f9a2c1b.js, chunk.4F2A.css, main.min.js 등.
 # Vite/webpack/rollup/esbuild 의 캐시버스팅 산출물을 파일명만으로 거른다.
@@ -658,6 +868,9 @@ def scan_path(
         )
 
     files_to_scan: list[Path] = []
+    # 제외 디렉터리에서 건져 올린 비밀 자재(개인키·키스토어 등). 제외 폴더 안에
+    # 있다는 이유로 버리면, 이 변경이 고치려는 사각지대가 그대로 되살아난다.
+    pending_secret_files: list[Path] = []
     over_limit_count = 0        # 상한 초과로 검사되지 않은 '검사 대상' 파일 수
     is_dir = root.is_dir()
 
@@ -674,12 +887,24 @@ def scan_path(
                     rel_dir = str((Path(dirpath) / d).relative_to(root))
                 except ValueError:
                     rel_dir = d
+                # 임시·업로드 디렉터리는 caller 가 제외하기로 한 경우에만 이 경로를
+                # 탄다 — 명시적으로 exclude_dirs 를 넘겨 tmp 를 뺀 호출자는 그
+                # 폴더를 **검사하겠다는 뜻**이므로 가로채지 않는다.
+                is_staging = d in _DATA_STAGING_DIR_NAMES and d in exc
                 is_build = d in _BUILD_OUTPUT_DIR_NAMES or _path_is_excluded_suffix(rel_dir)
-                if is_build:
+                if is_staging or is_build:
+                    # 버리되 **규모와 위험 자재는 남긴다**. 디렉터리를 1건으로
+                    # 세면 그 뒤의 수천 건이 보고서에서 사라진다.
+                    swept, secret_files = _sweep_excluded_dir(Path(dirpath) / d, exc)
                     skipped.append(SkippedFile(
                         path=rel_dir.replace("\\", "/") + "/",
-                        reason=BUILD_ARTIFACT_SKIP_REASON,
+                        reason=(
+                            staging_dir_skip_reason(swept, len(secret_files))
+                            if is_staging
+                            else build_output_dir_skip_reason(swept)
+                        ),
                     ))
+                    pending_secret_files.extend(secret_files)
                     continue
                 if d in exc:
                     continue
@@ -752,6 +977,11 @@ def scan_path(
             # over_limit_count 가 실제 미검사 건수가 된다. os.walk 는 파일을
             # 열지 않으므로 추가 비용은 디렉터리 목록 읽기뿐이다.
 
+    # 제외 디렉터리에서 건진 비밀 자재는 **max_files 상한과 무관하게** 검사한다.
+    # 상한은 잘못 지정한 경로에서 무한정 도는 것을 막는 안전판이지 위험 자재를
+    # 버리라는 뜻이 아니고, 이 목록은 _MAX_SWEPT_SECRET_FILES 로 이미 유계다.
+    files_to_scan.extend(pending_secret_files)
+
     if over_limit_count:
         skipped.append(SkippedFile(
             path=str(root),
@@ -787,6 +1017,11 @@ def scan_path(
             except UnicodeDecodeError:
                 skipped.append(SkippedFile(path=rel, reason="encoding: not utf-8 or cp949"))
                 continue
+        # 이 도구가 만든 보고서는 폴더 이름과 무관하게 뺀다(자기 참조).
+        # 내용을 이미 읽은 뒤라 추가 I/O 는 없다.
+        if _looks_like_gvskb_report(text, f.suffix.lower()):
+            skipped.append(SkippedFile(path=rel, reason=SELF_REPORT_SKIP_REASON))
+            continue
         # single-line 초장문/평균 줄 과대 = 미니파이드 번들. 룰 대량 오탐의 원인.
         # 다만 **파일명에 `.min.` 이 없어도** 미니파이드 `.js` 는 벤더 라이브러리를
         # 그대로 받아 둔 경우가 흔하다(`vendor/lib.js`). 이름 규칙으로만 걸면 그쪽이
@@ -816,7 +1051,10 @@ def scan_path(
                 if keyfile_rule is not None:
                     all_findings.append(build_finding(
                         keyfile_rule, filename=rel, line_no=evidence_no,
-                        evidence=_redact_evidence(evidence_line),
+                        # 여기 증거는 **맨 자격증명 값**이다. `_redact_evidence`
+                        # 는 접두사·변수명을 단서로 삼아 이 모양을 못 가린다 —
+                        # 실측에서 세션 서명키가 보고서에 통째로 실렸다.
+                        evidence=_redact_secret_material(evidence_line),
                         engine="secret-file",
                     ))
         scanned.append(rel)

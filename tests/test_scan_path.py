@@ -113,9 +113,16 @@ def test_scan_path_excludes_build_output_dirs(tmp_path: Path) -> None:
         assert ".puppeteer-cache" not in f
         assert ".tmp" not in f
         assert "dist" not in f
-    # 제외 사실은 빌드 산출물로 기록된다(버리되 정직).
-    build = [s for s in report.skipped_files if s.reason == BUILD_ARTIFACT_SKIP_REASON]
-    assert len(build) >= 4
+    # 제외 사실은 빌드 산출물로 기록된다(버리되 정직) — 이제 **몇 개를** 안
+    # 봤는지 함께 적는다. 디렉터리를 1건으로 세면 규모가 사라진다.
+    build = [s for s in report.skipped_files if "빌드 산출물" in (s.reason or "")]
+    assert len(build) >= 3
+    assert all("파일 미검사" in (s.reason or "") for s in build if s.path.endswith("/"))
+    # `.tmp` 는 빌드 산출물이 **아니다** — 임시·업로드 디렉터리로 따로 기록한다.
+    staging = [s for s in report.skipped_files if s.path.rstrip("/").endswith(".tmp")]
+    assert len(staging) == 1
+    assert "임시·업로드 디렉터리" in staging[0].reason
+    assert "빌드 산출물" not in staging[0].reason
 
 
 def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
@@ -318,3 +325,146 @@ def test_default_max_files_covers_a_realistic_repository() -> None:
     from gvskb.scanner import DEFAULT_MAX_FILES
 
     assert DEFAULT_MAX_FILES >= 10_000, DEFAULT_MAX_FILES
+
+
+# ---------------------------------------------------------------------------
+# 제외 디렉터리는 '안 본 것'이지 '없는 것'이 아니다
+#
+# 실측(2026-08-10): 보안 포털의 `tmp/scan-targets/` 에 업로드된 타 기관 프로젝트가
+# 남아 있었고, 그 안의 유효한 와일드카드 TLS **개인키 6사본**이 스캔·제외 어디에도
+# 나타나지 않았다. `tmp` 가 빌드 산출물로 분류돼 디렉터리째 잘렸기 때문이다.
+# 파일 단위에서는 같은 실패를 이미 고쳤지만(`_is_secret_filename` 우회), os.walk 는
+# dirnames 를 먼저 쳐내므로 그 안전장치가 디렉터리 프루닝을 이기지 못했다.
+# ---------------------------------------------------------------------------
+
+_FAKE_KEY = (
+    "-----BEGIN RSA PRIVATE KEY-----\n"
+    "MIIEowIBAAKCAQEAvV3fZ2p8Qw9sT1nKbGxRr7YmLd4HcJq0WsAeUiOpNvXtZgBk\n"
+    "-----END RSA PRIVATE KEY-----\n"
+)
+
+
+def test_private_key_in_tmp_is_still_found(tmp_path: Path) -> None:
+    """제외 디렉터리 안이라도 개인키는 반드시 보여야 한다."""
+    _write(tmp_path / "src" / "app.py", "import os\n")
+    _write(tmp_path / "tmp" / "scan-targets" / "up" / "ssl" / "site_key.pem", _FAKE_KEY)
+
+    report = scan_path(tmp_path)
+
+    scanned = {f.replace("\\", "/") for f in report.scanned_files}
+    assert "tmp/scan-targets/up/ssl/site_key.pem" in scanned
+    assert any(f.rule_id.startswith("GOV-SECRET") for f in report.findings)
+
+
+def test_tmp_sweep_ignores_vendored_ca_bundles(tmp_path: Path) -> None:
+    """과잉 교정 방지 — 중첩 .venv 의 공개 CA 번들까지 끌어오면 노이즈가 신호를 덮는다."""
+    _write(tmp_path / "src" / "app.py", "import os\n")
+    _write(
+        tmp_path / "tmp" / "up" / ".venv" / "Lib" / "certifi" / "cacert.pem",
+        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+    )
+    _write(tmp_path / "tmp" / "up" / "ssl" / "real_key.pem", _FAKE_KEY)
+
+    report = scan_path(tmp_path)
+
+    scanned = {f.replace("\\", "/") for f in report.scanned_files}
+    assert "tmp/up/ssl/real_key.pem" in scanned
+    assert not [f for f in scanned if "cacert.pem" in f]
+
+
+def test_excluded_directory_reports_how_many_files_were_not_scanned(tmp_path: Path) -> None:
+    """디렉터리를 1건으로 세면 그 뒤의 수천 건이 보고서에서 사라진다."""
+    _write(tmp_path / "src" / "app.py", "import os\n")
+    for i in range(7):
+        _write(tmp_path / "tmp" / "up" / f"f{i}.txt", "x\n")
+    for i in range(4):
+        _write(tmp_path / "dist" / f"b{i}.js", "var a=1;\n")
+
+    report = scan_path(tmp_path)
+
+    staging = next(s for s in report.skipped_files if s.path.rstrip("/").endswith("tmp"))
+    assert "7개 파일 미검사" in staging.reason
+    assert "임시·업로드 디렉터리" in staging.reason
+    build = next(s for s in report.skipped_files if s.path.rstrip("/").endswith("dist"))
+    assert "4개 파일 미검사" in build.reason
+    assert "빌드 산출물" in build.reason      # 리포트 집계가 이 부분 문자열을 쓴다
+
+
+# ---------------------------------------------------------------------------
+# 자기 참조 — 보고서에는 증거 문구가 인용돼 있어 재검사하면 발견이 증식한다.
+# 가드가 `.check-reports` 라는 **이름 하나**에만 걸려 있어, 산출물을 `reports/` 에
+# 쓰는 프로젝트에서는 그대로 우회됐다(실측: 발견 49건 중 24건이 에코).
+# ---------------------------------------------------------------------------
+
+def test_gvskb_report_is_skipped_whatever_the_folder_is_called(tmp_path: Path) -> None:
+    from gvskb.scanner import SELF_REPORT_SKIP_REASON
+
+    _write(tmp_path / "src" / "app.py", "import os\n")
+    _write(
+        tmp_path / "reports" / "2026-08-09_보안점검.json",
+        '{"target": "x", "engine_version": "0.3.0", "ruleset_digest": "abc",\n'
+        ' "scanned_files": [], "findings": [{"evidence": "-----BEGIN RSA PRIVATE KEY-----"}]}\n',
+    )
+    # `.md` 는 애초에 검사 대상 확장자가 아니라 더 앞에서 걸러진다. 실제로 에코를
+    # 만든 형식은 `.json` 과 `.html` 이었다(실측: HTML 보고서 1개에서 5건).
+    _write(
+        tmp_path / "산출물" / "점검.html",
+        "<title>코드 보안 검사 결과</title>\n<code>-----BEGIN RSA PRIVATE KEY-----</code>\n",
+    )
+
+    report = scan_path(tmp_path)
+
+    skipped = {s.path.replace("\\", "/"): s.reason for s in report.skipped_files}
+    assert skipped.get("reports/2026-08-09_보안점검.json") == SELF_REPORT_SKIP_REASON
+    assert skipped.get("산출물/점검.html") == SELF_REPORT_SKIP_REASON
+    # 에코가 사라져야 한다 — 남의 보고서를 읽고 만든 발견은 이 프로젝트의 위험이 아니다.
+    assert not [f for f in report.findings if "보안점검" in f.location.file or "점검" in f.location.file]
+
+
+def test_real_source_is_not_mistaken_for_a_report(tmp_path: Path) -> None:
+    """과잉 교정 방지 — 보고서를 다루는 **코드**까지 빼면 진짜 사각지대가 생긴다."""
+    _write(
+        tmp_path / "report_writer.py",
+        '# 코드 보안 검사 결과 를 만드는 모듈\n'
+        'API_KEY = "sk-proj-abcdefghijklmnopqrstuvwxyz"\n',
+    )
+    _write(
+        tmp_path / "data.json",
+        '{"engine_version": "1.0", "note": "우리 서비스 설정"}\n',
+    )
+
+    report = scan_path(tmp_path)
+
+    scanned = {f.replace("\\", "/") for f in report.scanned_files}
+    assert "report_writer.py" in scanned
+    assert "data.json" in scanned
+    assert any(f.rule_id.startswith("GOV-SECRET") for f in report.findings)
+
+
+def test_large_report_is_detected_even_though_markers_come_late(tmp_path: Path) -> None:
+    """앞부분만 보면 놓친다 — 거대한 findings 배열이 마커를 한참 뒤로 민다.
+
+    실측: 131KB 보고서에서 `ruleset_digest` 가 72,070자 지점에 있어, 앞 4,000자만
+    보던 첫 구현이 그 파일 하나를 통째로 놓쳤고 에코 15건이 그대로 남았다.
+    """
+    from gvskb.scanner import SELF_REPORT_SKIP_REASON
+
+    entry = (
+        '    {"rule_id": "GOV-SECRET-APIKEY-001", '
+        '"evidence": "-----BEGIN RSA PRIVATE KEY-----"}'
+    )
+    filler = ",\n".join(entry for _ in range(400))
+    body = (
+        '{"target": "x",\n "findings": [\n'
+        + filler
+        + '\n ],\n "engine_version": "0.3.0", "ruleset_digest": "abc"}\n'
+    )
+    # 마커가 앞 4,000자 밖으로 밀려 있어야 이 테스트가 의미를 갖는다.
+    assert body.index('"ruleset_digest"') > 4000
+    _write(tmp_path / "점검이력" / "big.json", body)
+
+    report = scan_path(tmp_path)
+
+    skipped = {s.path.replace("\\", "/"): s.reason for s in report.skipped_files}
+    assert skipped.get("점검이력/big.json") == SELF_REPORT_SKIP_REASON
+    assert not report.findings

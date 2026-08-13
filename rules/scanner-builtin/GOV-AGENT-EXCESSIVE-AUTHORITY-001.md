@@ -13,7 +13,10 @@ sources:
 severity: critical
 decision_default: block
 domains: [agent-safety]
-languages: [python, javascript]
+# typescript 를 빼면 이 룰은 `.ts`/`.tsx` 에서 한 번도 돌지 않는다. TS 는 JS 의
+# 상위집합이라 'JS 에는 맞고 TS 에는 안 맞는' 룰은 없다 — 목록에 javascript 만
+# 있으면 그건 의도가 아니라 빠뜨린 것이다(같은 구멍이 다섯 번 났다).
+languages: [python, javascript, typescript]
 scenarios: [agent]
 related_baseline: [OWASP-LLM-2025-06]
 verified_at: 2026-05-31
@@ -29,7 +32,13 @@ detection:
     # 패턴1: 명확한 에이전트 식별자(agent/assistant/llm/mcp[+접미사]).
     - '(?i)\b(?:agent|assistant|llm|mcp)\w*\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
     # 패턴2: tool 계열(tool/tools/toolkit/tool_*/toolRegistry) — toolbar/tooltip 제외.
-    - '(?i)\btool(?:s|kit|_\w*|registry)?\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
+    # JS 표준 **컬렉션** 메서드도 뺀다. `tools` 는 흔히 `Set<string>` 이고
+    # `tools.delete(name)` 은 집합에서 원소를 빼는 코드다(실측 오탐,
+    # lexdiff/tool-tiers.ts). `deleteFile`·`removeUser` 처럼 이름이 더
+    # 붙은 호출은 그대로 잡는다 — 맨몸 동사만 제외한다.
+    # 패턴1(agent/assistant/llm/mcp)에는 적용하지 않는다: 거기서 맨몸
+    # `delete` 는 실제로 에이전트가 자원을 지우는 호출이다.
+    - '(?i)\btool(?:s|kit|_\w*|registry)?\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()(?!(?:delete|remove|clear|add|has|get|set)\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
   category: agent-safety
   why_it_matters: 공공업무 agent는 파일 삭제, 메일 발송, DB 변경, 결재 요청 전에 반드시 사용자 확인과 권한 검사를 거쳐야 합니다.
   public_sector_impact:

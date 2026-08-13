@@ -274,6 +274,92 @@ def _check_examples(rule: Rule, rel_path: str) -> list[RuleIssue]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 중복 커버리지 — 같은 일을 하는 룰이 둘이면 담당자는 한 줄을 두 번 고친다
+# ---------------------------------------------------------------------------
+
+def _fires_on(compiled: dict, text: str) -> bool:
+    """컴파일된 룰이 이 한 줄에 걸리는가.
+
+    **스캐너의 판정 순서를 그대로 따른다** — 패턴 매치 → 값 검증기 → 맥락 제외.
+    린터가 자기만의 매칭을 따로 구현하면 언젠가 스캐너와 어긋나고, 그때
+    린터는 조용히 틀린 답을 낸다. 그래서 컴파일도 ``_compile_rule`` 을 그대로
+    빌려 쓴다.
+
+    주석 판정·언어 필터·억제 주석은 일부러 보지 않는다. 여기서 묻는 것은
+    "이 룰이 저 예시를 자기 것으로 보는가"이지 "실제 파일에서 발행되는가"가
+    아니다. 언어 필터를 존중하면 이번에 실제로 벌어진 일 — 언어 목록에 구멍이
+    있어 겹침이 가려진 것 — 을 그대로 놓친다.
+    """
+    validators = compiled.get("validators") or ()
+    hit = None
+    for pat in compiled["patterns"]:
+        candidate = pat.search(text)
+        if candidate is None:
+            continue
+        if validators and not all(v(candidate.group(0)) for v in validators):
+            continue
+        hit = candidate
+        break
+    if hit is None:
+        return False
+    return not any(ex.search(text) for ex in compiled.get("excludes") or ())
+
+
+def _check_duplicate_coverage(rules: list[Rule], rel_of) -> list[RuleIssue]:
+    """같은 카테고리의 두 룰이 **서로의 positive 예시를 전부** 잡으면 중복이다.
+
+    실제로 벌어진 일이라 만들었다. ``GOV-PII-PHONE-001`` 이 있는 줄 모르고
+    ``GOV-PII-CONTACT-001`` 을 새로 만들었고, 같은 전화번호 한 줄에 두 건이
+    발행됐다. 회귀 코퍼스가 못 잡은 이유는 기존 룰의 ``languages`` 에
+    typescript 가 없어 ``.ts`` 코퍼스에서는 애초에 겹치지 않았기 때문이다.
+
+    판정 기준을 **양방향 전부**로 좁힌 이유:
+
+    - 한쪽만 덮는 것은 정상이다. 넓은 룰과 좁은 룰이 공존하는 편이 낫다
+      (예: 일반 하드코딩 시크릿 룰 vs. 특정 벤더 토큰 룰).
+    - 서로가 서로의 예시를 **남김없이** 잡는다는 것은 두 룰이 같은 것을 본다는
+      뜻이다. 이건 우연으로 잘 생기지 않는다.
+
+    ``dedup_group`` 을 선언한 쌍은 건너뛴다 — 겹침을 이미 **알고 있고**
+    보고 단계에서 하나로 묶고 있다는 선언이기 때문이다. 예시가 2개 미만인
+    룰도 건너뛴다. 한 줄만 보고 "같다"고 말할 수는 없다.
+    """
+    from .scanners.regex_scanner import _compile_rule
+
+    candidates: list[tuple[Rule, dict, list[str]]] = []
+    for r in rules:
+        det = r.detection
+        if det is None or not det.patterns or not r.examples or len(r.examples.positive) < 2:
+            continue
+        compiled = _compile_rule(r)
+        if compiled is None or not compiled.get("patterns"):
+            continue
+        candidates.append((r, compiled, list(r.examples.positive)))
+
+    out: list[RuleIssue] = []
+    for i, (ra, ca, pa) in enumerate(candidates):
+        for rb, cb, pb in candidates[i + 1:]:
+            if (ra.detection.category or "") != (rb.detection.category or ""):
+                continue
+            group_a = getattr(ra.detection, "dedup_group", None)
+            if group_a and group_a == getattr(rb.detection, "dedup_group", None):
+                continue
+            if not all(_fires_on(cb, x) for x in pa):
+                continue
+            if not all(_fires_on(ca, x) for x in pb):
+                continue
+            detail = (
+                f"{ra.id} 와 {rb.id} 가 서로의 positive 예시를 전부 잡습니다 "
+                f"(카테고리 {ra.detection.category}). 같은 줄에 두 건이 발행돼 "
+                "담당자가 한 번 고칠 것을 두 번 봅니다. 하나로 합치거나, "
+                "의도된 겹침이면 양쪽에 같은 dedup_group 을 선언하세요."
+            )
+            out.append(_issue(ra.id, rel_of(ra), "error", "duplicate-coverage", detail))
+            out.append(_issue(rb.id, rel_of(rb), "error", "duplicate-coverage", detail))
+    return out
+
+
 def _check_review_due(rule: Rule, rel_path: str, today: date) -> list[RuleIssue]:
     if rule.review_due is None:
         return []
@@ -315,11 +401,19 @@ def validate_rules_dir(rules_dir: Path, *, today: date | None = None) -> dict:
             break
 
     # Per-rule checks
+    _rel_cache: dict[str, str] = {}
+
+    def _rel_of(rule: Rule) -> str:
+        if rule.id not in _rel_cache:
+            _rel_cache[rule.id] = next(
+                (str(p.relative_to(rules_dir))
+                 for p in rules_dir.rglob(f"{rule.id}*.md") if p.is_file()),
+                "<unknown>",
+            )
+        return _rel_cache[rule.id]
+
     for r in rules:
-        rel = next(
-            (str(p.relative_to(rules_dir)) for p in rules_dir.rglob(f"{r.id}*.md") if p.is_file()),
-            "<unknown>",
-        )
+        rel = _rel_of(r)
         issues.extend(_check_regex(r, rel))
         issues.extend(_check_severity_decision(r, rel))
         issues.extend(_check_review_due(r, rel, today))
@@ -329,6 +423,9 @@ def validate_rules_dir(rules_dir: Path, *, today: date | None = None) -> dict:
         issues.extend(_check_sink_token_boundaries(r, rel))
         issues.extend(_check_sanitizer_allowlist_is_a_call(r, rel))
         issues.extend(_check_ignorecase_lowercase_class(r, rel))
+
+    # 룰 사이의 검사 — 룰 하나만 봐서는 절대 보이지 않는 결함.
+    issues.extend(_check_duplicate_coverage(rules, _rel_of))
 
     # 룰셋 잠금 — "룰을 고쳤는데 버전은 그대로"를 여기서 막는다.
     # 별도 명령으로만 두면 아무도 안 돌린다. CI 가 이미 부르는 자리에 붙여야
