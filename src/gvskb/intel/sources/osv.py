@@ -30,8 +30,15 @@ from .base import HttpFetcher, SourceAdapter, register_source
 GCS_BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com"
 
 # Ecosystems we may pull from. Order is intentional: PyPI is small and always on.
-_DEFAULT_ECOSYSTEMS: tuple[str, ...] = ("PyPI",)
-_OPT_IN_ECOSYSTEMS: tuple[str, ...] = ("npm",)
+# Public so that consumers (check_package 의 커버리지 공백 안내)can tell "이 생태계는
+# 기본 수집 대상인데 캐시가 없다" 와 "이 생태계는 opt-in 이라 안 담겼다" 를 구분한다 —
+# 섞으면 PyPI 를 물어본 담당자에게 "npm 을 켜라"는 엉뚱한 안내가 나간다.
+DEFAULT_ECOSYSTEMS: tuple[str, ...] = ("PyPI",)
+OPT_IN_ECOSYSTEMS: tuple[str, ...] = ("npm",)
+
+# 하위 호환 별칭 (기존 내부 참조·테스트용)
+_DEFAULT_ECOSYSTEMS = DEFAULT_ECOSYSTEMS
+_OPT_IN_ECOSYSTEMS = OPT_IN_ECOSYSTEMS
 
 _KEEP = ("id", "summary", "modified", "published", "aliases", "affected")
 _TRUTHY = {"1", "true", "yes", "on"}
