@@ -28,6 +28,16 @@ detection:
     - "s\\.send\\s*\\(\\s*(?:password|passwd|pwd|token|secret|api_key)[A-Za-z0-9_]*\\.encode"
     - "requests\\.(?:get|post|put|delete|patch)\\s*\\(\\s*['\"]http://"
     - "urllib\\.request\\.urlopen\\s*\\(\\s*['\"]http://"
+  # 맥락 제외 — **루프백 목적지**(localhost·127.0.0.0/8·::1)는 취소한다.
+  # 이 발견의 근거는 CWE-319(평문 *전송*)인데, 루프백 트래픽은 NIC 를 타지 않아
+  # 네트워크에 나가지 않는다. 패킷 캡처로 가로챌 구간 자체가 없으므로 근거가
+  # 성립하지 않는다. 실측 오탐: `r = requests.get("http://localhost:3000", timeout=5)`
+  # (개발 서버 헬스체크 — 민감정보가 실리지도 않는다). 이 구분이 없으면 로컬
+  # 개발 스크립트·평가 하네스가 전부 high 로 잡힌다.
+  # 한계: 루프백이 외부로 중계하는 프록시인 경우는 이 제외로 놓친다. 다만 그
+  # 위험은 프록시 쪽 설정 문제라 이 룰(소스의 평문 전송)의 사정권이 아니다.
+  exclude_patterns:
+    - "(?i)https?://(?:localhost|127(?:\\.\\d{1,3}){3}|\\[::1\\]|::1)(?::\\d+)?\\b"
   category: kisa-secure-coding
   why_it_matters: >-
     개인정보·인증정보·금융정보를 *평문*으로 DB에 저장하거나 네트워크로 전송하면
@@ -63,6 +73,10 @@ examples:
     - "cur.execute('UPDATE USERS SET HASHED_PWD=%s WHERE USER_ID=%s', (hashed, user_id))"
     - "requests.post('https://api.example.go.kr/login', json={'token': token})"
     - "s.sendall(enc_payload.encode('utf-8'))"
+    # 루프백 목적지 — 네트워크를 벗어나지 않으므로 CWE-319 가 성립하지 않는다
+    - "r = requests.get('http://localhost:3000', timeout=5)"
+    - "requests.get('http://127.0.0.1:8000/healthz', timeout=2)"
+    - "urllib.request.urlopen('http://[::1]:9000/ping')"
 ---
 
 ## 무엇이 위험한가
