@@ -501,6 +501,11 @@ class PackageRegistryMetadata(BaseModel):
     )
     latest_version: str | None = None
     queried_version: str | None = Field(default=None, description="검사 대상 버전(미지정 시 최신)")
+    version_exists: bool | None = Field(
+        default=None,
+        description="검사 대상 **버전**의 실재 여부. 패키지는 있어도 버전이 없으면 False. "
+                    "None=버전 미지정 또는 미확인. 존재하지 않는 버전은 설치 불가·오타·조작 신호다",
+    )
     version_published_at: str | None = Field(default=None, description="검사 대상 버전의 발행 시각(ISO)")
     version_age_days: int | None = Field(default=None, description="버전 발행 후 경과일 — 쿨다운 판정 근거")
     first_published_at: str | None = Field(default=None, description="패키지 최초 발행 시각(ISO) — 신생 탐지 근거")
@@ -561,6 +566,11 @@ class PackageCheckResult(BaseModel):
     checked: bool = Field(default=False, description="취약점 검사가 실제 수행됐는가(실재확인과 별개)")
     verdict: Literal[
         "malicious", "not_found", "vulnerable", "cooldown_hold",
+        # 이름·버전 신호 — 레지스트리 실재 여부와 **독립**으로 적용한다. 예전엔
+        # 인기 패키지와 1자 차이 이름이라도 레지스트리에 존재하면 '이상 없음'으로
+        # 통과했다(실측 2026-08-29: npm 의 `expresss` 는 실존하는 자리차지 패키지).
+        # 스쿼터가 이름을 등록해 두면 휴리스틱이 정확히 그 상황에서 무력화됐다.
+        "suspicious_name", "version_not_found",
         "checked_stale", "checked_clean", "unknown", "error",
         # 기관 레지스트리 판정 — 이 도구의 관측이 아니라 기관의 결정이다.
         "registry_approved", "registry_rejected",

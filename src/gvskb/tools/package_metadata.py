@@ -69,6 +69,9 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     releases = data.get("releases") or {}
     version_published = None
     files = releases.get(queried) or []
+    # 버전을 콕 집어 물었는데 releases 에 없으면 그 버전은 존재하지 않는다 —
+    # 발행일 None 으로 흡수되던 신호를 별도 필드로 낸다.
+    version_exists = (queried in releases) if (version and releases) else None
     times = [f.get("upload_time_iso_8601") for f in files if f.get("upload_time_iso_8601")]
     if times:
         version_published = min(times)
@@ -94,6 +97,7 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
         exists=True,
         latest_version=latest,
         queried_version=queried,
+        version_exists=version_exists,
         version_published_at=version_published,
         version_age_days=_age_days(version_published),
         first_published_at=first_published,
@@ -116,7 +120,9 @@ def _parse_npm(data: dict, version: str | None) -> PackageRegistryMetadata:
     if isinstance(lic, dict):  # 구형 표기 {"type": "MIT", ...}
         lic = lic.get("type")
 
-    ver_doc = (data.get("versions") or {}).get(queried) or {}
+    versions_doc = data.get("versions") or {}
+    ver_doc = versions_doc.get(queried) or {}
+    version_exists = (queried in versions_doc) if (version and versions_doc) else None
     scripts = ver_doc.get("scripts") or {}
     hook_names = [h for h in _NPM_INSTALL_HOOKS if h in scripts]
     install_scripts = "present" if hook_names else ("none" if ver_doc else "unknown")
@@ -125,6 +131,7 @@ def _parse_npm(data: dict, version: str | None) -> PackageRegistryMetadata:
         exists=True,
         latest_version=latest,
         queried_version=queried,
+        version_exists=version_exists,
         version_published_at=version_published,
         version_age_days=_age_days(version_published),
         first_published_at=first_published,

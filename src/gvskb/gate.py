@@ -84,6 +84,8 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "vulnerable": "CVSS HIGH 이하 취약점",
     "cooldown": "발행 직후 버전 — 아직 신뢰할 수 없음",
     "unchecked": "판정 불가 — '안전'이라는 뜻이 아님",
+    "suspicious_name": "인기 패키지와 이름이 거의 같음(타이포스쿼팅 의심)",
+    "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
     "source": "소스 코드 발견",
 }
 
@@ -143,6 +145,19 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
             "recommended_version": check.get("recommended_version"),
         })
     return reasons
+
+
+def _has_dep_verdict(report: ScanReport, verdict: str) -> bool:
+    """의존성 컴포넌트 중 해당 판정이 하나라도 있는가."""
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return False
+    return any(
+        (comp.get("check") or {}).get("verdict") == verdict
+        for comp in _dep_merged_components(audits)
+    )
 
 
 def _has_cooldown_hold(report: ScanReport) -> bool:
@@ -220,6 +235,10 @@ def gate_status(report: ScanReport) -> dict:
         conditional_criteria.append("cooldown")
     if unchecked:
         conditional_criteria.append("unchecked")
+    if _has_dep_verdict(report, "suspicious_name"):
+        conditional_criteria.append("suspicious_name")
+    if _has_dep_verdict(report, "version_not_found"):
+        conditional_criteria.append("version_not_found")
     if report.summary.finding_count:
         conditional_criteria.append("source")
 
