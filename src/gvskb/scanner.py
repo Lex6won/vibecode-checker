@@ -828,6 +828,8 @@ def _sweep_excluded_dir(
             if inside_vendor or len(secrets) >= _MAX_SWEPT_SECRET_FILES:
                 continue
             p = Path(dirpath) / name
+            if p.is_symlink():
+                continue   # 트리 밖을 가리키는 링크는 읽지 않는다(위 walk 와 같은 이유)
             if p.suffix.lower() not in _SECRET_MATERIAL_EXTS and not _is_secret_filename(name):
                 continue
             try:
@@ -907,6 +909,10 @@ _MINIFIED_MIN_BYTES = 1000  # 너무 짧은 파일은 판정 제외(정상적인
 # 20,000은 정상 저장소가 도달할 수 없는 값이면서(공공 프로젝트 실측 최대 수천),
 # 잘못 지정한 경로(예: 사용자 홈)에서 무한정 도는 것은 막는 안전판이다.
 DEFAULT_MAX_FILES = 20_000
+SYMLINK_SKIP_REASON = (
+    "심볼릭 링크 — 검사 트리 밖을 가리킬 수 있어 따라가지 않았습니다"
+    "(실제 파일을 넣어 다시 검사하세요)"
+)
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 
@@ -1100,6 +1106,15 @@ def scan_path(
                         over_limit_count += 1
                     continue
                 p = Path(dirpath) / name
+                if p.is_symlink():
+                    # 링크를 따라가지 않는다 — 검사 대상 트리 밖의 파일(예: 서버의
+                    # /etc/shadow·다른 프로젝트의 .env)을 읽어 그 내용이 증거로
+                    # 보고서에 실릴 수 있다. 업로드한 zip 에 링크를 넣는 것으로 충분하다.
+                    skipped.append(SkippedFile(
+                        path=_rel(p, root, is_dir),
+                        reason=SYMLINK_SKIP_REASON,
+                    ))
+                    continue
                 if name.lower() in _DEP_MANIFEST_NAMES:
                     skipped.append(SkippedFile(
                         path=_rel(p, root, is_dir),
@@ -1319,6 +1334,73 @@ def path_level_rule_ids() -> tuple[str, ...]:
     return ("GOV-SECRET-KEYFILE-001",)
 
 
+def _looks_like_pyproject(text: str) -> bool:
+    head = text[:20000]
+    return bool(re.search(r"^\[project\]|^\[tool\.poetry", head, re.MULTILINE))
+
+
+_REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _pyproject_requirement_lines(text: str) -> list[str]:
+    """pyproject.toml → requirements 줄 목록.
+
+    PEP 621 ``project.dependencies`` · ``project.optional-dependencies.*`` 와
+    poetry ``tool.poetry.dependencies``(+ group) 를 읽는다. extras(``pkg[x]``)·
+    환경 마커(``; python_version…``)는 떼고, 첫 제약만 남긴다(``>=2.0,<3`` → ``>=2.0``:
+    경계값 검사는 '이 제약이 취약 버전을 허용한다'는 신호이지 설치 버전이 아니다).
+    """
+    import tomllib
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return []
+    out: list[str] = []
+
+    def _pep508(req: str) -> None:
+        req = req.split(";", 1)[0].strip()
+        req = re.sub(r"\[[^\]]*\]", "", req)          # extras
+        m = _REQ_NAME_RE.match(req)
+        if not m:
+            return
+        name = m.group(1)
+        spec = req[m.end():].strip().strip("()")
+        first = spec.split(",", 1)[0].strip() if spec else ""
+        if first.startswith("@"):                     # URL 의존성 — 버전 없음
+            first = ""
+        out.append(f"{name}{first}")
+
+    proj = data.get("project") or {}
+    for req in proj.get("dependencies") or []:
+        if isinstance(req, str):
+            _pep508(req)
+    for reqs in (proj.get("optional-dependencies") or {}).values():
+        for req in reqs or []:
+            if isinstance(req, str):
+                _pep508(req)
+
+    poetry = (data.get("tool") or {}).get("poetry") or {}
+    groups = [poetry.get("dependencies") or {}]
+    for g in (poetry.get("group") or {}).values():
+        if isinstance(g, dict):
+            groups.append(g.get("dependencies") or {})
+    for deps in groups:
+        for name, spec in deps.items():
+            if name.lower() == "python":
+                continue
+            if isinstance(spec, dict):
+                spec = spec.get("version") or ""
+            spec = str(spec or "").strip()
+            if spec.startswith(("^", "~")):
+                spec = ">=" + spec.lstrip("^~")
+            elif spec == "*" or not spec:
+                spec = ""
+            elif spec[0].isdigit():
+                spec = "==" + spec
+            out.append(f"{name}{spec.split(',', 1)[0]}")
+    return out
+
+
 def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
     """Parse common dependency manifests without executing package managers.
 
@@ -1332,6 +1414,8 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
     """
     packages: list[dict] = []
     eco = ecosystem.lower()
+    if eco == "pypi" and _looks_like_pyproject(manifest_text):
+        manifest_text = "\n".join(_pyproject_requirement_lines(manifest_text))
     if eco == "pypi":
         for raw in manifest_text.splitlines():
             line = raw.strip()

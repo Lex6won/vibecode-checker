@@ -201,6 +201,10 @@ def _run_dependency_audit(
             return _LOCK_NAMES[low], "lock"
         if low.startswith("requirements") and low.endswith(".txt"):
             return "pypi", "manifest"
+        if low == "pyproject.toml":
+            # PEP 621 · poetry — 현대 Python 프로젝트의 주 매니페스트. 이것을 못 읽어
+            # 체커가 **자기 의존성을 한 번도 검사하지 못했다**(재점검 2026-08-29).
+            return "pypi", "manifest"
         if low == "package.json":
             return "npm", "manifest"
         return None
@@ -241,7 +245,7 @@ def _run_dependency_audit(
 
     if not manifests and not include_installed and not vendor_bundles:
         print(
-            "[gvskb] --check-deps: 검사할 매니페스트(requirements*.txt·package.json)를 찾지 못했습니다.",
+            "[gvskb] --check-deps: 검사할 매니페스트(requirements*.txt·pyproject.toml·package.json)를 찾지 못했습니다.",
             file=sys.stderr,
         )
         return None

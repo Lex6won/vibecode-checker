@@ -25,17 +25,20 @@ classifiers = [
 ]
 # 상·하한을 함께 지정해 망분리 신규 설치 시 의존성 표류를 막는다(검증 버전 기준).
 # fastmcp 는 2→3 API 변화가 있었으므로 메이저 상한을 명시한다.
+# 하한은 **취약점이 없는 첫 버전**이다 — 체커가 자기 pyproject 를 검사하게 되자
+# (재점검 2026-08-29) 하한 fastmcp 2.0.0(CRITICAL 포함 14건)·pydantic 2.0(2건)이 차단으로
+# 나왔다. 망분리 설치는 오래된 휠 캐시에서 하한 버전을 그대로 고를 수 있다.
 dependencies = [
-    "fastmcp>=2.0.0,<4",
-    "pydantic>=2.0,<3",
+    "fastmcp>=3.2.0,<4",
+    "pydantic>=2.4.0,<3",
     "pyyaml>=6.0,<7",
-    "httpx>=0.27,<1",
+    "httpx>=0.27.0,<1",
 ]
 
 [project.optional-dependencies]
 # 상한을 둔다 — 린터·테스트 러너의 기본 동작 변경이 CI 를 깨뜨린 실측 사례가 있다
 # (ruff 0.16 의 기본 규칙 확대). 상향은 의도적 결정으로만 한다.
-dev = ["pytest>=8.0,<10", "ruff>=0.5,<1"]
+dev = ["pytest>=9.0.3,<10", "ruff>=0.5.0,<1"]
 
 [project.scripts]
 gvskb-server = "gvskb.server:main"

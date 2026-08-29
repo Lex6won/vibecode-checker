@@ -3583,7 +3583,7 @@ def _render_finding_group_md(group: dict) -> list[str]:
     if f.severity_adjusted:
         out.append(f"- **심각도 조정**: {f.severity_adjusted}")
     if f.evidence:
-        out.append(f"- **{_evidence_label(f.evidence)}**: `{_oneline(f.evidence)}`")
+        out.append(f"- **{_evidence_label(f.evidence)}**: {_md_code(_oneline(f.evidence))}")
     if f.why_it_matters:
         out.append(f"- **왜 위험한가**: {f.why_it_matters.strip()}")
     if f.public_sector_impact:
@@ -3603,6 +3603,16 @@ def _render_finding_group_md(group: dict) -> list[str]:
         refs = ", ".join(f.references[:5])
         out.append(f"- **출처**: {refs}")
     return out
+
+
+def _md_code(text: str) -> str:
+    """인라인 코드. 증거에 백틱이 있으면 더 긴 펜스로 감싼다 — 검사 대상이 쓴
+    백틱 하나가 코드 구간을 닫고 뒤를 마크다운으로 해석시키지 않도록."""
+    if "`" not in text:
+        return f"`{text}`"
+    longest = max(len(m) for m in re.findall(r"`+", text))
+    fence = "`" * (longest + 1)
+    return f"{fence} {text} {fence}"
 
 
 def _oneline(text: str, limit: int = 160) -> str:

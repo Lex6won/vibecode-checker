@@ -60,6 +60,33 @@ def _offline_metadata() -> PackageRegistryMetadata:
     )
 
 
+def _pep440_key(v: str) -> str:
+    """느슨한 PEP 440 정규화 키 — 소문자, 구분자 통일, 후행 `.0` 제거.
+
+    `1.0` · `1.0.0` · `v1.0` · `1.0.0.0` → `1`. 정확한 구현(packaging)을 의존성에
+    더하지 않으려는 최소 규칙이며, 존재 여부 비교에만 쓴다.
+    """
+    s = v.strip().lower().lstrip("v")
+    s = s.replace("_", ".").replace("-", ".")
+    head, sep, tail = s.partition("+")             # local version 은 버린다
+    parts = head.split(".")
+    # 숫자 세그먼트 앞 0 제거, 후행 0 세그먼트 제거(릴리스 부분만)
+    norm = [p.lstrip("0") or "0" if p.isdigit() else p for p in parts]
+    while len(norm) > 1 and norm[-1] == "0":
+        norm.pop()
+    return ".".join(norm)
+
+
+def _match_release_key(queried: str, releases: dict) -> str | None:
+    if queried in releases:
+        return queried
+    key = _pep440_key(queried)
+    for k in releases:
+        if _pep440_key(k) == key:
+            return k
+    return None
+
+
 def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     info = data.get("info") or {}
     latest = info.get("version")
@@ -68,10 +95,13 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     # 발행 시각: 해당 버전 파일들의 최초 업로드 시각. releases 는 {버전: [파일...]}.
     releases = data.get("releases") or {}
     version_published = None
-    files = releases.get(queried) or []
     # 버전을 콕 집어 물었는데 releases 에 없으면 그 버전은 존재하지 않는다 —
-    # 발행일 None 으로 흡수되던 신호를 별도 필드로 낸다.
-    version_exists = (queried in releases) if (version and releases) else None
+    # 발행일 None 으로 흡수되던 신호를 별도 필드로 낸다. 비교는 PEP 440 정규화로
+    # 한다: `httpx>=0.27` 의 `0.27` 은 releases 의 `0.27.0` 과 같은 버전인데 문자열
+    # 비교로 "요청 버전 없음(high)"이 됐다(재점검 2026-08-29, 체커 자기 pyproject).
+    matched = _match_release_key(queried, releases) if queried else None
+    files = (releases.get(matched) if matched else None) or []
+    version_exists = (matched is not None) if (version and releases) else None
     times = [f.get("upload_time_iso_8601") for f in files if f.get("upload_time_iso_8601")]
     if times:
         version_published = min(times)
