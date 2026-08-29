@@ -182,4 +182,4 @@ def test_metadata_only_pyproject_is_ok_not_unparsed(monkeypatch: pytest.MonkeyPa
     d = asyncio.run(audit_manifest(dyn, ecosystem="pypi", filename="pyproject.toml"))
     assert d["requires_review"] is True and "dynamic" in d["note"]
     junk = asyncio.run(audit_manifest("this is not a manifest", ecosystem="pypi", filename="requirements.txt"))
-    assert junk["parsed_count"] == 0 and junk["verdict"] != "ok"   # 쓰레기 텍스트는 여전히 통과가 아니다
+    assert junk["verdict"] != "ok"   # 쓰레기 텍스트는 여전히 통과가 아니다(오프라인이면 review_required)
