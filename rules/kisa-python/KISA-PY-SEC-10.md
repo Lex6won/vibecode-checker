@@ -33,6 +33,16 @@ detection:
     - "jwt\\.decode\\s*\\([^)]*options\\s*=\\s*\\{[^}]*['\"]verify_signature['\"]\\s*:\\s*False"
     # 4) PKCS1 / RSA 서명 객체를 만들지 않고 raw 데이터 신뢰
     - "PKCS1_v1_5\\.new\\s*\\([^)]*\\)\\.verify\\s*\\([^)]*,\\s*None\\s*\\)"
+  # 2)의 `==` 비교는 "외부에서 받은 해시를 서명 대신 == 로 믿는" 자리를 겨냥한다.
+  # 그런데 `assert _sha256_bytes(b"abc") == hashlib.sha256(b"abc").hexdigest()`
+  # 같은 known-answer 자체검증(리터럴 인자·assert 문)까지 차단으로 올라왔다(실측
+  # 2026-08-29). assert 는 -O 에서 사라져 신뢰 결정에 쓰이지 않고, 리터럴 인자는
+  # 외부값이 아니다. 단 같은 줄에 요청·헤더·토큰 등 **외부값 토큰이 있으면 제외를
+  # 취소**한다 — `if hashlib.sha256(b"admin").hexdigest() == request.args["h"]` 는
+  # 리터럴이지만 외부값 비교라 계속 잡힌다.
+  exclude_patterns:
+    - "^\\s*assert\\b(?![^\\n]*(?:request\\.|req\\.|client|received|header|sig|token|param|payload|form|args))"
+    - "hashlib\\.(?:sha256|sha384|sha512|md5|sha1)\\s*\\(\\s*[bBuU]?['\"](?![^\\n]*(?:request\\.|req\\.|client|received|header|sig|token|param|payload|form|args))"
   category: kisa-secure-coding
   why_it_matters: >-
     KISA 가이드의 안전하지 않은 예시는 클라이언트가 보낸 *암호화된 파이썬 코드*를

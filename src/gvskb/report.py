@@ -640,7 +640,11 @@ def _dep_risk(report: ScanReport) -> tuple[int, int, int, bool]:
 #: (판정 조건, 심각도, 부록 기준표에 적을 설명). 위에서부터 첫 매칭 우선.
 _DEP_SEVERITY_TABLE: tuple[tuple[str, Severity, str], ...] = (
     ("malicious", Severity.critical, "악성 패키지 · 기관 레지스트리 차단 · 레지스트리에 없는 이름(가짜 이름 의심)"),
-    ("kev_or_high", Severity.high, "취약점 있음 + CISA KEV 등재 또는 CVSS 심각도 HIGH·CRITICAL"),
+    # CVSS CRITICAL 은 게이트의 **차단** 사유(gate.BLOCK_CRITERIA)다. 예전엔 HIGH 와
+    # 한 등급으로 묶어 결론은 "CRITICAL 3종 차단"인데 집계는 "치명 1"이 됐다.
+    ("critical_cvss", Severity.critical, "CVSS CRITICAL 취약점 (차단 기준)"),
+    ("kev_or_high", Severity.high, "취약점 있음 + CISA KEV 등재 또는 CVSS 심각도 HIGH"),
+    ("name_or_version", Severity.high, "인기 패키지와 1자 차이 이름 · 요청 버전이 저장소에 없음"),
     ("vulnerable", Severity.medium, "취약점 있음 (CVSS MEDIUM 이하 또는 심각도 미상)"),
     ("cooldown", Severity.medium, "발행 직후 버전 — 쿨다운 보류(위험 확인이 아니라 '아직 신뢰할 수 없음')"),
 )
@@ -656,9 +660,13 @@ def _dep_component_severity(check: dict) -> Severity | None:
     if check.get("is_malicious_package") or check.get("verdict") in ("registry_rejected", "not_found"):
         return Severity.critical
     if check.get("vulnerability_count"):
-        if check.get("in_kev") or str(check.get("max_cve") or "").upper() in ("HIGH", "CRITICAL"):
+        if str(check.get("max_cve") or "").upper() == "CRITICAL":
+            return Severity.critical
+        if check.get("in_kev") or str(check.get("max_cve") or "").upper() == "HIGH":
             return Severity.high
         return Severity.medium
+    if check.get("verdict") in ("suspicious_name", "version_not_found"):
+        return Severity.high
     if check.get("verdict") == "cooldown_hold":
         return Severity.medium
     return None
@@ -3075,6 +3083,12 @@ def _pkg_verdict_label(check: dict) -> str:
         return f"⚠ 개별 취약점 {n}건"
     if check.get("verdict") == "cooldown_hold":
         return "⏸ 발행 직후 — 대기 권고"
+    if check.get("verdict") == "suspicious_name":
+        # 판정 칸에 적는다 — 비고 칸의 '타이포스쿼팅 의심'은 판정 칸이 초록이면 읽히지 않는다.
+        sim = ((check.get("heuristics") or {}).get("typosquat_suspects") or [{}])[0].get("similar_to")
+        return f"⚠ 이름 의심({sim}와 1자 차이)" if sim else "⚠ 이름 의심(타이포스쿼팅)"
+    if check.get("verdict") == "version_not_found":
+        return "❌ 요청 버전 없음(오타·자리차지 의심)"
     if check.get("verdict") == "registry_approved":
         # checked=False 면 '승인은 받았으나 이번에 대조하지 못함' — 구분해 보여준다.
         return "✅ 기관 승인(레지스트리)" if check.get("checked") else "✅ 기관 승인 · 대조 못 함"
@@ -3099,8 +3113,8 @@ def _pkg_note(check: dict) -> str:
     heur = check.get("heuristics") or {}
     if check.get("verdict") == "not_found":
         bits.append("AI가 지어낸 이름(슬롭스쿼팅) 가능성 — 공식 문서에서 이름 확인")
-    if heur.get("typosquat_warning"):
-        bits.append("타이포스쿼팅 의심")
+    if heur.get("typosquat_warning") and check.get("verdict") != "suspicious_name":
+        bits.append("타이포스쿼팅 의심(2자 차이)")
     if check.get("in_kev") or check.get("kev_signals"):
         bits.append("CISA KEV 신호")
     cd = check.get("cooldown") or {}

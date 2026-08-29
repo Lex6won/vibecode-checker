@@ -5,6 +5,41 @@
 
 ## [Unreleased]
 
+### 자기검사 2차 — 존재하는 스쿼팅 패키지가 통과하던 게이트 구멍 (Fixed · Rules) — 2026-08-29
+
+**① `expresss 0.0.1` 이 "이상 없음"이었다.** 평가 코퍼스의 고의 오타 패키지인데,
+npm 에 `expresss` 는 **실제로 존재**한다(2016년 등록된 자리차지 패키지, latest 0.0.0).
+판정 사다리는 `malicious > vulnerable > cooldown_hold > checked_clean` 네 단뿐이라
+이름 휴리스틱(`typosquat_warning`)이 어디에도 반영되지 않았고, 이름 신호를 가르는
+것은 **레지스트리 실재 여부뿐**이었다 — `reqeusts`(미존재)는 차단, `expresss`(존재)는
+통과. 스쿼터가 이름을 등록해 두면 휴리스틱이 정확히 그 상황에서 무력화된다.
+요청한 버전 0.0.1 은 존재하지도 않았는데 발행일 None → `cooldown.ok=None` 으로
+흡수돼 "판정 불가"조차 표시되지 않았다.
+
+- `PackageRegistryMetadata.version_exists` 신설(npm `versions`·PyPI `releases` 대조).
+- 판정 `version_not_found`(high)·`suspicious_name`(편집거리 1, high) 추가 — **실재
+  여부와 독립**으로 적용. `requires_review` 에 `cooldown.ok is None`·편집거리 2 포함.
+- 게이트 조건부 기준에 두 판정 추가. 보고서는 **판정 칸**에 "⚠ 이름 의심(express와
+  1자 차이)"를 적는다 — 비고 칸의 경고는 판정 칸이 초록이면 읽히지 않았다.
+- CVSS CRITICAL 패키지를 보고서 집계에서 '치명'으로 — 결론은 "CRITICAL 3종 차단"
+  인데 집계는 "치명 1"이던 불일치(HIGH 와 한 등급으로 묶여 있었다).
+
+**② KISA-PY-SEC-10 이 known-answer 테스트를 차단했다.** `assert _sha256_bytes(b"abc")
+== hashlib.sha256(b"abc").hexdigest()` — 자체 헬퍼가 표준 라이브러리와 같은 값을
+내는지 확인하는 줄. `== hashlib.sha256(` 만 보고 발화했다. `exclude_patterns` 로
+assert 문·리터럴 인자를 제외하되, 같은 줄에 요청·헤더·토큰 등 **외부값 토큰이
+있으면 제외를 취소**한다 — `if hashlib.sha256(b"admin").hexdigest() ==
+request.args["h"]` 는 계속 잡힌다.
+
+**③ KISA-PY-SEC-05 가 사설망 http 를 평문 전송으로 잡았다.** `requests.post(
+'http://10.0.0.5/api')`·`http://localhost:3000` — 룰은 CWE-319 민감정보 평문 전송인데
+호스트도 페이로드도 보지 않았다. 망분리 기관의 내부 API 호출 전반에 경고가
+뿌려진다. 공인망 http 는 그대로, 사설망·루프백은 민감 토큰이 동반될 때만.
+`http://10.0.0.5.evil.com/` 은 경계 `[:/'"]` 요구로 여전히 잡힌다.
+
+- 회귀·적대 테스트 `tests/test_selfscan_round2.py` 신규(28케이스).
+- 룰셋 잠금 → **2026.08.29b**.
+
 ### 자기검사 1차 — 제품 코드 오탐 세 원인 제거 (Fixed · Rules) — 2026-08-29
 
 포털로 **이 저장소 자체**를 검사해 493건이 나왔다. 493건을 하나씩 소스와 대조한

@@ -64,6 +64,12 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+def _squat_distance(heuristics: dict) -> int | None:
+    """가장 가까운 인기 패키지와의 편집거리(없으면 None)."""
+    hits = heuristics.get("typosquat_suspects") or []
+    return int(hits[0]["edit_distance"]) if hits else None
+
+
 def _typosquat_suspects(name: str, ecosystem: str) -> list[dict]:
     """Popular packages within edit distance 1–2 of this name (likely typos)."""
     pool = _POPULAR_NPM if ecosystem.lower() == "npm" else _POPULAR_PYPI
@@ -1434,12 +1440,29 @@ async def check_package_impl(
             f"(기준 {cooldown.cooldown_days}일, 등급 {cooldown.env_grade}). "
             "오염된 신규 버전은 대부분 수 시간~수 일 내 발각·삭제됩니다 — 기다렸다 설치하세요(VCPS C1)."
         )
+    elif meta.version_exists is False:
+        # 패키지는 있는데 **요청한 버전이 없다** — 설치가 안 되거나(오타), 스쿼터가
+        # 자리만 잡아 둔 패키지(latest 0.0.0)에 존재하지 않는 버전을 적어 둔 경우.
+        # 예전엔 발행일 None → cooldown.ok=None 으로 흡수돼 '이상 없음'이 됐다.
+        verdict, severity = "version_not_found", "high"
+        notes.append(
+            f"'{name}' 은(는) 저장소에 있지만 버전 {version} 은 존재하지 않습니다"
+            f"(최신 {meta.latest_version}). 버전 오타이거나 자리차지 패키지일 수 있습니다 — "
+            "공식 문서에서 이름과 버전을 함께 확인하세요."
+        )
+    elif _squat_distance(heuristics) == 1:
+        # 인기 패키지와 1자 차이 — 레지스트리에 **존재하더라도** 통과시키지 않는다.
+        # 존재가 면죄부가 되면 스쿼터가 이름을 등록해 둔 바로 그 상황에서 뚫린다.
+        verdict, severity = "suspicious_name", "high"
     else:
         verdict, severity = "checked_clean", "info"
 
     requires_review = (
         has_malicious or bool(vulns) or cooldown.ok is False
+        or cooldown.ok is None            # 발행일 미상 — 쿨다운 판정 불가는 통과가 아니다
         or meta.exists is None            # 실재 미확인(조회 실패)은 검토 대상
+        or meta.version_exists is False
+        or _squat_distance(heuristics) in (1, 2)   # 2자 차이도 사람이 봐야 한다
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)
