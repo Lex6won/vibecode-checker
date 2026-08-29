@@ -211,7 +211,7 @@ def _python_lines_with_strings_blanked(code: str) -> dict[int, str] | None:
     """각 줄에서 **문자열 리터럴 내용만 공백으로** 지운 사본. 파싱 실패면 None.
 
     줄 번호 → 지워진 줄. 여러 줄 문자열은 걸친 줄 전부에서 지운다. 따옴표는
-    남겨 두어 `exec("...")` 의 바깥 `exec(` 는 그대로 보인다.
+    남겨 두어 `exec("...")` 의 바깥 `exec(` 는 그대로 보인다. 주석 본문도 지운다.
     """
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
@@ -221,6 +221,14 @@ def _python_lines_with_strings_blanked(code: str) -> dict[int, str] | None:
     out: dict[int, list[str]] = {}
     fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", -1)
     for tok in tokens:
+        if tok.type == tokenize.COMMENT:
+            # 주석도 실행되지 않는다. 자기검사(2026-08-29) 때 테스트의 설명 주석
+            # 한 줄이 문자열 감쇄를 통과한 뒤 재매치돼 차단으로 남았다.
+            (sl, sc), (_el, ec) = tok.start, tok.end
+            buf = out.setdefault(sl, list(lines[sl - 1]))
+            for i in range(sc, min(ec, len(buf))):
+                buf[i] = " "
+            continue
         if tok.type != tokenize.STRING and tok.type != fstring_middle:
             continue
         (sl, sc), (el, ec) = tok.start, tok.end

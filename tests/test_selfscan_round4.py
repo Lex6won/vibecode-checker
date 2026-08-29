@@ -139,3 +139,13 @@ def test_korean_general_prohibition_form_is_recognised():
 def test_identifier_fragments_do_not_count_as_prohibition(code):
     f = _one(code, "GOV-CODE-EXEC-001")
     assert f.decision.value == "block", f.severity_adjusted
+
+
+# ── 자기검사 재점검(2026-08-29): 주석 안의 코드 모양은 실행되지 않는다 ──
+def test_code_shape_in_comment_is_attenuated_but_real_call_on_same_line_is_not():
+    rep = scan_code('x = load(v)  # 예전에는 eval(v) 였음', filename="app.py")
+    ex = [f for f in rep.findings if f.rule_id == "GOV-CODE-EXEC-001"]
+    assert ex and ex[0].decision.value != "block" and ex[0].severity_adjusted
+    rep2 = scan_code('y = eval(v)  # eval 은 위험', filename="app.py")
+    ex2 = [f for f in rep2.findings if f.rule_id == "GOV-CODE-EXEC-001"]
+    assert ex2 and ex2[0].decision.value == "block"

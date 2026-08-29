@@ -56,7 +56,8 @@ def test_blocked_package_forbids_green_verdict() -> None:
         assert "배포 미승인" in out
         # 단위는 `종` — 게이트 문장(`패키지 N종`) 뒤에 그대로 이어 붙는 조각이라
         # 여기만 `건` 이면 한 문장에서 같은 수가 두 단위로 세어진다.
-        assert "취약·악성 패키지 1종" in out
+        # 악성이 0 이면 '악성'을 말하지 않는다(9차 P-10) — 단위 `종`은 유지.
+        assert "취약 패키지 1종" in out and "취약·악성 패키지 1종" not in out
 
 
 def test_high_only_package_is_conditional_not_blocked() -> None:
