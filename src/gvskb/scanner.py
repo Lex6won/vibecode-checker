@@ -514,6 +514,74 @@ def _dedupe(findings: list[Finding]) -> list[Finding]:
     return list(best.values())
 
 
+_HTML_SUFFIXES = (".html", ".htm", ".xhtml")
+_SCRIPT_OPEN_RE = re.compile(r"<script\b([^>]*)>", re.IGNORECASE)
+_SCRIPT_CLOSE_RE = re.compile(r"</script\s*>", re.IGNORECASE)
+_SCRIPT_TYPE_ATTR_RE = re.compile(r"""\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
+_JS_SCRIPT_TYPES = {
+    "", "text/javascript", "application/javascript", "application/x-javascript",
+    "text/ecmascript", "application/ecmascript", "module", "text/babel", "text/jsx",
+}
+
+
+def _script_tag_is_js(attrs: str) -> bool:
+    """`type` 이 없거나 JS 계열이면 True. JSON·템플릿(`text/template`)은 False.
+
+    정규식 한 줄의 부정 전방탐색으로 하려다 `["']?` 가 빈 문자열로 물러나며
+    `type="module"` 을 비 JS 로 오판했다(2026-08-30) — 값을 꺼내 파이썬에서 비교한다.
+    """
+    m = _SCRIPT_TYPE_ATTR_RE.search(attrs)
+    if m is None:
+        return True
+    value = (m.group(1) or m.group(2) or m.group(3) or "").strip().lower()
+    return value in _JS_SCRIPT_TYPES
+
+
+def _html_script_view(code: str, filename: str, language: str | None) -> str | None:
+    """HTML 파일에서 인라인 <script> 본문만 남기고 나머지 줄은 비운 사본.
+
+    스크립트 블록이 없으면 None. `type="application/json"` 같은 비 JS 블록은 제외.
+    `<script src=…></script>` 처럼 본문이 없는 태그는 아무 줄도 남기지 않는다.
+    """
+    if language and language.lower() not in {"html", "xhtml"}:
+        return None
+    if not language and not filename.lower().endswith(_HTML_SUFFIXES):
+        return None
+    if "<script" not in code.lower():
+        return None
+    out: list[str] = []
+    state = 0          # 0=마크업 · 1=JS 블록 안 · 2=비 JS 블록 안(건너뜀)
+    found = False
+    for raw in code.splitlines():
+        pieces: list[str] = []
+        cursor = 0
+        while True:
+            if state == 0:
+                m = _SCRIPT_OPEN_RE.search(raw, cursor)
+                if m is None:
+                    break
+                cursor = m.end()
+                state = 1 if _script_tag_is_js(m.group(1) or "") else 2
+                continue
+            c = _SCRIPT_CLOSE_RE.search(raw, cursor)
+            if c is None:
+                if state == 1:
+                    pieces.append(raw[cursor:])
+                break
+            if state == 1:
+                pieces.append(raw[cursor:c.start()])
+            state = 0
+            cursor = c.end()
+        body = " ".join(p for p in pieces if p.strip())
+        if body.strip():
+            found = True
+            # 앞쪽 마크업 길이만큼 공백을 두어 열(column)도 대략 보존한다.
+            out.append(" " * max(0, len(raw) - len(body)) + body)
+        else:
+            out.append("")
+    return "\n".join(out) if found else None
+
+
 def scan_code(
     code: str,
     *,
@@ -536,6 +604,22 @@ def scan_code(
             profile=profile,
             categories=categories,
         ))
+    # HTML 의 인라인 <script> 는 JavaScript 다. JS 룰은 languages=[javascript, typescript]
+    # 라 .html 에서는 한 줄도 돌지 않았다 — 포털 `my-scans.html` 의 innerHTML XSS 를
+    # 통째로 놓쳤다(개선요청 #34 D3, 2026-08-30). 룰 36개에 html 을 더하면 마크업
+    # 본문(설명문의 `eval()`)에 JS 룰이 걸리므로, 스크립트 블록만 남긴 사본을
+    # javascript 로 한 번 더 검사한다. 줄 번호는 보존된다.
+    script_view = _html_script_view(code, filename, language)
+    if script_view is not None:
+        for adapter in _ADAPTERS:
+            raw.extend(adapter.scan(
+                script_view,
+                filename=filename,
+                language="javascript",
+                scenario=scenario,
+                profile=profile,
+                categories=categories,
+            ))
     from .scanners.ast_scanner import python_ast_parsed
     raw = _drop_regex_when_ast_owns(raw, python_ast_parsed(code, filename, language))
     findings = _dedupe(raw)

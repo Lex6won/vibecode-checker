@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+### 13차 — HTML 인라인 <script> 는 JavaScript 다 (개선요청 #34 D3) — 2026-08-30
+
+포털 자체 점검(개선요청 #34)이 "my-scans.html 의 innerHTML XSS 를 체커가 못 잡았다"고
+했다. 재현하니 `.js` 면 잡히고 `.html` 이면 0건 — JS 룰 36개가 전부
+`languages: [javascript, typescript]` 라 HTML 파일에서는 한 줄도 돌지 않았다. 라운드 18의
+"typescript 누락"과 같은 계열의 언어 스코프 결함이다.
+
+- 룰에 html 을 더하지 않고 **스크립트 블록만 남긴 사본**을 javascript 로 한 번 더
+  검사한다 — 마크업 설명문의 `eval()` 에 JS 룰이 걸리지 않게. 줄 번호 보존,
+  `type="application/json"`·`text/template` 블록 제외, `type="module"` 포함.
+  js-taint 엔진도 같은 사본에 돈다.
+- 첫 시안의 `type` 판별 정규식이 `["']?` 의 되물림으로 `type="module"` 을 비 JS 로
+  오판 — 값을 꺼내 파이썬에서 비교하도록 바꿨다.
+- 포털 HTML 749개 실측: 새 발견 26건 중 9건이 `el.innerHTML = ""`·고정 문구 리터럴
+  이었다(`.js` 에서도 원래 잡히던 **기존 오탐**). `html_sink_context` 에 "상수 리터럴
+  대입" 관찰을 더해 내린다 — `${…}`·`+`·식별자·닫히지 않은 템플릿은 그대로 차단.
+  잔여 19건은 전부 동적 값(실제 `my-scans.html:118` 포함).
+
+테스트 **1829 passed**(+12), 벤치마크 recall 100%·FP 0.
+
 ### 자기검사 12차 — 체커 자신의 공격면(서버 운영 관점) (Hardening) — 2026-08-30
 
 룰 검사는 제품 코드 0건이었지만 룰은 정규식이다. "서버에 설치해 운영해도 되는가"를
