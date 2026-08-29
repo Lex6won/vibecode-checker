@@ -46,7 +46,9 @@ _CONFIDENCE_LABEL_KO = {
 def _confidence_label(value: str | None, engine: str | None = None) -> str:
     if value == "confirmed" and engine == "regex":
         return _CONFIDENCE_LABEL_KO["confirmed@regex"]
-    return _CONFIDENCE_LABEL_KO.get(value or "", value or "—")
+    # confidence 가 비어 있으면 '패턴 일치만'이다 — 재점검(2026-08-29) 때 "—" 로
+    # 떨어져 근거 없는 발견처럼 읽혔다(회귀).
+    return _CONFIDENCE_LABEL_KO.get(value or "pattern-only", value or _CONFIDENCE_LABEL_KO["pattern-only"])
 
 
 #: 증거 줄 라벨. 가려진 것이 **있을 때만** 가렸다고 말한다.
@@ -3067,10 +3069,13 @@ def _env_grade_line(report: ScanReport) -> str | None:
         return None
     from .vcps import env_grade_summary
 
-    raw = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    # audit 최상위 env_grade 는 **부르는 쪽이 명시한 값**(--env)이고, 없으면 None 이다.
+    explicit = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    raw = explicit
     if raw is None:
-        # audit 최상위에 없으면 각 check 의 cooldown 판정에 적용된 등급을 본다 —
-        # 거기에만 값이 실린 경로가 있어 "지정 없음"으로 거짓 표기됐다(실측 2026-08-29).
+        # 명시가 없어도 각 check 의 cooldown 판정에는 **적용된** 기본 등급이 실린다.
+        # 그 값으로 등급·기준일은 정확히 적되, 출처는 '기본값 적용'으로 남긴다 —
+        # 재점검(2026-08-29) 때 이 값을 '검사 실행 시 지정'으로 잘못 표기했다.
         raw = next(
             (((c.get("cooldown") or {}).get("env_grade")) for a in audits
              for c in (a.get("checks") or []) if (c.get("cooldown") or {}).get("env_grade")),
@@ -3082,7 +3087,7 @@ def _env_grade_line(report: ScanReport) -> str | None:
     # 'E2(내부서버 공용)' 로 찍혀 "왜 내 PC 가 내부서버냐"가 됐다. 값만 있고
     # 출처가 없으면 읽는 사람은 도구가 환경을 판단한 것으로 읽는다.
     origin = (
-        f"검사 실행 시 지정(`--env {grade}`)" if raw
+        f"검사 실행 시 지정(`--env {grade}`)" if explicit
         else "지정 없음 · 기본값 적용(이 도구는 실행환경을 자동 판별하지 않습니다)"
     )
     return (
