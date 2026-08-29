@@ -33,7 +33,11 @@ detection:
     # 오류 본문에 "secret" 이라는 단어가 있다는 이유만으로 개인정보 전송으로
     # 보고됐다(실측: 시크릿이 새지 않는지 검증하는 테스트가 critical 4건).
     # 실제 호출·임포트 형태만 LLM 맥락으로 인정한다.
-    - '(?i)^(?!.*(?:os\.environ|process\.env|os\.getenv|getenv))(?=.*(?:\bopenai\s*\.|\bfrom\s+openai\b|\bimport\s+openai\b|new\s+OpenAI\s*\(|api\.openai\.com|chat\.completions|\bmessages\s*=|\bprompt\s*=)).*(resident|rrn|주민|민원|phone|전화|password|secret|api_key)'
+    # 단어만으로 발화하지 않는다 — `prompt = "민원 챗봇입니다. 무엇을 도와드릴까요?"`
+    # 가 치명이었다(실측 2026-08-29). 값이 실제로 결합되는 형태(보간 `{…rrn…}`,
+    # `+`/`%` 결합 변수명, 주민번호·휴대폰 리터럴, `주민번호: 값`)를 요구한다.
+    # `*_masked`·`redact*` 변수는 이미 가려진 값으로 보고 제외한다.
+    - '(?i)^(?!.*(?:os\.environ|process\.env|os\.getenv|getenv))(?=.*(?:\bopenai\s*\.|\bfrom\s+openai\b|\bimport\s+openai\b|new\s+OpenAI\s*\(|api\.openai\.com|chat\.completions|\bmessages\s*=|\bprompt\s*=)).*(?:\{[^{}"'']*(?:resident|rrn|주민|phone|전화|password|secret|api_key|민원인)(?![^{}]*(?:masked|redact))[^{}"'']*\}|[+%]\s*\w*(?:resident|rrn|phone|password|secret|api_key)(?!\w*(?:masked|redact))\w*|\b\d{6}-[1-4](?:\d{6}|\*{6})|01[016789][-\s]?\d{3,4}[-\s]?\d{4}|(?:주민(?:등록)?번호|전화번호|password|secret|api_key)\s*[:=]\s*\S)'
   category: llm-appsec
   why_it_matters: 프롬프트는 외부 서비스, 로그, 모니터링, trace에 남을 수 있어 개인정보와 내부정보를 그대로 넣으면 안 됩니다.
   public_sector_impact:
@@ -56,6 +60,9 @@ examples:
     - "host = os.environ.get(\"OPENAI_API_KEY\")"
     - "api_key = os.environ[\"OPENAI_API_KEY\"]"
     - "messages = build_safe_messages(user_id)"
+    - "prompt = \"민원 챗봇입니다. 무엇을 도와드릴까요?\""
+    - "prompt = build_prompt(rrn_masked)"
+    - "messages = [{\"role\": \"system\", \"content\": \"전화 상담 시간은 9시입니다\"}]"
     # 함수 이름 안의 'OpenAI' 는 LLM 호출이 아니다 — 실측 오탐(wiggle_web).
     # 아래 두 줄은 오히려 시크릿이 새지 '않는지' 검증하는 테스트 코드다.
     - "await assert.rejects(requestStructuredOpenAI({ ...base, fetchImpl: async () => new Response(\"secret upstream body\", { status: 429 }) }))"

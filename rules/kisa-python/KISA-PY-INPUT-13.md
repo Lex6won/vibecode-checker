@@ -22,16 +22,16 @@ verified_at: 2026-06-03
 review_due: 2026-12-03
 detection:
   patterns:
-    # 1) Django HttpResponse/HttpResponseRedirect 에 request.* 값을 직접 전달
-    - "HttpResponseRedirect\\s*\\(\\s*request\\.(?:GET|POST|args|form|values|params|json|META)"
+    # (삭제 2026-08-29) `HttpResponseRedirect(request.*)`·`redirect(request.*)` —
+    # 오픈 리다이렉트(KISA-PY-INPUT-07)의 영역이다. Werkzeug·Django·http.client 모두
+    # 헤더 값의 개행을 거부해 redirect 경로로는 응답 분할이 재현되지 않는데, 같은 줄에
+    # 높음 2건이 떠 사용자가 "두 취약점"으로 읽었다. 헤더·쿠키 직접 주입만 남긴다.
     # 2) response['Header'] = request.* (헤더 인젝션)
     - "(?<![A-Za-z0-9_])(?:res|resp|response)\\s*\\[\\s*['\"][A-Za-z0-9_-]+['\"]\\s*\\]\\s*=\\s*request\\.(?:GET|POST|args|form|values|params|json|META|COOKIE|COOKIES)"
     # 3) set_cookie / set_header 에 request.* 값을 직접 전달
     - "\\.(?:set_cookie|set_header|setHeader|add_header|headers\\.add|headers\\.set)\\s*\\(\\s*[^)]*request\\.(?:GET|POST|args|form|values|params|json|META|COOKIE|COOKIES)"
     # 4) Flask make_response / Response 의 headers 딕셔너리에 사용자 값
     - "Response\\s*\\([^)]*headers\\s*=\\s*\\{[^}]*request\\.(?:args|form|values|json|cookies)"
-    # 5) Flask redirect(request.args[...])
-    - "(?<![A-Za-z0-9_.])redirect\\s*\\(\\s*request\\.(?:args|form|values|json)"
   category: kisa-secure-coding
   why_it_matters: >-
     사용자 입력값이 응답 헤더나 `Set-Cookie`, `Location`에 그대로 들어가면
@@ -73,7 +73,6 @@ examples:
   language: python
   positive:
     - "res = HttpResponse()\nres['Content-Type'] = request.POST.get('content-type')"
-    - "from flask import redirect, request\nreturn redirect(request.args['next'])"
     - "response.set_cookie('lang', request.GET['lang'])"
   negative:
     - "ct = request.POST.get('content-type', '').replace('\\r', '').replace('\\n', '')\nres['Content-Type'] = ct"

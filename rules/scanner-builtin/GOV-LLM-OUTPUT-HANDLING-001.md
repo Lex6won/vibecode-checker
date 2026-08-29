@@ -34,7 +34,12 @@ detection:
     # 나온 적이 없고, `\b` 를 걸면 `llmResponse`·`llm_response`(이 룰의 positive
     # 예시)가 통째로 미탐이 된다. 근거가 요구하는 곳만 좁힌다.
     # `.*` → `.{0,120}`: 한 줄에 토큰이 181자 떨어져 있던 산문 JSON 이 실제로 걸렸다.
-    - "(?i)(?:(?:llm|response|completion|model_output).{0,120}(?<![A-Za-z0-9])(?:execute|exec|eval|os\\.system|innerHTML|dangerouslySetInnerHTML)(?!(?-i:[a-z]))|(?<![A-Za-z0-9])(?:execute|exec|eval|os\\.system|innerHTML|dangerouslySetInnerHTML)(?!(?-i:[a-z])).{0,120}(?:llm|response|completion|model_output))"
+    # sink 는 **호출 `(` 또는 대입 `=` 형태**여야 한다. 토큰 공존만 요구하던 예전
+    # 패턴은 `"id": "llm-eval-in-evaluate-json"`(케이스 ID)·`evaluateResponseQuality
+    # 안의 eval — …`(산문)·룰 린터의 정규식 문자열·`retrieval 속 eval`(음성 픽스처)을
+    # 높음·차단으로 올렸다(실측 2026-08-29, 11건). `if (el.innerHTML == response)` 는
+    # 비교라 `=(?!=)` 로 제외. `subprocess.run(model_output, shell=True)` 미탐도 보강.
+    - "(?i)(?:(?:llm|response|completion|model_output).{0,120}(?<![A-Za-z0-9])(?:(?:execute|exec|eval|os\\.system|subprocess\\.(?:run|call|Popen))(?!(?-i:[a-z]))\\w*\\s*\\(|(?:innerHTML|dangerouslySetInnerHTML)(?!(?-i:[a-z]))\\s*=(?!=))|(?<![A-Za-z0-9])(?:(?:execute|exec|eval|os\\.system|subprocess\\.(?:run|call|Popen))(?!(?-i:[a-z]))\\w*\\s*\\(|(?:innerHTML|dangerouslySetInnerHTML)(?!(?-i:[a-z]))\\s*=(?!=)).{0,120}(?:llm|response|completion|model_output))"
   category: llm-appsec
   why_it_matters: 공격자가 prompt injection으로 AI 응답을 조작하면 SQL, shell, HTML, 스크립트가 실행될 수 있습니다.
   public_sector_impact:
@@ -52,9 +57,15 @@ examples:
   positive:
     - "exec(llm_response)"
     - "os.system(model_output.strip())"
+    - "subprocess.run(model_output, shell=True)"
+    - "div.innerHTML=llmText"
   negative:
     - "logger.info(\"status=%s\", response.status_code)"
     - "render_plain_text(sanitize(llm_response))"
+    - "if (el.innerHTML == response) { return; }"
+    - "response.exec_time = 3"
+    - "llm-exec-policy = strict"
+    - "\"id\": \"llm-eval-in-evaluate-json\""
 ---
 
 ## 무엇이 위험한가

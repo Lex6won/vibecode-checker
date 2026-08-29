@@ -5,6 +5,32 @@
 
 ## [Unreleased]
 
+### 자기검사 6차 — 룰 정밀도 8종 (Rules) — 2026-08-29
+
+- **GOV-LLM-OUTPUT-HANDLING-001**: sink 가 **호출 `(` 또는 대입 `=`** 형태여야 발화.
+  토큰 공존만 요구하던 패턴은 케이스 ID(`llm-eval-in-evaluate-json`)·산문·룰 린터의
+  정규식 문자열·음성 픽스처까지 높음·차단(11건). `subprocess.run(model_output)` 미탐 보강.
+- **GOV-LLM-PII-PROMPT-001**: 값 신호(f-string 보간 `{rrn}`·`+`/`%` 결합·주민번호/휴대폰
+  리터럴·`주민번호:`) 요구. `prompt = "민원 챗봇입니다"` 가 치명이었다. `*_masked` 제외.
+- **GOV-AGENT-EXCESSIVE-AUTHORITY-001**: 동사 뒤 `(?!(?-i:[a-z]))` — `dropdown`·
+  `approved`·`transferable`·`deletion_log` 는 안 잡고 `sendEmail`·`dropTable`·`DELETE` 는
+  잡는다. `(?i)` 아래 `[a-z]` 가 대문자를 먹는 함정은 `(?-i:)` 로 되살렸다.
+- **KISA-PY-INPUT-13**: `redirect(request.*)`·`HttpResponseRedirect(request.*)` 패턴 삭제
+  — 오픈 리다이렉트(INPUT-07)의 영역. 헤더·쿠키 직접 주입만 남김.
+- **KISA-PY-ERR-01**: `app.run(debug=True)` 패턴 삭제 — GOV-FLASK-DEBUG-001 과 글자
+  단위 동일. Django `DEBUG = True`·`str(e)` 반환은 유지.
+- **KISA-PY-SEC-06**: 픽스처 가드(dummy/fake/test/example…)를 형제 룰 APIKEY-001 과
+  맞춤 — 형제가 negative 로 확정한 `dummy_password_1` 을 이 룰이 되살렸다.
+- **GOV-SECRET-APIKEY-001**: PEM 패턴 삭제 — PRIVATEKEY-001 이 더 넓게 잡는다(9줄 중복).
+- 보고서 판정 근거 라벨: regex 룰의 `confirmed` 는 "확인됨(패턴 자체가 확증)". 예전엔
+  "데이터 흐름 추적"이라 적어 하지 않은 일을 한 것처럼 읽혔다.
+- 코퍼스: E-02 휴대폰 시료를 `010-2345-6789` 로(예전 값은 PHONE 룰의 예시 제외번호라
+  구조적으로 못 잡았다), D-02 기대에서 발화 불가 룰(baseline OWASP-LLM-2025-01·
+  OUTPUT-HANDLING) 제거, I-05 기대에서 INPUT-13 제거, H-05/06/08 을 탐지 기대로 승격.
+- 보류: KISA-PY-INPUT-01 f-string/`+` 확장은 dedup 병합(S-8)과 함께 — 지금 넣으면
+  GOV-SQL-INJECTION-001 과 같은 줄 2건만 늘어난다.
+- 테스트 `tests/test_selfscan_round6_rules.py`(52케이스). 룰셋 잠금 2026.08.29c.
+
 ### 자기검사 5차 — 게이트 판정을 JSON 에 싣는다 (Added · 계약 비파괴) — 2026-08-29
 
 사람용 보고서의 결론은 `gate_status()`(의존성이 게이트, 소스는 보조)인데 JSON 에는

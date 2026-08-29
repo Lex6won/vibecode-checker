@@ -131,8 +131,8 @@ detection:
     - '(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])'
     - '(?<![A-Za-z0-9])dop_v1_[a-f0-9]{64}'
     - '(?<![A-Za-z0-9])SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}'
-    # PEM 개인키 블록 — 파일 확장자와 무관하게 소스 안에 붙여 넣은 경우
-    - '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+    # (삭제 2026-08-29) PEM 개인키 블록은 GOV-SECRET-PRIVATEKEY-001 이 더 넓게
+    # (ENCRYPTED·PuTTY 포함) 잡는다 — 같은 줄 2건이 9곳 있었다.
   # 값이 키 이름 그 자체면 변수 참조지 비밀값이 아니다 — TypeScript 로 룰을
   # 열자 객체 리터럴 `access_token: accessToken` 이 차단으로 올라왔다.
   # 실제 비밀값이 자기 키 이름과 같을 수는 없어 진짜를 가릴 위험이 없다.
