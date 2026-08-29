@@ -125,6 +125,14 @@ EXPOSURE_CATEGORIES: frozenset[str] = frozenset({
     "public-sector-internal",
 })
 
+#: 카테고리는 다르지만 **값 기반**(적혀 있는 것만으로 위험)인 룰. 테스트 경로
+#: 감쇄가 카테고리로만 걸려 있어 이 룰은 tests/ 에서도 치명·차단이었다(실측
+#: 2026-08-29: 픽스처 5건이 게이트를 막음). 카테고리를 바꾸면 프로파일·리포트
+#: 분류가 따라 흔들리므로 룰 단위로 opt-in 한다. 목록은 여기 한 곳에만 둔다.
+VALUE_BASED_RULE_IDS: frozenset[str] = frozenset({
+    "GOV-LLM-PII-PROMPT-001",
+})
+
 
 class RuleExamples(BaseModel):
     """Code samples that pin per-rule precision / recall.
