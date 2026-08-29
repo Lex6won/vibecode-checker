@@ -168,3 +168,18 @@ def test_bounded_missing_version_is_unknown_not_high():
         exact = asyncio.run(cp.check_package_impl("httpx", "pypi", version="9.9", version_exact=True))
     assert bounded["verdict"] == "unknown" and bounded["verdict_severity"] == "low"
     assert exact["verdict"] == "version_not_found" and exact["verdict_severity"] == "high"
+
+
+# ── 의존성 없는 pyproject 는 소음이 아니다 ──
+def test_metadata_only_pyproject_is_ok_not_unparsed(monkeypatch: pytest.MonkeyPatch):
+    import asyncio
+    from gvskb.tools.check_package import audit_manifest
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    meta_only = "[project]" + chr(10) + 'name="x"' + chr(10) + 'version="1"' + chr(10) + "[tool.ruff]" + chr(10) + "line-length=100"
+    r = asyncio.run(audit_manifest(meta_only, ecosystem="pypi", filename="pyproject.toml"))
+    assert r["verdict"] == "ok" and r["requires_review"] is False and r["parsed_count"] == 0
+    dyn = "[project]" + chr(10) + 'name="x"' + chr(10) + 'dynamic=["version","dependencies"]'
+    d = asyncio.run(audit_manifest(dyn, ecosystem="pypi", filename="pyproject.toml"))
+    assert d["requires_review"] is True and "dynamic" in d["note"]
+    junk = asyncio.run(audit_manifest("this is not a manifest", ecosystem="pypi", filename="requirements.txt"))
+    assert junk["parsed_count"] == 0 and junk["verdict"] != "ok"   # 쓰레기 텍스트는 여전히 통과가 아니다
