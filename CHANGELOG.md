@@ -5,6 +5,27 @@
 
 ## [Unreleased]
 
+### 15차 — 사람이 찾았고 체커가 놓친 실제 취약점 2종을 좁은 룰로 (개선요청 #34 D1·D2) — 2026-08-30
+
+- **GOV-PATH-BOUNDARY-001** (medium·warn·pattern-only): `resolved.startsWith(path.resolve(root))`
+  · `.startsWith(root)` · Python `.startswith(os.path.abspath(base_dir))` — 구분자 없는
+  접두어 비교. 같은 줄의 `+ path.sep`·`+ "/"`·`path.relative`·`is_relative_to`·
+  `os.path.join(base, '')` 는 제외, URL·href 접두어 비교도 제외.
+  **포털 `src/server.js` 3곳(411·452·625) 실측 적중** — 요청서가 사람이 찾았다고 한 그 결함.
+  체커 `src/` 0건.
+- **GOV-RESPONSE-SECRET-001** (medium·warn·pattern-only): `res.json({ password: … })` ·
+  체인 `res.status(400).json(` · 헬퍼 `json(response, 200, { dev_login_url: … })` ·
+  Koa `ctx.body = {…}` · `jsonify/JSONResponse({"reset_token": …})`. 키는 비밀번호·API 키·
+  개인키·개발용 로그인 링크·재설정 토큰·OTP — **`token` 단독은 잡지 않는다**(로그인
+  응답의 액세스 토큰은 정상). `password: null`·`password_changed:`·`has_password:` 제외.
+  **포털 `src/server.js:1378`(dev_login_url) 실측 적중.**
+- 첫 시안 결함 3건을 적대 테스트가 잡았다: 식별자 `root` 단독 미매치 · Python 안전
+  관용구 `join(base, '')` 오탐 · `ctx.body =` 미매치.
+- 코퍼스 B-90/B-91(양성)·B-92(정상 로그인 응답, 음성) 추가, `server_safe.js` 에 안전한
+  경계 검사 추가. 벤치마크 recall 100%·FP 0. RULESET.lock 2026.08.30f.
+
+테스트 **1872 passed**.
+
 ### 14차 — 같은 줄·같은 유형은 "1개 문제, 근거 룰 2개" (S-8, 개선요청 #34 C) — 2026-08-30
 
 자기검사 때 보류한 S-8 을 포털 요청으로 착수했다(포털은 `rule_id` 를 소비하지 않음을
