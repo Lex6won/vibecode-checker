@@ -1129,6 +1129,7 @@ async def audit_manifest(
                 ecosystem=ecosystem,
                 env_grade=env_grade,
                 client=client,
+                version_exact=bool(package.get("version_exact", True)),
             )
         done += 1
         if on_progress is not None:
@@ -1292,6 +1293,7 @@ async def check_package_impl(
     timeout: float = 10.0,
     env_grade: str | None = None,
     client: "httpx.AsyncClient | None" = None,
+    version_exact: bool = True,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
@@ -1439,6 +1441,15 @@ async def check_package_impl(
             f"버전 발행 후 {cooldown.version_age_days}일밖에 지나지 않았습니다"
             f"(기준 {cooldown.cooldown_days}일, 등급 {cooldown.env_grade}). "
             "오염된 신규 버전은 대부분 수 시간~수 일 내 발각·삭제됩니다 — 기다렸다 설치하세요(VCPS C1)."
+        )
+    elif meta.version_exists is False and version_exact is False:
+        # `pkg>=9.9` 처럼 **경계값**이 실재 버전이 아닌 경우 — 설치되는 것은 그 이상의
+        # 어떤 버전이므로 오타·자리차지 신호가 아니다. 다만 그 버전으로는 취약점을
+        # 못 물었으니 '판정 불가'로 남긴다(초록불 아님).
+        verdict, severity = "unknown", "low"
+        notes.append(
+            f"'{name}' 의 하한 {version} 은 실재 버전이 아닙니다(최신 {meta.latest_version}). "
+            "실제 설치 버전은 락파일·설치 환경(--include-installed)으로 확인하세요."
         )
     elif meta.version_exists is False:
         # 패키지는 있는데 **요청한 버전이 없다** — 설치가 안 되거나(오타), 스쿼터가

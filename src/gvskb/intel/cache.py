@@ -153,9 +153,19 @@ class IntelCache:
         items = data.get("items", [])
         # 무결성 재검증 — USB 반입 등 이동 경로에서 변조·손상된 캐시가 판정에
         # 쓰이지 않도록, 기록된 sha256이 있으면 items 해시를 다시 계산해 비교한다.
-        # (sha256이 비어 있는 수제/구버전 캐시는 검증 불가 — 그대로 통과)
+        # sha256 이 비어 있으면 **통과시키지 않는다** — 예전에는 "검증 불가 — 그대로
+        # 통과"였다. 캐시 폴더에 쓸 수 있는 누구나 서명 없는 항목을 넣어 판정
+        # (악성 패키지 목록)을 바꿀 수 있었다(재점검 2026-08-29). 구버전 캐시는
+        # `gvskb update-intel` 로 다시 받으면 된다.
         recorded = data.get("sha256", "")
-        if recorded and _sha256(items) != recorded:
+        if not recorded:
+            print(
+                f"[gvskb] ⚠ intel cache without integrity hash: {p.name} — "
+                "sha256 이 없는 캐시는 쓰지 않습니다. `gvskb update-intel`로 다시 받으세요.",
+                file=sys.stderr,
+            )
+            return None
+        if _sha256(items) != recorded:
             print(
                 f"[gvskb] ⚠ intel cache integrity check failed: {p.name} — "
                 "sha256 불일치(변조·손상 가능). 이 캐시는 무시합니다. "
