@@ -1106,6 +1106,21 @@ async def audit_manifest(
         lock_format = None
         packages = parse_manifest_packages(manifest_text, ecosystem)
         if not packages:
+            from ..scanner import _looks_like_pyproject
+            if ecosystem == "pypi" and _looks_like_pyproject(manifest_text):
+                # 메타데이터만 있는 pyproject(의존성 선언 0, 또는 dynamic) — 파싱 실패가
+                # 아니라 "선언된 의존성이 없다"이다. 검토 필요로 올리면 pyproject 를 쓰는
+                # 모든 프로젝트에 소음이 생긴다(푸시 전 검토 2026-08-30). 단 dynamic 이면
+                # 실제 의존성은 다른 파일에 있으니 그 사실을 적는다.
+                dyn = "dependencies" in (manifest_text.split("dynamic", 1)[1][:200] if "dynamic" in manifest_text else "")
+                res = _unparsed_result(ecosystem, "")
+                res.update({
+                    "verdict": "ok", "requires_review": bool(dyn),
+                    "note": ("pyproject.toml 이 의존성을 dynamic 으로 선언 — 실제 목록은 requirements*.txt 등 다른 파일에 있습니다. 그 파일을 함께 검사하세요."
+                             if dyn else "pyproject.toml 에 선언된 의존성이 없습니다(메타데이터 전용)."),
+                    "disclaimer": "선언된 패키지가 0건인 매니페스트입니다 — 락파일·requirements 가 있으면 그쪽 결과를 보세요.",
+                })
+                return res
             return _unparsed_result(ecosystem, "이 텍스트에서 패키지를 파싱하지 못했습니다. 형식·ecosystem을 확인하세요.")
 
     effective_limit = limit if limit is not None else (
