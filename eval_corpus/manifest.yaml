@@ -34,6 +34,10 @@ cases:
   - {id: B-05, file: b_express_api/routes.js, line: 7, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [KISA-JS-INPUT-01], sink: "WHERE id = \" + req.params.id"}
   - {id: B-06, file: b_express_api/routes.js, line: 13, kind: vulnerability, category: code-exec, expect_detected: true, expected_rule_ids: [KISA-JS-API-02, KISA-JS-INPUT-02], sink: "new Function(body)"}
 
+  - {id: B-90, file: b_express_api/boundary.js, line: 5, kind: vulnerability, category: path-traversal, expect_detected: true, expected_rule_ids: [GOV-PATH-BOUNDARY-001], sink: "resolved.startsWith(path.resolve(root))"}
+  - {id: B-91, file: b_express_api/boundary.js, line: 9, kind: vulnerability, category: info-exposure, expect_detected: true, expected_rule_ids: [GOV-RESPONSE-SECRET-001], sink: "dev_login_url"}
+  - {id: B-92, file: b_express_api/boundary.js, line: 12, kind: hard_variant, category: info-exposure, expect_detected: false, expected_rule_ids: [GOV-RESPONSE-SECRET-001], sink: "token: accessToken"}
+
   # ---------- (C) 정적 페이지 (HTML + vanilla JS) ----------
   - {id: C-01, file: c_static_page/index.html, line: 7, kind: vulnerability, category: misconfig, expect_detected: true, expected_rule_ids: [], sink: "http://cdn.example.com"}
   - {id: C-02, file: c_static_page/index.html, line: 12, kind: vulnerability, category: xss, expect_detected: true, expected_rule_ids: [], sink: "document.write(location.hash"}
