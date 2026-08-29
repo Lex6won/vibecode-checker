@@ -68,6 +68,14 @@ def detect_format(text: str, filename: str = "") -> tuple[str, str] | None:
     return None
 
 
+#: 그래프 간선 — ``(from, to)``. ``from=None`` 은 "검사 대상 프로젝트 자신이 이 패키지를
+#: 직접 쓴다"는 뜻(락파일의 루트 항목·매니페스트의 직접 의존성). 이름 기준이다 — 같은
+#: 이름이 트리 여러 곳에 다른 버전으로 설치돼도 관계는 이름으로만 남긴다(SBOM 단계에서
+#: 대표 버전으로 근사). 정확한 버전별 관계 해석은 패키지 매니저를 실제로 실행해야
+#: 가능한데, 이 모듈은 그것을 하지 않는다(패키지 매니저를 실행하지 않는 것이 설계 원칙).
+Edge = tuple[str | None, str]
+
+
 def _dedupe(packages: list[dict]) -> list[dict]:
     """(이름, 버전) 중복 제거 — 락파일은 같은 패키지를 여러 경로에 담는다.
 
@@ -85,50 +93,80 @@ def _dedupe(packages: list[dict]) -> list[dict]:
     return out
 
 
-def _parse_package_lock(text: str) -> list[dict]:
+def _dep_names(spec: object) -> list[str]:
+    """``dependencies`` 필드에서 이름만 뽑는다.
+
+    두 형태를 받는다 — poetry.lock ``{이름: 제약}`` 딕셔너리, uv.lock ``[{"name": 이름}]``
+    리스트. 버전 제약(``>=2.0`` 등)은 여기서 버린다 — 관계는 이름 기준이다.
+    """
+    if isinstance(spec, dict):
+        return [str(k) for k in spec.keys()]
+    if isinstance(spec, list):
+        return [str(d["name"]) for d in spec if isinstance(d, dict) and d.get("name")]
+    return []
+
+
+def _parse_package_lock(text: str) -> tuple[list[dict], list[Edge]]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        return []
+        return [], []
     out: list[dict] = []
+    edges: set[Edge] = set()
     # v2·v3: packages 는 설치 경로를 키로 갖는다("" = 루트 프로젝트 자신).
     pkgs = data.get("packages")
     if isinstance(pkgs, dict):
         for path, meta in pkgs.items():
-            if not path or not isinstance(meta, dict):
-                continue  # "" 는 프로젝트 자신 — 의존성이 아니다
-            # node_modules/a/node_modules/b → b (중첩 설치)
-            name = meta.get("name") or path.split("node_modules/")[-1]
+            if not isinstance(meta, dict):
+                continue
+            if not path:
+                # "" 는 프로젝트 자신 — 컴포넌트는 아니지만 **직접 의존성 관계**는 여기 있다.
+                for dep in _dep_names(meta.get("dependencies")):
+                    edges.add((None, dep))
+                continue
             if meta.get("link"):
                 continue  # 워크스페이스 심볼릭 링크 — 실제 패키지는 별도 항목에 있다
-            out.append({"name": str(name), "version": meta.get("version")})
-    # v1: dependencies 가 중첩 트리
+            # node_modules/a/node_modules/b → b (중첩 설치)
+            name = str(meta.get("name") or path.split("node_modules/")[-1])
+            out.append({"name": name, "version": meta.get("version")})
+            for dep in _dep_names(meta.get("dependencies")):
+                edges.add((name, dep))
+    # v1: dependencies 가 중첩 트리 — 바깥 노드가 안쪽 노드의 의존자다.
     deps = data.get("dependencies")
     if isinstance(deps, dict):
-        def walk(node: dict) -> None:
+        def walk(parent: str | None, node: dict) -> None:
             for name, meta in node.items():
                 if not isinstance(meta, dict):
                     continue
                 out.append({"name": str(name), "version": meta.get("version")})
+                edges.add((parent, str(name)))
                 child = meta.get("dependencies")
                 if isinstance(child, dict):
-                    walk(child)
-        walk(deps)
-    return _dedupe(out)
+                    walk(str(name), child)
+        walk(None, deps)
+    return _dedupe(out), sorted(edges, key=lambda e: (e[0] or "", e[1]))
 
 
-def _parse_toml_packages(text: str) -> list[dict]:
-    """poetry.lock · uv.lock — 둘 다 [[package]] 배열에 name/version 을 담는다."""
+def _parse_toml_packages(text: str) -> tuple[list[dict], list[Edge]]:
+    """poetry.lock · uv.lock — 둘 다 [[package]] 배열에 name/version 을 담는다.
+
+    ``dependencies`` 모양이 둘 사이에 다르다 — poetry 는 ``{이름: 제약}`` 딕셔너리,
+    uv 는 ``[{"name": 이름}, ...]`` 리스트. ``_dep_names`` 가 둘 다 받는다.
+    """
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        return []
-    out = [
-        {"name": str(p.get("name")), "version": p.get("version")}
-        for p in (data.get("package") or [])
-        if isinstance(p, dict) and p.get("name")
-    ]
-    return _dedupe(out)
+        return [], []
+    out: list[dict] = []
+    edges: set[Edge] = set()
+    for p in data.get("package") or []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        name = str(p["name"])
+        out.append({"name": name, "version": p.get("version")})
+        for dep in _dep_names(p.get("dependencies")):
+            edges.add((name, dep))
+    return _dedupe(out), sorted(edges, key=lambda e: (e[0] or "", e[1]))
 
 
 # pnpm 은 버전대별로 키 형식이 다르다:
@@ -145,14 +183,26 @@ _PNPM_AT = re.compile(r"^/?(?P<name>(?:@[^/]+/)?[^/@][^/]*?)@(?P<version>\d[^(\s
 _PNPM_SLASH = re.compile(r"^/(?P<name>(?:@[^/]+/)?[^/]+)/(?P<version>\d[^/(\s:]*)")
 
 
-def _parse_pnpm(text: str) -> list[dict]:
+def _parse_pnpm(text: str) -> tuple[list[dict], list[Edge]]:
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError:
-        return []
+        return [], []
     if not isinstance(data, dict):
-        return []
+        return [], []
     out: list[dict] = []
+    edges: set[Edge] = set()
+    # importers.'.'  는 프로젝트 자신의 직접 의존성(v9+). 워크스페이스의 다른
+    # 멤버(importers 의 다른 키)는 여기서 다루지 않는다 — 관계가 '이 검사 대상'
+    # 기준이어야 하는데 어느 멤버가 그것인지 알 수 없다.
+    importers = data.get("importers")
+    root = importers.get(".") if isinstance(importers, dict) else None
+    if isinstance(root, dict):
+        for key in ("dependencies", "devDependencies", "optionalDependencies"):
+            block = root.get(key)
+            if isinstance(block, dict):
+                for dep_name in block:
+                    edges.add((None, str(dep_name)))
     for section in ("packages", "snapshots"):
         node = data.get(section)
         if not isinstance(node, dict):
@@ -161,12 +211,19 @@ def _parse_pnpm(text: str) -> list[dict]:
             k = str(key)
             m = _PNPM_AT.match(k) or _PNPM_SLASH.match(k)
             if m:
-                out.append({"name": m.group("name"), "version": m.group("version")})
+                name, version = m.group("name"), m.group("version")
+            elif isinstance(meta, dict) and meta.get("name") and meta.get("version"):
+                name, version = str(meta["name"]), str(meta["version"])
+            else:
                 continue
-            # 키에서 못 읽으면 값 쪽 메타데이터를 본다.
-            if isinstance(meta, dict) and meta.get("name") and meta.get("version"):
-                out.append({"name": str(meta["name"]), "version": str(meta["version"])})
-    return _dedupe(out)
+            out.append({"name": name, "version": version})
+            # `snapshots` 항목이 실제 해석된 의존성을 담는다(`packages` 는 대체로 없음).
+            if isinstance(meta, dict):
+                deps_block = meta.get("dependencies")
+                if isinstance(deps_block, dict):
+                    for dep_name in deps_block:
+                        edges.add((name, str(dep_name)))
+    return _dedupe(out), sorted(edges, key=lambda e: (e[0] or "", e[1]))
 
 
 # yarn v1 클래식:
@@ -175,14 +232,21 @@ def _parse_pnpm(text: str) -> list[dict]:
 _YARN_VERSION = re.compile(r'^\s+version:?\s+"?([^"\s]+)"?\s*$')
 
 
-def _parse_yarn(text: str) -> list[dict]:
+#: yarn 클래식의 의존성 하위 블록 시작 줄(2칸 들여쓰기 정확히) 및 그 항목
+#: (4칸 들여쓰기 `이름 "범위"`, 스코프 이름의 `/` 는 이름의 일부).
+_YARN_DEPS_HEADER_RE = re.compile(r"^  (?:dependencies|optionalDependencies):\s*$")
+_YARN_DEP_ITEM_RE = re.compile(r'^ {4}"?([^"\s]+)"?\s+"?[^"\s]')
+
+
+def _parse_yarn(text: str) -> tuple[list[dict], list[Edge]]:
     # berry(v2+)는 YAML 이다 — __metadata 키로 구분한다.
     if "__metadata:" in text[:4000]:
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
-            return []
+            return [], []
         out: list[dict] = []
+        edges: set[Edge] = set()
         if isinstance(data, dict):
             for key, meta in data.items():
                 if str(key).startswith("__") or not isinstance(meta, dict):
@@ -191,10 +255,16 @@ def _parse_yarn(text: str) -> list[dict]:
                 # "@scope/pkg@npm:^1.0.0" → "@scope/pkg"
                 if meta.get("version"):
                     out.append({"name": name, "version": str(meta["version"])})
-        return _dedupe(out)
+                    deps = meta.get("dependencies")
+                    if isinstance(deps, dict):
+                        for dep_name in deps:
+                            edges.add((name, str(dep_name)))
+        return _dedupe(out), sorted(edges, key=lambda e: (e[0] or "", e[1]))
 
     out = []
+    edges: set[Edge] = set()
     current: str | None = None
+    in_deps = False
     for raw in text.splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -204,12 +274,25 @@ def _parse_yarn(text: str) -> list[dict]:
             # "@scope/pkg@^1.0.0" → "@scope/pkg" / "pkg@^1.0.0" → "pkg"
             at = spec.rfind("@")
             current = spec[:at] if at > 0 else spec
+            in_deps = False
             continue
+        if _YARN_DEPS_HEADER_RE.match(raw):
+            in_deps = True
+            continue
+        if in_deps:
+            if raw.startswith("    "):
+                m = _YARN_DEP_ITEM_RE.match(raw)
+                if m and current:
+                    edges.add((current, m.group(1)))
+                continue
+            in_deps = False  # 4칸보다 얕게 들여쓰기 — 하위 블록 끝
         m = _YARN_VERSION.match(raw)
         if m and current:
+            # `current` 를 여기서 지우지 않는다 — `dependencies:` 하위 블록이 이
+            # 줄 **뒤에** 오므로, 그 간선을 같은 패키지에 붙이려면 블록이 끝날
+            # 때(다음 헤더 줄)까지 이름을 들고 있어야 한다.
             out.append({"name": current, "version": m.group(1)})
-            current = None
-    return _dedupe(out)
+    return _dedupe(out), sorted(edges, key=lambda e: (e[0] or "", e[1]))
 
 
 _PARSERS = {
@@ -222,15 +305,23 @@ _PARSERS = {
 
 
 def parse_lockfile(text: str, filename: str = "") -> dict | None:
-    """락파일 → ``{format, ecosystem, packages}``. 형식을 못 알아보면 None.
+    """락파일 → ``{format, ecosystem, packages, edges}``. 형식을 못 알아보면 None.
 
     파싱은 되었으나 패키지가 0건이면 ``packages: []`` 를 그대로 돌려준다 —
     **0건을 '이상 없음'으로 바꾸지 않는다.** 호출자가 '검사되지 않음'으로
     다뤄야 한다.
+
+    ``edges``(추가 필드, 2026-08-30)는 "누가 누구를 쓰는가"를 이름 기준으로 담는다
+    — SBOM 의존성 그래프(CycloneDX ``dependencies``)의 원천. 락파일이 이미 담고
+    있는 관계를 옮기는 것뿐이라 새 네트워크 조회가 필요 없다. ``from=None`` 은
+    검사 대상 프로젝트 자신의 직접 의존성.
     """
     detected = detect_format(text, filename)
     if detected is None:
         return None
     fmt, eco = detected
-    packages = _PARSERS[fmt](text)
-    return {"format": fmt, "ecosystem": eco, "packages": packages}
+    packages, edges = _PARSERS[fmt](text)
+    return {
+        "format": fmt, "ecosystem": eco, "packages": packages,
+        "edges": [{"from": f, "to": t} for f, t in edges],
+    }

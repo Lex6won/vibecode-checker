@@ -5,6 +5,41 @@
 
 ## [Unreleased]
 
+### 17차 — SBOM 공급자명·의존성 관계 그래프 (NTIA 최소 요소) — 2026-08-30
+
+이전 대화에서 "체커가 만드는 SBOM이 국제 표준(NTIA 최소 요소 7개) 대비 어디가
+부족한가"를 점검했더니 **공급자명**과 **의존성 관계**가 빠져 있었다. 둘 다 **이미
+조회하던 레지스트리 응답, 이미 파싱하던 락파일에 있는데 버리고 있던 데이터**였다
+— 새 네트워크 호출도 새 검사 대상도 없다.
+
+- **공급자명** — `PackageRegistryMetadata.supplier`·`repository_url`(추가 필드).
+  npm 은 `author`(조회한 버전 우선, 없으면 패키지 최상위, 그래도 없으면
+  `maintainers[0]`)·`repository`(git+ssh·git@ 단축형·git:// 를 전부
+  `https://github.com/…` 로 정규화)에서 안정적으로 나온다(실측: express 확인).
+  PyPI 는 `info.author`·`project_urls`(대소문자 정규화해 Source/Homepage 등 탐색)에서
+  나오는데 **패키지의 절반 정도는 비어 있다**(실측: pyyaml·numpy 는 있고 flask·
+  requests·django 는 없음 — PEP 621 저작자 정보가 이 필드로 안 넘어오는 경우가
+  흔함). 없으면 지어내지 않고 `None`으로 둔다.
+- **의존성 관계 그래프** — `parse_lockfile()` 이 `edges`(추가 필드, 이름 기준
+  `{from, to}`)를 함께 낸다. 5개 형식 전부: package-lock.json(v1 중첩 트리·v2/v3
+  `packages[].dependencies`) · poetry.lock(`[package.dependencies]`) ·
+  uv.lock(`dependencies=[{name}]`) · pnpm-lock.yaml(`snapshots`·`importers['.']`) ·
+  yarn.lock(classic 들여쓰기 하위 블록·berry `dependencies`). 매니페스트만 있고
+  락파일이 없으면 1단계(직접 의존성)까지만 — 매니페스트 자체가 아는 게 그만큼이다.
+  `audit_manifest()` 가 `dependency_graph`(추가 필드)로 내보내고, 상한에 잘려
+  검사되지 않은 패키지를 가리키는 간선은 제거한다(검사 안 한 것을 그래프에만
+  남기지 않는다).
+- SBOM(`to_cyclonedx`)이 `components[].supplier`·`externalReferences`(vcs)와
+  최상위 `dependencies`(CycloneDX 표준 관계 배열)로 반영한다. 관계는 **이름 기준
+  근사**(같은 이름이 트리 여러 곳에 다른 버전으로 설치돼도 SBOM에 실린 대표
+  버전으로 매칭)임을 `gvskb:dependency_graph_basis` 속성에 명시한다.
+- 실측(포털 `package-lock.json`): `busboy`→`streamsearch` 관계, `busboy` 공급자
+  `Brian White <mscdex@mscdex.net>`, 저장소 `https://github.com/mscdex/busboy`
+  전부 정확히 나옴.
+
+기존 `packages` 출력·`checks` 필드·기존 SBOM 필드는 전혀 건드리지 않았다(전부
+추가 필드). 테스트 **1909 passed**(+24), 벤치마크 recall 100%·FP 0, 룰 린터 OK.
+
 ### 16차 — 경로 성격별 집계 · 보안 자세 관찰(부재형) (개선요청 #34 A-3 · D4 · E) — 2026-08-30
 
 - **`summary.by_path_class`**(추가 필드): runtime·test·sample 별 `{total, block}`. 차단 건수

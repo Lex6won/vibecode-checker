@@ -564,6 +564,18 @@ class PackageRegistryMetadata(BaseModel):
     first_published_at: str | None = Field(default=None, description="패키지 최초 발행 시각(ISO) — 신생 탐지 근거")
     package_age_days: int | None = None
     license: str | None = None
+    supplier: str | None = Field(
+        default=None,
+        description=(
+            "공급자·저작자 표시(레지스트리 응답을 그대로 옮김, 우리가 검증하지 않음). "
+            "npm 은 대체로 채워지지만 PyPI 는 PEP 621 저작자 정보가 이 필드로 안 넘어오는 "
+            "패키지가 흔하다 — None 이 '조회 실패'가 아니라 '레지스트리에 없음'일 수 있다."
+        ),
+    )
+    repository_url: str | None = Field(
+        default=None,
+        description="소스 저장소·홈페이지 URL(레지스트리 project_urls/repository 필드 그대로).",
+    )
     install_scripts: Literal["none", "present", "unknown"] = Field(
         default="unknown",
         description="설치 스크립트(preinstall/install/postinstall) 존재 여부. PyPI는 미개봉 검사라 unknown",
