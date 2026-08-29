@@ -48,6 +48,17 @@ _EXT_TO_LANG = {
     ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".ps1": "powershell",
     ".html": "html", ".htm": "html", ".xml": "xml",
     ".vue": "javascript", ".svelte": "javascript",
+    # 데이터·설정 파일에도 **언어를 준다.** 예전에는 이 확장자들이 목록에 없어
+    # eff_lang=None 이 됐고, 아래 언어 필터가 "언어 미상이면 통과" 라 Python/JS
+    # 전용 룰이 YAML 문자열(`sink: "eval(x)"`)·JSON 케이스 ID·semgrep 룰 패턴에
+    # 그대로 걸렸다(실측 2026-08-29: 자기검사 493건 중 45건). 정작 .html 은
+    # 언어가 있어 필터됐으니 "알 수 없는 파일에서만 필터가 꺼지는" 역전이었다.
+    # 값 기반 룰(시크릿·PII·내부망 — languages 미선언)은 영향 없이 계속 본다.
+    # 데이터 파일에 실행 코드가 실리는 룰(package.json 스크립트·CI run:)은
+    # 각 룰이 `languages` 에 `data` 를 **명시 opt-in** 한다.
+    ".yaml": "data", ".yml": "data", ".json": "data", ".toml": "data",
+    ".ini": "config", ".cfg": "config", ".conf": "config", ".env": "config",
+    ".properties": "config",
 }
 
 # A comment line cannot host a live vulnerability, so comment/docstring lines
@@ -498,7 +509,11 @@ def redact_evidence(text: str) -> str:
     # 로그·오류 메시지에 그대로 찍히지만, 넓게 가려서 생기는 손해는 증거 문자열이
     # 조금 덜 읽히는 것뿐이다. 비대칭이 명백하므로 과잉 마스킹 쪽을 택한다.
     # (실측: sk- 만 가려서 sk_ggtrust_… 형식 기관 API 키가 무방비였다.)
-    text = re.sub(r"sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
+    # 좌측 경계: `risk-management-framework` 처럼 단어 중간의 sk- 에서
+    # 시작하면 키가 아니다 — 공개 URL 을 가려 증거를 못 읽게 했다
+    # (실측 2026-08-29). `` 대신 lookbehind 를 쓰는 이유는 `_sk-…` 처럼
+    # 식별자 끝에 붙은 경우 `` 가 통과시키기 때문이다.
+    text = re.sub(r"(?<![A-Za-z0-9_\-/.])sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
     text = re.sub(r"AKIA[0-9A-Z]{16}", lambda m: _partial(m.group(0)), text)
     text = re.sub(
         r"(?i)((api[_-]?key|secret|password|passwd|pwd|token)\s*[:=]\s*[\"'])([^\"']+)([\"'])",

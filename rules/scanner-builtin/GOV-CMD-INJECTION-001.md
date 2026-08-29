@@ -15,7 +15,7 @@ cwe: [CWE-78]
 severity: critical
 decision_default: block
 domains: [gov-secure-coding]
-languages: [python]
+languages: [python, data]
 scenarios: [web-app, data-pipeline, agent]
 related_baseline: [MOIS-49-SW-17]
 verified_at: 2026-05-31

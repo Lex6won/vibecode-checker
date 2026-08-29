@@ -5,6 +5,49 @@
 
 ## [Unreleased]
 
+### 자기검사 1차 — 제품 코드 오탐 세 원인 제거 (Fixed · Rules) — 2026-08-29
+
+포털로 **이 저장소 자체**를 검사해 493건이 나왔다. 493건을 하나씩 소스와 대조한
+결과 `src/` 실제 취약은 0건이었고, 제품 코드·설정을 차단으로 올린 원인은 셋이었다.
+(전수 판정과 수정 명세 44항목은 별도 문서 — 이 커밋은 그중 1단계.)
+
+**① 데이터 파일에 언어 필터가 꺼져 있었다.** `_EXT_TO_LANG` 에 .yaml/.json/.toml 이
+없어 언어가 "미상"이 됐고, 언어 필터는 *미상이면 통과* 였다. 그래서 Python/JS 전용
+룰이 YAML 문자열(`sink: "eval(x)"`)·JSON 케이스 ID·semgrep 룰 패턴에 그대로 걸렸다.
+정작 .html 은 언어가 있어 필터됐으니 **알 수 없는 파일에서만 필터가 꺼지는** 역전.
+.yaml/.yml/.json/.toml → `data`, .ini/.cfg/.conf/.env/.properties → `config` 를
+부여했다. 값 기반 룰(시크릿·PII·내부망, `languages` 미선언)은 영향 없이 계속 본다.
+데이터 파일에 실행 코드가 실리는 룰(package.json 스크립트·CI `run:`)은
+GOV-CODE-EXEC-001·GOV-CMD-INJECTION-001·KISA-PY/JS-INPUT-05 가 `data` 를 **명시
+opt-in** 했다 — 기존 테스트 `test_real_execution_risk_still_blocks` 가 지키는 자리.
+
+**② 벤더 접두사 패턴에 좌측 경계가 없었다.** `sk-[A-Za-z0-9_-]{20,}` 가 NIST 공개
+URL `ai-risk-management-framework` 의 단어 중간(`ri` 뒤)에서 정확히 20자를 잡아
+**제품 설정 파일 `config/security_sources.yaml` 이 치명·배포 차단**으로 올라왔다.
+`desk-`·`task-`·`mask_token…`·`NAKIA…`·`laughp_…` 도 같은 결함. 접두 패턴 10개
+전부에 `(?<![A-Za-z0-9…])` 를 걸었다(`` 는 `_sk-` 를 통과시키므로 lookbehind).
+`Bearer sk-…`·`="sk-…"`·`=sk-…`(.env)·`?key=sk-…`·`{"key":"sk-…"}` 는 계속 잡힌다.
+증거 마스킹의 `sk[-_]` 규칙도 같은 결함이라 같은 경계를 걸었다 — 공개 URL 을
+`ai-risk-ma[마스킹]rk` 로 가려 담당자가 무엇이 잡혔는지 알 수 없게 하고 있었다.
+
+**③ `GOV-CODE-EXEC-001` 이 메서드 호출을 잡았다.** `(eval|exec)\s*\(` 는 `.` 뒤를
+막지 못해 `engine.eval(`·`pattern.exec(`·`cp.exec(` 를 치명으로 올렸다(13줄). 실제
+Python 에서는 SQLModel 의 `session.exec(select(...))` 가 매우 흔해 실사용 오탐이
+확실한 자리. KISA-PY-INPUT-02 와 같은 경계 `(?<![A-Za-z0-9_.])` 를 쓰고
+`builtins.exec` 우회만 명시적으로 되살렸다.
+
+**같이 배운 것.** 수정 주석에 `` `sk-management-framework` `` 를 그대로 적자 새
+패턴이 **그 주석을 잡았다** — 백틱 뒤는 경계 밖이고 시크릿 룰은 주석도 본다. 도구가
+자기 결함 설명문을 결함으로 잡는 자기참조는 국면 ⅩⅨ와 같은 계열이라 문구를 바꿨다.
+
+- 회귀·적대 테스트 `tests/test_selfscan_round1.py` 신규(양방향 45케이스).
+- `test_security_guidance_prose_is_attenuated_not_blocked` 는 YAML 산문이 아예
+  매치되지 않게 되어 "발견 존재" 전제를 풀었고, 감쇄 메커니즘 검증은 코드+반성문
+  케이스(`test_prohibition_note_attenuates_but_keeps_finding`)로 옮겼다.
+- 룰셋 잠금 2026.08.9 → **2026.08.29**.
+- 자기검사 재측정(dev-quick, 신규 테스트 파일 제외): 493/차단 297 → **445/247**,
+  `src/`·`config/` 발견 **0**. 남은 대부분은 tests/ 문자열 리터럴(2단계 대상).
+
 ### git 없는 PC 설치 경로 추가 · 퀵스타트를 현재 도구에 맞춤 (Docs) — 2026-08-13
 
 **① git 없는 PC 설치 경로가 문서에 없었다.** 안내한 설치 명령이
