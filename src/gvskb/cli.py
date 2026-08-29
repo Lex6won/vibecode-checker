@@ -414,6 +414,10 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # 게이트 판정을 보고서에 새긴다 — 의존성 감사가 붙은 **뒤**여야 한다.
+    from .gate import attach_gate
+    attach_gate(report)
+
     if args.format in ("json", "sarif"):
         if args.format == "sarif":
             from .report import render_sarif

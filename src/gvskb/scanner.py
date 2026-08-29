@@ -465,6 +465,11 @@ def _summary(findings: list[Finding]) -> ScanSummary:
         by_decision=by_decision,
         highest_severity=_highest(findings),
         blocked=any(f.decision == Decision.block for f in findings),
+        location_count=len({(f.location.file, f.location.line) for f in findings}),
+        block_location_count=len({
+            (f.location.file, f.location.line)
+            for f in findings if f.decision == Decision.block and not f.suppressed
+        }),
     )
 
 

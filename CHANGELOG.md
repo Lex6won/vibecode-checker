@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+### 자기검사 5차 — 게이트 판정을 JSON 에 싣는다 (Added · 계약 비파괴) — 2026-08-29
+
+사람용 보고서의 결론은 `gate_status()`(의존성이 게이트, 소스는 보조)인데 JSON 에는
+그 결과가 없었다. JSON 만 읽는 포털은 `summary.blocked`(소스 기준·legacy)로 폴백해
+**같은 검사에서 문서와 기계가 다른 답**을 냈다. 기존 필드는 그대로 두고 추가만 한다.
+
+- `ScanReport.gate` — 저장·반환 직전 `gate.attach_gate()` 로 새긴 판정 스냅샷. CLI
+  `scan`(의존성 감사가 붙은 뒤)·MCP `scan_code`/`scan_path`/`detect_secrets_and_pii`/
+  `save_report` 전부.
+- `ScanSummary.location_count`·`block_location_count` — 고유 (파일, 줄) 수. 같은 줄에
+  GOV·KISA 두 룰이면 건수 2, 위치 1. `summary.blocked` 는 docstring 에 legacy 명시.
+- 구버전 JSON(`gate` 없음)도 그대로 파싱된다(회귀 테스트).
+- 같은 줄 두 룰을 **한 건으로 병합**하는 `dedup_group` 활성화는 건수 의미가 바뀌어
+  포털·하네스 확인 뒤로 미룬다(명세 S-8).
+
 ### 자기검사 4차 — 경로가 아니라 구조로 낮추기 (Fixed) — 2026-08-29
 
 **① 문자열 리터럴 안의 코드 모양.** 자기검사에서 코드 실행·명령 주입 발견 216건 중

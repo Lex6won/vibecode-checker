@@ -309,7 +309,15 @@ class ScanSummary(BaseModel):
     by_severity: dict[str, int]
     by_decision: dict[str, int]
     highest_severity: Severity | None = None
+    #: **소스 발견 기준(legacy)** — 배포 게이트 판정이 아니다. 게이트는 의존성을
+    #: 기준으로 막고 소스는 보조(``gate.py``)이므로, 배포 판정은 ``ScanReport.gate``
+    #: 를 읽어야 한다. 이 필드를 판정으로 쓰면 "소스 차단 = 배포 차단"이라는 옛
+    #: 의미가 되살아난다(실측 2026-08-29: 포털이 폴백으로 이 값을 읽고 있었다).
     blocked: bool = False
+    #: 고유 (파일, 줄) 수 — 같은 줄에 GOV·KISA 두 룰이 걸리면 finding_count 는 2,
+    #: location_count 는 1. 담당자가 고칠 단위는 위치다.
+    location_count: int = 0
+    block_location_count: int = 0
 
 
 class SkippedFile(BaseModel):
@@ -449,6 +457,13 @@ class ScanReport(BaseModel):
             "단일 audit dict 또는 {'audits': [...]}(여러 매니페스트). None이면 섹션 미표시. "
             "보안팀이 코드+패키지 위험을 한 문서에서 보도록 리포트에 병합된다."
         ),
+    )
+    #: 배포 게이트 판정 스냅샷 — 저장 직전 ``gate.gate_status()`` 결과. 예전에는
+    #: 렌더 시점에만 계산돼 JSON 에 없었고, JSON 만 읽는 소비자(포털·하네스)는
+    #: ``summary.blocked``(소스 기준)로 판정해 사람용 보고서와 다른 답을 냈다.
+    gate: dict | None = Field(
+        default=None,
+        description="배포 게이트 판정(verdict/blocked/block_reasons/…). None=아직 계산 전",
     )
     duplicate_files: list[dict] = Field(
         default_factory=list,
