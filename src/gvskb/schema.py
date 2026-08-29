@@ -330,6 +330,11 @@ class ScanSummary(BaseModel):
     #: location_count 는 1. 담당자가 고칠 단위는 위치다.
     location_count: int = 0
     block_location_count: int = 0
+    #: 경로 성격별 집계 — runtime(운영 코드) · test(테스트 경로) · sample(fixtures·examples·
+    #: corpus 같은 시험·예제 경로). 값은 {"total": n, "block": n}. **판정은 바꾸지 않는다** —
+    #: "차단 13건"이 "운영 0 + 시험 13"임을 읽는 사람이 바로 알게 하려는 집계다(개선요청 #34 A-3).
+    #: 시험 경로 감등은 넣지 않았다: Django fixtures 는 실제 개인정보 덤프가 놓이는 자리다.
+    by_path_class: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class SkippedFile(BaseModel):
@@ -480,6 +485,15 @@ class ScanReport(BaseModel):
     gate: dict | None = Field(
         default=None,
         description="배포 게이트 판정(verdict/blocked/block_reasons/…). None=아직 계산 전",
+    )
+    posture_notes: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "보안 자세 관찰(정보). 룰이 못 보는 **부재형** 항목 — 웹 서버 진입점은 있는데 "
+            "CSP·X-Frame-Options·쿠키 보호 속성 설정 흔적이 저장소 어디에도 없을 때. "
+            "판정(block/warn)·게이트와 무관하며 finding 이 아니다(개선요청 #34 D4·E). "
+            "각 항목: id · level · title · detail · files · safe_fix · references."
+        ),
     )
     duplicate_files: list[dict] = Field(
         default_factory=list,

@@ -5,6 +5,30 @@
 
 ## [Unreleased]
 
+### 16차 — 경로 성격별 집계 · 보안 자세 관찰(부재형) (개선요청 #34 A-3 · D4 · E) — 2026-08-30
+
+- **`summary.by_path_class`**(추가 필드): runtime·test·sample 별 `{total, block}`. 차단 건수
+  옆에 `(운영 코드 17 · 시험·예제 10 — 판정은 동일, 경로 성격별 집계)` 를 시험 경로 건수가
+  있을 때만 병기. **감등은 넣지 않았다**(fixtures 는 실제 개인정보 덤프가 놓이는 자리).
+  포털 실측: 차단 27 = 운영 17 + 시험·예제 10.
+- **`ScanReport.posture_notes`**(추가 필드, 정보·게이트 무관): 웹 서버 진입점(express()·
+  createServer·Flask(__name__)·FastAPI()·Django MIDDLEWARE)은 있는데 **같은 프로젝트 루트**
+  (가장 가까운 매니페스트 디렉터리) 안에 CSP·X-Frame-Options·frame-ancestors·helmet·
+  Talisman·SecurityMiddleware 흔적이 없으면 `POSTURE-HEADERS-001`, 쿠키를 쓰는데
+  HttpOnly·Secure·SameSite 흔적이 없으면 `POSTURE-COOKIE-001`. 보고서에 "보안 자세 관찰
+  (정보 · 판정과 무관)" 섹션.
+- 실측이 첫 시안을 두 번 고쳤다: ① 저장소 전체를 증거 범위로 삼자 포털이 동봉한
+  골든 템플릿의 helmet 이 앱 `src/server.js` 의 공백을 가렸다 → 프로젝트 루트 단위.
+  ② `approved-packages.yaml` 의 'helmet' 문자열과 `nosniff` 가 증거로 잡혔다 → 증거는
+  코드·설정 파일만, HSTS·nosniff 는 CSP·프레임 보호가 아니므로 제외.
+  최종: 포털 `src/server.js` 에 헤더 관찰 1건 — 요청서 D4 그대로. 체커 자신은 0.
+
+테스트 **1885 passed** · 벤치마크 recall 100%·FP 0.
+
+**개선요청 #34 대응 종합**(13~16차): D3 HTML 인라인 스크립트(우리 결함) · C dedup 병합
+(S-8 보류 해제) · D2 경로 경계 룰 · D1 응답 비밀 룰 · A-3 경로 성격 집계 · D4/E 보안 자세
+관찰. 거부: A-1/2 fixtures 감등 · B-2 엔트로피 필터. B-1 은 이미 해결돼 있었음.
+
 ### 15차 — 사람이 찾았고 체커가 놓친 실제 취약점 2종을 좁은 룰로 (개선요청 #34 D1·D2) — 2026-08-30
 
 - **GOV-PATH-BOUNDARY-001** (medium·warn·pattern-only): `resolved.startsWith(path.resolve(root))`
