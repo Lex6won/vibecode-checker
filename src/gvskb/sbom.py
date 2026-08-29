@@ -155,9 +155,57 @@ def _component(check: dict) -> dict:
         comp["version"] = str(check["version"])
     if lic := _license_entry(check):
         comp["licenses"] = lic
+    # 공급자·외부 참조 — registry_metadata 에서 그대로 옮긴다(검증하지 않음).
+    # PyPI 는 절반 정도만 채워지고, 그때는 필드를 아예 만들지 않는다 — 빈 문자열은
+    # "공급자가 없다"로 읽히는데 실제로는 "레지스트리가 말 안 해 줬다"이다.
+    meta = check.get("registry_metadata")
+    if isinstance(meta, dict):
+        if supplier := meta.get("supplier"):
+            comp["supplier"] = {"name": str(supplier)}
+        if repo := meta.get("repository_url"):
+            comp["externalReferences"] = [{"type": "vcs", "url": str(repo)}]
     if props := _properties(check):
         comp["properties"] = props
     return comp
+
+
+def _norm_dep_name(name: str) -> str:
+    """관계 매칭 전용 정규화 — 대소문자·`_`/`-` 표기 차이를 흡수한다.
+
+    poetry.lock 의 의존성 키(``Jinja2``)와 패키지 자체의 선언(``jinja2``)처럼
+    같은 패키지가 자리마다 다르게 적히는 일이 흔하다.
+    """
+    return name.strip().lower().replace("_", "-")
+
+
+def _dependency_graph(dependency_audit: dict | None, by_ref: dict[str, dict], root_ref: str | None) -> list[dict]:
+    """감사 결과의 ``dependency_graph``(이름 기준 간선) → CycloneDX ``dependencies``.
+
+    이름 → purl 매핑은 이 SBOM 에 실제로 실린 컴포넌트(``by_ref``)에서만 만든다 —
+    간선이 가리키는 이름이 상한에 잘려 컴포넌트로 안 실렸으면 그 간선은 그냥
+    버려진다(존재하지 않는 컴포넌트를 참조하는 그래프를 만들지 않는다).
+    """
+    name_to_ref: dict[str, str] = {}
+    for c in by_ref.values():
+        n = _norm_dep_name(str(c.get("name") or ""))
+        if n:
+            name_to_ref[n] = _purl(c)
+
+    edges: dict[str, set[str]] = {}
+    for a in _audit_list(dependency_audit):
+        for e in a.get("dependency_graph") or []:
+            if not isinstance(e, dict):
+                continue
+            to_ref = name_to_ref.get(_norm_dep_name(str(e.get("to") or "")))
+            if not to_ref:
+                continue
+            frm = e.get("from")
+            from_ref = root_ref if frm is None else name_to_ref.get(_norm_dep_name(str(frm)))
+            if not from_ref or from_ref == to_ref:
+                continue
+            edges.setdefault(from_ref, set()).add(to_ref)
+
+    return [{"ref": ref, "dependsOn": sorted(tos)} for ref, tos in sorted(edges.items())]
 
 
 def _vulnerabilities(check: dict) -> list[dict]:
@@ -275,13 +323,27 @@ def to_cyclonedx(
         },
         "components": components,
     }
+    root_ref = None
     if target or name:
         label = project_name(target, name)
+        root_ref = f"root:{label}"
         doc["metadata"]["component"] = {
-            "type": "application", "name": label, "bom-ref": f"root:{label}",
+            "type": "application", "name": label, "bom-ref": root_ref,
         }
     if vulns:
         doc["vulnerabilities"] = vulns
+    if deps := _dependency_graph(dependency_audit, by_ref, root_ref):
+        doc["dependencies"] = deps
+        # 이름 기준 관계라는 것을 문서에 남긴다 — 버전별로 정확히 다른 그래프를
+        # 만들려면 패키지 매니저를 실제로 실행해야 하는데, 이 도구는 그것을 하지
+        # 않는다(설계 원칙). 근사를 근사라고 말하지 않으면 과신을 산다.
+        props.append({
+            "name": "gvskb:dependency_graph_basis",
+            "value": (
+                "패키지 이름 기준 관계입니다 — 같은 이름이 트리 여러 곳에 다른 "
+                "버전으로 설치된 경우 이 SBOM 에 실린 대표 버전으로 근사됩니다."
+            ),
+        })
     return doc
 
 

@@ -1089,6 +1089,7 @@ async def audit_manifest(
 
     source_kind = "manifest"
     lock = parse_lockfile(manifest_text, filename)
+    dependency_graph: list[dict] = []
     if lock is not None:
         source_kind = "lockfile"
         lock_format = lock["format"]
@@ -1096,6 +1097,10 @@ async def audit_manifest(
             # 파일 형식이 생태계를 확정한다 — 인자가 틀렸으면 파일을 따른다.
             ecosystem = lock["ecosystem"]  # type: ignore[assignment]
         packages = lock["packages"]
+        # SBOM 의존성 그래프(CycloneDX dependencies)의 원천 — 락파일이 이미 담은
+        # 관계를 그대로 옮긴다(2026-08-30 신설). 이름 기준이라 트리 여러 곳에
+        # 같은 이름의 다른 버전이 있으면 근사된다.
+        dependency_graph = lock.get("edges") or []
         if not packages:
             return _unparsed_result(
                 ecosystem,
@@ -1105,6 +1110,9 @@ async def audit_manifest(
     else:
         lock_format = None
         packages = parse_manifest_packages(manifest_text, ecosystem)
+        # 락파일이 없으면 전이 관계는 알 수 없지만, "이 프로젝트가 직접 이걸
+        # 쓴다"는 1단계 관계는 매니페스트 자체가 이미 말해 준다.
+        dependency_graph = [{"from": None, "to": str(p["name"])} for p in packages if p.get("name")]
         if not packages:
             from ..scanner import _looks_like_pyproject
             if ecosystem == "pypi" and _looks_like_pyproject(manifest_text):
@@ -1129,6 +1137,13 @@ async def audit_manifest(
     effective_limit = max(0, min(effective_limit, _MAX_PACKAGES))
     limited = packages[:effective_limit]
     truncated = len(packages) - len(limited)
+    # 상한에 걸려 잘려나간 패키지를 가리키는 간선은 뺀다 — 검사되지 않은 것을
+    # 그래프에만 남기면 "관계는 아는데 그 패키지는 안 봤다"는 반쪽 정보가 된다.
+    _checked_names = {str(p["name"]) for p in limited if p.get("name")}
+    dependency_graph = [
+        e for e in dependency_graph
+        if e.get("to") in _checked_names and (e.get("from") is None or e.get("from") in _checked_names)
+    ]
 
     # 순차 실행이면 락파일 800건이 곧 800회 왕복이다 — 동시 실행하되 상한을 둔다.
     sem = asyncio.Semaphore(_concurrency())
@@ -1276,6 +1291,7 @@ async def audit_manifest(
         "requires_review": requires_review,
         "verdict": verdict,
         "packages": limited,
+        "dependency_graph": dependency_graph,
         "checks": checks,
         "engine_version": _engine_version(),
         "checked_at": _now_iso(),

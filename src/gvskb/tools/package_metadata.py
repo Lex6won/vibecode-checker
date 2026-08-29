@@ -87,6 +87,17 @@ def _match_release_key(queried: str, releases: dict) -> str | None:
     return None
 
 
+def _first_url(urls: object, keys: tuple[str, ...]) -> str | None:
+    """대소문자가 배포자마다 다른 URL 맵(``project_urls``)에서 우선순위대로 하나."""
+    if not isinstance(urls, dict):
+        return None
+    lower = {str(k).lower(): v for k, v in urls.items() if v}
+    for key in keys:
+        if lower.get(key):
+            return str(lower[key]).strip() or None
+    return None
+
+
 def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     info = data.get("info") or {}
     latest = info.get("version")
@@ -123,6 +134,17 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
             if c.startswith("License ::"):
                 lic = c.split("::")[-1].strip()
                 break
+
+    # 공급자·저장소 — SBOM supplier/externalReferences 의 원천(2026-08-30 신설).
+    # 실측: pyyaml·numpy 는 `author` 가 채워지지만 flask·requests·django 는 비어
+    # 있다(PEP 621 저작자 정보가 이 필드로 안 넘어오는 경우가 흔함) — 없으면
+    # 지어내지 않고 None 으로 둔다. `project_urls` 키는 대소문자가 배포자마다
+    # 다르다("Source" vs "source") — 소문자로 정규화해 찾는다.
+    supplier = (info.get("author") or "").strip() or None
+    repo = _first_url(info.get("project_urls"), ("source", "source code", "repository", "homepage", "home"))
+    if not repo:
+        repo = (info.get("home_page") or "").strip() or None
+
     return PackageRegistryMetadata(
         exists=True,
         latest_version=latest,
@@ -133,10 +155,45 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
         first_published_at=first_published,
         package_age_days=_age_days(first_published),
         license=lic or None,
+        supplier=supplier,
+        repository_url=repo,
         install_scripts="unknown",  # PyPI 는 미개봉 검사 — sdist 실행 코드 여부 판단 불가(정직하게 unknown)
         source="pypi.org JSON API",
         fetched_at=_now_iso(),
     )
+
+
+def _npm_person(v: object) -> str | None:
+    """npm ``author``/``maintainers[i]`` — ``{"name","email"}`` 또는 ``"Name <email>"`` 문자열."""
+    if isinstance(v, dict):
+        name = (v.get("name") or "").strip()
+        email = (v.get("email") or "").strip()
+        if name and email:
+            return f"{name} <{email}>"
+        return name or email or None
+    if isinstance(v, str):
+        return v.strip() or None
+    return None
+
+
+def _npm_repo_url(v: object) -> str | None:
+    """npm ``repository`` — ``{"url": "git+https://…"}`` 또는 문자열. git 접두사만 벗긴다."""
+    url = v.get("url") if isinstance(v, dict) else v if isinstance(v, str) else None
+    if not url:
+        return None
+    url = url.strip()
+    if url.startswith("git+"):
+        url = url[4:]
+    if url.startswith("git@github.com:"):
+        url = "https://github.com/" + url[len("git@github.com:"):]
+    elif url.startswith(("ssh://git@", "git://")):
+        # ssh://git@github.com/a/b · git://github.com/a/b → https://github.com/a/b
+        # — 웹으로 열어 볼 수 있는 형태가 SBOM 을 읽는 사람에게 더 쓸모 있다.
+        rest = url.split("@", 1)[-1] if url.startswith("ssh://") else url[len("git://"):]
+        url = "https://" + rest
+    if url.endswith(".git"):
+        url = url[:-4]
+    return url or None
 
 
 def _parse_npm(data: dict, version: str | None) -> PackageRegistryMetadata:
@@ -157,6 +214,19 @@ def _parse_npm(data: dict, version: str | None) -> PackageRegistryMetadata:
     hook_names = [h for h in _NPM_INSTALL_HOOKS if h in scripts]
     install_scripts = "present" if hook_names else ("none" if ver_doc else "unknown")
 
+    # 공급자·저장소 — SBOM supplier/externalReferences 의 원천(2026-08-30 신설).
+    # 실측: npm 은 author·maintainers·repository 가 대체로 채워진다(express 확인).
+    # 조회한 **버전**의 값을 우선하고(버전마다 관리자가 바뀔 수 있다), 없으면
+    # 패키지 최상위 문서로 내려간다.
+    supplier = _npm_person(ver_doc.get("author")) or _npm_person(data.get("author"))
+    if not supplier:
+        maintainers = ver_doc.get("maintainers") or data.get("maintainers") or []
+        if isinstance(maintainers, list) and maintainers:
+            supplier = _npm_person(maintainers[0])
+    repo = _npm_repo_url(ver_doc.get("repository")) or _npm_repo_url(data.get("repository"))
+    if not repo:
+        repo = (ver_doc.get("homepage") or data.get("homepage") or "").strip() or None
+
     return PackageRegistryMetadata(
         exists=True,
         latest_version=latest,
@@ -167,6 +237,8 @@ def _parse_npm(data: dict, version: str | None) -> PackageRegistryMetadata:
         first_published_at=first_published,
         package_age_days=_age_days(first_published),
         license=str(lic) if lic else None,
+        supplier=supplier,
+        repository_url=repo,
         install_scripts=install_scripts,
         install_script_names=hook_names,
         deprecated=bool(ver_doc.get("deprecated")) if ver_doc else None,
