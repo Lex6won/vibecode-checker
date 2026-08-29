@@ -625,7 +625,7 @@ def save_report(
         md_path.write_text(
             render_markdown_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
         html_path.write_text(
-            render_html_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
+            render_html_impl(parsed, saved_path=str(html_path)), encoding="utf-8")
         json_path.write_text(
             _json.dumps(attach_gate(parsed).model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",

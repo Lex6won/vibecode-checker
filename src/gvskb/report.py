@@ -279,6 +279,8 @@ def _rule_groups(findings: list[Finding]) -> list[dict]:
             "files": len({f.location.file for f in fs}),
             "sample": fs[0],
             "findings": fs,
+            # 같은 룰이 '필수'와 '나머지'에 나뉘는 이유 — 낮춘 사유를 목록에서 바로 보이게.
+            "adjusted": (fs[0].severity_adjusted or "").split(" · ", 1)[-1] if fs[0].severity_adjusted else "",
         })
     rows.sort(key=lambda r: (-_SEVERITY_RANK[r["severity"]], -r["count"], r["rule_id"]))
     return rows
@@ -306,7 +308,7 @@ def _action_order(findings: list[Finding]) -> list[dict]:
     tiers: list[dict] = [
         # "배포가 차단됩니다" 였다 — 소스 발견은 사다리에서 **조건부 승인**이므로
         # 배포를 막지 않는다. 단이 말해야 하는 것은 배포 결과가 아니라 조치 급함이다.
-        {"label": "지금 막아야 하는 것", "hint": "필수 조치 — 사유 기록으로 넘길 수 없습니다",
+        {"label": "지금 막아야 하는 것", "hint": "필수 조치 — 보안담당자 승인 없이는 우회할 수 없습니다(감사 기록 남김)",
          "groups": []},
         {"label": "그다음", "hint": "치명·높음", "groups": []},
         {"label": "나머지", "hint": "보통·낮음 — 순서가 뒤일 뿐 조치 대상입니다", "groups": []},
@@ -778,7 +780,15 @@ def _dep_verdict_clause(report: ScanReport) -> str:
     vuln, unchecked, not_found, _blocked = _dep_risk(report)
     parts: list[str] = []
     if vuln:
-        parts.append(f"취약·악성 패키지 {vuln}종")
+        malicious = sum(
+            1 for comp in _dep_merged_components(_dep_audits(report))
+            if (comp.get("check") or {}).get("is_malicious_package")
+        )
+        # 악성 0 인데 늘 "취약·악성"이라 적으면 없는 것을 있는 것처럼 읽힌다.
+        if malicious:
+            parts.append(f"취약 패키지 {vuln - malicious}종 · 악성 {malicious}종")
+        else:
+            parts.append(f"취약 패키지 {vuln}종")
     if not_found:
         parts.append(f"레지스트리에 없는 패키지 {not_found}종")
     if unchecked:
@@ -1109,7 +1119,16 @@ def _meta_rows(
     """
     rows = [("대상", report.target), ("검사일시", ts), ("프로파일", _profile_cell(report))]
     if saved_path:
-        rows.append(("이 보고서 위치", saved_path))
+        # 렌더러마다 자기 경로를 적고, 쌍둥이(.md/.html)도 함께 밝힌다 — HTML 이
+        # .md 경로를 자기 위치라 적던 결함(실측 2026-08-29)을 고치면서, .md 를
+        # 정본으로 인용해 온 문서·도구가 그 경로를 계속 찾을 수 있게 한다.
+        low = saved_path.lower()
+        twin = None
+        if low.endswith(".html"):
+            twin = saved_path[:-5] + ".md"
+        elif low.endswith(".md"):
+            twin = saved_path[:-3] + ".html"
+        rows.append(("이 보고서 위치", f"{saved_path} (같은 이름으로 함께 저장: {twin})" if twin else saved_path))
     if report.scenario:
         rows.append(("시나리오", report.scenario))
     if report.language:
@@ -1122,10 +1141,35 @@ def _meta_rows(
     return rows
 
 
+def _repro_command(report: ScanReport, explicit: str | None) -> tuple[str, str]:
+    """(재현 명령, 손실 안내). 결과에 새겨진 명령 → 호출자가 준 명령 → 폴백 순.
+
+    폴백은 **손실을 명시**한다. `gvskb report <json>` 경로는 실행 옵션을 모르고,
+    예전 폴백 `gvskb scan <path> --profile X` 는 `--check-deps` 를 잃어 재현자가
+    의존성 차단이 사라진 더 깨끗한 결과를 받았다(실측 2026-08-29). 의존성 감사가
+    있으면 최소한 `--check-deps` 를 붙인다.
+    """
+    cmd = report.reproduce_command or explicit
+    if cmd:
+        return cmd, ""
+    fallback = f"gvskb scan {report.target} --profile {report.profile}"
+    if report.dependency_audit:
+        fallback += " --check-deps"
+    return fallback, (
+        "재현 명령 미기록 — 이 보고서는 실행 옵션이 저장되지 않은 결과에서 렌더됐습니다. "
+        "아래 명령은 최소 재구성이며 `--max-files`·`--env`·`--include-installed` 등이 "
+        "빠졌을 수 있습니다. 옵션이 빠지면 결과가 **더 깨끗해 보이는 방향**으로 달라집니다."
+    )
+
+
 def _criteria_cell(report: ScanReport) -> str:
     """"어떤 엔진 + 어떤 룰셋이 이 판정을 냈나" 한 칸."""
     engine = report.engine_version or "(미상)"
-    if report.ruleset_version:
+    if report.ruleset_version and report.ruleset_digest:
+        # 버전 문자열은 사람이 올리는 값이라 같은 버전으로 룰이 바뀔 수 있다 —
+        # 재현성의 최소 단위는 지문이므로 항상 병기한다(실측 2026-08-29).
+        ruleset = f"룰셋 {report.ruleset_version} (지문 {report.ruleset_digest[:12]}…)"
+    elif report.ruleset_version:
         ruleset = f"룰셋 {report.ruleset_version}"
     elif report.ruleset_digest:
         ruleset = f"룰셋 (버전 선언 없음, 지문 {report.ruleset_digest[:12]}…)"
@@ -1287,8 +1331,8 @@ def render_markdown(
     _dep_row_sum = _dep_domain_row(report)
     if _dep_row_sum and _dep_row_sum["count"]:
         lines.append(
-            f"- **총 조치 대상: {summary.finding_count + _dep_row_sum['count']}건** "
-            f"(소스 코드 {summary.finding_count}건 · 패키지 {_dep_row_sum['count']}종)"
+            f"- **총 조치 대상: 소스 코드 {summary.finding_count}건 + 패키지 {_dep_row_sum['count']}종** "
+            "(단위가 달라 더하지 않습니다)"
         )
     if suppressed:
         lines.append(f"- 승인된 예외(요약에서 제외): {len(suppressed)}건 (아래 '승인된 예외 내역')")
@@ -1373,6 +1417,7 @@ def render_markdown(
                 lines.append(
                     f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
                     f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
+                    + (f" · 낮춤: {g['adjusted']}" if g.get("adjusted") else "")
                 )
             lines.append("")
         if (_dep_row_order := _dep_domain_row(report)) and _dep_row_order["count"]:
@@ -1616,8 +1661,11 @@ def render_markdown(
 
     lines.append("### 재현 절차")
     lines.append("")
-    repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
+    repro, repro_note = _repro_command(report, reproduce_command)
     lines.append("같은 결과를 다시 만들거나 다른 환경에서 검증하려면 다음과 같이 실행합니다.")
+    if repro_note:
+        lines.append("")
+        lines.append(f"> ⚠ {repro_note}")
     lines.append("")
     lines.append("```bash")
     lines.append(repro)
@@ -2068,9 +2116,8 @@ def render_html(
             p.append(dep_chips)
         if dep_row["count"]:
             p.append(
-                f'<div class="kv"><b>총 조치 대상 {summary.finding_count + dep_row["count"]}건</b> '
-                f'(소스 코드 {summary.finding_count}건 · 패키지 {dep_row["count"]}종) — '
-                "두 심각도는 서로 다른 기준으로 정해집니다(부록 '심각도 판정 기준').</div>"
+                f'<div class="kv"><b>총 조치 대상: 소스 코드 {summary.finding_count}건 + 패키지 {dep_row["count"]}종</b> '
+                "— 단위가 달라 더하지 않으며, 두 심각도는 서로 다른 기준으로 정해집니다(부록 '심각도 판정 기준').</div>"
             )
 
     if summary.finding_count == 0:
@@ -2116,7 +2163,9 @@ def render_html(
                     f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
                     f"<b>{_esc(g['title'])}</b>"
                     f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
-                    f'{_esc(g["rule_id"])}</span></li>'
+                    f'{_esc(g["rule_id"])}'
+                    + (f' · 낮춤: {_esc(g["adjusted"])}' if g.get("adjusted") else "")
+                    + '</span></li>'
                 )
             p.append("</ul>")
         if dep_row_top := _dep_domain_row(report):
@@ -2333,7 +2382,7 @@ def render_html(
 
     # === 부록 (기술 정보) — 기본 접기 ====================================
     non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
-    repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
+    repro, repro_note = _repro_command(report, reproduce_command)
     p.append('<details class="sec"><summary>부록 (가이드라인 분포·생략 파일·재현·재검증)'
              '</summary><div class="secbody">')
     if report.findings or dep_row:
@@ -2396,7 +2445,9 @@ def _fix_prompt_text(group: dict) -> str:
     f: Finding = group["sample"]
     sev = _SEVERITY_LABEL_KO[group["severity"]]
     dec = _DECISION_LABEL_KO.get(group["decision"], group["decision"].value)
-    locs = _locations_by_file(group["findings"])
+    # 프롬프트는 복사해서 AI 에 넘기는 블록이다 — 줄을 자르면("외 6건") AI 가 고칠
+    # 방법이 없다(실측 2026-08-29, 72건 룰). 길어도 전부 싣는다.
+    locs = _locations_by_file(group["findings"], limit_lines=10**9)
     out = [
         f"[{sev}/{dec}] {f.plain_title} ({group['rule_id']}) — {group['count']}건",
         f"위치: {locs}",
@@ -3017,6 +3068,14 @@ def _env_grade_line(report: ScanReport) -> str | None:
     from .vcps import env_grade_summary
 
     raw = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    if raw is None:
+        # audit 최상위에 없으면 각 check 의 cooldown 판정에 적용된 등급을 본다 —
+        # 거기에만 값이 실린 경로가 있어 "지정 없음"으로 거짓 표기됐다(실측 2026-08-29).
+        raw = next(
+            (((c.get("cooldown") or {}).get("env_grade")) for a in audits
+             for c in (a.get("checks") or []) if (c.get("cooldown") or {}).get("env_grade")),
+            None,
+        )
     grade, label, days = env_grade_summary(raw)
     # **누가 정했는지**를 함께 적는다. 이 도구는 실행환경을 탐지하지 않는다 —
     # 부르는 쪽이 넘긴 값이거나 기본값이다. 실측 오해: 개인 PC 에서 돌린 검사가
