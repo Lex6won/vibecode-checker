@@ -5,6 +5,47 @@
 
 ## [Unreleased]
 
+### 자기검사 8차 — 외부 연결 인벤토리가 '호출'과 '표·주석·문서·테스트'를 가른다 (Fixed) — 2026-08-29
+
+자기검사의 외부 연결 111행 중 제품 코드의 **실제 아웃바운드는 10건**이었다. 나머지는
+스캐너 자기 카탈로그의 문자열 표, 출력용 상수, 문서 URL, 테스트 리터럴. 카탈로그 소스의
+**주석 한 줄**이 "서버 공인 IP 노출 ⚠"로, `docs.python.org` 참고 링크가 "Python 설치본
+다운로드 · 개인정보 인접"으로 올라왔고, 개인정보 인접 13건 중 정당한 것은 0건이었다.
+보안팀에 넘기는 목록이 grep 결과가 되면 신호가 노이즈에 묻힌다.
+
+- `ExternalConnection.context` 에 `test`·`comment`·`data-table` 추가(기존 값 유지).
+  줄 문맥으로 판정: 주석 줄 → comment, 창 안에 호출식(requests/httpx/fetch/axios…)이
+  있으면 runtime, URL 이 3개 이상이거나 표 원소 모양이면 data-table, 테스트 경로면 test.
+  한 호스트가 한 파일에서 호출식과 표 양쪽에 나오면 호출식이 이긴다(과소 판정 방지).
+- 개인정보 인접 신호는 **URL 본문·주석을 뺀** 코드에서, runtime 맥락일 때만.
+- 호스트 카탈로그는 접미 매칭(`python.org` 가 `docs.python.org` 를 삼키지 않음),
+  `docs.`/`wiki.`/`blog.`/`help.` 는 "문서 사이트(운영 중 전송 아님)".
+- URL 호스트의 마지막 라벨은 알파벳 TLD — `git+https://…@v0.2.1` 의 `v0.2.1` 가짜 호스트.
+- 한눈에 보기의 국외·⚠ 는 **고유 호스트** 기준, runtime 맥락만(행 기준으로는
+  api.openai.com 하나가 "국외 11"이었다).
+- ipify 문구를 단정형 마크다운 강조에서 가능성형 평문으로.
+- 테스트 `tests/test_selfscan_round8_external.py`(9케이스).
+
+### 자기검사 7차 — 전수 분석이 드러낸 미탐 4종 (Detection) — 2026-08-29
+
+오탐을 줄이는 것만으로는 반쪽이다. 493건 전수 대조와 적대적 실측에서 **잡았어야
+하는데 못 잡은 것**들이 함께 나왔다.
+
+- **프롬프트 주입(AST)** — `SYSTEM_PROMPT + user_input`(리터럴이 없어 "리터럴+동적"
+  판정을 비껴감), `"요약: %s" % user_input`(`%` 포맷 미추적 — SQL 조립에도 같은
+  구멍이었다), LangChain `chain.invoke(p)`·`llm.predict(p)`(sink 목록에 없음). `%` 는
+  `_expr_builds_dynamic_sql` 에 넣어 SQL·프롬프트가 함께 잡는다. LangChain sink 는
+  `db.invoke`·`queue.stream` 오탐을 막으려고 수신자를 llm/chain/model/chat/agent 로 한정.
+- **판정 근거 규약 통일** — 프롬프트 주입도 SQL 과 같이 "동적 부분이 매개변수뿐이면
+  likely, 스코프 안에서 조립을 따라갔으면 confirmed". 예전엔 무조건 confirmed 였다.
+  대문자 지시문 상수(`SYSTEM_PROMPT`)는 동적 이름으로 세지 않는다.
+- **`sh -c <오염값>`** — `subprocess.run(["sudo","-u","root","sh","-c",cmd])` 는
+  shell=True 가 없어도 셸을 띄운다. 코퍼스 s04_privesc.py:13 이 미탐이었다. argv 에
+  sh/bash/cmd/powershell + `-c`/`/c` + 비상수 원소가 있으면 KISA-PY-INPUT-05.
+- **`yaml.load` 안전 Loader 없음** — 코퍼스 c_deser.py:8 이 미탐. `Loader=` 가
+  Safe 계열이 아니거나 없으면 KISA-PY-CODE-03(AST 정본 + regex 보조).
+- 테스트 `tests/test_selfscan_round7_misses.py`(19케이스). 룰셋 잠금 2026.08.29d.
+
 ### 자기검사 6차 — 룰 정밀도 8종 (Rules) — 2026-08-29
 
 - **GOV-LLM-OUTPUT-HANDLING-001**: sink 가 **호출 `(` 또는 대입 `=`** 형태여야 발화.

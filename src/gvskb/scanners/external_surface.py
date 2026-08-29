@@ -53,8 +53,8 @@ _HOST_CATALOG: tuple[tuple[str, str, str, str | None, str | None], ...] = (
     # ── 인프라·운영 (데이터 전송이 거의 없어 '기타'로 뭉뚱그리면 노이즈가 된다) ──
     ("acme-v02.api.letsencrypt.org", "infra", "인증서 발급 요청(도메인명)", "국외", "Let's Encrypt/ISRG(미국)"),
     ("letsencrypt.org", "infra", "인증서 발급·검증", "국외", "Let's Encrypt/ISRG(미국)"),
-    ("api.ipify.org", "infra", "**서버의 공인 IP가 외부로 노출됨**", "국외", "ipify(미국)"),
-    ("ifconfig.me", "infra", "**서버의 공인 IP가 외부로 노출됨**", "국외", "ifconfig.me(미국)"),
+    ("api.ipify.org", "infra", "공인 IP 조회 서비스 — 호출 시 서버 IP 가 외부로 전송됨", "국외", "ipify(미국)"),
+    ("ifconfig.me", "infra", "공인 IP 조회 서비스 — 호출 시 서버 IP 가 외부로 전송됨", "국외", "ifconfig.me(미국)"),
     ("checkip.amazonaws.com", "infra", "서버 공인 IP 조회", "국외", "AWS(미국)"),
     ("ntp.org", "infra", "시각 동기화(전송 데이터 없음)", "국외", "NTP Pool(국제)"),
     ("registry.npmjs.org", "infra", "패키지 다운로드(설치 시)", "국외", "npm/GitHub(미국)"),
@@ -247,9 +247,43 @@ _INTERNAL_HOST = re.compile(
 # userinfo(user@) 는 건너뛰고, 호스트는 점을 포함한 실제 도메인만(예: 'x' 같은
 # 사용자명·로컬 토큰 오추출 방지).
 _URL_RE = re.compile(
-    r"https?://(?:[^@/\s]+@)?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)(/[A-Za-z0-9._/-]*)?",
+    # 마지막 라벨은 알파벳 TLD 여야 한다 — `git+https://…@v0.2.1` 의 `v0.2.1` 이
+    # 호스트로 잡혔다(실측 2026-08-29).
+    r"https?://(?:[^@/\s]+@)?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63})(/[A-Za-z0-9._/-]*)?(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+
+# 줄 문맥 — 호출식인지, 상수·표·주석인지. URL 정규식은 어디서 나왔는지 모른다:
+# 스캐너 **자기 카탈로그 소스의 주석 한 줄**이 "서버 공인 IP 노출 ⚠"로 올라왔고
+# 111건 중 실제 호출은 10건이었다(실측 2026-08-29, 자기검사).
+_CALL_CTX = re.compile(
+    r"requests\.|httpx\.|urllib|aiohttp|fetch\s*\(|axios|\.(?:get|post|put|patch|delete|request)\s*\("
+    r"|urlopen|curl\s|Invoke-(?:RestMethod|WebRequest)|WebSocket\(|new\s+URL\(|base_url\s*=|BASE_URL\s*=",
+    re.IGNORECASE,
+)
+_COMMENT_LINE = re.compile(r"^\s*(?:#|//|/\*|\*|<!--|\"\"\"|\'\'\')")
+_TABLE_LINE = re.compile(r"^\s*[\(\[\{]?\s*[\"\'][^\"\']*[\"\']\s*[,:]")   # ("host", …) · "host": …
+
+
+_DATA_FILE_SUFFIXES = (".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties")
+
+
+def _line_context(lines: list[str], idx: int, filename: str = "") -> str:
+    """runtime | comment | data-table — 줄이 어떤 자리인지."""
+    line = lines[idx - 1]
+    if _COMMENT_LINE.match(line):
+        return "comment"
+    window = " ".join(lines[max(0, idx - 3): idx + 2])
+    if _CALL_CTX.search(window):
+        return "runtime"
+    # 설정·데이터 파일의 주소 목록(출처 URL·엔드포인트 표)은 호출식이 없으면 표다.
+    # `run: curl https://…`(CI) 는 위의 호출식 판정으로 runtime 이 된다.
+    if filename.lower().endswith(_DATA_FILE_SUFFIXES):
+        return "data-table"
+    # 한 창(±2줄)에 URL 이 3개 이상이면 호출이 아니라 목록이다.
+    if len(_URL_RE.findall(window)) >= 3 or _TABLE_LINE.match(line):
+        return "data-table"
+    return "runtime"
 _MODEL_RE = re.compile(r"""model\s*[=:]\s*["']([\w.\-:]+)["']""")
 _GENMODEL_RE = re.compile(r"""GenerativeModel\s*\(\s*["']([\w.\-:]+)["']""")
 _APIVER_RE = re.compile(r"/(v\d+\w*)")
@@ -295,8 +329,12 @@ def _lookup_host(host: str) -> tuple[str, str, str | None, str | None]:
     추정은 국가·운영주체를 단정하지 않는다(None = 직접 확인 필요).
     """
     low = host.lower()
+    # 접미 매칭 — `python.org` 가 `docs.python.org` 에 부분문자열로 걸려 "설치본
+    # 다운로드"로 분류됐다(실측 2026-08-29). 문서 사이트는 별도로 안내한다.
+    if low.startswith(("docs.", "wiki.", "blog.", "help.")):
+        return "other", "문서 사이트(운영 중 전송 아님)", None, None
     for needle, cat, summary, region, operator in _HOST_CATALOG:
-        if needle in low:
+        if low == needle or low.endswith("." + needle):
             return cat, summary, region, operator
     for pattern, cat, summary in _HOST_HEURISTICS:
         if pattern.search(low):
@@ -339,14 +377,22 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
             continue
 
         window = " ".join(lines[idx - 1: idx + 2])  # 현재 줄 + 다음 2줄(인자 다중행 대응)
-        pii = bool(_PII_SIGNAL.search(window))
+        line_ctx = _line_context(lines, idx, filename)
+        # 개인정보 신호는 **URL 본문·주석을 뺀** 코드에서만 본다 — `/library/secrets.html`
+        # 경로의 'secrets', 카탈로그 설명문의 '카드'에 자기 매칭했다(실측 2026-08-29).
+        pii_window = _URL_RE.sub(" ", window)
+        pii_window = re.sub(r"(?:#|//).*?(?=\n|$)", " ", pii_window)
+        pii = line_ctx == "runtime" and bool(_PII_SIGNAL.search(pii_window))
         model = _model_on_line(window)
         for host, apiver in hosts_on_line:
-            a = agg.setdefault(host, {"idx": idx, "ver": None, "model": None, "pii": False, "count": 0})
+            a = agg.setdefault(host, {"idx": idx, "ver": None, "model": None, "pii": False, "count": 0, "ctx": line_ctx})
             a["idx"] = min(a["idx"], idx)
             a["ver"] = a["ver"] or apiver
             a["model"] = a["model"] or model
             a["pii"] = a["pii"] or pii
+            # 한 호스트가 한 파일에서 호출식과 표 양쪽에 나오면 호출식이 이긴다(과소 판정 방지).
+            if line_ctx == "runtime":
+                a["ctx"] = "runtime"
             a["count"] += 1  # 호출 지점 수 — 보안팀이 검토 범위(규모)를 알 수 있게
 
     out: list[ExternalConnection] = []
@@ -355,6 +401,12 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
         if a["pii"]:
             summary += " · ⚠ 개인정보 인접"
         ctx = _file_context(filename)
+        if ctx == "runtime":
+            from ..scanner import is_test_path   # 테스트 파일의 리터럴은 운영 중 전송이 아니다
+            if is_test_path(filename):
+                ctx = "test"
+            elif a["ctx"] != "runtime":
+                ctx = a["ctx"]
         if ctx == "doc-or-installer":
             # 설치 안내·스크립트에 등장하는 주소 — 운영 중 전송이 아니다.
             #

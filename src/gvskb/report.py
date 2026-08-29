@@ -514,11 +514,17 @@ def _airgap_note(res: list, egress_count: int) -> str:
 
 
 def _external_stats(report: ScanReport) -> tuple[int, int, int, int]:
-    """(외부 API 수, 플러그인 수, 국외 전송 수, ⚠검토 필요 수)."""
+    """(외부 API 수, 플러그인 수, 국외 전송 **호스트** 수, ⚠검토 필요 **호스트** 수).
+
+    국외·⚠ 는 **고유 호스트** 기준이다. 행(호스트×파일) 수로 세던 예전에는
+    api.openai.com 하나가 파일 11개에 나와 "국외 11"이 됐다(실측 2026-08-29).
+    운영 중 전송이 아닌 맥락(문서·테스트·주석·표)은 두 집계에서 뺀다.
+    """
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
-    gukoe = sum(1 for c in report.external_surface if c.region == "국외")
-    warn = sum(1 for c in report.external_surface if c.review_level == "warn")
+    live = [c for c in report.external_surface if c.context == "runtime"]
+    gukoe = len({c.target for c in live if c.region == "국외"})
+    warn = len({c.target for c in live if c.review_level == "warn"})
     return len(api), len(pkg), gukoe, warn
 
 
