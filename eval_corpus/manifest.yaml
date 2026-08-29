@@ -47,6 +47,8 @@ cases:
   - {id: D-04, file: d_llm_chatbot/rag_index.py, line: 9, kind: vulnerability, category: deserialization, expect_detected: true, expected_rule_ids: [KISA-PY-CODE-03], sink: "pickle.load(fh)"}
   - {id: D-05, file: d_llm_chatbot/rag_index.py, line: 13, kind: vulnerability, category: pii, expect_detected: true, expected_rule_ids: [GOV-PII-RRN-001, GOV-LLM-PII-PROMPT-001], sink: "900101-1234567"}
   - {id: D-06, file: d_llm_chatbot/rag_index.py, line: 18, kind: vulnerability, category: tls, expect_detected: true, expected_rule_ids: [KISA-PY-SEC-11], sink: "verify=False"}
+  - {id: D-07, file: d_llm_chatbot/agent_tools.py, line: 5, kind: vulnerability, category: agent, expect_detected: true, expected_rule_ids: [GOV-AGENT-EXCESSIVE-AUTHORITY-001], sink: "await agent.delete_file(path)"}
+  - {id: D-08, file: d_llm_chatbot/agent_tools.py, line: 9, kind: hard_variant, category: agent, expect_detected: false, expected_rule_ids: [GOV-AGENT-EXCESSIVE-AUTHORITY-001], sink: "tools.delete(name)"}
 
   # ---------- (E) 데이터 파이프라인 (Python) ----------
   - {id: E-01, file: e_data_pipeline/pipeline.py, line: 8, kind: vulnerability, category: deserialization, expect_detected: true, expected_rule_ids: [KISA-PY-CODE-03], sink: "pd.read_pickle(url)"}
