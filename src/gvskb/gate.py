@@ -195,6 +195,16 @@ def _exposure_counts(report: ScanReport) -> dict:
     return {"secret": secret, "pii": pii}
 
 
+def attach_gate(report: ScanReport) -> ScanReport:
+    """저장·반환 직전에 게이트 판정을 보고서 안에 새긴다.
+
+    의존성 감사는 스캔이 끝난 뒤 붙으므로 **가장 마지막**에 불러야 한다. JSON 을
+    읽는 쪽이 ``summary.blocked``(소스 기준)가 아니라 이 값을 보게 하기 위한 것.
+    """
+    report.gate = gate_status(report)
+    return report
+
+
 def gate_status(report: ScanReport) -> dict:
     """이 결과의 게이트 판정 — 차단 / 조건부 승인 / 승인.
 
