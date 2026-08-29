@@ -579,6 +579,25 @@ def _short_reason(reason: str) -> str:
     return _skip_reason_group(reason or "")
 
 
+_PATH_CLASS_KO = {"runtime": "운영 코드", "test": "테스트", "sample": "시험·예제"}
+
+
+def _path_class_suffix(summary) -> str:
+    """차단 건수 옆에 `(운영 코드 0 · 테스트 3 · 시험·예제 10)` — 시험 경로 건수가 있을 때만.
+
+    판정은 그대로다. "차단 13건"이 실제로 "운영 0 + 시험 13"임을 읽는 사람이 바로 알게
+    하려는 것이지, 시험 코드를 봐주려는 것이 아니다(개선요청 #34 A: 감등은 거부, 분리는 수용).
+    """
+    bp = getattr(summary, "by_path_class", None) or {}
+    if not bp:
+        return ""
+    non_runtime = sum(v.get("block", 0) for k, v in bp.items() if k != "runtime")
+    if not non_runtime:
+        return ""
+    parts = [f"{_PATH_CLASS_KO.get(k, k)} {v.get('block', 0)}" for k, v in bp.items() if v.get("block", 0)]
+    return " (" + " · ".join(parts) + " — 판정은 동일, 경로 성격별 집계)"
+
+
 def _unique_location_count(findings: list[Finding]) -> int:
     """같은 (파일, 줄)을 1곳으로 세는 고유 위치 수 — 이중 계상 오해 방지."""
     return len({(f.location.file, f.location.line) for f in findings})
@@ -1306,6 +1325,7 @@ def render_markdown(
     lines.append(
         f"- {_DECISION_LABEL_KO[Decision.block]}: "
         f"**{summary.by_decision.get(Decision.block.value, 0)}건**"
+        + _path_class_suffix(summary)
     )
     if summary.highest_severity:
         lines.append(
@@ -1589,6 +1609,9 @@ def render_markdown(
     # --- ⑨ 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) --------------
     if report.external_surface:
         lines.extend(_render_external_surface_md(report))
+
+    # --- ⑨-2 보안 자세 관찰(정보) — 부재형 항목, 판정과 무관 ------------------
+    lines.extend(_render_posture_md(report))
 
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
     lines.extend(_render_dependency_audit_md(report))
@@ -2056,7 +2079,7 @@ def render_html(
     p.append(
         f'<div class="stat"><div class="num" style="color:'
         f'{"#c0392b" if block_n else "#1f2937"}">{block_n}</div>'
-        f'<div class="lab">{_esc(_DECISION_LABEL_KO[Decision.block])}</div></div>'
+        f'<div class="lab">{_esc(_DECISION_LABEL_KO[Decision.block] + _path_class_suffix(summary))}</div></div>'
     )
     p.append(
         f'<div class="stat"><div class="num" style="color:{sev_col}">{sev_label}</div>'
@@ -2347,6 +2370,9 @@ def render_html(
     # === 외부 연결 인벤토리 (위험과 분리, 발견 0이어도 표시) ==============
     if report.external_surface:
         p.extend(_render_external_surface_html(report))
+
+    # === 보안 자세 관찰(정보) — 부재형 항목, 판정과 무관 =================
+    p.extend(_render_posture_html(report))
 
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     dep_prompt = _dep_fix_prompt_text(report)
@@ -3486,6 +3512,48 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
                    '또는 최신 인텔 캐시(<code class="ev">gvskb update-intel</code>)로 다시 검사하세요.</div>')
     out.append("</div></details>")
     return out
+
+
+def _render_posture_md(report: ScanReport) -> list[str]:
+    notes = getattr(report, "posture_notes", None) or []
+    if not notes:
+        return []
+    out = ["## 보안 자세 관찰 (정보 · 판정과 무관)", "",
+           "> 룰은 코드에 *있는* 모양을 잡습니다. 아래는 *없어서* 생기는 항목으로, 차단·경고 수에 "
+           "들어가지 않습니다. 프록시·플랫폼에서 처리한다면 그 근거를 남기면 됩니다.", ""]
+    for n in notes:
+        out.append(f"### {n.get('title', '')}  `{n.get('id', '')}`")
+        out.append("")
+        out.append(n.get("detail", ""))
+        if n.get("files"):
+            out.append("")
+            out.append("- 진입점: " + " · ".join(f"`{f}`" for f in n["files"]))
+        if n.get("safe_fix"):
+            out.append(f"- 조치: {n['safe_fix']}")
+        if n.get("references"):
+            out.append("- 참고: " + " · ".join(n["references"]))
+        out.append("")
+    return out
+
+
+def _render_posture_html(report: ScanReport) -> list[str]:
+    notes = getattr(report, "posture_notes", None) or []
+    if not notes:
+        return []
+    p = ['<details class="sec"><summary>보안 자세 관찰 (정보 · 판정과 무관) '
+         f'<span class="cnt">{len(notes)}</span></summary>',
+         '<p class="muted">룰은 코드에 있는 모양을 잡습니다. 아래는 없어서 생기는 항목으로 차단·경고 수에 '
+         '들어가지 않습니다. 프록시·플랫폼에서 처리한다면 그 근거를 남기면 됩니다.</p>']
+    for n in notes:
+        p.append(f'<div class="card"><h4>{_esc(n.get("title", ""))} <span class="tag">{_esc(n.get("id", ""))}</span></h4>')
+        p.append(f'<p>{_esc(n.get("detail", ""))}</p>')
+        if n.get("files"):
+            p.append('<p>진입점: ' + " · ".join(f"<code>{_esc(f)}</code>" for f in n["files"]) + "</p>")
+        if n.get("safe_fix"):
+            p.append(f'<p><b>조치</b> {_esc(n["safe_fix"])}</p>')
+        p.append("</div>")
+    p.append("</details>")
+    return p
 
 
 def _render_external_surface_md(report: ScanReport) -> list[str]:

@@ -461,12 +461,46 @@ def _highest(findings: Iterable[Finding]) -> Severity | None:
     return highest
 
 
+_SAMPLE_PATH_SEGMENTS = {
+    "fixtures", "fixture", "examples", "example", "samples", "sample", "demo", "demos",
+    "corpus", "eval_corpus", "e2e", "__fixtures__", "testdata", "mocks", "__mocks__",
+}
+
+
+def path_class(filename: str) -> str:
+    """runtime · test · sample — 경로의 성격(집계 전용, 판정과 무관)."""
+    if not filename or filename == "<memory>":
+        return "runtime"
+    parts = [p.lower() for p in filename.replace("\\", "/").split("/") if p]
+    if any(p in _SAMPLE_PATH_SEGMENTS for p in parts[:-1]):
+        return "sample"
+    if is_test_path(filename):
+        return "test"
+    return "runtime"
+
+
+def _posture_notes(posture, skipped) -> list[dict]:
+    """검사되지 않은 매니페스트(requirements.txt 등)의 위치도 프로젝트 루트 판정에 쓴다."""
+    try:
+        posture.register_paths([getattr(s, "path", "") for s in skipped])
+        return posture.notes()
+    except Exception:  # noqa: BLE001 — 관찰 실패가 검사를 막으면 안 된다
+        return []
+
+
 def _summary(findings: list[Finding]) -> ScanSummary:
     by_severity = {s.value: 0 for s in Severity}
     by_decision = {d.value: 0 for d in Decision}
+    by_path_class: dict[str, dict[str, int]] = {
+        k: {"total": 0, "block": 0} for k in ("runtime", "test", "sample")
+    }
     for finding in findings:
         by_severity[finding.severity.value] += 1
         by_decision[finding.decision.value] += 1
+        cls = by_path_class[path_class(finding.location.file)]
+        cls["total"] += 1
+        if finding.decision == Decision.block and not finding.suppressed:
+            cls["block"] += 1
     return ScanSummary(
         finding_count=len(findings),
         by_severity=by_severity,
@@ -478,6 +512,7 @@ def _summary(findings: list[Finding]) -> ScanSummary:
             (f.location.file, f.location.line)
             for f in findings if f.decision == Decision.block and not f.suppressed
         }),
+        by_path_class=by_path_class,
     )
 
 
@@ -1273,6 +1308,8 @@ def scan_path(
     all_findings: list[Finding] = []
     scanned: list[str] = []
     content_hashes: dict[str, list[str]] = {}   # 내용 해시 → 같은 내용 파일 경로들
+    from .scanners.posture import PostureCollector
+    posture = PostureCollector()   # 부재형 관찰(보안 헤더·쿠키 속성) — 판정과 무관
 
     for f in files_to_scan:
         rel = _rel(f, root, is_dir)
@@ -1320,6 +1357,7 @@ def scan_path(
             hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), []
         ).append(rel)
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
+        posture.observe(rel, text, runtime=path_class(rel) == "runtime")
         file_findings = report.findings
         # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
         # 감쇄(비밀 자재 검사 결과는 그대로).
@@ -1387,6 +1425,7 @@ def scan_path(
         intel_freshness=_intel_freshness(),
         suppression_summary=suppression_summary,
         vendor_bundles=vendor_bundles,
+        posture_notes=_posture_notes(posture, skipped),
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}
