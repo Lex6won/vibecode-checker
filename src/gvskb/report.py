@@ -2557,7 +2557,12 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
 
 
 def _render_external_surface_html(report: ScanReport) -> list[str]:
-    """외부 연결 인벤토리 섹션(HTML) — 접기형. ⚠가 있으면 기본 펼침(절충)."""
+    """외부 연결 인벤토리 섹션(HTML) — 접기형, 항상 기본 닫힘.
+
+    예전엔 ⚠(개인정보 인접)가 있으면 기본 펼침이었다(절충). 다른 모든 접기 섹션
+    (분야별 상세 등)이 "기본은 닫힘 — 클릭해 펼친다"인 것과 어긋났다 — 저장한
+    리포트를 열 때마다 이 섹션만 이미 펼쳐진 채로 보였다. 통일한다.
+    """
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
     res = [c for c in report.external_surface if c.kind == "resource"]
@@ -2573,7 +2578,7 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
         head_extra = f' · <span style="color:#c0392b">{" · ".join(bits)}</span>'
     res_head = f" · 외부 리소스 {len(res)}" if res else ""
     out: list[str] = [
-        f'<details class="sec inv"{" open" if warn else ""}>'
+        '<details class="sec inv">'
         f"<summary>외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{res_head}{head_extra}</summary>"
         '<div class="secbody">',
         '<div class="invnote">⚠ <b>사용 금지가 아닙니다.</b> 외부로 데이터를 보낼 수 있는 지점 '

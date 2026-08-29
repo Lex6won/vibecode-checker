@@ -152,8 +152,9 @@ def test_render_html_has_inventory_section_and_card() -> None:
     assert "외부 연결 인벤토리" in html
     assert "외부 연결 (" in html          # (A) 최상단 요약 카드
     assert "api.openai.com" in html
-    # ⚠(PII) 있으면 기본 펼침(절충)
-    assert 'class="sec inv" open' in html
+    # 다른 접기 섹션과 동일하게 기본은 항상 닫힘 — ⚠(PII) 가 있어도 펼치지 않는다.
+    assert 'class="sec inv">' in html
+    assert 'class="sec inv" open' not in html
 
 
 def test_render_html_inventory_is_self_contained() -> None:
