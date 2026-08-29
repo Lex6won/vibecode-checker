@@ -293,11 +293,14 @@ class ExternalConnection(BaseModel):
     )
     call_count: int = Field(default=1, description="같은 파일 내 호출 지점 수(api 전용). location은 첫 지점")
     pii_adjacent: bool = Field(default=False, description="같은 줄/근접에 개인정보 신호")
-    context: Literal["runtime", "doc-or-installer"] = Field(
+    context: Literal["runtime", "doc-or-installer", "test", "comment", "data-table"] = Field(
         default="runtime",
         description=(
             "이 연결이 나온 맥락. runtime=코드가 실제로 호출 · "
-            "doc-or-installer=설치 안내 문서·설치 스크립트의 다운로드 링크. "
+            "doc-or-installer=설치 안내 문서·설치 스크립트의 다운로드 링크 · "
+            "test=테스트 코드의 리터럴 · comment=주석·독스트링 안의 주소 · "
+            "data-table=호스트 목록·카탈로그 같은 데이터 표(호출 아님). "
+            "runtime 외의 값은 운영 중 전송이 아니므로 국외이전·개인정보 집계에서 제외한다. "
             "후자는 **운영 중 데이터 전송이 아니므로 국외이전 검토 대상이 아니다**."
         ),
     )
