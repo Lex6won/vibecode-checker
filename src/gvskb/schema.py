@@ -422,6 +422,10 @@ class ScanReport(BaseModel):
         default=None,
         description="검사 실행 모드: 'online' | 'offline'(망분리). None이면 리포트에 미표시.",
     )
+    #: 이 결과를 만든 정확한 CLI 명령. `gvskb report <json>` 으로 다시 렌더할 때
+    #: 폴백 문구가 `--check-deps`·`--max-files` 를 잃어 재현자가 **더 깨끗한 결과**를
+    #: 받던 결함(실측 2026-08-29)을 막는다. None=미기록(구버전 JSON).
+    reproduce_command: str | None = Field(default=None)
     # 분석 출처 증명(provenance) — "어떤 엔진이 언제 판단했나"를 결과에 각인해
     # 레지스트리·감사로그가 재현 가능한 근거를 갖게 한다. 구버전 JSON 역호환 위해 None 허용.
     engine_version: str | None = Field(

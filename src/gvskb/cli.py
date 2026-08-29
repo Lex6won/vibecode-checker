@@ -105,10 +105,13 @@ def _emit_doc_report(
     # 저장할 때는 **저장될 경로를 문서 안에 새긴다.** stderr 한 줄은 놓치기 쉽고,
     # 파일만 전달받은 사람은 원본이 어디 있는지 알 방법이 없다. 화면으로만
     # 흘려보내는 경우(`--stdout`)에는 저장 경로가 없으므로 적지 않는다.
+    # 렌더러마다 **자기 경로**를 새긴다 — HTML 이 .md 경로를 자기 위치라고 적고
+    # 있었다(실측 2026-08-29). 결재·감사에 인용되는 문서가 자기 출처를 틀리게 말했다.
     saved_md = str(Path(output).with_suffix(".md")) if output else None
+    saved_html = str(Path(output).with_suffix(".html")) if output else None
 
     md = render_markdown(report, reproduce_command=reproduce_command, saved_path=saved_md)
-    html_doc = render_html(report, reproduce_command=reproduce_command, saved_path=saved_md)
+    html_doc = render_html(report, reproduce_command=reproduce_command, saved_path=saved_html)
 
     if not output:
         text = html_doc if fmt == "html" else md
@@ -417,6 +420,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     # 게이트 판정을 보고서에 새긴다 — 의존성 감사가 붙은 **뒤**여야 한다.
     from .gate import attach_gate
     attach_gate(report)
+    # 재현 명령도 결과 안에 새긴다 — `gvskb report` 로 다시 렌더해도 잃지 않게.
+    report.reproduce_command = _scan_reproduce_command(args)
 
     if args.format in ("json", "sarif"):
         if args.format == "sarif":
@@ -634,7 +639,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         report,
         fmt=getattr(args, "format", "markdown"),
         output=args.output,
-        reproduce_command=args.reproduce_command,
+        reproduce_command=args.reproduce_command or report.reproduce_command,
     )
     return EXIT_OK
 
