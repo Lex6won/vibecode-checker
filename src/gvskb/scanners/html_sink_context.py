@@ -155,6 +155,55 @@ def _sanitize_evidence(
     return "helper" if (m2 and m2.group(1) in helpers) else None
 
 
+_CONST_RHS_RE = re.compile(r"\.(?:inner|outer)HTML\s*=\s*(.*)$")
+_TEMPLATE_MAX_LINES = 80      # 다줄 템플릿 리터럴을 따라갈 상한(방어적)
+
+
+def _rhs_is_constant_literal(lines: list[str], idx: int) -> bool:
+    """``.innerHTML = <순수 문자열 리터럴>`` 인가 — 보간·결합이 없는 상수.
+
+    ``el.innerHTML = ""`` · ``= '<p class="x">고정 문구</p>'`` · 다줄 템플릿 리터럴에
+    ``${`` 가 하나도 없는 경우. 값의 출처가 코드 자체이므로 주입이 아니다.
+    개선요청 #34 를 계기로 포털 HTML 을 실측하니 새 발견 26건 중 9건이 이 모양이었다
+    (2026-08-30). ``+`` 결합·``${`` 보간·식별자는 상수가 아니다.
+    """
+    m = _CONST_RHS_RE.search(lines[idx])
+    if m is None:
+        return False
+    rhs = m.group(1).strip()
+    if not rhs:
+        return False
+    q = rhs[0]
+    if q in ("'", '"'):
+        # 같은 줄에서 닫히고, 닫힌 뒤에 결합 연산자가 없어야 한다.
+        end = rhs.find(q, 1)
+        while end != -1 and rhs[end - 1] == "\\":
+            end = rhs.find(q, end + 1)
+        if end == -1:
+            return False
+        tail = rhs[end + 1:].strip().rstrip(";").strip()
+        return tail == ""
+    if q == "`":
+        body = rhs[1:]
+        j = idx
+        while True:
+            close = body.find("`")
+            while close != -1 and close > 0 and body[close - 1] == "\\":
+                close = body.find("`", close + 1)
+            if close != -1:
+                if "${" in body[:close]:
+                    return False
+                tail = body[close + 1:].strip().rstrip(";").strip()
+                return tail == ""
+            if "${" in body:
+                return False
+            j += 1
+            if j >= len(lines) or j - idx > _TEMPLATE_MAX_LINES:
+                return False            # 닫는 백틱을 못 찾음 — 보수적으로 상수 아님
+            body = lines[j]
+    return False
+
+
 def attenuate_html_sink_findings(
     findings: list[Finding], code: str, filename: str,
 ) -> list[Finding]:
@@ -181,6 +230,9 @@ def attenuate_html_sink_findings(
             adjusted.append(f)
             continue
 
+        if _rhs_is_constant_literal(lines, idx):
+            # 값이 코드에 박힌 상수 — 주입할 외부 값이 없다(*관찰*). 내린다.
+            continue
         evidence = _sanitize_evidence(lines, idx, helpers, local_defs)
         if evidence == "direct":
             # 주입 지점을 감싼 정화 호출이고, 그것이 '본문에 정화가 없는 지역
