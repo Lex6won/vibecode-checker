@@ -34,13 +34,19 @@ _SEVERITY_LABEL_KO = {
 # "치명 8건"만 크게 뜨고 그중 전부가 패턴 일치였다면 신뢰가 무너진다(실측 사례).
 _CONFIDENCE_LABEL_KO = {
     "confirmed": "확인됨(데이터 흐름 추적)",
+    # regex 룰이 `confidence: confirmed` 를 선언한 경우(PEM 헤더처럼 패턴이 곧
+    # 확증) — "데이터 흐름 추적"이라 적으면 하지 않은 일을 한 것처럼 읽힌다
+    # (실측 2026-08-29: 룰 문서의 예시 줄에 그 라벨이 붙었다).
+    "confirmed@regex": "확인됨(패턴 자체가 확증)",
     "likely": "유력함(구조 분석) — 문맥 확인 권장",
     "pattern-only": "패턴 일치만 — 값의 출처를 직접 확인하세요",
 }
 
 
-def _confidence_label(value: str | None) -> str:
-    return _CONFIDENCE_LABEL_KO.get(value or "pattern-only", "패턴 일치만")
+def _confidence_label(value: str | None, engine: str | None = None) -> str:
+    if value == "confirmed" and engine == "regex":
+        return _CONFIDENCE_LABEL_KO["confirmed@regex"]
+    return _CONFIDENCE_LABEL_KO.get(value or "", value or "—")
 
 
 #: 증거 줄 라벨. 가려진 것이 **있을 때만** 가렸다고 말한다.
@@ -2606,7 +2612,7 @@ def _render_rule_group_html(group: dict) -> list[str]:
     out.append(
         f'<div class="row"><span class="tag">{_esc(f.rule_id)}</span>'
         f'<span class="tag">{_esc(f.category)}</span>'
-        f'<span class="tag">{_esc(_confidence_label(f.confidence))}</span></div>'
+        f'<span class="tag">{_esc(_confidence_label(f.confidence, f.engine))}</span></div>'
     )
     if f.severity_adjusted:
         out.append(
@@ -3501,7 +3507,7 @@ def _render_finding_group_md(group: dict) -> list[str]:
     out.append(f"- **위치**: {_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT)}")
     out.append(f"- **룰**: `{f.rule_id}`")
     out.append(f"- **카테고리**: {f.category}")
-    out.append(f"- **판정 근거**: {_confidence_label(f.confidence)}")
+    out.append(f"- **판정 근거**: {_confidence_label(f.confidence, f.engine)}")
     # 등급을 낮췄으면 그 사실과 이유를 반드시 함께 보여준다 — 조용히 낮추면
     # 검토자가 "왜 low 인지" 판단할 근거를 잃는다.
     if f.severity_adjusted:

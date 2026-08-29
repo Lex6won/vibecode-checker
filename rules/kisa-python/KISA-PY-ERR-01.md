@@ -21,7 +21,8 @@ detection:
   patterns:
     - "(?:return|render|jsonify|HttpResponse)\\s*\\([^)]*(?:traceback\\.format_exc|str\\s*\\(\\s*e\\s*\\)|repr\\s*\\(\\s*e\\s*\\))"
     - "(?:DEBUG|FLASK_DEBUG|DJANGO_DEBUG)\\s*=\\s*True"
-    - "app\\.run\\s*\\([^)]*debug\\s*=\\s*True"
+    # (삭제 2026-08-29) `app.run(debug=True)` 는 GOV-FLASK-DEBUG-001(차단·RCE 설명)이
+    # 글자 단위로 같은 패턴을 갖는다. 같은 줄 2건을 피한다. Django `DEBUG = True` 는 남긴다.
   category: kisa-secure-coding
   why_it_matters: >-
     `return str(e)` 또는 `jsonify({"error": traceback.format_exc()})`처럼 예외
@@ -48,7 +49,7 @@ examples:
   language: python
   positive:
     - "return jsonify({\"error\": str(e)}), 500"
-    - "app.run(host=\"127.0.0.1\", debug=True)"
+    - "DEBUG = True"
   negative:
     - "return jsonify({\"error\": \"처리 중 오류가 발생했습니다\"}), 500"
     - "app.run(host=\"127.0.0.1\")"
