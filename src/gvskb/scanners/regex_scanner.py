@@ -453,7 +453,8 @@ MASK_MARK = "[마스킹]"
 #: 보고서가 모든 증거에 '마스킹됨' 딱지를 붙이면 그 딱지는 정보가 아니다 —
 #: `eval(x)` 옆의 '마스킹됨'을 본 담당자는 무엇이 가려졌는지 찾다가 지친다.
 _MASKED_SHAPE_RE = re.compile(
-    r"\[마스킹\]|\d{6}-[1-4]\*{6}|01[016789]-\*{4}-\d{4}",
+    r"\[마스킹\]|\d{6}-[1-4]\*{6}|01[016789]-\*{4}-\d{4}"
+    r"|\d{4}-\*{4}-\*{4}-\d{3,4}",           # 카드번호 앞 4·뒤 4 만 남긴 모양
 )
 
 
@@ -484,7 +485,7 @@ def _partial(token: str) -> str:
 #: 앞 몇 자를 봐도 나머지를 좁히지 못하지만, 비밀번호는 사람이 지어 저엔트로피다
 #: — `P@ss…` 넉 자가 추측을 실질적으로 도와준다. 게다가 어느 비밀번호인지는
 #: 변수명(`DB_PASSWORD`)이 이미 말해 주므로 부분 노출로 얻는 것도 없다.
-_FULL_MASK_KEYS = re.compile(r"(?i)^(password|passwd|pwd)$")
+_FULL_MASK_KEYS = re.compile(r"(?i)(?:^|[._-])(password|passwd|pwd|비밀번호|암호)$")
 
 
 def _mask_quoted_value(m: re.Match[str]) -> str:
@@ -515,8 +516,26 @@ def redact_evidence(text: str) -> str:
     # 식별자 끝에 붙은 경우 `` 가 통과시키기 때문이다.
     text = re.sub(r"(?<![A-Za-z0-9_\-/.])sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
     text = re.sub(r"AKIA[0-9A-Z]{16}", lambda m: _partial(m.group(0)), text)
+    # URL 안의 자격증명 `scheme://user:비밀@host` — 비밀번호이므로 통째로 가린다.
+    # 실측(2026-08-29): `postgres://admin:p4ssFAKE@…` 가 보고서에 원문으로 실렸다.
+    text = re.sub(r"(://[^\s:/@\"']+:)([^\s@\"']+)(@)", lambda m: f"{m.group(1)}{MASK_MARK}{m.group(3)}", text)
+    # JWT 3세그먼트 — 헤더 앞 4자만 남긴다(어느 토큰인지 식별용).
     text = re.sub(
-        r"(?i)((api[_-]?key|secret|password|passwd|pwd|token)\s*[:=]\s*[\"'])([^\"']+)([\"'])",
+        r"(eyJ[A-Za-z0-9_-]{4})[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+",
+        lambda m: f"{m.group(1)}{MASK_MARK}", text,
+    )
+    # 카드번호(Visa·MC·Amex·Discover 접두 + 13~16자리) — 앞 4·뒤 3~4 만 남긴다.
+    text = re.sub(
+        r"(?<![\d.])((?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6(?:011|5\d{2})))[- ]?\d{4}[- ]?\d{4}[- ]?(\d{3,4})(?![\d.])",
+        r"\1-****-****-\2", text,
+    )
+    # 인용값 규칙 — 키 어휘를 **탐지 룰과 같게** 둔다. 예전엔 `SECRET_KEY`·
+    # `SIGNING_KEY`·`JWT_SECRET_KEY`(접미 `_KEY`)·`비밀번호 =`·`**password** =`
+    # 가 전부 원문으로 실렸다(실측 2026-08-29). 보고서는 결재로 올라가고
+    # 감사로그에 남으므로, 여기서 못 가리면 도구가 유출본을 한 벌 더 만든다.
+    text = re.sub(
+        r"(?i)((?:[\w.\-]*[._-])?(api[_-]?key|secret(?:[_-]?key)?|signing[_-]?key|private[_-]?key"
+        r"|access[_-]?key|auth[_-]?token|password|passwd|pwd|token|비밀번호|암호)(?:\*\*)?\s*[:=]\s*[\"'])([^\"']+)([\"'])",
         _mask_quoted_value,
         text,
     )
