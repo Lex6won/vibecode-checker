@@ -28,6 +28,9 @@ detection:
     - "setInterval\\s*\\(\\s*[\"'`]"
     - 'vm\.runInNewContext\s*\('
     - 'vm\.runInThisContext\s*\('
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-JS-API-02). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: js-code-exec
   category: kisa-secure-coding
   why_it_matters: >-
     JavaScript에서 eval / new Function / 문자열을 받은 setTimeout·setInterval /

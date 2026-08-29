@@ -137,6 +137,9 @@ detection:
   # 열자 객체 리터럴 `access_token: accessToken` 이 차단으로 올라왔다.
   # 실제 비밀값이 자기 키 이름과 같을 수는 없어 진짜를 가릴 위험이 없다.
   validators: [not_self_named_value]
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-SEC-06, KISA-JS-SEC-06). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: hardcoded-credential
   category: secret-scanning
   why_it_matters: 키가 저장소나 LLM 프롬프트에 노출되면 행정시스템, 클라우드, 외부 API가 탈취될 수 있습니다.
   public_sector_impact:

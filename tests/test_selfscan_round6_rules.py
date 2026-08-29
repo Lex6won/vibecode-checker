@@ -7,7 +7,7 @@ from gvskb.scanner import scan_code
 
 
 def _ids(code: str, filename: str = "app.py") -> set[str]:
-    return {f.rule_id for f in scan_code(code, filename=filename).findings}
+    return {rid for f in scan_code(code, filename=filename).findings for rid in (f.rule_id, *f.also_matched)}
 
 
 # ── R-3 OUTPUT-HANDLING: sink 는 호출/대입 형태 ──

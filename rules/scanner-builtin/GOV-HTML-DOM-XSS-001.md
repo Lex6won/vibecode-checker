@@ -25,6 +25,9 @@ detection:
     - 'document\.write(?:ln)?\s*\([^)]*location\.'
     - '\.innerHTML\s*=[^;]*location\.'
     - 'document\.write(?:ln)?\s*\([^)]*(?:document\.URL|window\.name)'
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-JS-INPUT-04). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: html-dom-xss
   category: xss
   why_it_matters: >-
     HTML 인라인 스크립트가 `document.write(location.hash)`처럼 URL 조각을 그대로

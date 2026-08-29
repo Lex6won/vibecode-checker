@@ -23,6 +23,9 @@ review_due: 2026-11-30
 detection:
   patterns:
     - '\bos\.system\s*\(|subprocess\.(run|Popen|call)\s*\([^)]*shell\s*=\s*True'
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-INPUT-05). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: py-cmd-injection
   category: gov-secure-coding
   why_it_matters: 파일명이나 요청값이 명령어로 실행되면 서버 파일 삭제, 정보 탈취, 원격 명령 실행으로 이어질 수 있습니다.
   public_sector_impact:
