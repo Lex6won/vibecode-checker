@@ -13,9 +13,11 @@ Rules are still loaded once at import via the regex adapter. ``RULES`` and
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
+import tokenize
 from pathlib import Path
 from typing import Iterable
 
@@ -41,6 +43,7 @@ from .scanners.regex_scanner import (
 from .scanners.semgrep_scanner import SemgrepScanner
 from .schema import (
     EXPOSURE_CATEGORIES,
+    VALUE_BASED_RULE_IDS,
     Decision,
     ExternalConnection,
     Finding,
@@ -112,7 +115,8 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
     adjusted: list[Finding] = []
     for finding in findings:
         if (
-            finding.category not in _VALUE_BASED_CATEGORIES
+            (finding.category not in _VALUE_BASED_CATEGORIES
+             and finding.rule_id not in VALUE_BASED_RULE_IDS)
             or finding.severity == Severity.low
         ):
             adjusted.append(finding)
@@ -137,12 +141,17 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
 _PROHIBITION_RE = re.compile(
     r"(?i)("
     r"하지\s*(?:말|마)|말\s*것|말고|금지|삼가|피하세요|피할\s*것|않도록|"
+    # 동사+`지 마세요` 일반형 — `이렇게 쓰지 마세요: eval(x)` 가 감쇄되지 않았다
+    # (실측 2026-08-29). 위의 `하지 마` 는 '하다' 한 동사만 알았다.
+    r"[가-힣]+지\s*(?:마세요|마십시오|마라|말라)|"
     r"안\s*됩니다|안\s*된다|위험합니다|주의하세요|대신\s|권장하지|"
     # 영문 토큰은 `\s` 가 아니라 `\b` 로 끊는다. `avoid\s` 로 두었더니
     # 줄 **끝**에 온 `// avoid` 가 매치되지 않아, 같은 모양이 뒤 공백
     # 유무로 다르게 판정됐다(적대적 검증에서 검출).
-    r"must\s+not|should\s+not|do\s+not|don't|never\b|avoid\b|"
-    r"forbidden|prohibited|deprecated|instead\s+of"
+    # 왼쪽에도 `\b` — `never_cache = eval(x)`·`deprecated_eval(y)` 처럼 식별자
+    # 안의 조각이 안내문으로 읽혀 실코드가 감쇄됐다(적대적 검증 2026-08-29).
+    r"\bmust\s+not|\bshould\s+not|\bdo\s+not|\bdon't|\bnever\b|\bavoid\b|"
+    r"\bforbidden\b|\bprohibited\b|\bdeprecated\b|\binstead\s+of"
     r")"
 )
 
@@ -186,6 +195,162 @@ def attenuate_prohibition_prose_findings(
             "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
             "requires_approval_to_bypass": False,
             "severity_adjusted": f"{finding.severity.value} → low · {_PROHIBITION_REASON}",
+        }))
+    return adjusted
+
+
+_STRING_LITERAL_REASON = (
+    "문자열 리터럴 안의 코드 모양 — 실행되는 코드가 아니라 문자열(테스트 입력·"
+    "메시지·템플릿)일 가능성이 높음"
+)
+
+_STR_PREFIX_CHARS = "rRbBuUfF"
+
+
+def _python_lines_with_strings_blanked(code: str) -> dict[int, str] | None:
+    """각 줄에서 **문자열 리터럴 내용만 공백으로** 지운 사본. 파싱 실패면 None.
+
+    줄 번호 → 지워진 줄. 여러 줄 문자열은 걸친 줄 전부에서 지운다. 따옴표는
+    남겨 두어 `exec("...")` 의 바깥 `exec(` 는 그대로 보인다.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        return None
+    lines = code.splitlines()
+    out: dict[int, list[str]] = {}
+    fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", -1)
+    for tok in tokens:
+        if tok.type != tokenize.STRING and tok.type != fstring_middle:
+            continue
+        (sl, sc), (el, ec) = tok.start, tok.end
+        for ln in range(sl, el + 1):
+            if ln - 1 >= len(lines):
+                break
+            buf = out.setdefault(ln, list(lines[ln - 1]))
+            a = sc if ln == sl else 0
+            b = ec if ln == el else len(buf)
+            if tok.type == tokenize.STRING:
+                body = tok.string
+                stripped = body.lstrip(_STR_PREFIX_CHARS)
+                q = 3 if stripped.startswith(('"""', "'''")) else 1
+                if ln == sl:
+                    a = sc + (len(body) - len(stripped)) + q
+                if ln == el:
+                    b = ec - q
+            for i in range(max(a, 0), min(b, len(buf))):
+                buf[i] = " "
+    return {ln: "".join(buf) for ln, buf in out.items()}
+
+
+def attenuate_string_literal_findings(
+    findings: list[Finding], code: str, filename: str,
+) -> list[Finding]:
+    """Python 문자열 리터럴 **안에서만** 매치된 코드 모양 발견을 low·warn 으로.
+
+    실측(2026-08-29, 자기검사): tests/*.py 의 코드 실행·명령 주입 발견 159건이
+    **전부** `scan_code("eval(x)")` 같은 문자열 안이었다(tokenize 로 159/159).
+    실행되는 코드가 아니다. 그러나 **지우지 않는다** — 코드 생성기가 취약 코드를
+    문자열로 써내거나 `f.write("eval(user_input)")` 하는 사례가 있다.
+
+    노출 위험(비밀값·개인정보·내부망)은 문자열 안에 있는 것이 정상 형태이므로
+    적용하지 않는다. AST 엔진 발견은 문자열을 보고하지 않으므로 regex 만 본다.
+    판정 방법: 그 줄에서 문자열 내용을 지운 뒤 룰 패턴이 **하나도** 안 맞으면
+    매치가 문자열 안에 있었던 것이다 — 컬럼 정보 없이도 확정된다.
+    """
+    if not filename.lower().endswith((".py", ".pyw")):
+        return findings
+    if not any(
+        f.engine == "regex" and f.category not in EXPOSURE_CATEGORIES
+        and f.rule_id not in VALUE_BASED_RULE_IDS and f.severity != Severity.low
+        for f in findings
+    ):
+        return findings
+    blanked = _python_lines_with_strings_blanked(code)
+    if blanked is None:
+        return findings
+    adjusted: list[Finding] = []
+    for finding in findings:
+        line_no = finding.location.line or 0
+        if (
+            finding.engine != "regex"
+            or finding.category in EXPOSURE_CATEGORIES
+            or finding.rule_id in VALUE_BASED_RULE_IDS
+            or finding.severity == Severity.low
+            or line_no not in blanked
+        ):
+            adjusted.append(finding)
+            continue
+        rule = lookup_rule(finding.rule_id)
+        patterns = (rule or {}).get("patterns") or []
+        if not patterns or any(p.search(blanked[line_no]) for p in patterns):
+            adjusted.append(finding)      # 문자열 밖에도 매치가 있다 — 진짜 코드
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_STRING_LITERAL_REASON}",
+        }))
+    return adjusted
+
+
+_RULE_DOC_REASON = "룰 정의 문서 — 탐지 예시 코드이지 프로젝트 코드가 아님"
+
+_RULE_DOC_FRONTMATTER_START_RE = re.compile(r"^---\s*\n")
+
+
+def _looks_like_rule_definition(text: str, suffix: str) -> bool:
+    """이 파일이 **탐지 룰 정의·벤치마크 매니페스트**인가(경로와 무관하게).
+
+    실측(2026-08-29, 자기검사): 파일명에 secret/password 가 든 룰 문서 6개가
+    '비밀 파일 특례'로 스캔돼 룰의 **예시 코드**가 치명 35건으로 올라왔다.
+    `rules/` 경로를 제외하면 진짜 프로젝트의 `rules/` 업무 코드가 사각지대가
+    되므로 **구조 마커**로 판단한다 — 룰 문서·semgrep 룰·벤치마크 매니페스트에만
+    있는 형태다. 판정되면 제외가 아니라 **감쇄**한다(룰 예시에 진짜 키를 붙여
+    넣는 사고는 실제로 가능하다).
+    """
+    head = text[:4000]
+    if suffix == ".md":
+        # 닫는 `---` 를 요구하지 않는다 — 룰 문서의 frontmatter 는 패턴·주석·예시가
+        # 길어 4,000자를 넘기 일쑤다(실측: GOV-SECRET-APIKEY-001.md). 시작 표식과
+        # 세 마커가 앞부분에 함께 있으면 충분히 특정된다.
+        if not _RULE_DOC_FRONTMATTER_START_RE.match(head):
+            return False
+        return bool(
+            re.search(r"^id:\s*\S", head, re.M)
+            and re.search(r"^severity:\s*\S", head, re.M)
+            and re.search(r"^(?:detection:|\s+patterns:)", head, re.M)
+        )
+    if suffix in {".yaml", ".yml"}:
+        semgrep = (
+            re.search(r"^rules:\s*$", head, re.M)
+            and re.search(r"^\s+(?:-\s+)?id:\s*\S", head, re.M)
+            and re.search(r"^\s+(?:pattern|patterns|pattern-either|pattern-regex):", head, re.M)
+        )
+        bench = (
+            re.search(r"^cases:\s*$", head, re.M)
+            and "sink:" in text
+            and "expected_rule_ids" in text
+        )
+        return bool(semgrep or bench)
+    if suffix == ".json":
+        return '"expected_rule_ids"' in text or ('"cases"' in head and '"sink"' in text)
+    return False
+
+
+def attenuate_rule_definition_findings(findings: list[Finding]) -> list[Finding]:
+    """룰 정의 문서의 발견을 low·warn 으로 — 비밀 자재 검사(`secret-file`)는 제외."""
+    adjusted: list[Finding] = []
+    for finding in findings:
+        if finding.engine == "secret-file" or finding.severity == Severity.low:
+            adjusted.append(finding)
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_RULE_DOC_REASON}",
         }))
     return adjusted
 
@@ -374,6 +539,8 @@ def scan_code(
     # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
     # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
     findings = attenuate_prohibition_prose_findings(findings, code)
+    # 문자열 리터럴 안에서만 매치된 코드 모양 — 실행 코드가 아니다. 역시 감쇄.
+    findings = attenuate_string_literal_findings(findings, code, filename)
     # 자원을 만들어 **호출자에게 넘기는** 함수에는 with 를 요구할 수 없다.
     from .scanners.resource_owner import attenuate_returned_resource_findings
     findings = attenuate_returned_resource_findings(findings, code, filename)
@@ -1041,7 +1208,12 @@ def scan_path(
             hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), []
         ).append(rel)
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
-        all_findings.extend(report.findings)
+        file_findings = report.findings
+        # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
+        # 감쇄(비밀 자재 검사 결과는 그대로).
+        if _looks_like_rule_definition(text, f.suffix.lower()):
+            file_findings = attenuate_rule_definition_findings(file_findings)
+        all_findings.extend(file_findings)
         # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
         # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
         if _is_secret_filename(f.name):

@@ -517,7 +517,7 @@ def redact_evidence(text: str) -> str:
     text = re.sub(r"(?<![A-Za-z0-9_\-/.])sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
     text = re.sub(r"AKIA[0-9A-Z]{16}", lambda m: _partial(m.group(0)), text)
     # URL 안의 자격증명 `scheme://user:비밀@host` — 비밀번호이므로 통째로 가린다.
-    # 실측(2026-08-29): `postgres://admin:p4ssFAKE@…` 가 보고서에 원문으로 실렸다.
+    # 실측(2026-08-29): DB 접속 URL 의 `user:비밀번호@host` 자리가 보고서에 원문으로 실렸다.
     text = re.sub(r"(://[^\s:/@\"']+:)([^\s@\"']+)(@)", lambda m: f"{m.group(1)}{MASK_MARK}{m.group(3)}", text)
     # JWT 3세그먼트 — 헤더 앞 4자만 남긴다(어느 토큰인지 식별용).
     text = re.sub(
