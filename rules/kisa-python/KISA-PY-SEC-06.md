@@ -31,6 +31,9 @@ detection:
     - "(?i)(?:secret|secret_key|signing_key|jwt_secret)(?:\\*\\*)?\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))(?!(?:[^'\"]*[_\\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|changeme)(?:[_\\-.]|['\"]))[^'\"\\s$\\{]{8,}['\"]"
     - "(?i)(?:db_pass|db_password|database_password)(?:\\*\\*)?\\s*=\\s*['\"](?![^'\"]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\\*\\*\\*|예시|여기))(?!(?:[^'\"]*[_\\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|changeme)(?:[_\\-.]|['\"]))[^'\"\\s$\\{]{4,}['\"]"
     - "(?:postgres|mysql|mongodb)://[^:]+:[^@]+@"
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(GOV-SECRET-APIKEY-001, KISA-JS-SEC-06). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: hardcoded-credential
   category: secret-scanning
   why_it_matters: >-
     소스에 박힌 비밀번호·DB 접속정보·서명키는 git 이력·LLM 학습 데이터·CI

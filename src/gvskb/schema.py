@@ -250,6 +250,15 @@ class Finding(BaseModel):
     )
     # 심각도 감쇄 — 발견을 지우지 않고 등급만 낮춘다. 지우면 "왜 안 나왔지"를
     # 추적할 수 없고, 그대로 두면 가짜 값 때문에 배포가 막힌다.
+    also_matched: list[str] = Field(
+        default_factory=list,
+        description=(
+            "같은 파일·같은 줄을 같은 취약 유형으로 본 **다른 룰**의 id. 같은 dedup_group "
+            "의 룰이 겹치면 가장 확실한 엔진·근거의 발견 하나만 남기고 나머지 rule_id 를 "
+            "여기 적는다 — '1개 문제, 근거 룰 2개'이지 '2개 문제'가 아니다(개선요청 #34 C). "
+            "references 는 합집합이 된다. 비어 있으면 겹친 룰이 없었다는 뜻이다."
+        ),
+    )
     severity_adjusted: str | None = Field(
         default=None,
         description=(

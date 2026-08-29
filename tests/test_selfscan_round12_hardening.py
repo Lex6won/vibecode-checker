@@ -183,3 +183,13 @@ def test_metadata_only_pyproject_is_ok_not_unparsed(monkeypatch: pytest.MonkeyPa
     assert d["requires_review"] is True and "dynamic" in d["note"]
     junk = asyncio.run(audit_manifest("this is not a manifest", ecosystem="pypi", filename="requirements.txt"))
     assert junk["verdict"] != "ok"   # 쓰레기 텍스트는 여전히 통과가 아니다(오프라인이면 review_required)
+
+
+def test_state_file_is_not_treated_as_cache_entry(tmp_path: Path, capsys):
+    from gvskb.intel.cache import IntelCache
+    (tmp_path / ".autopull-state.json").write_text('{"last": 1}', encoding="utf-8")
+    c = IntelCache(tmp_path)
+    assert c.list_sources() == []
+    for sid in c.list_sources():
+        c.load(sid)
+    assert "sha256" not in capsys.readouterr().err

@@ -11,7 +11,8 @@ from gvskb.scanner import _html_script_view, _script_tag_is_js, scan_code
 
 
 def _ids(code: str, filename: str = "page.html") -> list[tuple[str, int]]:
-    return [(f.rule_id, f.location.line) for f in scan_code(code, filename=filename).findings]
+    return [(rid, f.location.line) for f in scan_code(code, filename=filename).findings
+            for rid in (f.rule_id, *f.also_matched)]  # 병합된 근거 룰 포함(S-8)
 
 
 def test_inline_script_innerhtml_is_detected_with_correct_line():

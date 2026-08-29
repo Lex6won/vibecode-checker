@@ -49,7 +49,7 @@ def test_civil_complaint_chatbot_profile_blocks_llm_pii_path() -> None:
 def test_internal_db_query_profile_blocks_sql_concat() -> None:
     code = 'cursor.execute("UPDATE board SET name=%s" % name)\n'
     r = scan_code(code, filename="ingest.py", language="python", profile="internal-db-query")
-    sql = [f for f in r.findings if f.rule_id == "KISA-PY-INPUT-01"]
+    sql = [f for f in r.findings if "KISA-PY-INPUT-01" in (f.rule_id, *f.also_matched)]
     assert sql and sql[0].decision == Decision.block
 
 

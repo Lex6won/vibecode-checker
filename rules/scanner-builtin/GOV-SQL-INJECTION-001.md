@@ -30,6 +30,9 @@ detection:
     - "execute\\s*\\(\\s*f[\"'](?!\\s*(?:ALTER|CREATE|DROP|TRUNCATE|RENAME|PRAGMA|ATTACH|DETACH|REINDEX|VACUUM|ANALYZE)\\b)"
     - 'execute\s*\([^)]*\.format\s*\('
     - 'execute\s*\([^)]*\+[^)]*\)'
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-INPUT-01). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: py-sql-injection
   category: gov-secure-coding
   why_it_matters: >-
     SQL 을 문자열로 조립하면, 그 조각에 사용자 입력이 닿는 순간 SQL 삽입이

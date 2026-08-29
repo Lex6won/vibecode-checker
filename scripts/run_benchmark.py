@@ -76,6 +76,7 @@ def run_scan(profile: str | None = None) -> list[dict]:
                 "file": rel_to_projects(f.location.file),
                 "line": f.location.line,
                 "rule_id": f.rule_id,
+                "also_matched": list(getattr(f, "also_matched", []) or []),
                 "severity": f.severity.value,
                 "category": f.category,
                 "engine": f.engine,
@@ -92,7 +93,8 @@ def match(case: dict, findings: list[dict], tol: int = LINE_TOL) -> dict | None:
             continue
         ids = case.get("expected_rule_ids") or []
         if ids:
-            if fnd["rule_id"] in ids:
+            # 같은 줄의 다른 룰이 대표로 남고 기대 룰은 also_matched 에 있을 수 있다.
+            if fnd["rule_id"] in ids or any(a in ids for a in fnd.get("also_matched", [])):
                 return fnd
         else:
             # rule id 예측 불가 → 같은 파일·라인의 어떤 발견이든 탐지로 인정

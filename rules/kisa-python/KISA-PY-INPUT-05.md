@@ -26,6 +26,9 @@ detection:
     - 'os\.popen\s*\('
     - 'subprocess\.(?:run|call|check_call|check_output|Popen)\s*\([^)]*shell\s*=\s*True'
     - 'commands\.(?:getoutput|getstatusoutput)\s*\('
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(GOV-CMD-INJECTION-001). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: py-cmd-injection
   category: kisa-secure-coding
   why_it_matters: >-
     os.system / os.popen / subprocess의 shell=True는 *셸을 통과해 명령을 실행*하므로

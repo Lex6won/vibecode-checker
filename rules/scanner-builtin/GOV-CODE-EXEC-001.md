@@ -23,6 +23,9 @@ detection:
     # 2026-08-29, 13줄). KISA-PY-INPUT-02 와 같은 경계를 쓰고, `builtins.exec`
     # 로 우회하는 형태만 명시적으로 되살린다.
     - '(?<![A-Za-z0-9_.])(eval|exec)\s*\(|\bbuiltins\.(eval|exec)\s*\('
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-INPUT-02). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: py-code-exec
   category: gov-secure-coding
   why_it_matters: 사용자 입력이나 LLM 출력이 eval/exec로 실행되면 공격자가 임의 코드를 실행할 수 있습니다.
   public_sector_impact:

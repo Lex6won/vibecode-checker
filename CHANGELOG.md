@@ -5,6 +5,28 @@
 
 ## [Unreleased]
 
+### 14차 — 같은 줄·같은 유형은 "1개 문제, 근거 룰 2개" (S-8, 개선요청 #34 C) — 2026-08-30
+
+자기검사 때 보류한 S-8 을 포털 요청으로 착수했다(포털은 `rule_id` 를 소비하지 않음을
+확인). JSON 계약 변화는 **추가 필드 `Finding.also_matched`** 와 건수 감소 두 가지다.
+
+- `dedup_group` 선언 7묶음 15룰: py-code-exec(GOV-CODE-EXEC-001·KISA-PY-INPUT-02) ·
+  py-cmd-injection · py-sql-injection · js-code-exec(KISA-JS-API-02·INPUT-02) ·
+  hardcoded-credential(GOV-SECRET-APIKEY-001·KISA-PY-SEC-06·KISA-JS-SEC-06) ·
+  password-hashing(SEC-04·SEC-14) · html-dom-xss(GOV-HTML-DOM-XSS-001·KISA-JS-INPUT-04).
+- 대표 선정 순위를 (심각도, 결정, rule_id) 에서 **(엔진 정밀도, 근거, 심각도, 결정,
+  GOV 우선, rule_id)** 로 — 예전엔 동점이면 문자열 비교로 regex KISA 가 AST-confirmed
+  GOV 를 밀어냈다. 패자의 rule_id 는 `also_matched`, references 는 합집합.
+- 예외 파일(suppressions)·프로파일 decision_overrides 는 `also_matched` 의 id 로도
+  매칭한다(여러 개면 가장 엄격한 쪽). 보고서 카드·표·MD 는 `A (+B)` 로 표기.
+  벤치마크 매칭도 also_matched 를 인정.
+- 룰별 지표(`collapse_duplicates=False`)는 불변. RULESET.lock 2026.08.30.
+- 자기 검사 재측정: 603 → **466건**(병합 169, 차단 48 → 41). 벤치마크 recall 100%·FP 0.
+- 곁가지: 12차 fail-closed 캐시가 상태 파일 `.autopull-state.json` 에 매 검사마다
+  경고를 냈다 — 캐시 항목 열거에서 점 파일 제외.
+
+테스트 **1838 passed**.
+
 ### 13차 — HTML 인라인 <script> 는 JavaScript 다 (개선요청 #34 D3) — 2026-08-30
 
 포털 자체 점검(개선요청 #34)이 "my-scans.html 의 innerHTML XSS 를 체커가 못 잡았다"고

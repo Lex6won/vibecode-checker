@@ -13,7 +13,8 @@ from gvskb.scanners.regex_scanner import redact_evidence
 
 
 def _ids(code: str, filename: str, language: str | None = None) -> set[str]:
-    return {f.rule_id for f in scan_code(code, filename=filename, language=language).findings}
+    return {rid for f in scan_code(code, filename=filename, language=language).findings
+            for rid in (f.rule_id, *f.also_matched)}  # 병합된 근거 룰 포함(S-8)
 
 
 # ── S-1: 데이터 파일 언어 스코프 ───────────────────────────────────────────
@@ -69,7 +70,7 @@ def test_code_exec_ignores_method_receivers(code):
     "exec (payload)",
 ])
 def test_code_exec_still_fires_on_builtins(code):
-    fs = [f for f in scan_code(code, filename="app.py").findings if f.rule_id == "GOV-CODE-EXEC-001"]
+    fs = [f for f in scan_code(code, filename="app.py").findings if "GOV-CODE-EXEC-001" in (f.rule_id, *f.also_matched)]
     assert fs and fs[0].decision.value == "block"
 
 

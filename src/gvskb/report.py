@@ -2669,7 +2669,7 @@ def _render_rule_group_html(group: dict) -> list[str]:
         f'{_esc(_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT))}</code></span></div>'
     )
     out.append(
-        f'<div class="row"><span class="tag">{_esc(f.rule_id)}</span>'
+        f'<div class="row"><span class="tag">{_esc(_rule_label(f))}</span>'
         f'<span class="tag">{_esc(f.category)}</span>'
         f'<span class="tag">{_esc(_confidence_label(f.confidence, f.engine))}</span></div>'
     )
@@ -2744,7 +2744,7 @@ def _render_suppressions_md(suppressed: list[Finding]) -> list[str]:
     for f in suppressed:
         reason = (f.suppress_reason or "").replace("|", "\\|")  # MD 표 파이프 이스케이프
         out.append(
-            f"| `{f.rule_id}` | `{f.location.file}:{f.location.line}` | "
+            f"| `{_rule_label(f)}` | `{f.location.file}:{f.location.line}` | "
             f"{_SEVERITY_LABEL_KO[f.severity]} | {reason} |"
         )
     out.append("")
@@ -2764,7 +2764,7 @@ def _render_suppressions_html(suppressed: list[Finding]) -> list[str]:
     ]
     for f in suppressed:
         out.append(
-            f"<tr><td>{_esc(f.rule_id)}</td>"
+            f"<tr><td>{_esc(_rule_label(f))}</td>"
             f"<td>{_esc(f.location.file)}:{f.location.line}</td>"
             f"<td>{_esc(_SEVERITY_LABEL_KO[f.severity])}</td>"
             f"<td>{_esc(f.suppress_reason or '')}</td></tr>"
@@ -3575,7 +3575,7 @@ def _render_finding_group_md(group: dict) -> list[str]:
     )
     out.append("")
     out.append(f"- **위치**: {_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT)}")
-    out.append(f"- **룰**: `{f.rule_id}`")
+    out.append(f"- **룰**: `{_rule_label(f)}`")
     out.append(f"- **카테고리**: {f.category}")
     out.append(f"- **판정 근거**: {_confidence_label(f.confidence, f.engine)}")
     # 등급을 낮췄으면 그 사실과 이유를 반드시 함께 보여준다 — 조용히 낮추면
@@ -3613,6 +3613,13 @@ def _md_code(text: str) -> str:
     longest = max(len(m) for m in re.findall(r"`+", text))
     fence = "`" * (longest + 1)
     return f"{fence} {text} {fence}"
+
+
+def _rule_label(f) -> str:
+    """`KISA-PY-INPUT-02 (+GOV-CODE-EXEC-001)` — 한 문제를 본 다른 룰을 함께 적는다."""
+    if getattr(f, "also_matched", None):
+        return f"{f.rule_id} (+{', '.join(f.also_matched)})"
+    return f.rule_id
 
 
 def _oneline(text: str, limit: int = 160) -> str:

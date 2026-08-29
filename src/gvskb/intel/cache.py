@@ -187,4 +187,6 @@ class IntelCache:
     def list_sources(self) -> list[str]:
         if not self.cache_dir.exists():
             return []
-        return sorted(p.stem for p in self.cache_dir.glob("*.json"))
+        # `.autopull-state.json` 같은 상태 파일은 캐시 항목이 아니다 — 무결성 검사에
+        # 걸려 매 검사마다 경고를 냈다(S-8 재측정 2026-08-30).
+        return sorted(p.stem for p in self.cache_dir.glob("*.json") if not p.name.startswith("."))

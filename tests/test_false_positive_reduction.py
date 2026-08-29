@@ -213,7 +213,7 @@ def test_injection_rules_are_not_attenuated_in_tests() -> None:
     """값이 아니라 *코드 모양*이 문제인 룰은 테스트 코드에서도 그대로 둔다."""
     code = 'cursor.execute("SELECT * FROM users WHERE id = %s" % user_id)'
     findings = scan_code(code, filename="tests/test_db.py", language="python").findings
-    sqli = [f for f in findings if f.rule_id == "KISA-PY-INPUT-01"]
+    sqli = [f for f in findings if "KISA-PY-INPUT-01" in (f.rule_id, *f.also_matched)]
     assert sqli and sqli[0].severity_adjusted is None
 
 
@@ -242,7 +242,8 @@ def test_overlapping_error_rules_collapse_to_one_finding() -> None:
 
 
 def test_dedup_keeps_findings_without_a_group() -> None:
-    code = 'password = "Ab3xK9mQ2pR7sT1uV"'
+    # 하드코딩 자격증명 룰은 S-8 에서 hardcoded-credential 그룹이 됐다 — 그룹 없는 룰로 본다.
+    code = 'app.run(host="0.0.0.0", debug=True)'
     findings = scan_code(code, filename="app/settings.py", language="python",
                          collapse_duplicates=False).findings
     assert dedupe_by_group(findings) == findings

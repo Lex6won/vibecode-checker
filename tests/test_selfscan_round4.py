@@ -19,7 +19,7 @@ def _find(code: str, filename: str = "app.py"):
 
 
 def _one(code: str, rule: str, filename: str = "app.py"):
-    fs = [f for f in _find(code, filename) if f.rule_id == rule]
+    fs = [f for f in _find(code, filename) if rule in (f.rule_id, *f.also_matched)]  # S-8 병합
     assert fs, f"{rule} 가 발화해야 한다: {code!r}"
     return fs[0]
 
@@ -144,8 +144,8 @@ def test_identifier_fragments_do_not_count_as_prohibition(code):
 # ── 자기검사 재점검(2026-08-29): 주석 안의 코드 모양은 실행되지 않는다 ──
 def test_code_shape_in_comment_is_attenuated_but_real_call_on_same_line_is_not():
     rep = scan_code('x = load(v)  # 예전에는 eval(v) 였음', filename="app.py")
-    ex = [f for f in rep.findings if f.rule_id == "GOV-CODE-EXEC-001"]
+    ex = [f for f in rep.findings if "GOV-CODE-EXEC-001" in (f.rule_id, *f.also_matched)]
     assert ex and ex[0].decision.value != "block" and ex[0].severity_adjusted
     rep2 = scan_code('y = eval(v)  # eval 은 위험', filename="app.py")
-    ex2 = [f for f in rep2.findings if f.rule_id == "GOV-CODE-EXEC-001"]
+    ex2 = [f for f in rep2.findings if "GOV-CODE-EXEC-001" in (f.rule_id, *f.also_matched)]
     assert ex2 and ex2[0].decision.value == "block"

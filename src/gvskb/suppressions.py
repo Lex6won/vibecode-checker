@@ -145,7 +145,8 @@ def apply_suppressions(
 
     for f in findings:
         for e in valid:
-            if f.rule_id != e["rule_id"]:
+            # 같은 줄의 다른 룰이 대표로 남고 예외의 rule_id 는 also_matched 에 있을 수 있다.
+            if e["rule_id"] not in (f.rule_id, *getattr(f, "also_matched", [])):
                 continue
             if _norm(f.location.file) != _norm(str(e["file"])):
                 continue

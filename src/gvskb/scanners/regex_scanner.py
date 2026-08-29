@@ -578,14 +578,41 @@ _SEVERITY_RANK = {
 _DECISION_RANK = {Decision.block: 2, Decision.warn: 1, Decision.allow: 0}
 
 
+# 엔진의 근거 강도. 예전 순위는 (심각도, 결정, rule_id) 라 동점이면 문자열 비교로
+# "KISA-" 가 "GOV-" 를 이겨 **regex KISA 가 AST-confirmed GOV 를 밀어냈다**(자기검사
+# 2026-08-29, S-8). 데이터 흐름을 본 발견이 패턴만 본 발견보다 앞서야 한다.
+_ENGINE_PRECISION = {
+    "python-ast": 3, "js-taint": 2, "semgrep": 2, "secret-file": 1, "regex": 1,
+}
+_CONFIDENCE_RANK = {"confirmed": 3, "likely": 2, "pattern-only": 1}
+
+
 def _dedup_rank(finding: Finding) -> tuple:
-    # 심각도 → 결정 → rule_id 순. rule_id 를 마지막에 넣어 같은 무게일 때
-    # 실행 순서와 무관하게 항상 같은 룰이 남게 한다(리포트 재현성).
+    # 엔진 정밀도 → 근거 → 심각도 → 결정 → rule_id. rule_id 를 마지막에 넣어
+    # 같은 무게일 때 실행 순서와 무관하게 항상 같은 룰이 남게 한다(리포트 재현성).
     return (
+        _ENGINE_PRECISION.get(finding.engine or "", 0),
+        _CONFIDENCE_RANK.get(finding.confidence or "", 0),
         _SEVERITY_RANK.get(finding.severity, 0),
         _DECISION_RANK.get(finding.decision, 0),
+        # 엔진·근거·무게가 전부 같으면 공공 특화 룰(GOV-)이 대표다 — 안전한 수정·
+        # 공공 영향 설명이 그쪽에 있고, 포털·하네스가 참조하는 id 도 대부분 GOV 다.
+        1 if finding.rule_id.startswith("GOV-") else 0,
         finding.rule_id,
     )
+
+
+def _merge_into(winner: Finding, loser: Finding) -> Finding:
+    """패자의 rule_id·references 를 승자에 합친다 — 근거를 버리지 않는다."""
+    also = list(winner.also_matched)
+    for rid in [loser.rule_id, *loser.also_matched]:
+        if rid != winner.rule_id and rid not in also:
+            also.append(rid)
+    refs = list(winner.references)
+    for r in loser.references:
+        if r not in refs:
+            refs.append(r)
+    return winner.model_copy(update={"also_matched": also, "references": refs})
 
 
 def dedupe_by_group(findings: list[Finding]) -> list[Finding]:
@@ -610,7 +637,9 @@ def dedupe_by_group(findings: list[Finding]) -> list[Finding]:
             seen[key] = len(kept)
             kept.append(finding)
         elif _dedup_rank(finding) > _dedup_rank(kept[index]):
-            kept[index] = finding
+            kept[index] = _merge_into(finding, kept[index])
+        else:
+            kept[index] = _merge_into(kept[index], finding)
     return kept
 
 
