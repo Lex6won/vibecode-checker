@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+### 자기검사 10차 — 코퍼스·벤치마크가 실제 호출 조건을 말하게 (Corpus) — 2026-08-29
+
+- 에이전트 권한 룰(GOV-AGENT-EXCESSIVE-AUTHORITY-001)의 정밀도·재현율을 코퍼스가 한 번도
+  재지 않았다. `d_llm_chatbot/agent_tools.py` 신설 — D-07(`agent.delete_file(path)` 양성)
+  · D-08(`tools.delete(name)` 집합 연산, 음성).
+- 벤치마크가 기본 프로파일 recall 1.0 만 보고해, 하네스가 실제로 부르는 `dev-quick`
+  (severity_min=high)에서 medium 룰이 조용히 빠지는 사실을 숨겼다. `vuln_recall_dev_quick`
+  과 빠지는 케이스 목록(A-11 KISA-PY-ERR-03 · C-01 혼합 콘텐츠)을 함께 적는다.
+- 재실행: recall **40/40**, 음성 대조군 FP 0, dev-quick 0.95(A-11·C-01).
+
+**자기검사 10단계 종합** — 493건/차단 297 → 425건/차단 47(잔여 전부 eval_corpus 고의
+샘플, 신규 테스트 픽스처 제외). `src/`·`config/`·`rules/`·`tests/` 차단 0. 테스트 1028 →
+1770+. 수정 명세 44항목 중 41항목 적용, 보류 3(S-8 dedup 병합·R-11·P-13).
+
 ### 자기검사 9차 — 보고서가 자기 결과를 정직하게 말하게 (Report) — 2026-08-29
 
 보고서 감사 결과 **수치는 전부 맞았다**. 결함은 의미와 문구였다.
