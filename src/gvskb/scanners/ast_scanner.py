@@ -93,6 +93,36 @@ def _collect_import_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
+def _argv_spawns_shell_with_dynamic_command(call: ast.Call) -> bool:
+    if not call.args or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+        return False
+    elts = call.args[0].elts
+    strs = [e.value if isinstance(e, ast.Constant) and isinstance(e.value, str) else None for e in elts]
+    for i, s in enumerate(strs):
+        if s is None or s.rsplit("/", 1)[-1] not in {"sh", "bash", "zsh", "dash", "cmd", "cmd.exe", "powershell", "pwsh"}:
+            continue
+        rest = strs[i + 1:]
+        for j, t in enumerate(rest):
+            if t in {"-c", "/c", "/C", "-Command"}:
+                # `-c` 바로 뒤의 **명령 문자열 자체**가 동적일 때만 잡는다.
+                # `["cmd", "/c", "del", fname]` 처럼 명령어가 상수이고 뒤가 인자인
+                # 형태는 코퍼스가 음성으로 고정한 판정이다(g_clean_twins).
+                return j + 1 < len(rest) and rest[j + 1] is None
+    return False
+
+
+def _yaml_loader_is_safe(call: ast.Call) -> bool:
+    for kw in call.keywords:
+        if kw.arg == "Loader":
+            name = kw.value.attr if isinstance(kw.value, ast.Attribute) else getattr(kw.value, "id", "")
+            return "Safe" in str(name)
+    if len(call.args) >= 2:
+        node = call.args[1]
+        name = node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", "")
+        return "Safe" in str(name)
+    return False   # Loader 미지정: PyYAML<6 은 FullLoader 경고, 5.x 이하는 임의 객체
+
+
 def _kw_is_true(call: ast.Call, name: str) -> bool:
     for kw in call.keywords:
         if kw.arg == name and isinstance(kw.value, ast.Constant) and kw.value.value is True:
@@ -160,6 +190,16 @@ class _Visitor(ast.NodeVisitor):
             if len(parts) >= 2 and parts[0] == "subprocess" and parts[1] in _SUBPROCESS_FUNCS:
                 if _kw_is_true(node, "shell"):
                     self._record("KISA-PY-INPUT-05", node.lineno)
+                # 3b') shell=True 없이 `["sh", "-c", cmd]` — 셸을 직접 띄우는 것과
+                # 같다(미탐, eval_corpus s04_privesc.py). 리스트 안에 sh/bash 와 -c 가
+                # 있고 그 뒤 원소가 상수가 아니면 잡는다.
+                elif _argv_spawns_shell_with_dynamic_command(node):
+                    self._record("KISA-PY-INPUT-05", node.lineno)
+
+            # 3b'') yaml.load(...) — Loader 가 Safe 계열이 아니면 임의 객체 생성
+            if len(parts) >= 2 and parts[0] == "yaml" and parts[1] == "load":
+                if not _yaml_loader_is_safe(node):
+                    self._record("KISA-PY-CODE-03", node.lineno)
 
             # 3c) hashlib.md5() / hashlib.sha1() — direct
             if len(parts) >= 2 and parts[0] == "hashlib" and parts[1] in _WEAK_HASH_FUNCS:
@@ -211,7 +251,12 @@ _SQL_EXEC_METHODS = {"execute", "executemany", "executescript"}
 _LLM_SINK_RE = re.compile(
     r"(?:chat\.completions\.create|completions\.create|responses\.create"
     r"|messages\.create|ChatCompletion\.create|generate_content"
-    r"|\.chat|\.complete)$"
+    r"|\.chat|\.complete"
+    # LangChain 계열 — 공공 챗봇에서 가장 흔한 형태인데 미탐이었다(적대적 검증
+    # 2026-08-29). `db.invoke`·`queue.stream` 오탐을 막으려고 수신자 이름을
+    # llm/chain/model/chat 계열로 한정한다.
+    r"|(?:^|\.)(?:llm|chain|model|chat|chat_model|agent)\w*\.(?:invoke|ainvoke|predict|stream|astream)"
+    r")$"
 )
 
 
@@ -265,6 +310,13 @@ def _expr_builds_dynamic_sql(node: ast.AST, tainted: set[str], env: ConstEnv | N
         return _fstring_is_dynamic(node, env)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _add_mixes_literal_and_dynamic(node, env)
+    # `"… %s" % value` — % 포맷도 문자열 조립이다(SQL·프롬프트 공통 미탐, 2026-08-29).
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+            and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str)):
+        right = node.right
+        if env is not None and expr_is_constant(right, env):
+            return False
+        return not isinstance(right, ast.Constant)
     if isinstance(node, ast.IfExp):
         return _expr_builds_dynamic_sql(node.body, tainted, env) or \
             _expr_builds_dynamic_sql(node.orelse, tainted, env)
@@ -394,7 +446,34 @@ def _call_passes_dynamic_prompt(call: ast.Call, tainted: set[str]) -> bool:
                 return True
             if isinstance(node, (ast.BinOp, ast.JoinedStr)) and _expr_builds_dynamic_sql(node, tainted):
                 return True
+            # `SYSTEM_PROMPT + user_input` — 리터럴이 없어 위 판정을 비껴간다.
+            # 대문자 상수 이름(지시문 상수의 관례)과 동적 값의 결합은 같은 모양이다.
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and _adds_instruction_constant(node):
+                return True
+            # `"요약: %s" % user_input` — % 포맷도 결합이다.
+            if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+                    and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str)
+                    and not isinstance(node.right, ast.Constant)):
+                return True
     return False
+
+
+_INSTRUCTION_CONST_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+
+
+def _adds_instruction_constant(node: ast.BinOp) -> bool:
+    """`+` 체인에 대문자 상수 이름(SYSTEM_PROMPT 류)과 비상수 값이 함께 있는가."""
+    has_const = has_dyn = False
+    stack: list[ast.AST] = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+            stack.extend((n.left, n.right))
+        elif isinstance(n, ast.Name) and _INSTRUCTION_CONST_RE.match(n.id):
+            has_const = True
+        elif isinstance(n, (ast.Name, ast.Call, ast.Attribute, ast.Subscript, ast.Await)):
+            has_dyn = True
+    return has_const and has_dyn
 
 
 def _scope_env(
@@ -435,6 +514,23 @@ def _dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: ConstEnv)
             found_param = True
         else:
             return False   # 매개변수 아닌 동적 이름이 섞였다 → 스코프 안에서 추적된 것
+    return found_param
+
+
+def _prompt_dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: ConstEnv) -> bool:
+    """프롬프트 인자 판 — `SYSTEM_PROMPT` 같은 대문자 지시문 상수는 동적 이름으로 세지 않는다."""
+    if not params:
+        return False
+    found_param = False
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Name) or isinstance(n.ctx, ast.Store):
+            continue
+        if expr_is_constant(n, env) or _INSTRUCTION_CONST_RE.match(n.id):
+            continue
+        if n.id in params:
+            found_param = True
+        else:
+            return False
     return found_param
 
 
@@ -490,7 +586,11 @@ def _process_scope(
             src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
             if _is_ignored(src, "GOV-LLM-PROMPT-INJECTION-001"):
                 continue
-            hits.append(("GOV-LLM-PROMPT-INJECTION-001", line_no, redact_evidence(src)))
+            # SQL 과 같은 규약: 동적 부분이 매개변수뿐이면 출처를 추적한 적이 없다.
+            args_root = ast.Tuple(elts=list(call.args) + [kw.value for kw in call.keywords])
+            conf = ("likely" if _prompt_dynamic_part_is_a_parameter(args_root, scope_params, env)
+                    else _CONFIDENCE_BY_RULE.get("GOV-LLM-PROMPT-INJECTION-001", "likely"))
+            hits.append(("GOV-LLM-PROMPT-INJECTION-001", line_no, redact_evidence(src), conf))
         # 2) recurse into compound bodies with the same (flow-insensitive) taint.
         for body in _sub_statement_bodies(stmt):
             _process_scope(body, tainted, hits, source_lines, env, literal_params, scope_params)
