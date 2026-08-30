@@ -13,9 +13,9 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-1589_passed-success.svg)
-![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-37%2F37_탐지_·_오탐_0-success.svg)
-![룰](https://img.shields.io/badge/보안_룰-탐지_99_·_참조_227-orange.svg)
+![Tests](https://img.shields.io/badge/tests-1909_passed-success.svg)
+![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-42%2F42_탐지_·_오탐_0-success.svg)
+![룰](https://img.shields.io/badge/보안_룰-탐지_101_·_참조_227-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
 
 </div>
@@ -328,7 +328,7 @@ gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳
 | 개인정보 노출 | 주민등록번호·전화번호 평문 저장, 로그 출력 |
 | SQL 삽입 | `"SELECT … WHERE name='" + name + "'"` |
 | 위험한 코드 실행 | `eval()`, `exec()`, `os.system(사용자입력)` |
-| 웹 취약점 | XSS, 경로 조작, Flask `debug=True` 배포 |
+| 웹 취약점 | XSS, 경로 조작, 응답에 그대로 실리는 비밀번호·로그인 링크, Flask `debug=True` 배포 |
 | 취약·가짜 패키지 | 알려진 CVE, 오타를 노린 typosquat(`reqeusts`) |
 | 폴더에 넣어둔 외부 라이브러리 | `static/xlsx.full.min.js` 처럼 직접 받아둔 파일 — 라이브러리·버전을 식별해 알려진 취약점과 대조 (`package.json` 이 없어도 검사) |
 | AI 특화 위험 | 프롬프트 인젝션(신뢰할 수 없는 입력이 LLM 프롬프트에 결합), 프롬프트에 개인정보 전송, LLM 출력 무검증 실행 |
@@ -347,7 +347,7 @@ gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳
 | **OWASP** | LLM Top 10 · Agentic Top 10 · AI Testing Guide |
 | **실시간 취약점 피드** | OSV.dev · CISA KEV · NVD · FIRST EPSS |
 
-룰은 총 **326개**입니다 — 탐지 룰 99개(검사에서 발견을 만드는 룰) + 참조 룰 227개(발견의 근거·출처로 인용되는 지식 룰). 모든 룰은 Markdown 파일로 정의되어 누구나 읽고 검토할 수 있습니다.
+룰은 총 **328개**입니다 — 탐지 룰 101개(검사에서 발견을 만드는 룰) + 참조 룰 227개(발견의 근거·출처로 인용되는 지식 룰). 모든 룰은 Markdown 파일로 정의되어 누구나 읽고 검토할 수 있습니다.
 
 ### 위협 정보(인텔)는 매일 자동 갱신됩니다
 
@@ -361,13 +361,13 @@ GitHub Actions가 **매일 03:00(KST)** 4개 피드(OSV 악성 패키지·CISA K
 
 ## 성능과 한계
 
-실무형 프로젝트 5종(민원 웹앱·API 서버·정적 페이지·LLM 챗봇·데이터 처리)에 취약점 37개를 심은 벤치마크에서 **37건 전부 탐지했고, 안전한 코드를 잘못 지적한 오탐은 0건**이었습니다. 벤치마크와 결과는 저장소(`eval_corpus/`)에 포함되어 있어 누구나 재현할 수 있습니다.
+실무형 프로젝트 5종(민원 웹앱·API 서버·정적 페이지·LLM 챗봇·데이터 처리)에 취약점 42개를 심은 벤치마크에서 **42건 전부 탐지했고, 안전한 코드를 잘못 지적한 오탐은 0건**이었습니다. 벤치마크와 결과는 저장소(`eval_corpus/`)에 포함되어 있어 누구나 재현할 수 있습니다.
 
 **다만 어떤 자동 점검 도구도 모든 위험을 잡지 못합니다.** 이 도구의 한계는 다음과 같습니다.
 
 | 한계 | 내용 |
 |---|---|
-| 일부러 숨긴 코드 | 난독화·우회 변형 9개 중 **4개만 탐지** — 악의적으로 숨긴 코드는 놓칠 수 있습니다 |
+| 일부러 숨긴 코드 | 난독화·우회 변형 11개 중 **4개만 탐지** — 악의적으로 숨긴 코드는 놓칠 수 있습니다 |
 | 탐지하지 못하는 유형 | 보안 지침이 요구하는 항목 중 현재 탐지하지 못하는 **15건을 목록으로 공개**하고 있습니다 |
 | 정적 분석의 한계 | 설계·권한·업무 로직상 취약점, 실행 중에만 드러나는 취약점은 잡지 못합니다 |
 
@@ -465,7 +465,7 @@ gvskb scan . --check-deps --sbom sbom.json   # 검사하면서 CycloneDX 1.6 SBO
 gvskb sbom vendor-sbom.json                  # 건네받은 SBOM 검사 (CycloneDX·SPDX JSON)
 ```
 
-판정하지 못한 컴포넌트도 SBOM에서 빼지 않고 사유를 남깁니다 — 빠지면 "그 패키지는 안전하다"로 읽히기 때문입니다. 엔진 버전과 룰셋 버전도 문서에 기록됩니다.
+컴포넌트마다 버전·라이선스·공급자 정보를 담고, 어떤 패키지가 어떤 패키지를 쓰는지(의존성 관계)도 함께 표시합니다 — 락파일(package-lock.json·poetry.lock 등)을 검사하면 전이 의존성까지, requirements.txt·package.json 같은 매니페스트만 있으면 직접 의존성까지 나옵니다. 판정하지 못한 컴포넌트도 SBOM에서 빼지 않고 사유를 남깁니다 — 빠지면 "그 패키지는 안전하다"로 읽히기 때문입니다. 엔진 버전과 룰셋 버전도 문서에 기록됩니다.
 
 ### 판정 재현 — 룰셋 고정
 
