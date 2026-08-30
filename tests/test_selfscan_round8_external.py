@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from gvskb.scanners.external_surface import extract_api_connections, _lookup_host, _URL_RE
-from gvskb.scanner import scan_code
 
 
 def _one(code: str, filename: str = "app.py"):
