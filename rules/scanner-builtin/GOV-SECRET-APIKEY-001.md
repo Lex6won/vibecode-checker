@@ -99,7 +99,16 @@ detection:
     # 실제 비밀번호가 전부 대문자·숫자·밑줄로만 이뤄질 수 있지만, 그 미탐보다
     # **정상 코드를 차단하는 쪽이 훨씬 비싸다**(도구를 끄게 만든다).
     - '(?i)^[ \t]*(\*\*)?(?:(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)[ \t]*:[ \t]*|[\w\-]+(?:\.[\w\-]+)*\.(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)[ \t]*=[ \t]*|(?-i:[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN)|(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN))(?(1)\*\*)[ \t]*=[ \t]*|(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)=)(?!(?:\$\{[^}]+\}|\$[A-Za-z_]\w*|%[A-Za-z_]\w*%|\{\{[^}]+\}\})[ \t]*(?:[#;].*)?$)(?![^\s#;]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))(?![^\s#;]*[(),])(?!(?-i:[A-Z][A-Z0-9_]*)[ \t]*(?:[#;].*)?$)[^\s\"'',#;]{6,}[ \t]*(?:[#;].*)?$'
-    - 'sk-[A-Za-z0-9_-]{20,}'
+    # ── 벤더 접두사 토큰은 전부 **좌측 경계**를 건다 ──
+    # 접두사 패턴에 경계가 없으면 단어 중간에서 시작한다: `ai-risk-management-
+    # framework`(NIST 공개 URL)에서 ri 뒤의 sk- 이하가 정확히 20자라
+    # 제품 설정 파일이 치명·차단으로 올라왔다(실측 2026-08-29). `desk-`·`task-`·
+    # `mask_token…`·`NAKIA…`·`laughp_…` 도 같은 결함. `\b` 대신 lookbehind 를
+    # 쓰는 이유: `_sk-…` 처럼 식별자 끝에 붙으면 `\b` 는 통과시킨다. `sk-` 는
+    # URL 경로 조각(`/risk-…`, `example.sk-…`)까지 막으려고 `/`·`.` 도 넣는다.
+    # `Bearer sk-…`·`="sk-…"`·`=sk-…`(.env)·`?key=sk-…`·`{"key":"sk-…"}` 는
+    # 전부 계속 잡힌다(회귀 테스트).
+    - '(?<![A-Za-z0-9_\-/.])sk-[A-Za-z0-9_-]{20,}'
     # sk_<벤더>_<본문> 형태 — Stripe(sk_live_·sk_test_), 기관 발급 키 등.
     # `sk_` 만으로는 잡지 않는다: 하이픈과 달리 언더스코어는 식별자에 흔해
     # sk_some_long_variable_name 같은 정상 코드가 오탐이 된다. 그래서
@@ -107,27 +116,30 @@ detection:
     #   ② 본문에 숫자나 대문자가 최소 1개 있을 것을 요구한다(전부 소문자면
     #      키가 아니라 식별자일 가능성이 높다. 32자 난수 키가 숫자·대문자를
     #      하나도 안 가질 확률은 무시할 수준).
-    - 'sk_[A-Za-z0-9]{2,}_(?=[A-Za-z0-9]*[0-9A-Z])[A-Za-z0-9]{16,}'
-    - 'AKIA[0-9A-Z]{16}'
+    - '(?<![A-Za-z0-9_\-])sk_[A-Za-z0-9]{2,}_(?=[A-Za-z0-9]*[0-9A-Z])[A-Za-z0-9]{16,}'
+    - '(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}(?![A-Za-z0-9])'
     # ── 벤더 접두사 토큰 ──
     # 접두사가 곧 신원이라 **오탐이 구조적으로 거의 없다**. 값 이름을 보지
     # 않으므로 `headers: {Authorization: "Bearer ghp_..."}` 처럼 변수명 없이
     # 문자열로만 박힌 자리도 잡는다 — 실측(2026-08-08)에서 GitHub 토큰이
     # 통째로 미탐이었고, 이는 실제 유출 사고 유형 1위다.
     # 자릿수를 함께 요구해 `ghp_something` 같은 평범한 식별자와 가른다.
-    - 'gh[pousr]_[A-Za-z0-9]{36,}'
-    - 'github_pat_[A-Za-z0-9_]{60,}'
-    - 'glpat-[A-Za-z0-9_\-]{20,}'
-    - 'xox[baprs]-[A-Za-z0-9-]{10,}'
-    - 'npm_[A-Za-z0-9]{36}'
-    - 'dop_v1_[a-f0-9]{64}'
-    - 'SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}'
-    # PEM 개인키 블록 — 파일 확장자와 무관하게 소스 안에 붙여 넣은 경우
-    - '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+    - '(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}'
+    - '(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{60,}'
+    - '(?<![A-Za-z0-9_\-])glpat-[A-Za-z0-9_\-]{20,}'
+    - '(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}'
+    - '(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])'
+    - '(?<![A-Za-z0-9])dop_v1_[a-f0-9]{64}'
+    - '(?<![A-Za-z0-9])SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}'
+    # (삭제 2026-08-29) PEM 개인키 블록은 GOV-SECRET-PRIVATEKEY-001 이 더 넓게
+    # (ENCRYPTED·PuTTY 포함) 잡는다 — 같은 줄 2건이 9곳 있었다.
   # 값이 키 이름 그 자체면 변수 참조지 비밀값이 아니다 — TypeScript 로 룰을
   # 열자 객체 리터럴 `access_token: accessToken` 이 차단으로 올라왔다.
   # 실제 비밀값이 자기 키 이름과 같을 수는 없어 진짜를 가릴 위험이 없다.
   validators: [not_self_named_value]
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-SEC-06, KISA-JS-SEC-06). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: hardcoded-credential
   category: secret-scanning
   why_it_matters: 키가 저장소나 LLM 프롬프트에 노출되면 행정시스템, 클라우드, 외부 API가 탈취될 수 있습니다.
   public_sector_impact:

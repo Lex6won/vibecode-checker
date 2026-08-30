@@ -67,8 +67,8 @@ def self_validate(cases: list[dict]) -> list[str]:
     return problems
 
 
-def run_scan() -> list[dict]:
-    report = scan_path(PROJECTS)
+def run_scan(profile: str | None = None) -> list[dict]:
+    report = scan_path(PROJECTS, profile=profile) if profile else scan_path(PROJECTS)
     out = []
     for f in report.findings:
         out.append(
@@ -76,6 +76,7 @@ def run_scan() -> list[dict]:
                 "file": rel_to_projects(f.location.file),
                 "line": f.location.line,
                 "rule_id": f.rule_id,
+                "also_matched": list(getattr(f, "also_matched", []) or []),
                 "severity": f.severity.value,
                 "category": f.category,
                 "engine": f.engine,
@@ -92,7 +93,8 @@ def match(case: dict, findings: list[dict], tol: int = LINE_TOL) -> dict | None:
             continue
         ids = case.get("expected_rule_ids") or []
         if ids:
-            if fnd["rule_id"] in ids:
+            # 같은 줄의 다른 룰이 대표로 남고 기대 룰은 also_matched 에 있을 수 있다.
+            if fnd["rule_id"] in ids or any(a in ids for a in fnd.get("also_matched", [])):
                 return fnd
         else:
             # rule id 예측 불가 → 같은 파일·라인의 어떤 발견이든 탐지로 인정
@@ -125,6 +127,10 @@ def main() -> int:
     print(f"[manifest 자가검증 OK] {len(cases)} 케이스")
 
     findings = run_scan()
+    # 하네스가 실제로 부르는 프로파일(dev-quick, severity_min=high)로도 돌린다 —
+    # 기본 프로파일 recall 1.0 을 보고하면서 medium 룰(ERR-03·MIXED-CONTENT 등)이
+    # 조용히 빠지는 사실을 벤치마크가 숨기고 있었다(실측 2026-08-29).
+    findings_quick = run_scan("dev-quick")
 
     vuln_cases = [c for c in cases if c["kind"] == "vulnerability"]
     hard_cases = [c for c in cases if c["kind"] == "hard_variant"]
@@ -196,11 +202,15 @@ def main() -> int:
         if not near:
             extras.append(f)
 
+    quick_lost = [c["id"] for c in vuln_cases if match(c, findings) and not match(c, findings_quick)]
+    quick_detected = sum(1 for c in vuln_cases if match(c, findings_quick))
     results = {
         "summary": {
             "vuln_total": len(vuln_cases),
             "vuln_detected": vuln_detected,
             "vuln_recall": round(vuln_detected / len(vuln_cases), 3),
+            "vuln_recall_dev_quick": round(quick_detected / len(vuln_cases), 3),
+            "dev_quick_lost_cases": quick_lost,
             "hard_total": len(hard_cases),
             "hard_detected": hard_detected,
             "known_gap_total": len(gap_cases),
@@ -227,6 +237,9 @@ def main() -> int:
     s = results["summary"]
     md = []
     md.append("# gvskb 독립 벤치마크 결과\n")
+    md.append(f"- dev-quick 프로파일 탐지율: **{s['vuln_recall_dev_quick']}** "
+              f"(기본 프로파일 대비 빠지는 케이스: {', '.join(s['dev_quick_lost_cases']) or '없음'} — "
+              "severity_min=high 가 medium 룰을 버리는 효과)\n")
     md.append(f"- 시드 취약점 탐지율(recall): **{s['vuln_detected']}/{s['vuln_total']} "
               f"= {s['vuln_recall']*100:.1f}%**")
     md.append(f"- 경계 프로브 탐지: {s['hard_detected']}/{s['hard_total']} (미탐이 정상 — 한계 측정)")

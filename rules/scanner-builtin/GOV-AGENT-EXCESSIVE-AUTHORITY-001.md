@@ -30,7 +30,12 @@ detection:
     # (client.delete)·챗봇 UI라 제외하고, `tool`은 toolbar/tooltip(UI)을 피하도록
     # 한정한다. 안전한 DOM 제거 API는 부정 전방탐색으로 제외한다.
     # 패턴1: 명확한 에이전트 식별자(agent/assistant/llm/mcp[+접미사]).
-    - '(?i)\b(?:agent|assistant|llm|mcp)\w*\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
+    # 동사 뒤 `(?!(?-i:[a-z]))` — 동사가 식별자 중간에 묻힌 `dropdown`·`approved`·
+    # `transferable`·`deletion_log` 는 잡지 않는다(적대적 검증 2026-08-29). `(?i)`
+    # 아래 `[a-z]` 는 대문자도 먹으므로 반드시 `(?-i:)` 로 되살린다 — 안 그러면
+    # `sendEmail`·`dropTable` 같은 진짜 호출이 죽는다. `paymentStatus`·`paymentMethod`
+    # 는 명사형이라 제외.
+    - '(?i)\b(?:agent|assistant|llm|mcp)\w*\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\(|paymentStatus|paymentMethod)\w*?(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)(?!(?-i:[a-z]))\w*\s*\('
     # 패턴2: tool 계열(tool/tools/toolkit/tool_*/toolRegistry) — toolbar/tooltip 제외.
     # JS 표준 **컬렉션** 메서드도 뺀다. `tools` 는 흔히 `Set<string>` 이고
     # `tools.delete(name)` 은 집합에서 원소를 빼는 코드다(실측 오탐,
@@ -38,7 +43,7 @@ detection:
     # 붙은 호출은 그대로 잡는다 — 맨몸 동사만 제외한다.
     # 패턴1(agent/assistant/llm/mcp)에는 적용하지 않는다: 거기서 맨몸
     # `delete` 는 실제로 에이전트가 자원을 지우는 호출이다.
-    - '(?i)\btool(?:s|kit|_\w*|registry)?\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\()(?!(?:delete|remove|clear|add|has|get|set)\s*\()\w*(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)\w*\s*\('
+    - '(?i)\btool(?:s|kit|_\w*|registry)?\.\s*(?!removeItem|removeChild|removeEventListener|removeAttribute|remove\s*\(|paymentStatus|paymentMethod)(?!(?:delete|remove|clear|add|has|get|set)\s*\()\w*?(?:delete|remove|drop|send_?e?mail|db_?write|update_?db|approve|payment|transfer)(?!(?-i:[a-z]))\w*\s*\('
   category: agent-safety
   why_it_matters: 공공업무 agent는 파일 삭제, 메일 발송, DB 변경, 결재 요청 전에 반드시 사용자 확인과 권한 검사를 거쳐야 합니다.
   public_sector_impact:
@@ -57,6 +62,9 @@ examples:
     - "function run(agent){ agent.delete_account(id); }"
     - "const r = await agent.tool_delete_file(path);"
     - "tool.send_email(to, body);"
+    - "assistant.sendEmail(to);"
+    - "agent.dropTable(t);"
+    - "agent.DELETE(x);"
   negative:
     - "sessionStorage.removeItem('k'); localStorage.removeItem('t');"
     - "el.classList.remove('hidden');"
@@ -66,6 +74,11 @@ examples:
     - "client.delete(`/users/${id}`);"
     - "await apiClient.delete(url);"
     - "bot.delete(messageId);"
+    - "mcp.dropdown(x);"
+    - "agent.approved(x);"
+    - "agent.transferable(x);"
+    - "mcp.deletion_log(x);"
+    - "agent.paymentStatus();"
     - "Toolbar.deleteRow(2);"
 ---
 

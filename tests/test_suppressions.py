@@ -41,9 +41,9 @@ def test_valid_exception_unblocks_but_keeps_finding(tmp_path: Path) -> None:
     report = scan_path(_write_project(tmp_path, _valid_exception()))
     sup = [f for f in report.findings if f.suppressed]
     assert sup, "매칭된 발견이 suppressed 표시돼야 한다"
-    assert all(f.rule_id == "GOV-CMD-INJECTION-001" for f in sup)
+    assert all("GOV-CMD-INJECTION-001" in (f.rule_id, *f.also_matched) for f in sup)
     assert "김보안" in (sup[0].suppress_reason or "")
-    # 요약·차단 판정은 비억제 기준 — 다른 룰(KISA-PY-INPUT-05)이 여전히 잡히면 blocked 유지 가능
+    # 요약·차단 판정은 비억제 기준. (S-8 이후 KISA-PY-INPUT-05 는 같은 발견의 also_matched 다.)
     assert report.summary.finding_count == len([f for f in report.findings if not f.suppressed])
     assert report.suppression_summary["applied"] >= 1
 
@@ -60,7 +60,8 @@ def test_all_findings_suppressed_clears_gate(tmp_path: Path) -> None:
     report = scan_path(_write_project(tmp_path, yaml_text))
     assert report.summary.blocked is False
     assert report.summary.finding_count == 0
-    assert len([f for f in report.findings if f.suppressed]) >= 2  # 기록은 유지
+    # S-8 병합 후 같은 줄의 두 룰은 발견 1건(근거 룰 2개)이다 — 기록은 유지.
+    assert len([f for f in report.findings if f.suppressed]) >= 1
 
 
 def test_expired_exception_is_ignored_and_reported(tmp_path: Path) -> None:

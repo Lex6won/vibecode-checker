@@ -25,6 +25,9 @@ detection:
     - '(?<![A-Za-z0-9_.])eval\s*\('
     - '(?<![A-Za-z0-9_.])exec\s*\('
     - '(?<![A-Za-z0-9_.])compile\s*\([^)]*,[^)]*,\s*["''](exec|eval|single)["'']'
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(GOV-CODE-EXEC-001). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: py-code-exec
   category: kisa-secure-coding
   why_it_matters: >-
     eval/exec/compile은 *문자열을 Python 코드로 실행*합니다. 사용자 입력이 직접

@@ -5,6 +5,452 @@
 
 ## [Unreleased]
 
+### 문서 — README 수치·SBOM 설명 갱신 — 2026-08-30
+
+테스트·벤치마크·룰 개수 배지를 실측값으로 갱신(1589→1909·37/37→42/42·탐지 99→101). SBOM 절에 공급자 정보·의존성 관계 설명 추가.
+
+### 18차 — 외부 연결 인벤토리가 저장 시 이미 펼쳐져 있던 문제 — 2026-08-30
+
+HTML 보고서의 다른 모든 접기 섹션(분야별 상세 등)은 "기본은 닫힘 — 클릭해 펼친다"인데
+외부 연결 인벤토리만 ⚠(개인정보 인접 경고)가 있으면 저장 시점부터 펼쳐진 채였다(예전
+절충안). 저장한 리포트를 열 때마다 그 섹션만 이미 열려 있어 사용자가 지적. `open`
+속성을 무조건 빼 다른 섹션과 통일한다 — ⚠ 요약은 여전히 접힌 제목 줄에 표시되므로
+정보가 사라지지 않는다.
+
+테스트 **1909 passed**(회귀 0, 기존 검증을 반대 방향으로 갱신).
+
+### 17차 — SBOM 공급자명·의존성 관계 그래프 (NTIA 최소 요소) — 2026-08-30
+
+이전 대화에서 "체커가 만드는 SBOM이 국제 표준(NTIA 최소 요소 7개) 대비 어디가
+부족한가"를 점검했더니 **공급자명**과 **의존성 관계**가 빠져 있었다. 둘 다 **이미
+조회하던 레지스트리 응답, 이미 파싱하던 락파일에 있는데 버리고 있던 데이터**였다
+— 새 네트워크 호출도 새 검사 대상도 없다.
+
+- **공급자명** — `PackageRegistryMetadata.supplier`·`repository_url`(추가 필드).
+  npm 은 `author`(조회한 버전 우선, 없으면 패키지 최상위, 그래도 없으면
+  `maintainers[0]`)·`repository`(git+ssh·git@ 단축형·git:// 를 전부
+  `https://github.com/…` 로 정규화)에서 안정적으로 나온다(실측: express 확인).
+  PyPI 는 `info.author`·`project_urls`(대소문자 정규화해 Source/Homepage 등 탐색)에서
+  나오는데 **패키지의 절반 정도는 비어 있다**(실측: pyyaml·numpy 는 있고 flask·
+  requests·django 는 없음 — PEP 621 저작자 정보가 이 필드로 안 넘어오는 경우가
+  흔함). 없으면 지어내지 않고 `None`으로 둔다.
+- **의존성 관계 그래프** — `parse_lockfile()` 이 `edges`(추가 필드, 이름 기준
+  `{from, to}`)를 함께 낸다. 5개 형식 전부: package-lock.json(v1 중첩 트리·v2/v3
+  `packages[].dependencies`) · poetry.lock(`[package.dependencies]`) ·
+  uv.lock(`dependencies=[{name}]`) · pnpm-lock.yaml(`snapshots`·`importers['.']`) ·
+  yarn.lock(classic 들여쓰기 하위 블록·berry `dependencies`). 매니페스트만 있고
+  락파일이 없으면 1단계(직접 의존성)까지만 — 매니페스트 자체가 아는 게 그만큼이다.
+  `audit_manifest()` 가 `dependency_graph`(추가 필드)로 내보내고, 상한에 잘려
+  검사되지 않은 패키지를 가리키는 간선은 제거한다(검사 안 한 것을 그래프에만
+  남기지 않는다).
+- SBOM(`to_cyclonedx`)이 `components[].supplier`·`externalReferences`(vcs)와
+  최상위 `dependencies`(CycloneDX 표준 관계 배열)로 반영한다. 관계는 **이름 기준
+  근사**(같은 이름이 트리 여러 곳에 다른 버전으로 설치돼도 SBOM에 실린 대표
+  버전으로 매칭)임을 `gvskb:dependency_graph_basis` 속성에 명시한다.
+- 실측(포털 `package-lock.json`): `busboy`→`streamsearch` 관계, `busboy` 공급자
+  `Brian White <mscdex@mscdex.net>`, 저장소 `https://github.com/mscdex/busboy`
+  전부 정확히 나옴.
+
+기존 `packages` 출력·`checks` 필드·기존 SBOM 필드는 전혀 건드리지 않았다(전부
+추가 필드). 테스트 **1909 passed**(+24), 벤치마크 recall 100%·FP 0, 룰 린터 OK.
+
+### 16차 — 경로 성격별 집계 · 보안 자세 관찰(부재형) (개선요청 #34 A-3 · D4 · E) — 2026-08-30
+
+- **`summary.by_path_class`**(추가 필드): runtime·test·sample 별 `{total, block}`. 차단 건수
+  옆에 `(운영 코드 17 · 시험·예제 10 — 판정은 동일, 경로 성격별 집계)` 를 시험 경로 건수가
+  있을 때만 병기. **감등은 넣지 않았다**(fixtures 는 실제 개인정보 덤프가 놓이는 자리).
+  포털 실측: 차단 27 = 운영 17 + 시험·예제 10.
+- **`ScanReport.posture_notes`**(추가 필드, 정보·게이트 무관): 웹 서버 진입점(express()·
+  createServer·Flask(__name__)·FastAPI()·Django MIDDLEWARE)은 있는데 **같은 프로젝트 루트**
+  (가장 가까운 매니페스트 디렉터리) 안에 CSP·X-Frame-Options·frame-ancestors·helmet·
+  Talisman·SecurityMiddleware 흔적이 없으면 `POSTURE-HEADERS-001`, 쿠키를 쓰는데
+  HttpOnly·Secure·SameSite 흔적이 없으면 `POSTURE-COOKIE-001`. 보고서에 "보안 자세 관찰
+  (정보 · 판정과 무관)" 섹션.
+- 실측이 첫 시안을 두 번 고쳤다: ① 저장소 전체를 증거 범위로 삼자 포털이 동봉한
+  골든 템플릿의 helmet 이 앱 `src/server.js` 의 공백을 가렸다 → 프로젝트 루트 단위.
+  ② `approved-packages.yaml` 의 'helmet' 문자열과 `nosniff` 가 증거로 잡혔다 → 증거는
+  코드·설정 파일만, HSTS·nosniff 는 CSP·프레임 보호가 아니므로 제외.
+  최종: 포털 `src/server.js` 에 헤더 관찰 1건 — 요청서 D4 그대로. 체커 자신은 0.
+
+테스트 **1885 passed** · 벤치마크 recall 100%·FP 0.
+
+**개선요청 #34 대응 종합**(13~16차): D3 HTML 인라인 스크립트(우리 결함) · C dedup 병합
+(S-8 보류 해제) · D2 경로 경계 룰 · D1 응답 비밀 룰 · A-3 경로 성격 집계 · D4/E 보안 자세
+관찰. 거부: A-1/2 fixtures 감등 · B-2 엔트로피 필터. B-1 은 이미 해결돼 있었음.
+
+### 15차 — 사람이 찾았고 체커가 놓친 실제 취약점 2종을 좁은 룰로 (개선요청 #34 D1·D2) — 2026-08-30
+
+- **GOV-PATH-BOUNDARY-001** (medium·warn·pattern-only): `resolved.startsWith(path.resolve(root))`
+  · `.startsWith(root)` · Python `.startswith(os.path.abspath(base_dir))` — 구분자 없는
+  접두어 비교. 같은 줄의 `+ path.sep`·`+ "/"`·`path.relative`·`is_relative_to`·
+  `os.path.join(base, '')` 는 제외, URL·href 접두어 비교도 제외.
+  **포털 `src/server.js` 3곳(411·452·625) 실측 적중** — 요청서가 사람이 찾았다고 한 그 결함.
+  체커 `src/` 0건.
+- **GOV-RESPONSE-SECRET-001** (medium·warn·pattern-only): `res.json({ password: … })` ·
+  체인 `res.status(400).json(` · 헬퍼 `json(response, 200, { dev_login_url: … })` ·
+  Koa `ctx.body = {…}` · `jsonify/JSONResponse({"reset_token": …})`. 키는 비밀번호·API 키·
+  개인키·개발용 로그인 링크·재설정 토큰·OTP — **`token` 단독은 잡지 않는다**(로그인
+  응답의 액세스 토큰은 정상). `password: null`·`password_changed:`·`has_password:` 제외.
+  **포털 `src/server.js:1378`(dev_login_url) 실측 적중.**
+- 첫 시안 결함 3건을 적대 테스트가 잡았다: 식별자 `root` 단독 미매치 · Python 안전
+  관용구 `join(base, '')` 오탐 · `ctx.body =` 미매치.
+- 코퍼스 B-90/B-91(양성)·B-92(정상 로그인 응답, 음성) 추가, `server_safe.js` 에 안전한
+  경계 검사 추가. 벤치마크 recall 100%·FP 0. RULESET.lock 2026.08.30f.
+
+테스트 **1872 passed**.
+
+### 14차 — 같은 줄·같은 유형은 "1개 문제, 근거 룰 2개" (S-8, 개선요청 #34 C) — 2026-08-30
+
+자기검사 때 보류한 S-8 을 포털 요청으로 착수했다(포털은 `rule_id` 를 소비하지 않음을
+확인). JSON 계약 변화는 **추가 필드 `Finding.also_matched`** 와 건수 감소 두 가지다.
+
+- `dedup_group` 선언 7묶음 15룰: py-code-exec(GOV-CODE-EXEC-001·KISA-PY-INPUT-02) ·
+  py-cmd-injection · py-sql-injection · js-code-exec(KISA-JS-API-02·INPUT-02) ·
+  hardcoded-credential(GOV-SECRET-APIKEY-001·KISA-PY-SEC-06·KISA-JS-SEC-06) ·
+  password-hashing(SEC-04·SEC-14) · html-dom-xss(GOV-HTML-DOM-XSS-001·KISA-JS-INPUT-04).
+- 대표 선정 순위를 (심각도, 결정, rule_id) 에서 **(엔진 정밀도, 근거, 심각도, 결정,
+  GOV 우선, rule_id)** 로 — 예전엔 동점이면 문자열 비교로 regex KISA 가 AST-confirmed
+  GOV 를 밀어냈다. 패자의 rule_id 는 `also_matched`, references 는 합집합.
+- 예외 파일(suppressions)·프로파일 decision_overrides 는 `also_matched` 의 id 로도
+  매칭한다(여러 개면 가장 엄격한 쪽). 보고서 카드·표·MD 는 `A (+B)` 로 표기.
+  벤치마크 매칭도 also_matched 를 인정.
+- 룰별 지표(`collapse_duplicates=False`)는 불변. RULESET.lock 2026.08.30.
+- 자기 검사 재측정: 603 → **466건**(병합 169, 차단 48 → 41). 벤치마크 recall 100%·FP 0.
+- 곁가지: 12차 fail-closed 캐시가 상태 파일 `.autopull-state.json` 에 매 검사마다
+  경고를 냈다 — 캐시 항목 열거에서 점 파일 제외.
+
+테스트 **1838 passed**.
+
+### 13차 — HTML 인라인 <script> 는 JavaScript 다 (개선요청 #34 D3) — 2026-08-30
+
+포털 자체 점검(개선요청 #34)이 "my-scans.html 의 innerHTML XSS 를 체커가 못 잡았다"고
+했다. 재현하니 `.js` 면 잡히고 `.html` 이면 0건 — JS 룰 36개가 전부
+`languages: [javascript, typescript]` 라 HTML 파일에서는 한 줄도 돌지 않았다. 라운드 18의
+"typescript 누락"과 같은 계열의 언어 스코프 결함이다.
+
+- 룰에 html 을 더하지 않고 **스크립트 블록만 남긴 사본**을 javascript 로 한 번 더
+  검사한다 — 마크업 설명문의 `eval()` 에 JS 룰이 걸리지 않게. 줄 번호 보존,
+  `type="application/json"`·`text/template` 블록 제외, `type="module"` 포함.
+  js-taint 엔진도 같은 사본에 돈다.
+- 첫 시안의 `type` 판별 정규식이 `["']?` 의 되물림으로 `type="module"` 을 비 JS 로
+  오판 — 값을 꺼내 파이썬에서 비교하도록 바꿨다.
+- 포털 HTML 749개 실측: 새 발견 26건 중 9건이 `el.innerHTML = ""`·고정 문구 리터럴
+  이었다(`.js` 에서도 원래 잡히던 **기존 오탐**). `html_sink_context` 에 "상수 리터럴
+  대입" 관찰을 더해 내린다 — `${…}`·`+`·식별자·닫히지 않은 템플릿은 그대로 차단.
+  잔여 19건은 전부 동적 값(실제 `my-scans.html:118` 포함).
+
+테스트 **1829 passed**(+12), 벤치마크 recall 100%·FP 0.
+
+### 자기검사 12차 — 체커 자신의 공격면(서버 운영 관점) (Hardening) — 2026-08-30
+
+룰 검사는 제품 코드 0건이었지만 룰은 정규식이다. "서버에 설치해 운영해도 되는가"를
+직접 찔러 확인했다 — HTML 보고서 XSS(증거·파일명·대상 경로 전부 이스케이프 확인),
+ReDoS(396 패턴 × 병리 입력 13종, 50ms 초과 0), 전송 TLS·타임아웃, 압축 반입, 임시
+파일, 심볼릭 링크, 자기 의존성.
+
+- **zip-slip(높음, 실측 재현)** — 인텔 번들 `manifest.json` 의 파일명을 그대로 써
+  `../../x` 가 캐시 밖에 실제로 기록됐다. 파일명은 단일 세그먼트만 허용하고 최종
+  경로가 캐시 디렉터리 안인지 확인, 멤버 크기 상한(200MB).
+- **예측 가능한 임시 파일(중간)** — 자동 갱신이 `/tmp/gvskb-autopull-bundle.zip` 고정
+  이름에 썼다(공용 서버 심볼릭 링크 선점). `mkstemp` 배타 생성 + 다운로드 상한(300MB,
+  스트리밍).
+- **서명 없는 캐시 통과(중간)** — sha256 이 비어 있는 인텔 캐시를 "검증 불가 — 통과"
+  시켰다. 캐시 폴더에 쓸 수 있으면 악성 패키지 목록을 바꿀 수 있었다. 거부로 전환
+  (`gvskb update-intel` 로 재수신).
+- **심볼릭 링크 추적(중간·Linux 서버)** — 파일 링크를 따라가 트리 밖 파일(다른
+  프로젝트의 `.env` 등)의 내용이 증거로 보고서에 실릴 수 있었다. 링크는 건너뛰고
+  생략 사유로 남긴다.
+- **pyproject.toml 미지원(높음·자기 맹점)** — `--check-deps` 가 `requirements*.txt`·
+  `package.json` 만 읽어 체커가 **자기 의존성을 한 번도 검사하지 못했다.** PEP 621·
+  poetry 파서 추가. 첫 검사에서 하한 fastmcp 2.0.0(CRITICAL 포함 14건)·pydantic 2.0
+  이 차단으로 나와 하한을 취약하지 않은 첫 버전으로 올렸다(fastmcp 3.2.0 · pydantic
+  2.4.0 · pytest 9.0.3).
+- **버전 존재 비교 오탐(높음 등급 오판)** — `httpx>=0.27` 의 `0.27` 이 releases 의
+  `0.27.0` 과 문자열이 달라 "요청 버전 없음(high)"이 됐다. PEP 440 정규화 비교.
+  또 하한(경계값)이 실재하지 않는 경우는 오타·자리차지 신호가 아니므로 `unknown·low`
+  (판정 불가, 초록불 아님)로 갈랐다. `==` 고정 버전 미존재는 그대로 high.
+- 마크다운 증거의 백틱 탈출 — 더 긴 펜스로 감싼다.
+- **푸시 전 검토에서 잡은 자기 회귀** — 의존성 선언이 없는 pyproject(메타데이터 전용,
+  매우 흔함)가 "파싱 실패·검토 필요"로 올라왔다. 선언 0건은 `ok`, `dynamic` 선언이면
+  "다른 파일에 있다"고 적고 검토 필요. OneDrive 재분석점이 링크로 오인되지 않음·기존
+  캐시 4종 sha256 보유·캐시 파일명 4종 통과를 실측으로 확인.
+
+**개발 환경 참고**: 이 PC 의 miniconda 에는 `mcp 1.27.2`·`starlette 1.2.0`·
+`cryptography 48.0.0`(HIGH)이 있으나 **체커 의존 트리 밖**(streamlit·Authlib 이 끌어온
+것). 체커 자기 pyproject 감사는 새 하한에서 6/6 clean.
+
+재측정: 테스트 **1807 passed**, 벤치마크 recall 100%·FP 0. 게이트는 여전히 blocked —
+잔여 차단은 100% eval_corpus.
+
+### 자기검사 11차 — "이제 배포 가능한가"를 다시 재어 보다 (Recheck) — 2026-08-29
+
+10단계를 닫고 같은 조건(포털 dev-quick · --check-deps)으로 저장소를 다시 검사했다.
+결과: **`src/`·`config/`·`rules/`·`tests/` 차단 0**, 잔여 차단 48건 + 패키지 3종은 전부
+`eval_corpus/`(고의 취약 샘플·`f_dependencies` 의 pyyaml 5.3.1·reqeusts·minimist).
+게이트 판정은 여전히 **blocked** 이며 이것은 도구가 옳게 동작한 결과다 — 저장소에
+취약 코퍼스가 실려 있다.
+
+재점검이 낸 것 4건:
+
+- **주석 안의 코드 모양** — 4차 테스트의 설명 주석 `# 바깥의 exec( 가 진짜` 가 문자열
+  감쇄 재매치에서 잡혀 `tests/` 에 차단 2건이 남아 있었다(자기참조 세 번째). 문자열
+  블랭킹이 **주석 토큰도 지우도록** 바꿨다 — 주석은 실행되지 않는다. 같은 줄의 실제
+  `eval(v)` 호출은 그대로 차단(테스트로 고정).
+- **실행환경 등급 출처 오표기(회귀)** — 9차의 `cooldown.env_grade` 폴백이 `--env` 를
+  주지 않은 실행을 "검사 실행 시 지정(`--env E1`)"으로 적었다. 명시값과 적용값을
+  갈라 폴백은 "지정 없음 · 기본값 적용"으로 되돌렸다.
+- **confidence 빈 값 라벨 회귀** — 6차에서 `_confidence_label` 을 엔진별로 나누며
+  None 의 기본이 '패턴 일치만'에서 "—" 로 떨어졌다. 복원.
+- 옛 테스트 2건이 새 문구(악성 0이면 '악성' 생략)·전용 룰(PEM → PRIVATEKEY-001)을
+  몰랐다 — 탐지 소실이 아님을 확인하고 기대값만 갱신.
+
+재측정: 테스트 **1790 passed**, 벤치마크 recall 100%·FP 0.
+
+### 자기검사 10차 — 코퍼스·벤치마크가 실제 호출 조건을 말하게 (Corpus) — 2026-08-29
+
+- 에이전트 권한 룰(GOV-AGENT-EXCESSIVE-AUTHORITY-001)의 정밀도·재현율을 코퍼스가 한 번도
+  재지 않았다. `d_llm_chatbot/agent_tools.py` 신설 — D-07(`agent.delete_file(path)` 양성)
+  · D-08(`tools.delete(name)` 집합 연산, 음성).
+- 벤치마크가 기본 프로파일 recall 1.0 만 보고해, 하네스가 실제로 부르는 `dev-quick`
+  (severity_min=high)에서 medium 룰이 조용히 빠지는 사실을 숨겼다. `vuln_recall_dev_quick`
+  과 빠지는 케이스 목록(A-11 KISA-PY-ERR-03 · C-01 혼합 콘텐츠)을 함께 적는다.
+- 재실행: recall **40/40**, 음성 대조군 FP 0, dev-quick 0.95(A-11·C-01).
+
+**자기검사 10단계 종합** — 493건/차단 297 → 425건/차단 47(잔여 전부 eval_corpus 고의
+샘플, 신규 테스트 픽스처 제외). `src/`·`config/`·`rules/`·`tests/` 차단 0. 테스트 1028 →
+1770+. 수정 명세 44항목 중 41항목 적용, 보류 3(S-8 dedup 병합·R-11·P-13).
+
+### 자기검사 9차 — 보고서가 자기 결과를 정직하게 말하게 (Report) — 2026-08-29
+
+보고서 감사 결과 **수치는 전부 맞았다**. 결함은 의미와 문구였다.
+
+- **재현 명령을 결과에 새긴다** (`ScanReport.reproduce_command`). `gvskb report <json>`
+  으로 다시 렌더하면 폴백 `gvskb scan <path> --profile X` 가 `--check-deps`·`--max-files`
+  를 잃어, 재현자가 의존성 차단이 사라진 **더 깨끗한 결과**를 받았다. 이제 JSON 의
+  명령을 우선 쓰고, 없으면(구버전) "재현 명령 미기록"을 명시하며 의존성 감사가 있었으면
+  최소 `--check-deps` 를 붙인다.
+- **HTML 은 자기 경로를 말한다.** "이 보고서 위치"가 HTML 안에서도 `.md` 였다. 렌더러마다
+  자기 경로 + "같은 이름으로 함께 저장: <쌍둥이>".
+- **"비밀값 노출 129건 — 반드시 재발급"** 중 98건은 도구가 스스로 낮춘(테스트 경로·
+  안내문·문자열·룰 문서) 것이었다. `_exposure_counts` 가 살아 있는 것과 낮춘 것을 갈라
+  세고(`secret_live`/`secret_attenuated` — 기존 키는 그대로), 결론 문구는 살아 있는
+  건수로 재발급을 요구하고 낮춘 건수는 별도로 적는다.
+- 조치 순서 1단 힌트 "사유 기록으로 넘길 수 없습니다" → "보안담당자 승인 없이는 우회할
+  수 없습니다" — 같은 문서의 기준표("소스 발견 → 조건부 승인")와 모순이었다.
+- 같은 룰이 '필수'와 '나머지'에 나뉠 때 목록에 **낮춘 사유**를 바로 적는다.
+- 수정 프롬프트의 위치 목록을 파일당 8줄에서 자르지 않는다("외 6건"은 AI 가 고칠 수 없다).
+- 판정 기준 칸에 룰셋 **지문을 항상 병기**(버전 문자열은 같은 값으로 룰이 바뀔 수 있다).
+- "총 조치 대상 499건(소스 493건 · 패키지 6종)" — 단위가 다른 수를 더하지 않는다.
+- "취약·악성 패키지 N종" — 악성 0 이면 '악성'을 말하지 않는다.
+- 실행환경 등급을 audit 최상위에 없으면 각 check 의 `cooldown.env_grade` 에서 읽는다.
+- 테스트 `tests/test_selfscan_round9_report.py`(9케이스). `test_report_readability` 의
+  "8건" 합산 기대를 새 문구로 갱신.
+
+### 자기검사 8차 — 외부 연결 인벤토리가 '호출'과 '표·주석·문서·테스트'를 가른다 (Fixed) — 2026-08-29
+
+자기검사의 외부 연결 111행 중 제품 코드의 **실제 아웃바운드는 10건**이었다. 나머지는
+스캐너 자기 카탈로그의 문자열 표, 출력용 상수, 문서 URL, 테스트 리터럴. 카탈로그 소스의
+**주석 한 줄**이 "서버 공인 IP 노출 ⚠"로, `docs.python.org` 참고 링크가 "Python 설치본
+다운로드 · 개인정보 인접"으로 올라왔고, 개인정보 인접 13건 중 정당한 것은 0건이었다.
+보안팀에 넘기는 목록이 grep 결과가 되면 신호가 노이즈에 묻힌다.
+
+- `ExternalConnection.context` 에 `test`·`comment`·`data-table` 추가(기존 값 유지).
+  줄 문맥으로 판정: 주석 줄 → comment, 창 안에 호출식(requests/httpx/fetch/axios…)이
+  있으면 runtime, URL 이 3개 이상이거나 표 원소 모양이면 data-table, 테스트 경로면 test.
+  한 호스트가 한 파일에서 호출식과 표 양쪽에 나오면 호출식이 이긴다(과소 판정 방지).
+- 개인정보 인접 신호는 **URL 본문·주석을 뺀** 코드에서, runtime 맥락일 때만.
+- 호스트 카탈로그는 접미 매칭(`python.org` 가 `docs.python.org` 를 삼키지 않음),
+  `docs.`/`wiki.`/`blog.`/`help.` 는 "문서 사이트(운영 중 전송 아님)".
+- URL 호스트의 마지막 라벨은 알파벳 TLD — `git+https://…@v0.2.1` 의 `v0.2.1` 가짜 호스트.
+- 한눈에 보기의 국외·⚠ 는 **고유 호스트** 기준, runtime 맥락만(행 기준으로는
+  api.openai.com 하나가 "국외 11"이었다).
+- ipify 문구를 단정형 마크다운 강조에서 가능성형 평문으로.
+- 테스트 `tests/test_selfscan_round8_external.py`(9케이스).
+
+### 자기검사 7차 — 전수 분석이 드러낸 미탐 4종 (Detection) — 2026-08-29
+
+오탐을 줄이는 것만으로는 반쪽이다. 493건 전수 대조와 적대적 실측에서 **잡았어야
+하는데 못 잡은 것**들이 함께 나왔다.
+
+- **프롬프트 주입(AST)** — `SYSTEM_PROMPT + user_input`(리터럴이 없어 "리터럴+동적"
+  판정을 비껴감), `"요약: %s" % user_input`(`%` 포맷 미추적 — SQL 조립에도 같은
+  구멍이었다), LangChain `chain.invoke(p)`·`llm.predict(p)`(sink 목록에 없음). `%` 는
+  `_expr_builds_dynamic_sql` 에 넣어 SQL·프롬프트가 함께 잡는다. LangChain sink 는
+  `db.invoke`·`queue.stream` 오탐을 막으려고 수신자를 llm/chain/model/chat/agent 로 한정.
+- **판정 근거 규약 통일** — 프롬프트 주입도 SQL 과 같이 "동적 부분이 매개변수뿐이면
+  likely, 스코프 안에서 조립을 따라갔으면 confirmed". 예전엔 무조건 confirmed 였다.
+  대문자 지시문 상수(`SYSTEM_PROMPT`)는 동적 이름으로 세지 않는다.
+- **`sh -c <오염값>`** — `subprocess.run(["sudo","-u","root","sh","-c",cmd])` 는
+  shell=True 가 없어도 셸을 띄운다. 코퍼스 s04_privesc.py:13 이 미탐이었다. argv 에
+  sh/bash/cmd/powershell + `-c`/`/c` + 비상수 원소가 있으면 KISA-PY-INPUT-05.
+- **`yaml.load` 안전 Loader 없음** — 코퍼스 c_deser.py:8 이 미탐. `Loader=` 가
+  Safe 계열이 아니거나 없으면 KISA-PY-CODE-03(AST 정본 + regex 보조).
+- 테스트 `tests/test_selfscan_round7_misses.py`(19케이스). 룰셋 잠금 2026.08.29d.
+
+### 자기검사 6차 — 룰 정밀도 8종 (Rules) — 2026-08-29
+
+- **GOV-LLM-OUTPUT-HANDLING-001**: sink 가 **호출 `(` 또는 대입 `=`** 형태여야 발화.
+  토큰 공존만 요구하던 패턴은 케이스 ID(`llm-eval-in-evaluate-json`)·산문·룰 린터의
+  정규식 문자열·음성 픽스처까지 높음·차단(11건). `subprocess.run(model_output)` 미탐 보강.
+- **GOV-LLM-PII-PROMPT-001**: 값 신호(f-string 보간 `{rrn}`·`+`/`%` 결합·주민번호/휴대폰
+  리터럴·`주민번호:`) 요구. `prompt = "민원 챗봇입니다"` 가 치명이었다. `*_masked` 제외.
+- **GOV-AGENT-EXCESSIVE-AUTHORITY-001**: 동사 뒤 `(?!(?-i:[a-z]))` — `dropdown`·
+  `approved`·`transferable`·`deletion_log` 는 안 잡고 `sendEmail`·`dropTable`·`DELETE` 는
+  잡는다. `(?i)` 아래 `[a-z]` 가 대문자를 먹는 함정은 `(?-i:)` 로 되살렸다.
+- **KISA-PY-INPUT-13**: `redirect(request.*)`·`HttpResponseRedirect(request.*)` 패턴 삭제
+  — 오픈 리다이렉트(INPUT-07)의 영역. 헤더·쿠키 직접 주입만 남김.
+- **KISA-PY-ERR-01**: `app.run(debug=True)` 패턴 삭제 — GOV-FLASK-DEBUG-001 과 글자
+  단위 동일. Django `DEBUG = True`·`str(e)` 반환은 유지.
+- **KISA-PY-SEC-06**: 픽스처 가드(dummy/fake/test/example…)를 형제 룰 APIKEY-001 과
+  맞춤 — 형제가 negative 로 확정한 `dummy_password_1` 을 이 룰이 되살렸다.
+- **GOV-SECRET-APIKEY-001**: PEM 패턴 삭제 — PRIVATEKEY-001 이 더 넓게 잡는다(9줄 중복).
+- 보고서 판정 근거 라벨: regex 룰의 `confirmed` 는 "확인됨(패턴 자체가 확증)". 예전엔
+  "데이터 흐름 추적"이라 적어 하지 않은 일을 한 것처럼 읽혔다.
+- 코퍼스: E-02 휴대폰 시료를 `010-2345-6789` 로(예전 값은 PHONE 룰의 예시 제외번호라
+  구조적으로 못 잡았다), D-02 기대에서 발화 불가 룰(baseline OWASP-LLM-2025-01·
+  OUTPUT-HANDLING) 제거, I-05 기대에서 INPUT-13 제거, H-05/06/08 을 탐지 기대로 승격.
+- 보류: KISA-PY-INPUT-01 f-string/`+` 확장은 dedup 병합(S-8)과 함께 — 지금 넣으면
+  GOV-SQL-INJECTION-001 과 같은 줄 2건만 늘어난다.
+- 테스트 `tests/test_selfscan_round6_rules.py`(52케이스). 룰셋 잠금 2026.08.29c.
+
+### 자기검사 5차 — 게이트 판정을 JSON 에 싣는다 (Added · 계약 비파괴) — 2026-08-29
+
+사람용 보고서의 결론은 `gate_status()`(의존성이 게이트, 소스는 보조)인데 JSON 에는
+그 결과가 없었다. JSON 만 읽는 포털은 `summary.blocked`(소스 기준·legacy)로 폴백해
+**같은 검사에서 문서와 기계가 다른 답**을 냈다. 기존 필드는 그대로 두고 추가만 한다.
+
+- `ScanReport.gate` — 저장·반환 직전 `gate.attach_gate()` 로 새긴 판정 스냅샷. CLI
+  `scan`(의존성 감사가 붙은 뒤)·MCP `scan_code`/`scan_path`/`detect_secrets_and_pii`/
+  `save_report` 전부.
+- `ScanSummary.location_count`·`block_location_count` — 고유 (파일, 줄) 수. 같은 줄에
+  GOV·KISA 두 룰이면 건수 2, 위치 1. `summary.blocked` 는 docstring 에 legacy 명시.
+- 구버전 JSON(`gate` 없음)도 그대로 파싱된다(회귀 테스트).
+- 같은 줄 두 룰을 **한 건으로 병합**하는 `dedup_group` 활성화는 건수 의미가 바뀌어
+  포털·하네스 확인 뒤로 미룬다(명세 S-8).
+
+### 자기검사 4차 — 경로가 아니라 구조로 낮추기 (Fixed) — 2026-08-29
+
+**① 문자열 리터럴 안의 코드 모양.** 자기검사에서 코드 실행·명령 주입 발견 216건 중
+tests/*.py 의 159건이 **전부** `scan_code("eval(x)")` 처럼 문자열 안에 있었다(tokenize
+로 159/159 확인). 실행되는 코드가 아니다. `fixtures/`·`corpus/` 를 테스트 경로에 추가
+하자는 안은 **거부**했다 — Django fixtures 는 실제 개인정보 덤프가 가장 흔히 놓이는
+자리라, 경로로 낮추면 정확히 가장 위험한 곳에서 게이트가 열린다. 대신 구조로 판단한다:
+그 줄에서 문자열 내용을 지운 뒤 룰 패턴이 하나도 안 맞으면 매치는 문자열 안이었다.
+Python·regex 엔진·비노출 룰에만, 그리고 **지우지 않고 낮춘다**(코드 생성기가 취약
+코드를 문자열로 써내는 사례). `exec("os.system('id')")` 의 바깥 `exec(` 는 그대로 차단.
+
+**② 룰 정의 문서.** 파일명에 secret/password 가 든 룰 문서 6개가 '비밀 파일 특례'로
+스캔돼 룰의 **예시 코드**가 치명 35건이었다. `rules/` 경로를 빼면 진짜 프로젝트의
+`rules/` 업무 코드가 사각지대가 되므로 **구조 마커**(frontmatter `id:`+`severity:`+
+`detection:/patterns:`, semgrep `rules:`+`id`+`pattern*`, 벤치마크 `cases:`+`sink:`+
+`expected_rule_ids`)로 인식하고, 제외가 아니라 감쇄한다. 비밀 자재 검사(`secret-file`)
+는 룰 문서라도 낮추지 않는다 — 예시에 진짜 키를 붙여 넣는 사고 대비.
+
+**③ 값 기반인데 카테고리가 달라 감쇄에서 빠진 룰.** `GOV-LLM-PII-PROMPT-001`(category
+llm-appsec)은 적혀 있는 것만으로 위험한 값 기반 룰인데 테스트 경로 감쇄가 카테고리로만
+걸려 tests/ 픽스처 5건이 게이트를 막았다. `schema.VALUE_BASED_RULE_IDS` 로 룰 단위
+opt-in(카테고리를 바꾸면 프로파일·리포트 분류가 흔들린다).
+
+**④ 금지문 정규식.** `이렇게 쓰지 마세요: eval(x)` 는 안 낮아지고(`하지 마` 만 알았다),
+`never_cache = eval(x)`·`deprecated_eval(y)` 는 식별자 조각이 안내문으로 읽혀 실코드가
+낮아졌다. 동사+`지 마세요` 일반형 추가, 영문 토큰 양쪽 ``.
+
+- 테스트 `tests/test_selfscan_round4.py` 신규(22케이스).
+
+### 자기검사 3차 — 증거 마스킹이 못 가리던 일곱 모양 (Security) — 2026-08-29
+
+보고서에 **원문이 그대로 실리던** 값들(실측): `SECRET_KEY`·`SIGNING_KEY`·
+`JWT_SECRET_KEY`(접미 `_KEY` 를 키 어휘가 몰랐다), `비밀번호 =`(한국어 키), `**password**
+=`(마크다운 강조 — 탐지 룰은 알고 마스킹은 몰랐다), `postgres://admin:p4ss@…`(URL
+자격증명), JWT 3세그먼트, 카드번호 16자리. 국면 ⅩⅩⅢ("탐지해 놓고 유출본을 한 벌 더
+만들었다")과 같은 계열이다 — 탐지 룰의 어휘가 넓어질 때 마스킹 어휘는 따라오지 않았다.
+
+- 인용값 규칙의 키 어휘를 탐지 룰과 같게(`secret(?:[_-]?key)?`·`signing_key`·
+  `private_key`·`access_key`·`auth_token`·`비밀번호`·`암호`, `**` 강조 허용).
+- URL 자격증명은 통째로, JWT 는 헤더 앞 4자만, 카드번호는 앞 4·뒤 4 만 남긴다.
+- `_MASKED_SHAPE_RE` 가 카드 모양을 알아 `evidence_is_masked` 가 참을 돌려준다.
+- 가리면 안 되는 것 고정: 경로 안의 `token` 단어, 커밋 해시, `PUBLIC_KEY`, 타임스탬프,
+  카드 모양이 아닌 번호. 주민번호·휴대전화 모양은 그대로.
+- 테스트 `tests/test_selfscan_round3_masking.py` 신규(19케이스).
+
+### 자기검사 2차 — 존재하는 스쿼팅 패키지가 통과하던 게이트 구멍 (Fixed · Rules) — 2026-08-29
+
+**① `expresss 0.0.1` 이 "이상 없음"이었다.** 평가 코퍼스의 고의 오타 패키지인데,
+npm 에 `expresss` 는 **실제로 존재**한다(2016년 등록된 자리차지 패키지, latest 0.0.0).
+판정 사다리는 `malicious > vulnerable > cooldown_hold > checked_clean` 네 단뿐이라
+이름 휴리스틱(`typosquat_warning`)이 어디에도 반영되지 않았고, 이름 신호를 가르는
+것은 **레지스트리 실재 여부뿐**이었다 — `reqeusts`(미존재)는 차단, `expresss`(존재)는
+통과. 스쿼터가 이름을 등록해 두면 휴리스틱이 정확히 그 상황에서 무력화된다.
+요청한 버전 0.0.1 은 존재하지도 않았는데 발행일 None → `cooldown.ok=None` 으로
+흡수돼 "판정 불가"조차 표시되지 않았다.
+
+- `PackageRegistryMetadata.version_exists` 신설(npm `versions`·PyPI `releases` 대조).
+- 판정 `version_not_found`(high)·`suspicious_name`(편집거리 1, high) 추가 — **실재
+  여부와 독립**으로 적용. `requires_review` 에 `cooldown.ok is None`·편집거리 2 포함.
+- 게이트 조건부 기준에 두 판정 추가. 보고서는 **판정 칸**에 "⚠ 이름 의심(express와
+  1자 차이)"를 적는다 — 비고 칸의 경고는 판정 칸이 초록이면 읽히지 않았다.
+- CVSS CRITICAL 패키지를 보고서 집계에서 '치명'으로 — 결론은 "CRITICAL 3종 차단"
+  인데 집계는 "치명 1"이던 불일치(HIGH 와 한 등급으로 묶여 있었다).
+
+**② KISA-PY-SEC-10 이 known-answer 테스트를 차단했다.** `assert _sha256_bytes(b"abc")
+== hashlib.sha256(b"abc").hexdigest()` — 자체 헬퍼가 표준 라이브러리와 같은 값을
+내는지 확인하는 줄. `== hashlib.sha256(` 만 보고 발화했다. `exclude_patterns` 로
+assert 문·리터럴 인자를 제외하되, 같은 줄에 요청·헤더·토큰 등 **외부값 토큰이
+있으면 제외를 취소**한다 — `if hashlib.sha256(b"admin").hexdigest() ==
+request.args["h"]` 는 계속 잡힌다.
+
+**③ KISA-PY-SEC-05 가 사설망 http 를 평문 전송으로 잡았다.** `requests.post(
+'http://10.0.0.5/api')`·`http://localhost:3000` — 룰은 CWE-319 민감정보 평문 전송인데
+호스트도 페이로드도 보지 않았다. 망분리 기관의 내부 API 호출 전반에 경고가
+뿌려진다. 공인망 http 는 그대로, 사설망·루프백은 민감 토큰이 동반될 때만.
+`http://10.0.0.5.evil.com/` 은 경계 `[:/'"]` 요구로 여전히 잡힌다.
+
+- 회귀·적대 테스트 `tests/test_selfscan_round2.py` 신규(28케이스).
+- 룰셋 잠금 → **2026.08.29b**.
+
+### 자기검사 1차 — 제품 코드 오탐 세 원인 제거 (Fixed · Rules) — 2026-08-29
+
+포털로 **이 저장소 자체**를 검사해 493건이 나왔다. 493건을 하나씩 소스와 대조한
+결과 `src/` 실제 취약은 0건이었고, 제품 코드·설정을 차단으로 올린 원인은 셋이었다.
+(전수 판정과 수정 명세 44항목은 별도 문서 — 이 커밋은 그중 1단계.)
+
+**① 데이터 파일에 언어 필터가 꺼져 있었다.** `_EXT_TO_LANG` 에 .yaml/.json/.toml 이
+없어 언어가 "미상"이 됐고, 언어 필터는 *미상이면 통과* 였다. 그래서 Python/JS 전용
+룰이 YAML 문자열(`sink: "eval(x)"`)·JSON 케이스 ID·semgrep 룰 패턴에 그대로 걸렸다.
+정작 .html 은 언어가 있어 필터됐으니 **알 수 없는 파일에서만 필터가 꺼지는** 역전.
+.yaml/.yml/.json/.toml → `data`, .ini/.cfg/.conf/.env/.properties → `config` 를
+부여했다. 값 기반 룰(시크릿·PII·내부망, `languages` 미선언)은 영향 없이 계속 본다.
+데이터 파일에 실행 코드가 실리는 룰(package.json 스크립트·CI `run:`)은
+GOV-CODE-EXEC-001·GOV-CMD-INJECTION-001·KISA-PY/JS-INPUT-05 가 `data` 를 **명시
+opt-in** 했다 — 기존 테스트 `test_real_execution_risk_still_blocks` 가 지키는 자리.
+
+**② 벤더 접두사 패턴에 좌측 경계가 없었다.** `sk-[A-Za-z0-9_-]{20,}` 가 NIST 공개
+URL `ai-risk-management-framework` 의 단어 중간(`ri` 뒤)에서 정확히 20자를 잡아
+**제품 설정 파일 `config/security_sources.yaml` 이 치명·배포 차단**으로 올라왔다.
+`desk-`·`task-`·`mask_token…`·`NAKIA…`·`laughp_…` 도 같은 결함. 접두 패턴 10개
+전부에 `(?<![A-Za-z0-9…])` 를 걸었다(`` 는 `_sk-` 를 통과시키므로 lookbehind).
+`Bearer sk-…`·`="sk-…"`·`=sk-…`(.env)·`?key=sk-…`·`{"key":"sk-…"}` 는 계속 잡힌다.
+증거 마스킹의 `sk[-_]` 규칙도 같은 결함이라 같은 경계를 걸었다 — 공개 URL 을
+`ai-risk-ma[마스킹]rk` 로 가려 담당자가 무엇이 잡혔는지 알 수 없게 하고 있었다.
+
+**③ `GOV-CODE-EXEC-001` 이 메서드 호출을 잡았다.** `(eval|exec)\s*\(` 는 `.` 뒤를
+막지 못해 `engine.eval(`·`pattern.exec(`·`cp.exec(` 를 치명으로 올렸다(13줄). 실제
+Python 에서는 SQLModel 의 `session.exec(select(...))` 가 매우 흔해 실사용 오탐이
+확실한 자리. KISA-PY-INPUT-02 와 같은 경계 `(?<![A-Za-z0-9_.])` 를 쓰고
+`builtins.exec` 우회만 명시적으로 되살렸다.
+
+**같이 배운 것.** 수정 주석에 `` `sk-management-framework` `` 를 그대로 적자 새
+패턴이 **그 주석을 잡았다** — 백틱 뒤는 경계 밖이고 시크릿 룰은 주석도 본다. 도구가
+자기 결함 설명문을 결함으로 잡는 자기참조는 국면 ⅩⅨ와 같은 계열이라 문구를 바꿨다.
+
+- 회귀·적대 테스트 `tests/test_selfscan_round1.py` 신규(양방향 45케이스).
+- `test_security_guidance_prose_is_attenuated_not_blocked` 는 YAML 산문이 아예
+  매치되지 않게 되어 "발견 존재" 전제를 풀었고, 감쇄 메커니즘 검증은 코드+반성문
+  케이스(`test_prohibition_note_attenuates_but_keeps_finding`)로 옮겼다.
+- 룰셋 잠금 2026.08.9 → **2026.08.29**.
+- 자기검사 재측정(dev-quick, 신규 테스트 파일 제외): 493/차단 297 → **445/247**,
+  `src/`·`config/` 발견 **0**. 남은 대부분은 tests/ 문자열 리터럴(2단계 대상).
+
 ### git 없는 PC 설치 경로 추가 · 퀵스타트를 현재 도구에 맞춤 (Docs) — 2026-08-13
 
 **① git 없는 PC 설치 경로가 문서에 없었다.** 안내한 설치 명령이

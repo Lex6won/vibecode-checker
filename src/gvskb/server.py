@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from .gate import gate_status
+from .gate import attach_gate, gate_status
 from .loader import load_all_rules
 from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
@@ -216,7 +216,7 @@ def scan_code(
         profile=profile,
     )
     record_scan(report, "scan_code", caller=caller or "")  # 감사로그(옵트인) — scan_path는 스캐너가 직접 기록
-    return report.model_dump(mode="json")
+    return attach_gate(report).model_dump(mode="json")
 
 
 @_tool()
@@ -235,7 +235,7 @@ def detect_secrets_and_pii(
     """
     report = detect_secrets_and_pii_impl(code, filename=filename)
     record_scan(report, "detect_secrets_and_pii")
-    return report.model_dump(mode="json")
+    return attach_gate(report).model_dump(mode="json")
 
 
 @_tool()
@@ -485,7 +485,7 @@ def scan_path(
         max_files=max_files,
         caller=caller or "",
     )
-    return report.model_dump(mode="json")
+    return attach_gate(report).model_dump(mode="json")
 
 
 @_tool()
@@ -625,9 +625,9 @@ def save_report(
         md_path.write_text(
             render_markdown_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
         html_path.write_text(
-            render_html_impl(parsed, saved_path=str(md_path)), encoding="utf-8")
+            render_html_impl(parsed, saved_path=str(html_path)), encoding="utf-8")
         json_path.write_text(
-            _json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            _json.dumps(attach_gate(parsed).model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         written = {"markdown": str(md_path), "html": str(html_path), "json": str(json_path)}

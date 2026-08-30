@@ -38,7 +38,7 @@ def test_kisa_py_input_01_sql_raw_concat() -> None:
         'cursor.execute("UPDATE board SET name=%s WHERE id=%s" % (name, id))\n',
         filename="bad.py", language="python",
     )
-    assert any(f.rule_id == "KISA-PY-INPUT-01" for f in report.findings)
+    assert any("KISA-PY-INPUT-01" in (f.rule_id, *f.also_matched) for f in report.findings)
 
 
 def test_kisa_py_input_02_eval_exec() -> None:

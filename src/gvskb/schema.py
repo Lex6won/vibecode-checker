@@ -125,6 +125,14 @@ EXPOSURE_CATEGORIES: frozenset[str] = frozenset({
     "public-sector-internal",
 })
 
+#: 카테고리는 다르지만 **값 기반**(적혀 있는 것만으로 위험)인 룰. 테스트 경로
+#: 감쇄가 카테고리로만 걸려 있어 이 룰은 tests/ 에서도 치명·차단이었다(실측
+#: 2026-08-29: 픽스처 5건이 게이트를 막음). 카테고리를 바꾸면 프로파일·리포트
+#: 분류가 따라 흔들리므로 룰 단위로 opt-in 한다. 목록은 여기 한 곳에만 둔다.
+VALUE_BASED_RULE_IDS: frozenset[str] = frozenset({
+    "GOV-LLM-PII-PROMPT-001",
+})
+
 
 class RuleExamples(BaseModel):
     """Code samples that pin per-rule precision / recall.
@@ -242,6 +250,15 @@ class Finding(BaseModel):
     )
     # 심각도 감쇄 — 발견을 지우지 않고 등급만 낮춘다. 지우면 "왜 안 나왔지"를
     # 추적할 수 없고, 그대로 두면 가짜 값 때문에 배포가 막힌다.
+    also_matched: list[str] = Field(
+        default_factory=list,
+        description=(
+            "같은 파일·같은 줄을 같은 취약 유형으로 본 **다른 룰**의 id. 같은 dedup_group "
+            "의 룰이 겹치면 가장 확실한 엔진·근거의 발견 하나만 남기고 나머지 rule_id 를 "
+            "여기 적는다 — '1개 문제, 근거 룰 2개'이지 '2개 문제'가 아니다(개선요청 #34 C). "
+            "references 는 합집합이 된다. 비어 있으면 겹친 룰이 없었다는 뜻이다."
+        ),
+    )
     severity_adjusted: str | None = Field(
         default=None,
         description=(
@@ -285,11 +302,14 @@ class ExternalConnection(BaseModel):
     )
     call_count: int = Field(default=1, description="같은 파일 내 호출 지점 수(api 전용). location은 첫 지점")
     pii_adjacent: bool = Field(default=False, description="같은 줄/근접에 개인정보 신호")
-    context: Literal["runtime", "doc-or-installer"] = Field(
+    context: Literal["runtime", "doc-or-installer", "test", "comment", "data-table"] = Field(
         default="runtime",
         description=(
             "이 연결이 나온 맥락. runtime=코드가 실제로 호출 · "
-            "doc-or-installer=설치 안내 문서·설치 스크립트의 다운로드 링크. "
+            "doc-or-installer=설치 안내 문서·설치 스크립트의 다운로드 링크 · "
+            "test=테스트 코드의 리터럴 · comment=주석·독스트링 안의 주소 · "
+            "data-table=호스트 목록·카탈로그 같은 데이터 표(호출 아님). "
+            "runtime 외의 값은 운영 중 전송이 아니므로 국외이전·개인정보 집계에서 제외한다. "
             "후자는 **운영 중 데이터 전송이 아니므로 국외이전 검토 대상이 아니다**."
         ),
     )
@@ -301,7 +321,20 @@ class ScanSummary(BaseModel):
     by_severity: dict[str, int]
     by_decision: dict[str, int]
     highest_severity: Severity | None = None
+    #: **소스 발견 기준(legacy)** — 배포 게이트 판정이 아니다. 게이트는 의존성을
+    #: 기준으로 막고 소스는 보조(``gate.py``)이므로, 배포 판정은 ``ScanReport.gate``
+    #: 를 읽어야 한다. 이 필드를 판정으로 쓰면 "소스 차단 = 배포 차단"이라는 옛
+    #: 의미가 되살아난다(실측 2026-08-29: 포털이 폴백으로 이 값을 읽고 있었다).
     blocked: bool = False
+    #: 고유 (파일, 줄) 수 — 같은 줄에 GOV·KISA 두 룰이 걸리면 finding_count 는 2,
+    #: location_count 는 1. 담당자가 고칠 단위는 위치다.
+    location_count: int = 0
+    block_location_count: int = 0
+    #: 경로 성격별 집계 — runtime(운영 코드) · test(테스트 경로) · sample(fixtures·examples·
+    #: corpus 같은 시험·예제 경로). 값은 {"total": n, "block": n}. **판정은 바꾸지 않는다** —
+    #: "차단 13건"이 "운영 0 + 시험 13"임을 읽는 사람이 바로 알게 하려는 집계다(개선요청 #34 A-3).
+    #: 시험 경로 감등은 넣지 않았다: Django fixtures 는 실제 개인정보 덤프가 놓이는 자리다.
+    by_path_class: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class SkippedFile(BaseModel):
@@ -403,6 +436,10 @@ class ScanReport(BaseModel):
         default=None,
         description="검사 실행 모드: 'online' | 'offline'(망분리). None이면 리포트에 미표시.",
     )
+    #: 이 결과를 만든 정확한 CLI 명령. `gvskb report <json>` 으로 다시 렌더할 때
+    #: 폴백 문구가 `--check-deps`·`--max-files` 를 잃어 재현자가 **더 깨끗한 결과**를
+    #: 받던 결함(실측 2026-08-29)을 막는다. None=미기록(구버전 JSON).
+    reproduce_command: str | None = Field(default=None)
     # 분석 출처 증명(provenance) — "어떤 엔진이 언제 판단했나"를 결과에 각인해
     # 레지스트리·감사로그가 재현 가능한 근거를 갖게 한다. 구버전 JSON 역호환 위해 None 허용.
     engine_version: str | None = Field(
@@ -440,6 +477,22 @@ class ScanReport(BaseModel):
             "의존성(패키지) 취약점 검사 결과 — scan_dependencies/audit_manifest 반환값. "
             "단일 audit dict 또는 {'audits': [...]}(여러 매니페스트). None이면 섹션 미표시. "
             "보안팀이 코드+패키지 위험을 한 문서에서 보도록 리포트에 병합된다."
+        ),
+    )
+    #: 배포 게이트 판정 스냅샷 — 저장 직전 ``gate.gate_status()`` 결과. 예전에는
+    #: 렌더 시점에만 계산돼 JSON 에 없었고, JSON 만 읽는 소비자(포털·하네스)는
+    #: ``summary.blocked``(소스 기준)로 판정해 사람용 보고서와 다른 답을 냈다.
+    gate: dict | None = Field(
+        default=None,
+        description="배포 게이트 판정(verdict/blocked/block_reasons/…). None=아직 계산 전",
+    )
+    posture_notes: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "보안 자세 관찰(정보). 룰이 못 보는 **부재형** 항목 — 웹 서버 진입점은 있는데 "
+            "CSP·X-Frame-Options·쿠키 보호 속성 설정 흔적이 저장소 어디에도 없을 때. "
+            "판정(block/warn)·게이트와 무관하며 finding 이 아니다(개선요청 #34 D4·E). "
+            "각 항목: id · level · title · detail · files · safe_fix · references."
         ),
     )
     duplicate_files: list[dict] = Field(
@@ -501,11 +554,28 @@ class PackageRegistryMetadata(BaseModel):
     )
     latest_version: str | None = None
     queried_version: str | None = Field(default=None, description="검사 대상 버전(미지정 시 최신)")
+    version_exists: bool | None = Field(
+        default=None,
+        description="검사 대상 **버전**의 실재 여부. 패키지는 있어도 버전이 없으면 False. "
+                    "None=버전 미지정 또는 미확인. 존재하지 않는 버전은 설치 불가·오타·조작 신호다",
+    )
     version_published_at: str | None = Field(default=None, description="검사 대상 버전의 발행 시각(ISO)")
     version_age_days: int | None = Field(default=None, description="버전 발행 후 경과일 — 쿨다운 판정 근거")
     first_published_at: str | None = Field(default=None, description="패키지 최초 발행 시각(ISO) — 신생 탐지 근거")
     package_age_days: int | None = None
     license: str | None = None
+    supplier: str | None = Field(
+        default=None,
+        description=(
+            "공급자·저작자 표시(레지스트리 응답을 그대로 옮김, 우리가 검증하지 않음). "
+            "npm 은 대체로 채워지지만 PyPI 는 PEP 621 저작자 정보가 이 필드로 안 넘어오는 "
+            "패키지가 흔하다 — None 이 '조회 실패'가 아니라 '레지스트리에 없음'일 수 있다."
+        ),
+    )
+    repository_url: str | None = Field(
+        default=None,
+        description="소스 저장소·홈페이지 URL(레지스트리 project_urls/repository 필드 그대로).",
+    )
     install_scripts: Literal["none", "present", "unknown"] = Field(
         default="unknown",
         description="설치 스크립트(preinstall/install/postinstall) 존재 여부. PyPI는 미개봉 검사라 unknown",
@@ -561,6 +631,11 @@ class PackageCheckResult(BaseModel):
     checked: bool = Field(default=False, description="취약점 검사가 실제 수행됐는가(실재확인과 별개)")
     verdict: Literal[
         "malicious", "not_found", "vulnerable", "cooldown_hold",
+        # 이름·버전 신호 — 레지스트리 실재 여부와 **독립**으로 적용한다. 예전엔
+        # 인기 패키지와 1자 차이 이름이라도 레지스트리에 존재하면 '이상 없음'으로
+        # 통과했다(실측 2026-08-29: npm 의 `expresss` 는 실존하는 자리차지 패키지).
+        # 스쿼터가 이름을 등록해 두면 휴리스틱이 정확히 그 상황에서 무력화됐다.
+        "suspicious_name", "version_not_found",
         "checked_stale", "checked_clean", "unknown", "error",
         # 기관 레지스트리 판정 — 이 도구의 관측이 아니라 기관의 결정이다.
         "registry_approved", "registry_rejected",

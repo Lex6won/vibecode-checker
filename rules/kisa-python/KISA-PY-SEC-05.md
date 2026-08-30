@@ -26,8 +26,15 @@ detection:
     - "(?i)INSERT\\s+INTO\\s+\\w+[^;]*\\(\\s*[^)]*password[^)]*\\)\\s*VALUES"
     - "s\\.sendall\\s*\\(\\s*(?:password|passwd|pwd|token|secret|api_key)[A-Za-z0-9_]*\\.encode"
     - "s\\.send\\s*\\(\\s*(?:password|passwd|pwd|token|secret|api_key)[A-Za-z0-9_]*\\.encode"
-    - "requests\\.(?:get|post|put|delete|patch)\\s*\\(\\s*['\"]http://"
-    - "urllib\\.request\\.urlopen\\s*\\(\\s*['\"]http://"
+    # http:// 평문 호출 — 이 룰은 CWE-319 "민감정보 평문 전송"이다. 호스트를 보지
+    # 않던 예전 패턴은 `http://10.0.0.5/api`·`http://localhost:3000` 까지 잡아
+    # 망분리 기관의 내부 API 호출 전반에 경고를 뿌렸다(실측 2026-08-29). 두 갈래로
+    # 나눈다: ① 공인망 http 는 페이로드 무관 ② 사설망·루프백은 민감 토큰이 같이
+    # 있을 때만. `http://10.0.0.5.evil.com/` 은 경계 `[:/'"]` 요구로 ①에 걸린다.
+    - "requests\\.(?:get|post|put|delete|patch)\\s*\\(\\s*['\"]http://(?!(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}|0\\.0\\.0\\.0|\\[::1\\])(?=[:/'\"]))"
+    - "(?i)requests\\.(?:get|post|put|delete|patch)\\s*\\(\\s*['\"]http://[^\\n]*(?:password|passwd|pwd|token|secret|api_key|주민|rrn|비밀번호)"
+    - "urllib\\.request\\.urlopen\\s*\\(\\s*['\"]http://(?!(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}|0\\.0\\.0\\.0|\\[::1\\])(?=[:/'\"]))"
+    - "(?i)urllib\\.request\\.urlopen\\s*\\(\\s*['\"]http://[^\\n]*(?:password|passwd|pwd|token|secret|api_key|주민|rrn|비밀번호)"
   category: kisa-secure-coding
   why_it_matters: >-
     개인정보·인증정보·금융정보를 *평문*으로 DB에 저장하거나 네트워크로 전송하면

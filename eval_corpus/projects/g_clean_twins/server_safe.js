@@ -17,3 +17,13 @@ app.get("/hello", (req, res) => {
 });
 
 app.listen(3000);
+
+// 경로 경계 — 구분자를 붙이거나 relative 로 검사(GOV-PATH-BOUNDARY-001 음성)
+function safeRead(root, name) {
+  const base = path.resolve(root);
+  const target = path.resolve(base, name);
+  const rel = path.relative(base, target);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error("bad path");
+  if (!target.startsWith(base + path.sep)) throw new Error("bad path");
+  return target;
+}

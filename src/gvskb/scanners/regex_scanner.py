@@ -48,6 +48,17 @@ _EXT_TO_LANG = {
     ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".ps1": "powershell",
     ".html": "html", ".htm": "html", ".xml": "xml",
     ".vue": "javascript", ".svelte": "javascript",
+    # 데이터·설정 파일에도 **언어를 준다.** 예전에는 이 확장자들이 목록에 없어
+    # eff_lang=None 이 됐고, 아래 언어 필터가 "언어 미상이면 통과" 라 Python/JS
+    # 전용 룰이 YAML 문자열(`sink: "eval(x)"`)·JSON 케이스 ID·semgrep 룰 패턴에
+    # 그대로 걸렸다(실측 2026-08-29: 자기검사 493건 중 45건). 정작 .html 은
+    # 언어가 있어 필터됐으니 "알 수 없는 파일에서만 필터가 꺼지는" 역전이었다.
+    # 값 기반 룰(시크릿·PII·내부망 — languages 미선언)은 영향 없이 계속 본다.
+    # 데이터 파일에 실행 코드가 실리는 룰(package.json 스크립트·CI run:)은
+    # 각 룰이 `languages` 에 `data` 를 **명시 opt-in** 한다.
+    ".yaml": "data", ".yml": "data", ".json": "data", ".toml": "data",
+    ".ini": "config", ".cfg": "config", ".conf": "config", ".env": "config",
+    ".properties": "config",
 }
 
 # A comment line cannot host a live vulnerability, so comment/docstring lines
@@ -442,7 +453,8 @@ MASK_MARK = "[마스킹]"
 #: 보고서가 모든 증거에 '마스킹됨' 딱지를 붙이면 그 딱지는 정보가 아니다 —
 #: `eval(x)` 옆의 '마스킹됨'을 본 담당자는 무엇이 가려졌는지 찾다가 지친다.
 _MASKED_SHAPE_RE = re.compile(
-    r"\[마스킹\]|\d{6}-[1-4]\*{6}|01[016789]-\*{4}-\d{4}",
+    r"\[마스킹\]|\d{6}-[1-4]\*{6}|01[016789]-\*{4}-\d{4}"
+    r"|\d{4}-\*{4}-\*{4}-\d{3,4}",           # 카드번호 앞 4·뒤 4 만 남긴 모양
 )
 
 
@@ -473,7 +485,7 @@ def _partial(token: str) -> str:
 #: 앞 몇 자를 봐도 나머지를 좁히지 못하지만, 비밀번호는 사람이 지어 저엔트로피다
 #: — `P@ss…` 넉 자가 추측을 실질적으로 도와준다. 게다가 어느 비밀번호인지는
 #: 변수명(`DB_PASSWORD`)이 이미 말해 주므로 부분 노출로 얻는 것도 없다.
-_FULL_MASK_KEYS = re.compile(r"(?i)^(password|passwd|pwd)$")
+_FULL_MASK_KEYS = re.compile(r"(?i)(?:^|[._-])(password|passwd|pwd|비밀번호|암호)$")
 
 
 def _mask_quoted_value(m: re.Match[str]) -> str:
@@ -498,10 +510,32 @@ def redact_evidence(text: str) -> str:
     # 로그·오류 메시지에 그대로 찍히지만, 넓게 가려서 생기는 손해는 증거 문자열이
     # 조금 덜 읽히는 것뿐이다. 비대칭이 명백하므로 과잉 마스킹 쪽을 택한다.
     # (실측: sk- 만 가려서 sk_ggtrust_… 형식 기관 API 키가 무방비였다.)
-    text = re.sub(r"sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
+    # 좌측 경계: `risk-management-framework` 처럼 단어 중간의 sk- 에서
+    # 시작하면 키가 아니다 — 공개 URL 을 가려 증거를 못 읽게 했다
+    # (실측 2026-08-29). `` 대신 lookbehind 를 쓰는 이유는 `_sk-…` 처럼
+    # 식별자 끝에 붙은 경우 `` 가 통과시키기 때문이다.
+    text = re.sub(r"(?<![A-Za-z0-9_\-/.])sk[-_][A-Za-z0-9_-]{8,}", lambda m: _partial(m.group(0)), text)
     text = re.sub(r"AKIA[0-9A-Z]{16}", lambda m: _partial(m.group(0)), text)
+    # URL 안의 자격증명 `scheme://user:비밀@host` — 비밀번호이므로 통째로 가린다.
+    # 실측(2026-08-29): DB 접속 URL 의 `user:비밀번호@host` 자리가 보고서에 원문으로 실렸다.
+    text = re.sub(r"(://[^\s:/@\"']+:)([^\s@\"']+)(@)", lambda m: f"{m.group(1)}{MASK_MARK}{m.group(3)}", text)
+    # JWT 3세그먼트 — 헤더 앞 4자만 남긴다(어느 토큰인지 식별용).
     text = re.sub(
-        r"(?i)((api[_-]?key|secret|password|passwd|pwd|token)\s*[:=]\s*[\"'])([^\"']+)([\"'])",
+        r"(eyJ[A-Za-z0-9_-]{4})[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+",
+        lambda m: f"{m.group(1)}{MASK_MARK}", text,
+    )
+    # 카드번호(Visa·MC·Amex·Discover 접두 + 13~16자리) — 앞 4·뒤 3~4 만 남긴다.
+    text = re.sub(
+        r"(?<![\d.])((?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6(?:011|5\d{2})))[- ]?\d{4}[- ]?\d{4}[- ]?(\d{3,4})(?![\d.])",
+        r"\1-****-****-\2", text,
+    )
+    # 인용값 규칙 — 키 어휘를 **탐지 룰과 같게** 둔다. 예전엔 `SECRET_KEY`·
+    # `SIGNING_KEY`·`JWT_SECRET_KEY`(접미 `_KEY`)·`비밀번호 =`·`**password** =`
+    # 가 전부 원문으로 실렸다(실측 2026-08-29). 보고서는 결재로 올라가고
+    # 감사로그에 남으므로, 여기서 못 가리면 도구가 유출본을 한 벌 더 만든다.
+    text = re.sub(
+        r"(?i)((?:[\w.\-]*[._-])?(api[_-]?key|secret(?:[_-]?key)?|signing[_-]?key|private[_-]?key"
+        r"|access[_-]?key|auth[_-]?token|password|passwd|pwd|token|비밀번호|암호)(?:\*\*)?\s*[:=]\s*[\"'])([^\"']+)([\"'])",
         _mask_quoted_value,
         text,
     )
@@ -544,14 +578,41 @@ _SEVERITY_RANK = {
 _DECISION_RANK = {Decision.block: 2, Decision.warn: 1, Decision.allow: 0}
 
 
+# 엔진의 근거 강도. 예전 순위는 (심각도, 결정, rule_id) 라 동점이면 문자열 비교로
+# "KISA-" 가 "GOV-" 를 이겨 **regex KISA 가 AST-confirmed GOV 를 밀어냈다**(자기검사
+# 2026-08-29, S-8). 데이터 흐름을 본 발견이 패턴만 본 발견보다 앞서야 한다.
+_ENGINE_PRECISION = {
+    "python-ast": 3, "js-taint": 2, "semgrep": 2, "secret-file": 1, "regex": 1,
+}
+_CONFIDENCE_RANK = {"confirmed": 3, "likely": 2, "pattern-only": 1}
+
+
 def _dedup_rank(finding: Finding) -> tuple:
-    # 심각도 → 결정 → rule_id 순. rule_id 를 마지막에 넣어 같은 무게일 때
-    # 실행 순서와 무관하게 항상 같은 룰이 남게 한다(리포트 재현성).
+    # 엔진 정밀도 → 근거 → 심각도 → 결정 → rule_id. rule_id 를 마지막에 넣어
+    # 같은 무게일 때 실행 순서와 무관하게 항상 같은 룰이 남게 한다(리포트 재현성).
     return (
+        _ENGINE_PRECISION.get(finding.engine or "", 0),
+        _CONFIDENCE_RANK.get(finding.confidence or "", 0),
         _SEVERITY_RANK.get(finding.severity, 0),
         _DECISION_RANK.get(finding.decision, 0),
+        # 엔진·근거·무게가 전부 같으면 공공 특화 룰(GOV-)이 대표다 — 안전한 수정·
+        # 공공 영향 설명이 그쪽에 있고, 포털·하네스가 참조하는 id 도 대부분 GOV 다.
+        1 if finding.rule_id.startswith("GOV-") else 0,
         finding.rule_id,
     )
+
+
+def _merge_into(winner: Finding, loser: Finding) -> Finding:
+    """패자의 rule_id·references 를 승자에 합친다 — 근거를 버리지 않는다."""
+    also = list(winner.also_matched)
+    for rid in [loser.rule_id, *loser.also_matched]:
+        if rid != winner.rule_id and rid not in also:
+            also.append(rid)
+    refs = list(winner.references)
+    for r in loser.references:
+        if r not in refs:
+            refs.append(r)
+    return winner.model_copy(update={"also_matched": also, "references": refs})
 
 
 def dedupe_by_group(findings: list[Finding]) -> list[Finding]:
@@ -576,7 +637,9 @@ def dedupe_by_group(findings: list[Finding]) -> list[Finding]:
             seen[key] = len(kept)
             kept.append(finding)
         elif _dedup_rank(finding) > _dedup_rank(kept[index]):
-            kept[index] = finding
+            kept[index] = _merge_into(finding, kept[index])
+        else:
+            kept[index] = _merge_into(kept[index], finding)
     return kept
 
 

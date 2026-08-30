@@ -204,10 +204,11 @@ def test_severity_table_splits_source_and_dependency_columns() -> None:
 
 def test_total_action_items_line_sums_source_and_packages() -> None:
     md = render_markdown(_report_with_deps())
-    assert "총 조치 대상: 8건" in md       # 소스 6 + 패키지 2
-    assert "소스 코드 6건 · 패키지 2종" in md
+    # 2026-08-29: 건(소스)과 종(패키지)은 단위가 달라 더하지 않는다 — "8건"으로 합산하던 문구가 결함이었다.
+    assert "총 조치 대상: 소스 코드 6건 + 패키지 2종" in md
+    assert "총 조치 대상: 8건" not in md
     html = render_html(_report_with_deps())
-    assert "총 조치 대상 8건" in html
+    assert "총 조치 대상: 소스 코드 6건 + 패키지 2종" in html
 
 
 def test_severity_table_stays_single_column_without_dependency_audit() -> None:
