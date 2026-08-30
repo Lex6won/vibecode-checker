@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from gvskb.gate import attach_gate, gate_status
-from gvskb.scanner import scan_code, scan_path
+from gvskb.scanner import scan_code
 from gvskb.schema import ScanReport
 
 

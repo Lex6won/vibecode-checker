@@ -7,6 +7,8 @@ JS 룰 36개가 전부 `languages: [javascript, typescript]` 라 `.html` 에서�
 """
 from __future__ import annotations
 
+import pytest
+
 from gvskb.scanner import _html_script_view, _script_tag_is_js, scan_code
 
 
@@ -73,9 +75,6 @@ def test_js_taint_runs_on_inline_script():
 
 
 # ── 상수 리터럴 대입은 주입이 아니다(포털 실측: 새 발견 26건 중 9건) ──
-import pytest
-
-
 @pytest.mark.parametrize("code", [
     'el.innerHTML = "";',
     "el.innerHTML = '';",

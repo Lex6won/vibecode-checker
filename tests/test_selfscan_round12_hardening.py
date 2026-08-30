@@ -120,7 +120,8 @@ def test_requirements_txt_parsing_unchanged():
 
 
 def test_check_deps_picks_up_pyproject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    import subprocess, sys
+    import subprocess
+    import sys
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname="x"\ndependencies=["flask==0.12.2"]\n', encoding="utf-8")
     out = tmp_path / "r.json"
