@@ -43,6 +43,9 @@ from .bundle import import_bundle
 from .cache import IntelCache, default_cache_dir, intel_max_age_days
 
 # 공개 기본 소스 — GitHub Actions 가 매일 03:00 KST 갱신하는 고정 URL.
+#: 번들 다운로드 상한 — 상한 없는 `resp.content` 는 잘못된 URL 하나로 메모리를 채운다.
+MAX_BUNDLE_BYTES = 300 * 1024 * 1024
+
 DEFAULT_BUNDLE_URL = (
     "https://github.com/Lex6won/vibecode-checker/releases/download/"
     "intel-latest/gvskb-intel-bundle.zip"
@@ -192,16 +195,29 @@ def _pull_from_url(url: str, cache_dir: Path | None, timeout: float) -> AutoPull
 
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            payload = resp.content
+            with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in resp.iter_bytes():
+                    total += len(chunk)
+                    if total > MAX_BUNDLE_BYTES:
+                        return AutoPullResult(
+                            attempted=True, ok=False, source=url,
+                            error=f"번들이 상한({MAX_BUNDLE_BYTES:,}B)을 넘습니다 — 다운로드 중단.")
+                    chunks.append(chunk)
+                payload = b"".join(chunks)
     except Exception as exc:  # noqa: BLE001 — 네트워크 실패가 검사를 막으면 안 된다
         return AutoPullResult(attempted=True, ok=False, source=url,
                               error=f"번들 다운로드 실패: {exc!s}")
 
-    tmp = Path(tempfile.gettempdir()) / "gvskb-autopull-bundle.zip"
+    # 예측 가능한 이름(`/tmp/gvskb-autopull-bundle.zip`)은 공용 서버에서 다른 계정이
+    # 먼저 심볼릭 링크를 놓아 두면 그 자리에 쓰게 된다 — 배타 생성(mkstemp)으로 바꿨다.
+    fd, tmp_name = tempfile.mkstemp(prefix="gvskb-autopull-", suffix=".zip")
+    tmp = Path(tmp_name)
     try:
-        tmp.write_bytes(payload)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
         res = import_bundle(tmp, cache_dir=cache_dir)
     except OSError as exc:
         return AutoPullResult(attempted=True, ok=False, source=url,

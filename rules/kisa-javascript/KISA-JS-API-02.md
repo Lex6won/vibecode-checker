@@ -28,6 +28,9 @@ detection:
     - "(?:setTimeout|setInterval)\\s*\\(\\s*['\"`][^'\"`]+['\"`]\\s*,"
     - "crypto\\.createHash\\s*\\(\\s*['\"](?:md5|sha1|md4|md2|ripemd160)['\"]\\s*\\)"
     - "crypto\\.createHmac\\s*\\(\\s*['\"](?:md5|sha1|md4)['\"]\\s*,"
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-JS-INPUT-02). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: js-code-exec
   category: kisa-secure-coding
   why_it_matters: >-
     가이드 §제7절 2는 *부주의하게 사용될 가능성이 많은 API*를 취약한 API로 정의

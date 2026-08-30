@@ -84,6 +84,8 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "vulnerable": "CVSS HIGH 이하 취약점",
     "cooldown": "발행 직후 버전 — 아직 신뢰할 수 없음",
     "unchecked": "판정 불가 — '안전'이라는 뜻이 아님",
+    "suspicious_name": "인기 패키지와 이름이 거의 같음(타이포스쿼팅 의심)",
+    "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
     "source": "소스 코드 발견",
 }
 
@@ -145,6 +147,19 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
     return reasons
 
 
+def _has_dep_verdict(report: ScanReport, verdict: str) -> bool:
+    """의존성 컴포넌트 중 해당 판정이 하나라도 있는가."""
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return False
+    return any(
+        (comp.get("check") or {}).get("verdict") == verdict
+        for comp in _dep_merged_components(audits)
+    )
+
+
 def _has_cooldown_hold(report: ScanReport) -> bool:
     """발행 직후 버전 보류가 있는가.
 
@@ -169,15 +184,35 @@ def _exposure_counts(report: ScanReport) -> dict:
     **반드시 재발급**해야 한다. 개인정보는 제거와 유출 신고가 따른다.
     조치의 종류가 다르므로 두 값을 나눠 센다.
     """
-    secret = pii = 0
+    secret = pii = secret_att = pii_att = 0
     for f in report.findings:
         if f.suppressed:
             continue
+        # 도구가 스스로 낮춘 것(테스트 경로·안내문·문자열·룰 문서)은 "재발급하라"고
+        # 말할 근거가 약하다 — "비밀값 129건 재발급" 중 98건이 그랬다(실측 2026-08-29).
+        # 총량은 그대로 두고 살아 있는 것과 낮춘 것을 갈라 센다.
+        attenuated = bool(f.severity_adjusted)
         if f.category == "secret-scanning":
             secret += 1
+            secret_att += attenuated
         elif f.category == "privacy-public-sector":
             pii += 1
-    return {"secret": secret, "pii": pii}
+            pii_att += attenuated
+    return {
+        "secret": secret, "pii": pii,
+        "secret_live": secret - secret_att, "secret_attenuated": secret_att,
+        "pii_live": pii - pii_att, "pii_attenuated": pii_att,
+    }
+
+
+def attach_gate(report: ScanReport) -> ScanReport:
+    """저장·반환 직전에 게이트 판정을 보고서 안에 새긴다.
+
+    의존성 감사는 스캔이 끝난 뒤 붙으므로 **가장 마지막**에 불러야 한다. JSON 을
+    읽는 쪽이 ``summary.blocked``(소스 기준)가 아니라 이 값을 보게 하기 위한 것.
+    """
+    report.gate = gate_status(report)
+    return report
 
 
 def gate_status(report: ScanReport) -> dict:
@@ -220,6 +255,10 @@ def gate_status(report: ScanReport) -> dict:
         conditional_criteria.append("cooldown")
     if unchecked:
         conditional_criteria.append("unchecked")
+    if _has_dep_verdict(report, "suspicious_name"):
+        conditional_criteria.append("suspicious_name")
+    if _has_dep_verdict(report, "version_not_found"):
+        conditional_criteria.append("version_not_found")
     if report.summary.finding_count:
         conditional_criteria.append("source")
 
@@ -310,16 +349,25 @@ def _reason(
         # 판정 불가를 세기만 하고 뜻을 안 적으면, 담당자는 '차단 없음'만 읽고
         # 넘어간다. **확인하지 못한 것은 안전한 것이 아니다.**
         tail += " 판정 불가는 **'안전'이라는 뜻이 아닙니다** — 온라인 환경에서 다시 검사하세요."
-    if exposure["secret"]:
+    s_live, s_att = exposure.get("secret_live", exposure["secret"]), exposure.get("secret_attenuated", 0)
+    p_live, p_att = exposure.get("pii_live", exposure["pii"]), exposure.get("pii_attenuated", 0)
+    if s_live:
         tail = (
-            f" **비밀값 노출 {exposure['secret']}건이 포함돼 있습니다 — "
+            f" **비밀값 노출 {s_live}건이 포함돼 있습니다 — "
             "코드에서 지우는 것만으로는 끝나지 않습니다. 해당 값을 반드시 "
             "재발급(폐기)하세요.**"
+            + (f" (테스트·문서로 추정돼 낮춘 {s_att}건은 별도 — 진짜 값이 아닌지 확인하세요.)" if s_att else "")
         )
-    elif exposure["pii"]:
+    elif p_live:
         tail = (
-            f" **개인정보 {exposure['pii']}건이 포함돼 있습니다 — 제거 후 "
+            f" **개인정보 {p_live}건이 포함돼 있습니다 — 제거 후 "
             "유출 여부를 기관 지침에 따라 확인하세요.**"
+            + (f" (테스트·문서로 추정돼 낮춘 {p_att}건은 별도.)" if p_att else "")
+        )
+    elif s_att or p_att:
+        tail = (
+            f" 비밀값·개인정보 모양 {s_att + p_att}건이 있으나 테스트·문서로 추정돼 낮췄습니다 — "
+            "진짜 값이 섞여 있지 않은지만 확인하세요."
         )
     return (
         f"차단 사유는 없습니다. 확인이 필요한 항목이 있습니다({body}). "

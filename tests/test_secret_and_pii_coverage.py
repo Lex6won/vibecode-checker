@@ -122,7 +122,8 @@ def _tok(prefix: str, body: str) -> str:
     ("-----BEGIN RSA PRIVATE KEY-----", "소스에 붙여 넣은 개인키"),
 ])
 def test_vendor_prefix_tokens_are_detected(code: str, why: str) -> None:
-    assert "GOV-SECRET-APIKEY-001" in _hits(code, "a.py"), why
+    # PEM 개인키는 전용 룰(PRIVATEKEY-001)이 잡는다 — APIKEY-001 의 중복 패턴은 6차에서 뺐다.
+    assert {"GOV-SECRET-APIKEY-001", "GOV-SECRET-PRIVATEKEY-001"} & _hits(code, "a.py"), why
 
 
 def test_prefix_lookalikes_are_not_flagged() -> None:

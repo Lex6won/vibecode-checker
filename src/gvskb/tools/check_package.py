@@ -64,6 +64,12 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+def _squat_distance(heuristics: dict) -> int | None:
+    """가장 가까운 인기 패키지와의 편집거리(없으면 None)."""
+    hits = heuristics.get("typosquat_suspects") or []
+    return int(hits[0]["edit_distance"]) if hits else None
+
+
 def _typosquat_suspects(name: str, ecosystem: str) -> list[dict]:
     """Popular packages within edit distance 1–2 of this name (likely typos)."""
     pool = _POPULAR_NPM if ecosystem.lower() == "npm" else _POPULAR_PYPI
@@ -1083,6 +1089,7 @@ async def audit_manifest(
 
     source_kind = "manifest"
     lock = parse_lockfile(manifest_text, filename)
+    dependency_graph: list[dict] = []
     if lock is not None:
         source_kind = "lockfile"
         lock_format = lock["format"]
@@ -1090,6 +1097,10 @@ async def audit_manifest(
             # 파일 형식이 생태계를 확정한다 — 인자가 틀렸으면 파일을 따른다.
             ecosystem = lock["ecosystem"]  # type: ignore[assignment]
         packages = lock["packages"]
+        # SBOM 의존성 그래프(CycloneDX dependencies)의 원천 — 락파일이 이미 담은
+        # 관계를 그대로 옮긴다(2026-08-30 신설). 이름 기준이라 트리 여러 곳에
+        # 같은 이름의 다른 버전이 있으면 근사된다.
+        dependency_graph = lock.get("edges") or []
         if not packages:
             return _unparsed_result(
                 ecosystem,
@@ -1099,7 +1110,25 @@ async def audit_manifest(
     else:
         lock_format = None
         packages = parse_manifest_packages(manifest_text, ecosystem)
+        # 락파일이 없으면 전이 관계는 알 수 없지만, "이 프로젝트가 직접 이걸
+        # 쓴다"는 1단계 관계는 매니페스트 자체가 이미 말해 준다.
+        dependency_graph = [{"from": None, "to": str(p["name"])} for p in packages if p.get("name")]
         if not packages:
+            from ..scanner import _looks_like_pyproject
+            if ecosystem == "pypi" and _looks_like_pyproject(manifest_text):
+                # 메타데이터만 있는 pyproject(의존성 선언 0, 또는 dynamic) — 파싱 실패가
+                # 아니라 "선언된 의존성이 없다"이다. 검토 필요로 올리면 pyproject 를 쓰는
+                # 모든 프로젝트에 소음이 생긴다(푸시 전 검토 2026-08-30). 단 dynamic 이면
+                # 실제 의존성은 다른 파일에 있으니 그 사실을 적는다.
+                dyn = "dependencies" in (manifest_text.split("dynamic", 1)[1][:200] if "dynamic" in manifest_text else "")
+                res = _unparsed_result(ecosystem, "")
+                res.update({
+                    "verdict": "ok", "requires_review": bool(dyn),
+                    "note": ("pyproject.toml 이 의존성을 dynamic 으로 선언 — 실제 목록은 requirements*.txt 등 다른 파일에 있습니다. 그 파일을 함께 검사하세요."
+                             if dyn else "pyproject.toml 에 선언된 의존성이 없습니다(메타데이터 전용)."),
+                    "disclaimer": "선언된 패키지가 0건인 매니페스트입니다 — 락파일·requirements 가 있으면 그쪽 결과를 보세요.",
+                })
+                return res
             return _unparsed_result(ecosystem, "이 텍스트에서 패키지를 파싱하지 못했습니다. 형식·ecosystem을 확인하세요.")
 
     effective_limit = limit if limit is not None else (
@@ -1108,6 +1137,13 @@ async def audit_manifest(
     effective_limit = max(0, min(effective_limit, _MAX_PACKAGES))
     limited = packages[:effective_limit]
     truncated = len(packages) - len(limited)
+    # 상한에 걸려 잘려나간 패키지를 가리키는 간선은 뺀다 — 검사되지 않은 것을
+    # 그래프에만 남기면 "관계는 아는데 그 패키지는 안 봤다"는 반쪽 정보가 된다.
+    _checked_names = {str(p["name"]) for p in limited if p.get("name")}
+    dependency_graph = [
+        e for e in dependency_graph
+        if e.get("to") in _checked_names and (e.get("from") is None or e.get("from") in _checked_names)
+    ]
 
     # 순차 실행이면 락파일 800건이 곧 800회 왕복이다 — 동시 실행하되 상한을 둔다.
     sem = asyncio.Semaphore(_concurrency())
@@ -1123,6 +1159,7 @@ async def audit_manifest(
                 ecosystem=ecosystem,
                 env_grade=env_grade,
                 client=client,
+                version_exact=bool(package.get("version_exact", True)),
             )
         done += 1
         if on_progress is not None:
@@ -1254,6 +1291,7 @@ async def audit_manifest(
         "requires_review": requires_review,
         "verdict": verdict,
         "packages": limited,
+        "dependency_graph": dependency_graph,
         "checks": checks,
         "engine_version": _engine_version(),
         "checked_at": _now_iso(),
@@ -1286,6 +1324,7 @@ async def check_package_impl(
     timeout: float = 10.0,
     env_grade: str | None = None,
     client: "httpx.AsyncClient | None" = None,
+    version_exact: bool = True,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
@@ -1434,12 +1473,38 @@ async def check_package_impl(
             f"(기준 {cooldown.cooldown_days}일, 등급 {cooldown.env_grade}). "
             "오염된 신규 버전은 대부분 수 시간~수 일 내 발각·삭제됩니다 — 기다렸다 설치하세요(VCPS C1)."
         )
+    elif meta.version_exists is False and version_exact is False:
+        # `pkg>=9.9` 처럼 **경계값**이 실재 버전이 아닌 경우 — 설치되는 것은 그 이상의
+        # 어떤 버전이므로 오타·자리차지 신호가 아니다. 다만 그 버전으로는 취약점을
+        # 못 물었으니 '판정 불가'로 남긴다(초록불 아님).
+        verdict, severity = "unknown", "low"
+        notes.append(
+            f"'{name}' 의 하한 {version} 은 실재 버전이 아닙니다(최신 {meta.latest_version}). "
+            "실제 설치 버전은 락파일·설치 환경(--include-installed)으로 확인하세요."
+        )
+    elif meta.version_exists is False:
+        # 패키지는 있는데 **요청한 버전이 없다** — 설치가 안 되거나(오타), 스쿼터가
+        # 자리만 잡아 둔 패키지(latest 0.0.0)에 존재하지 않는 버전을 적어 둔 경우.
+        # 예전엔 발행일 None → cooldown.ok=None 으로 흡수돼 '이상 없음'이 됐다.
+        verdict, severity = "version_not_found", "high"
+        notes.append(
+            f"'{name}' 은(는) 저장소에 있지만 버전 {version} 은 존재하지 않습니다"
+            f"(최신 {meta.latest_version}). 버전 오타이거나 자리차지 패키지일 수 있습니다 — "
+            "공식 문서에서 이름과 버전을 함께 확인하세요."
+        )
+    elif _squat_distance(heuristics) == 1:
+        # 인기 패키지와 1자 차이 — 레지스트리에 **존재하더라도** 통과시키지 않는다.
+        # 존재가 면죄부가 되면 스쿼터가 이름을 등록해 둔 바로 그 상황에서 뚫린다.
+        verdict, severity = "suspicious_name", "high"
     else:
         verdict, severity = "checked_clean", "info"
 
     requires_review = (
         has_malicious or bool(vulns) or cooldown.ok is False
+        or cooldown.ok is None            # 발행일 미상 — 쿨다운 판정 불가는 통과가 아니다
         or meta.exists is None            # 실재 미확인(조회 실패)은 검토 대상
+        or meta.version_exists is False
+        or _squat_distance(heuristics) in (1, 2)   # 2자 차이도 사람이 봐야 한다
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)

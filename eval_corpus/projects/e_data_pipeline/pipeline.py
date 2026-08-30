@@ -11,7 +11,7 @@ def load_remote_frame(url: str) -> pd.DataFrame:
 def export_citizens() -> None:
     df = pd.DataFrame(
         [
-            {"name": "홍길동", "rrn": "900101-1234567", "phone": "010-1234-5678"},  # E-02 rrn+phone literal
+            {"name": "홍길동", "rrn": "900101-1234567", "phone": "010-2345-6789"},  # E-02 rrn+phone literal (2026-08-29: 1234-5678 은 룰의 예시 제외번호라 교체)
         ]
     )
     df.to_csv("citizens_export.csv", index=False)

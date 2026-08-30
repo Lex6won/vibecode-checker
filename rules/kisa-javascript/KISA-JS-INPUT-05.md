@@ -15,7 +15,7 @@ cwe: [CWE-78]
 severity: critical
 decision_default: block
 domains: [kisa-secure-coding]
-languages: [javascript, typescript]
+languages: [javascript, typescript, data]
 scenarios: [backend-node, agent, batch-job]
 related_baseline: [MOIS-49-INPUT-05]
 verified_at: 2026-05-31

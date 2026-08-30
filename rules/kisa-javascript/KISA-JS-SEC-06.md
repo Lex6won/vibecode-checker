@@ -23,6 +23,9 @@ detection:
     - "(?i)(?:password|secret|jwt_secret|api_key)(?:\\*\\*)?\\s*:\\s*['\"][^'\"\\s$\\{`]{6,}['\"]"
     - "(?:postgres|mysql|mongodb)://[^:]+:[^@]+@"
     - "Bearer\\s+[A-Za-z0-9._-]{20,}"
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(GOV-SECRET-APIKEY-001, KISA-PY-SEC-06). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: hardcoded-credential
   category: secret-scanning
   why_it_matters: >-
     JavaScript는 브라우저 측·서버 측 양쪽에서 흔히 작성됩니다. 특히 *브라우저

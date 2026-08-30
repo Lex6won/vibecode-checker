@@ -13,9 +13,11 @@ Rules are still loaded once at import via the regex adapter. ``RULES`` and
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
+import tokenize
 from pathlib import Path
 from typing import Iterable
 
@@ -41,6 +43,7 @@ from .scanners.regex_scanner import (
 from .scanners.semgrep_scanner import SemgrepScanner
 from .schema import (
     EXPOSURE_CATEGORIES,
+    VALUE_BASED_RULE_IDS,
     Decision,
     ExternalConnection,
     Finding,
@@ -112,7 +115,8 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
     adjusted: list[Finding] = []
     for finding in findings:
         if (
-            finding.category not in _VALUE_BASED_CATEGORIES
+            (finding.category not in _VALUE_BASED_CATEGORIES
+             and finding.rule_id not in VALUE_BASED_RULE_IDS)
             or finding.severity == Severity.low
         ):
             adjusted.append(finding)
@@ -137,12 +141,17 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
 _PROHIBITION_RE = re.compile(
     r"(?i)("
     r"하지\s*(?:말|마)|말\s*것|말고|금지|삼가|피하세요|피할\s*것|않도록|"
+    # 동사+`지 마세요` 일반형 — `이렇게 쓰지 마세요: eval(x)` 가 감쇄되지 않았다
+    # (실측 2026-08-29). 위의 `하지 마` 는 '하다' 한 동사만 알았다.
+    r"[가-힣]+지\s*(?:마세요|마십시오|마라|말라)|"
     r"안\s*됩니다|안\s*된다|위험합니다|주의하세요|대신\s|권장하지|"
     # 영문 토큰은 `\s` 가 아니라 `\b` 로 끊는다. `avoid\s` 로 두었더니
     # 줄 **끝**에 온 `// avoid` 가 매치되지 않아, 같은 모양이 뒤 공백
     # 유무로 다르게 판정됐다(적대적 검증에서 검출).
-    r"must\s+not|should\s+not|do\s+not|don't|never\b|avoid\b|"
-    r"forbidden|prohibited|deprecated|instead\s+of"
+    # 왼쪽에도 `\b` — `never_cache = eval(x)`·`deprecated_eval(y)` 처럼 식별자
+    # 안의 조각이 안내문으로 읽혀 실코드가 감쇄됐다(적대적 검증 2026-08-29).
+    r"\bmust\s+not|\bshould\s+not|\bdo\s+not|\bdon't|\bnever\b|\bavoid\b|"
+    r"\bforbidden\b|\bprohibited\b|\bdeprecated\b|\binstead\s+of"
     r")"
 )
 
@@ -186,6 +195,170 @@ def attenuate_prohibition_prose_findings(
             "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
             "requires_approval_to_bypass": False,
             "severity_adjusted": f"{finding.severity.value} → low · {_PROHIBITION_REASON}",
+        }))
+    return adjusted
+
+
+_STRING_LITERAL_REASON = (
+    "문자열 리터럴 안의 코드 모양 — 실행되는 코드가 아니라 문자열(테스트 입력·"
+    "메시지·템플릿)일 가능성이 높음"
+)
+
+_STR_PREFIX_CHARS = "rRbBuUfF"
+
+
+def _python_lines_with_strings_blanked(code: str) -> dict[int, str] | None:
+    """각 줄에서 **문자열 리터럴 내용만 공백으로** 지운 사본. 파싱 실패면 None.
+
+    줄 번호 → 지워진 줄. 여러 줄 문자열은 걸친 줄 전부에서 지운다. 따옴표는
+    남겨 두어 `exec("...")` 의 바깥 `exec(` 는 그대로 보인다. 주석 본문도 지운다.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        return None
+    lines = code.splitlines()
+    out: dict[int, list[str]] = {}
+    fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", -1)
+    for tok in tokens:
+        if tok.type == tokenize.COMMENT:
+            # 주석도 실행되지 않는다. 자기검사(2026-08-29) 때 테스트의 설명 주석
+            # 한 줄이 문자열 감쇄를 통과한 뒤 재매치돼 차단으로 남았다.
+            (sl, sc), (_el, ec) = tok.start, tok.end
+            buf = out.setdefault(sl, list(lines[sl - 1]))
+            for i in range(sc, min(ec, len(buf))):
+                buf[i] = " "
+            continue
+        if tok.type != tokenize.STRING and tok.type != fstring_middle:
+            continue
+        (sl, sc), (el, ec) = tok.start, tok.end
+        for ln in range(sl, el + 1):
+            if ln - 1 >= len(lines):
+                break
+            buf = out.setdefault(ln, list(lines[ln - 1]))
+            a = sc if ln == sl else 0
+            b = ec if ln == el else len(buf)
+            if tok.type == tokenize.STRING:
+                body = tok.string
+                stripped = body.lstrip(_STR_PREFIX_CHARS)
+                q = 3 if stripped.startswith(('"""', "'''")) else 1
+                if ln == sl:
+                    a = sc + (len(body) - len(stripped)) + q
+                if ln == el:
+                    b = ec - q
+            for i in range(max(a, 0), min(b, len(buf))):
+                buf[i] = " "
+    return {ln: "".join(buf) for ln, buf in out.items()}
+
+
+def attenuate_string_literal_findings(
+    findings: list[Finding], code: str, filename: str,
+) -> list[Finding]:
+    """Python 문자열 리터럴 **안에서만** 매치된 코드 모양 발견을 low·warn 으로.
+
+    실측(2026-08-29, 자기검사): tests/*.py 의 코드 실행·명령 주입 발견 159건이
+    **전부** `scan_code("eval(x)")` 같은 문자열 안이었다(tokenize 로 159/159).
+    실행되는 코드가 아니다. 그러나 **지우지 않는다** — 코드 생성기가 취약 코드를
+    문자열로 써내거나 `f.write("eval(user_input)")` 하는 사례가 있다.
+
+    노출 위험(비밀값·개인정보·내부망)은 문자열 안에 있는 것이 정상 형태이므로
+    적용하지 않는다. AST 엔진 발견은 문자열을 보고하지 않으므로 regex 만 본다.
+    판정 방법: 그 줄에서 문자열 내용을 지운 뒤 룰 패턴이 **하나도** 안 맞으면
+    매치가 문자열 안에 있었던 것이다 — 컬럼 정보 없이도 확정된다.
+    """
+    if not filename.lower().endswith((".py", ".pyw")):
+        return findings
+    if not any(
+        f.engine == "regex" and f.category not in EXPOSURE_CATEGORIES
+        and f.rule_id not in VALUE_BASED_RULE_IDS and f.severity != Severity.low
+        for f in findings
+    ):
+        return findings
+    blanked = _python_lines_with_strings_blanked(code)
+    if blanked is None:
+        return findings
+    adjusted: list[Finding] = []
+    for finding in findings:
+        line_no = finding.location.line or 0
+        if (
+            finding.engine != "regex"
+            or finding.category in EXPOSURE_CATEGORIES
+            or finding.rule_id in VALUE_BASED_RULE_IDS
+            or finding.severity == Severity.low
+            or line_no not in blanked
+        ):
+            adjusted.append(finding)
+            continue
+        rule = lookup_rule(finding.rule_id)
+        patterns = (rule or {}).get("patterns") or []
+        if not patterns or any(p.search(blanked[line_no]) for p in patterns):
+            adjusted.append(finding)      # 문자열 밖에도 매치가 있다 — 진짜 코드
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_STRING_LITERAL_REASON}",
+        }))
+    return adjusted
+
+
+_RULE_DOC_REASON = "룰 정의 문서 — 탐지 예시 코드이지 프로젝트 코드가 아님"
+
+_RULE_DOC_FRONTMATTER_START_RE = re.compile(r"^---\s*\n")
+
+
+def _looks_like_rule_definition(text: str, suffix: str) -> bool:
+    """이 파일이 **탐지 룰 정의·벤치마크 매니페스트**인가(경로와 무관하게).
+
+    실측(2026-08-29, 자기검사): 파일명에 secret/password 가 든 룰 문서 6개가
+    '비밀 파일 특례'로 스캔돼 룰의 **예시 코드**가 치명 35건으로 올라왔다.
+    `rules/` 경로를 제외하면 진짜 프로젝트의 `rules/` 업무 코드가 사각지대가
+    되므로 **구조 마커**로 판단한다 — 룰 문서·semgrep 룰·벤치마크 매니페스트에만
+    있는 형태다. 판정되면 제외가 아니라 **감쇄**한다(룰 예시에 진짜 키를 붙여
+    넣는 사고는 실제로 가능하다).
+    """
+    head = text[:4000]
+    if suffix == ".md":
+        # 닫는 `---` 를 요구하지 않는다 — 룰 문서의 frontmatter 는 패턴·주석·예시가
+        # 길어 4,000자를 넘기 일쑤다(실측: GOV-SECRET-APIKEY-001.md). 시작 표식과
+        # 세 마커가 앞부분에 함께 있으면 충분히 특정된다.
+        if not _RULE_DOC_FRONTMATTER_START_RE.match(head):
+            return False
+        return bool(
+            re.search(r"^id:\s*\S", head, re.M)
+            and re.search(r"^severity:\s*\S", head, re.M)
+            and re.search(r"^(?:detection:|\s+patterns:)", head, re.M)
+        )
+    if suffix in {".yaml", ".yml"}:
+        semgrep = (
+            re.search(r"^rules:\s*$", head, re.M)
+            and re.search(r"^\s+(?:-\s+)?id:\s*\S", head, re.M)
+            and re.search(r"^\s+(?:pattern|patterns|pattern-either|pattern-regex):", head, re.M)
+        )
+        bench = (
+            re.search(r"^cases:\s*$", head, re.M)
+            and "sink:" in text
+            and "expected_rule_ids" in text
+        )
+        return bool(semgrep or bench)
+    if suffix == ".json":
+        return '"expected_rule_ids"' in text or ('"cases"' in head and '"sink"' in text)
+    return False
+
+
+def attenuate_rule_definition_findings(findings: list[Finding]) -> list[Finding]:
+    """룰 정의 문서의 발견을 low·warn 으로 — 비밀 자재 검사(`secret-file`)는 제외."""
+    adjusted: list[Finding] = []
+    for finding in findings:
+        if finding.engine == "secret-file" or finding.severity == Severity.low:
+            adjusted.append(finding)
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_RULE_DOC_REASON}",
         }))
     return adjusted
 
@@ -288,18 +461,58 @@ def _highest(findings: Iterable[Finding]) -> Severity | None:
     return highest
 
 
+_SAMPLE_PATH_SEGMENTS = {
+    "fixtures", "fixture", "examples", "example", "samples", "sample", "demo", "demos",
+    "corpus", "eval_corpus", "e2e", "__fixtures__", "testdata", "mocks", "__mocks__",
+}
+
+
+def path_class(filename: str) -> str:
+    """runtime · test · sample — 경로의 성격(집계 전용, 판정과 무관)."""
+    if not filename or filename == "<memory>":
+        return "runtime"
+    parts = [p.lower() for p in filename.replace("\\", "/").split("/") if p]
+    if any(p in _SAMPLE_PATH_SEGMENTS for p in parts[:-1]):
+        return "sample"
+    if is_test_path(filename):
+        return "test"
+    return "runtime"
+
+
+def _posture_notes(posture, skipped) -> list[dict]:
+    """검사되지 않은 매니페스트(requirements.txt 등)의 위치도 프로젝트 루트 판정에 쓴다."""
+    try:
+        posture.register_paths([getattr(s, "path", "") for s in skipped])
+        return posture.notes()
+    except Exception:  # noqa: BLE001 — 관찰 실패가 검사를 막으면 안 된다
+        return []
+
+
 def _summary(findings: list[Finding]) -> ScanSummary:
     by_severity = {s.value: 0 for s in Severity}
     by_decision = {d.value: 0 for d in Decision}
+    by_path_class: dict[str, dict[str, int]] = {
+        k: {"total": 0, "block": 0} for k in ("runtime", "test", "sample")
+    }
     for finding in findings:
         by_severity[finding.severity.value] += 1
         by_decision[finding.decision.value] += 1
+        cls = by_path_class[path_class(finding.location.file)]
+        cls["total"] += 1
+        if finding.decision == Decision.block and not finding.suppressed:
+            cls["block"] += 1
     return ScanSummary(
         finding_count=len(findings),
         by_severity=by_severity,
         by_decision=by_decision,
         highest_severity=_highest(findings),
         blocked=any(f.decision == Decision.block for f in findings),
+        location_count=len({(f.location.file, f.location.line) for f in findings}),
+        block_location_count=len({
+            (f.location.file, f.location.line)
+            for f in findings if f.decision == Decision.block and not f.suppressed
+        }),
+        by_path_class=by_path_class,
     )
 
 
@@ -336,6 +549,74 @@ def _dedupe(findings: list[Finding]) -> list[Finding]:
     return list(best.values())
 
 
+_HTML_SUFFIXES = (".html", ".htm", ".xhtml")
+_SCRIPT_OPEN_RE = re.compile(r"<script\b([^>]*)>", re.IGNORECASE)
+_SCRIPT_CLOSE_RE = re.compile(r"</script\s*>", re.IGNORECASE)
+_SCRIPT_TYPE_ATTR_RE = re.compile(r"""\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
+_JS_SCRIPT_TYPES = {
+    "", "text/javascript", "application/javascript", "application/x-javascript",
+    "text/ecmascript", "application/ecmascript", "module", "text/babel", "text/jsx",
+}
+
+
+def _script_tag_is_js(attrs: str) -> bool:
+    """`type` 이 없거나 JS 계열이면 True. JSON·템플릿(`text/template`)은 False.
+
+    정규식 한 줄의 부정 전방탐색으로 하려다 `["']?` 가 빈 문자열로 물러나며
+    `type="module"` 을 비 JS 로 오판했다(2026-08-30) — 값을 꺼내 파이썬에서 비교한다.
+    """
+    m = _SCRIPT_TYPE_ATTR_RE.search(attrs)
+    if m is None:
+        return True
+    value = (m.group(1) or m.group(2) or m.group(3) or "").strip().lower()
+    return value in _JS_SCRIPT_TYPES
+
+
+def _html_script_view(code: str, filename: str, language: str | None) -> str | None:
+    """HTML 파일에서 인라인 <script> 본문만 남기고 나머지 줄은 비운 사본.
+
+    스크립트 블록이 없으면 None. `type="application/json"` 같은 비 JS 블록은 제외.
+    `<script src=…></script>` 처럼 본문이 없는 태그는 아무 줄도 남기지 않는다.
+    """
+    if language and language.lower() not in {"html", "xhtml"}:
+        return None
+    if not language and not filename.lower().endswith(_HTML_SUFFIXES):
+        return None
+    if "<script" not in code.lower():
+        return None
+    out: list[str] = []
+    state = 0          # 0=마크업 · 1=JS 블록 안 · 2=비 JS 블록 안(건너뜀)
+    found = False
+    for raw in code.splitlines():
+        pieces: list[str] = []
+        cursor = 0
+        while True:
+            if state == 0:
+                m = _SCRIPT_OPEN_RE.search(raw, cursor)
+                if m is None:
+                    break
+                cursor = m.end()
+                state = 1 if _script_tag_is_js(m.group(1) or "") else 2
+                continue
+            c = _SCRIPT_CLOSE_RE.search(raw, cursor)
+            if c is None:
+                if state == 1:
+                    pieces.append(raw[cursor:])
+                break
+            if state == 1:
+                pieces.append(raw[cursor:c.start()])
+            state = 0
+            cursor = c.end()
+        body = " ".join(p for p in pieces if p.strip())
+        if body.strip():
+            found = True
+            # 앞쪽 마크업 길이만큼 공백을 두어 열(column)도 대략 보존한다.
+            out.append(" " * max(0, len(raw) - len(body)) + body)
+        else:
+            out.append("")
+    return "\n".join(out) if found else None
+
+
 def scan_code(
     code: str,
     *,
@@ -358,6 +639,22 @@ def scan_code(
             profile=profile,
             categories=categories,
         ))
+    # HTML 의 인라인 <script> 는 JavaScript 다. JS 룰은 languages=[javascript, typescript]
+    # 라 .html 에서는 한 줄도 돌지 않았다 — 포털 `my-scans.html` 의 innerHTML XSS 를
+    # 통째로 놓쳤다(개선요청 #34 D3, 2026-08-30). 룰 36개에 html 을 더하면 마크업
+    # 본문(설명문의 `eval()`)에 JS 룰이 걸리므로, 스크립트 블록만 남긴 사본을
+    # javascript 로 한 번 더 검사한다. 줄 번호는 보존된다.
+    script_view = _html_script_view(code, filename, language)
+    if script_view is not None:
+        for adapter in _ADAPTERS:
+            raw.extend(adapter.scan(
+                script_view,
+                filename=filename,
+                language="javascript",
+                scenario=scenario,
+                profile=profile,
+                categories=categories,
+            ))
     from .scanners.ast_scanner import python_ast_parsed
     raw = _drop_regex_when_ast_owns(raw, python_ast_parsed(code, filename, language))
     findings = _dedupe(raw)
@@ -374,6 +671,8 @@ def scan_code(
     # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
     # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
     findings = attenuate_prohibition_prose_findings(findings, code)
+    # 문자열 리터럴 안에서만 매치된 코드 모양 — 실행 코드가 아니다. 역시 감쇄.
+    findings = attenuate_string_literal_findings(findings, code, filename)
     # 자원을 만들어 **호출자에게 넘기는** 함수에는 with 를 요구할 수 없다.
     from .scanners.resource_owner import attenuate_returned_resource_findings
     findings = attenuate_returned_resource_findings(findings, code, filename)
@@ -648,6 +947,8 @@ def _sweep_excluded_dir(
             if inside_vendor or len(secrets) >= _MAX_SWEPT_SECRET_FILES:
                 continue
             p = Path(dirpath) / name
+            if p.is_symlink():
+                continue   # 트리 밖을 가리키는 링크는 읽지 않는다(위 walk 와 같은 이유)
             if p.suffix.lower() not in _SECRET_MATERIAL_EXTS and not _is_secret_filename(name):
                 continue
             try:
@@ -727,6 +1028,10 @@ _MINIFIED_MIN_BYTES = 1000  # 너무 짧은 파일은 판정 제외(정상적인
 # 20,000은 정상 저장소가 도달할 수 없는 값이면서(공공 프로젝트 실측 최대 수천),
 # 잘못 지정한 경로(예: 사용자 홈)에서 무한정 도는 것은 막는 안전판이다.
 DEFAULT_MAX_FILES = 20_000
+SYMLINK_SKIP_REASON = (
+    "심볼릭 링크 — 검사 트리 밖을 가리킬 수 있어 따라가지 않았습니다"
+    "(실제 파일을 넣어 다시 검사하세요)"
+)
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 
@@ -920,6 +1225,15 @@ def scan_path(
                         over_limit_count += 1
                     continue
                 p = Path(dirpath) / name
+                if p.is_symlink():
+                    # 링크를 따라가지 않는다 — 검사 대상 트리 밖의 파일(예: 서버의
+                    # /etc/shadow·다른 프로젝트의 .env)을 읽어 그 내용이 증거로
+                    # 보고서에 실릴 수 있다. 업로드한 zip 에 링크를 넣는 것으로 충분하다.
+                    skipped.append(SkippedFile(
+                        path=_rel(p, root, is_dir),
+                        reason=SYMLINK_SKIP_REASON,
+                    ))
+                    continue
                 if name.lower() in _DEP_MANIFEST_NAMES:
                     skipped.append(SkippedFile(
                         path=_rel(p, root, is_dir),
@@ -994,6 +1308,8 @@ def scan_path(
     all_findings: list[Finding] = []
     scanned: list[str] = []
     content_hashes: dict[str, list[str]] = {}   # 내용 해시 → 같은 내용 파일 경로들
+    from .scanners.posture import PostureCollector
+    posture = PostureCollector()   # 부재형 관찰(보안 헤더·쿠키 속성) — 판정과 무관
 
     for f in files_to_scan:
         rel = _rel(f, root, is_dir)
@@ -1041,7 +1357,13 @@ def scan_path(
             hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), []
         ).append(rel)
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
-        all_findings.extend(report.findings)
+        posture.observe(rel, text, runtime=path_class(rel) == "runtime")
+        file_findings = report.findings
+        # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
+        # 감쇄(비밀 자재 검사 결과는 그대로).
+        if _looks_like_rule_definition(text, f.suffix.lower()):
+            file_findings = attenuate_rule_definition_findings(file_findings)
+        all_findings.extend(file_findings)
         # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
         # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
         if _is_secret_filename(f.name):
@@ -1103,6 +1425,7 @@ def scan_path(
         intel_freshness=_intel_freshness(),
         suppression_summary=suppression_summary,
         vendor_bundles=vendor_bundles,
+        posture_notes=_posture_notes(posture, skipped),
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}
@@ -1134,6 +1457,73 @@ def path_level_rule_ids() -> tuple[str, ...]:
     return ("GOV-SECRET-KEYFILE-001",)
 
 
+def _looks_like_pyproject(text: str) -> bool:
+    head = text[:20000]
+    return bool(re.search(r"^\[project\]|^\[tool\.poetry", head, re.MULTILINE))
+
+
+_REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _pyproject_requirement_lines(text: str) -> list[str]:
+    """pyproject.toml → requirements 줄 목록.
+
+    PEP 621 ``project.dependencies`` · ``project.optional-dependencies.*`` 와
+    poetry ``tool.poetry.dependencies``(+ group) 를 읽는다. extras(``pkg[x]``)·
+    환경 마커(``; python_version…``)는 떼고, 첫 제약만 남긴다(``>=2.0,<3`` → ``>=2.0``:
+    경계값 검사는 '이 제약이 취약 버전을 허용한다'는 신호이지 설치 버전이 아니다).
+    """
+    import tomllib
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return []
+    out: list[str] = []
+
+    def _pep508(req: str) -> None:
+        req = req.split(";", 1)[0].strip()
+        req = re.sub(r"\[[^\]]*\]", "", req)          # extras
+        m = _REQ_NAME_RE.match(req)
+        if not m:
+            return
+        name = m.group(1)
+        spec = req[m.end():].strip().strip("()")
+        first = spec.split(",", 1)[0].strip() if spec else ""
+        if first.startswith("@"):                     # URL 의존성 — 버전 없음
+            first = ""
+        out.append(f"{name}{first}")
+
+    proj = data.get("project") or {}
+    for req in proj.get("dependencies") or []:
+        if isinstance(req, str):
+            _pep508(req)
+    for reqs in (proj.get("optional-dependencies") or {}).values():
+        for req in reqs or []:
+            if isinstance(req, str):
+                _pep508(req)
+
+    poetry = (data.get("tool") or {}).get("poetry") or {}
+    groups = [poetry.get("dependencies") or {}]
+    for g in (poetry.get("group") or {}).values():
+        if isinstance(g, dict):
+            groups.append(g.get("dependencies") or {})
+    for deps in groups:
+        for name, spec in deps.items():
+            if name.lower() == "python":
+                continue
+            if isinstance(spec, dict):
+                spec = spec.get("version") or ""
+            spec = str(spec or "").strip()
+            if spec.startswith(("^", "~")):
+                spec = ">=" + spec.lstrip("^~")
+            elif spec == "*" or not spec:
+                spec = ""
+            elif spec[0].isdigit():
+                spec = "==" + spec
+            out.append(f"{name}{spec.split(',', 1)[0]}")
+    return out
+
+
 def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
     """Parse common dependency manifests without executing package managers.
 
@@ -1147,6 +1537,8 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
     """
     packages: list[dict] = []
     eco = ecosystem.lower()
+    if eco == "pypi" and _looks_like_pyproject(manifest_text):
+        manifest_text = "\n".join(_pyproject_requirement_lines(manifest_text))
     if eco == "pypi":
         for raw in manifest_text.splitlines():
             line = raw.strip()

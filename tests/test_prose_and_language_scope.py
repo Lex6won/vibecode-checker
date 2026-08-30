@@ -163,7 +163,22 @@ def test_security_guidance_prose_is_attenuated_not_blocked(code: str, why: str) 
     제보자는 차단을 피하려고 문장형 설명을 구조화 필드로 바꿨다 —
     도구가 사람의 문서를 고치게 만든 것이 이 결함의 진짜 피해다.
     """
+    # 2026-08-29: .yaml 에 언어(data)가 생겨 실행형 룰은 이 산문을 아예 보지
+    # 않는다 — 발견이 없는 것이 맞다. 남는다면 여전히 낮춰져 있어야 한다.
+    # "지우지 않고 낮춘다"는 감쇄 메커니즘 자체는 아래 코드+반성문 테스트가 지킨다.
     fs = _find(code, "policy.yaml")
+    assert all(f.decision.value != "block" for f in fs), why
+    assert all(f.severity_adjusted for f in fs), "낮춘 사유가 보고서에 남아야 한다"
+
+
+@pytest.mark.parametrize("code, filename, why", [
+    ("exec(llm_response)  # 하지 말 것 — 검증 없이 실행 금지", "app.py", "코드 + 한국어 반성문"),
+    ("os.system(cmd)  # never do this in production", "app.py", "코드 + 영문 반성문"),
+    ("el.innerHTML = llmResponse; // 렌더링하지 마세요", "app.ts", "JS 코드 + 반성문"),
+])
+def test_prohibition_note_attenuates_but_keeps_finding(code: str, filename: str, why: str) -> None:
+    """감쇄는 삭제가 아니다 — 금지문이 붙은 실코드는 낮춰서 남긴다."""
+    fs = _find(code, filename)
     assert fs, "발견 자체를 지우지는 않는다 — 낮출 뿐이다"
     assert all(f.decision.value != "block" for f in fs), why
     assert all(f.severity_adjusted for f in fs), "낮춘 사유가 보고서에 남아야 한다"

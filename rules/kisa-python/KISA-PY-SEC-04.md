@@ -26,6 +26,9 @@ detection:
     - "hashlib\\.new\\s*\\(\\s*[\"'](md5|sha1|md4)[\"']"
     - 'from\s+Crypto\.Cipher\s+import\s+(?:DES|ARC4|ARC2)'
     - 'Crypto\.Cipher\.(?:DES|ARC4|ARC2)\.new\s*\('
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-SEC-14). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: password-hashing
   category: kisa-secure-coding
   why_it_matters: >-
     MD5/SHA1은 충돌 공격이 실증되어 있고 DES/RC4는 키 길이·구조가 약해 더는

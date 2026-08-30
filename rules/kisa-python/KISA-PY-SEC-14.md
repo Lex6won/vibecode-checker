@@ -21,6 +21,9 @@ detection:
   patterns:
     - "hashlib\\.(?:sha256|sha384|sha512|md5|sha1)\\s*\\(\\s*(?:password|passwd|pwd|비밀번호|암호)"
     - "hashlib\\.(?:sha256|sha384|sha512|md5|sha1)\\s*\\(\\s*(?:request|input)\\.(?:get|form)\\s*\\([^)]*(?:password|pwd)"
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-SEC-04). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: password-hashing
   category: kisa-secure-coding
   why_it_matters: >-
     `hashlib.sha256(password.encode()).hexdigest()`처럼 솔트 없는 단일 해시는

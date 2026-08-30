@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,22 @@ BUNDLE_FORMAT_VERSION = 1
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+#: 캐시 파일 하나의 상한. OSV 악성 목록 전체가 수 MB 이므로 넉넉하되, 압축 폭탄으로
+#: 메모리를 채우는 번들은 거절한다.
+MAX_MEMBER_BYTES = 200 * 1024 * 1024
+
+_SAFE_MEMBER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
+
+
+def _is_safe_member_name(fname: str) -> bool:
+    """단일 파일명(구분자·`..`·절대경로·숨김 파일 없음)만 허용한다."""
+    if not fname or fname in {".", ".."}:
+        return False
+    if "/" in fname or "\\" in fname or ":" in fname:
+        return False
+    return _SAFE_MEMBER_RE.match(fname) is not None
 
 
 def export_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dict:
@@ -103,7 +120,21 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
         verified: list[tuple[str, bytes]] = []
         for f in files:
             fname = str(f.get("filename", ""))
+            # manifest 의 파일명은 **신뢰하지 않는다** — `../../x` 를 넣은 번들이
+            # 캐시 밖에 파일을 썼다(재점검 실측 2026-08-29, zip-slip). 이름은 단일
+            # 세그먼트여야 하고, 최종 경로가 캐시 디렉터리 안이어야 한다.
+            if not _is_safe_member_name(fname):
+                return {"ok": False, "sources": [],
+                        "error": f"번들 파일명이 허용 범위 밖입니다: {fname!r} — 경로 조작 의심. 반입 중단."}
             member = _CACHES_PREFIX + fname
+            try:
+                info = zf.getinfo(member)
+            except KeyError:
+                return {"ok": False, "sources": [],
+                        "error": f"번들에 '{fname}'이 없습니다(manifest와 불일치) — 반입 중단."}
+            if info.file_size > MAX_MEMBER_BYTES:
+                return {"ok": False, "sources": [],
+                        "error": f"'{fname}' 크기 {info.file_size:,}B 가 상한({MAX_MEMBER_BYTES:,}B)을 넘습니다 — 반입 중단."}
             try:
                 data = zf.read(member)
             except KeyError:
@@ -117,8 +148,13 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
         # 2단계: 전부 통과한 경우에만 기록
         target = cache_dir or default_cache_dir()
         target.mkdir(parents=True, exist_ok=True)
+        target_resolved = target.resolve()
         for fname, data in verified:
-            (target / fname).write_bytes(data)
+            dest = (target / fname)
+            if dest.resolve().parent != target_resolved:
+                return {"ok": False, "sources": [],
+                        "error": f"'{fname}' 의 기록 경로가 캐시 디렉터리를 벗어납니다 — 반입 중단."}
+            dest.write_bytes(data)
 
     return {
         "ok": True,

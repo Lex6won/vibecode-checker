@@ -34,13 +34,21 @@ _SEVERITY_LABEL_KO = {
 # "치명 8건"만 크게 뜨고 그중 전부가 패턴 일치였다면 신뢰가 무너진다(실측 사례).
 _CONFIDENCE_LABEL_KO = {
     "confirmed": "확인됨(데이터 흐름 추적)",
+    # regex 룰이 `confidence: confirmed` 를 선언한 경우(PEM 헤더처럼 패턴이 곧
+    # 확증) — "데이터 흐름 추적"이라 적으면 하지 않은 일을 한 것처럼 읽힌다
+    # (실측 2026-08-29: 룰 문서의 예시 줄에 그 라벨이 붙었다).
+    "confirmed@regex": "확인됨(패턴 자체가 확증)",
     "likely": "유력함(구조 분석) — 문맥 확인 권장",
     "pattern-only": "패턴 일치만 — 값의 출처를 직접 확인하세요",
 }
 
 
-def _confidence_label(value: str | None) -> str:
-    return _CONFIDENCE_LABEL_KO.get(value or "pattern-only", "패턴 일치만")
+def _confidence_label(value: str | None, engine: str | None = None) -> str:
+    if value == "confirmed" and engine == "regex":
+        return _CONFIDENCE_LABEL_KO["confirmed@regex"]
+    # confidence 가 비어 있으면 '패턴 일치만'이다 — 재점검(2026-08-29) 때 "—" 로
+    # 떨어져 근거 없는 발견처럼 읽혔다(회귀).
+    return _CONFIDENCE_LABEL_KO.get(value or "pattern-only", value or _CONFIDENCE_LABEL_KO["pattern-only"])
 
 
 #: 증거 줄 라벨. 가려진 것이 **있을 때만** 가렸다고 말한다.
@@ -273,6 +281,8 @@ def _rule_groups(findings: list[Finding]) -> list[dict]:
             "files": len({f.location.file for f in fs}),
             "sample": fs[0],
             "findings": fs,
+            # 같은 룰이 '필수'와 '나머지'에 나뉘는 이유 — 낮춘 사유를 목록에서 바로 보이게.
+            "adjusted": (fs[0].severity_adjusted or "").split(" · ", 1)[-1] if fs[0].severity_adjusted else "",
         })
     rows.sort(key=lambda r: (-_SEVERITY_RANK[r["severity"]], -r["count"], r["rule_id"]))
     return rows
@@ -300,7 +310,7 @@ def _action_order(findings: list[Finding]) -> list[dict]:
     tiers: list[dict] = [
         # "배포가 차단됩니다" 였다 — 소스 발견은 사다리에서 **조건부 승인**이므로
         # 배포를 막지 않는다. 단이 말해야 하는 것은 배포 결과가 아니라 조치 급함이다.
-        {"label": "지금 막아야 하는 것", "hint": "필수 조치 — 사유 기록으로 넘길 수 없습니다",
+        {"label": "지금 막아야 하는 것", "hint": "필수 조치 — 보안담당자 승인 없이는 우회할 수 없습니다(감사 기록 남김)",
          "groups": []},
         {"label": "그다음", "hint": "치명·높음", "groups": []},
         {"label": "나머지", "hint": "보통·낮음 — 순서가 뒤일 뿐 조치 대상입니다", "groups": []},
@@ -508,11 +518,17 @@ def _airgap_note(res: list, egress_count: int) -> str:
 
 
 def _external_stats(report: ScanReport) -> tuple[int, int, int, int]:
-    """(외부 API 수, 플러그인 수, 국외 전송 수, ⚠검토 필요 수)."""
+    """(외부 API 수, 플러그인 수, 국외 전송 **호스트** 수, ⚠검토 필요 **호스트** 수).
+
+    국외·⚠ 는 **고유 호스트** 기준이다. 행(호스트×파일) 수로 세던 예전에는
+    api.openai.com 하나가 파일 11개에 나와 "국외 11"이 됐다(실측 2026-08-29).
+    운영 중 전송이 아닌 맥락(문서·테스트·주석·표)은 두 집계에서 뺀다.
+    """
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
-    gukoe = sum(1 for c in report.external_surface if c.region == "국외")
-    warn = sum(1 for c in report.external_surface if c.review_level == "warn")
+    live = [c for c in report.external_surface if c.context == "runtime"]
+    gukoe = len({c.target for c in live if c.region == "국외"})
+    warn = len({c.target for c in live if c.review_level == "warn"})
     return len(api), len(pkg), gukoe, warn
 
 
@@ -561,6 +577,25 @@ def _short_reason(reason: str) -> str:
     수십 줄이 되어 요약의 의미가 사라진다.
     """
     return _skip_reason_group(reason or "")
+
+
+_PATH_CLASS_KO = {"runtime": "운영 코드", "test": "테스트", "sample": "시험·예제"}
+
+
+def _path_class_suffix(summary) -> str:
+    """차단 건수 옆에 `(운영 코드 0 · 테스트 3 · 시험·예제 10)` — 시험 경로 건수가 있을 때만.
+
+    판정은 그대로다. "차단 13건"이 실제로 "운영 0 + 시험 13"임을 읽는 사람이 바로 알게
+    하려는 것이지, 시험 코드를 봐주려는 것이 아니다(개선요청 #34 A: 감등은 거부, 분리는 수용).
+    """
+    bp = getattr(summary, "by_path_class", None) or {}
+    if not bp:
+        return ""
+    non_runtime = sum(v.get("block", 0) for k, v in bp.items() if k != "runtime")
+    if not non_runtime:
+        return ""
+    parts = [f"{_PATH_CLASS_KO.get(k, k)} {v.get('block', 0)}" for k, v in bp.items() if v.get("block", 0)]
+    return " (" + " · ".join(parts) + " — 판정은 동일, 경로 성격별 집계)"
 
 
 def _unique_location_count(findings: list[Finding]) -> int:
@@ -640,7 +675,11 @@ def _dep_risk(report: ScanReport) -> tuple[int, int, int, bool]:
 #: (판정 조건, 심각도, 부록 기준표에 적을 설명). 위에서부터 첫 매칭 우선.
 _DEP_SEVERITY_TABLE: tuple[tuple[str, Severity, str], ...] = (
     ("malicious", Severity.critical, "악성 패키지 · 기관 레지스트리 차단 · 레지스트리에 없는 이름(가짜 이름 의심)"),
-    ("kev_or_high", Severity.high, "취약점 있음 + CISA KEV 등재 또는 CVSS 심각도 HIGH·CRITICAL"),
+    # CVSS CRITICAL 은 게이트의 **차단** 사유(gate.BLOCK_CRITERIA)다. 예전엔 HIGH 와
+    # 한 등급으로 묶어 결론은 "CRITICAL 3종 차단"인데 집계는 "치명 1"이 됐다.
+    ("critical_cvss", Severity.critical, "CVSS CRITICAL 취약점 (차단 기준)"),
+    ("kev_or_high", Severity.high, "취약점 있음 + CISA KEV 등재 또는 CVSS 심각도 HIGH"),
+    ("name_or_version", Severity.high, "인기 패키지와 1자 차이 이름 · 요청 버전이 저장소에 없음"),
     ("vulnerable", Severity.medium, "취약점 있음 (CVSS MEDIUM 이하 또는 심각도 미상)"),
     ("cooldown", Severity.medium, "발행 직후 버전 — 쿨다운 보류(위험 확인이 아니라 '아직 신뢰할 수 없음')"),
 )
@@ -656,9 +695,13 @@ def _dep_component_severity(check: dict) -> Severity | None:
     if check.get("is_malicious_package") or check.get("verdict") in ("registry_rejected", "not_found"):
         return Severity.critical
     if check.get("vulnerability_count"):
-        if check.get("in_kev") or str(check.get("max_cve") or "").upper() in ("HIGH", "CRITICAL"):
+        if str(check.get("max_cve") or "").upper() == "CRITICAL":
+            return Severity.critical
+        if check.get("in_kev") or str(check.get("max_cve") or "").upper() == "HIGH":
             return Severity.high
         return Severity.medium
+    if check.get("verdict") in ("suspicious_name", "version_not_found"):
+        return Severity.high
     if check.get("verdict") == "cooldown_hold":
         return Severity.medium
     return None
@@ -758,7 +801,15 @@ def _dep_verdict_clause(report: ScanReport) -> str:
     vuln, unchecked, not_found, _blocked = _dep_risk(report)
     parts: list[str] = []
     if vuln:
-        parts.append(f"취약·악성 패키지 {vuln}종")
+        malicious = sum(
+            1 for comp in _dep_merged_components(_dep_audits(report))
+            if (comp.get("check") or {}).get("is_malicious_package")
+        )
+        # 악성 0 인데 늘 "취약·악성"이라 적으면 없는 것을 있는 것처럼 읽힌다.
+        if malicious:
+            parts.append(f"취약 패키지 {vuln - malicious}종 · 악성 {malicious}종")
+        else:
+            parts.append(f"취약 패키지 {vuln}종")
     if not_found:
         parts.append(f"레지스트리에 없는 패키지 {not_found}종")
     if unchecked:
@@ -1089,7 +1140,16 @@ def _meta_rows(
     """
     rows = [("대상", report.target), ("검사일시", ts), ("프로파일", _profile_cell(report))]
     if saved_path:
-        rows.append(("이 보고서 위치", saved_path))
+        # 렌더러마다 자기 경로를 적고, 쌍둥이(.md/.html)도 함께 밝힌다 — HTML 이
+        # .md 경로를 자기 위치라 적던 결함(실측 2026-08-29)을 고치면서, .md 를
+        # 정본으로 인용해 온 문서·도구가 그 경로를 계속 찾을 수 있게 한다.
+        low = saved_path.lower()
+        twin = None
+        if low.endswith(".html"):
+            twin = saved_path[:-5] + ".md"
+        elif low.endswith(".md"):
+            twin = saved_path[:-3] + ".html"
+        rows.append(("이 보고서 위치", f"{saved_path} (같은 이름으로 함께 저장: {twin})" if twin else saved_path))
     if report.scenario:
         rows.append(("시나리오", report.scenario))
     if report.language:
@@ -1102,10 +1162,35 @@ def _meta_rows(
     return rows
 
 
+def _repro_command(report: ScanReport, explicit: str | None) -> tuple[str, str]:
+    """(재현 명령, 손실 안내). 결과에 새겨진 명령 → 호출자가 준 명령 → 폴백 순.
+
+    폴백은 **손실을 명시**한다. `gvskb report <json>` 경로는 실행 옵션을 모르고,
+    예전 폴백 `gvskb scan <path> --profile X` 는 `--check-deps` 를 잃어 재현자가
+    의존성 차단이 사라진 더 깨끗한 결과를 받았다(실측 2026-08-29). 의존성 감사가
+    있으면 최소한 `--check-deps` 를 붙인다.
+    """
+    cmd = report.reproduce_command or explicit
+    if cmd:
+        return cmd, ""
+    fallback = f"gvskb scan {report.target} --profile {report.profile}"
+    if report.dependency_audit:
+        fallback += " --check-deps"
+    return fallback, (
+        "재현 명령 미기록 — 이 보고서는 실행 옵션이 저장되지 않은 결과에서 렌더됐습니다. "
+        "아래 명령은 최소 재구성이며 `--max-files`·`--env`·`--include-installed` 등이 "
+        "빠졌을 수 있습니다. 옵션이 빠지면 결과가 **더 깨끗해 보이는 방향**으로 달라집니다."
+    )
+
+
 def _criteria_cell(report: ScanReport) -> str:
     """"어떤 엔진 + 어떤 룰셋이 이 판정을 냈나" 한 칸."""
     engine = report.engine_version or "(미상)"
-    if report.ruleset_version:
+    if report.ruleset_version and report.ruleset_digest:
+        # 버전 문자열은 사람이 올리는 값이라 같은 버전으로 룰이 바뀔 수 있다 —
+        # 재현성의 최소 단위는 지문이므로 항상 병기한다(실측 2026-08-29).
+        ruleset = f"룰셋 {report.ruleset_version} (지문 {report.ruleset_digest[:12]}…)"
+    elif report.ruleset_version:
         ruleset = f"룰셋 {report.ruleset_version}"
     elif report.ruleset_digest:
         ruleset = f"룰셋 (버전 선언 없음, 지문 {report.ruleset_digest[:12]}…)"
@@ -1240,6 +1325,7 @@ def render_markdown(
     lines.append(
         f"- {_DECISION_LABEL_KO[Decision.block]}: "
         f"**{summary.by_decision.get(Decision.block.value, 0)}건**"
+        + _path_class_suffix(summary)
     )
     if summary.highest_severity:
         lines.append(
@@ -1267,8 +1353,8 @@ def render_markdown(
     _dep_row_sum = _dep_domain_row(report)
     if _dep_row_sum and _dep_row_sum["count"]:
         lines.append(
-            f"- **총 조치 대상: {summary.finding_count + _dep_row_sum['count']}건** "
-            f"(소스 코드 {summary.finding_count}건 · 패키지 {_dep_row_sum['count']}종)"
+            f"- **총 조치 대상: 소스 코드 {summary.finding_count}건 + 패키지 {_dep_row_sum['count']}종** "
+            "(단위가 달라 더하지 않습니다)"
         )
     if suppressed:
         lines.append(f"- 승인된 예외(요약에서 제외): {len(suppressed)}건 (아래 '승인된 예외 내역')")
@@ -1353,6 +1439,7 @@ def render_markdown(
                 lines.append(
                     f"- [ ] **{g['title']}** — {_SEVERITY_LABEL_KO[g['severity']]}·{dec_ko} · "
                     f"{g['count']}건 · 파일 {g['files']}개 (`{g['rule_id']}`)"
+                    + (f" · 낮춤: {g['adjusted']}" if g.get("adjusted") else "")
                 )
             lines.append("")
         if (_dep_row_order := _dep_domain_row(report)) and _dep_row_order["count"]:
@@ -1523,6 +1610,9 @@ def render_markdown(
     if report.external_surface:
         lines.extend(_render_external_surface_md(report))
 
+    # --- ⑨-2 보안 자세 관찰(정보) — 부재형 항목, 판정과 무관 ------------------
+    lines.extend(_render_posture_md(report))
+
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
     lines.extend(_render_dependency_audit_md(report))
 
@@ -1596,8 +1686,11 @@ def render_markdown(
 
     lines.append("### 재현 절차")
     lines.append("")
-    repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
+    repro, repro_note = _repro_command(report, reproduce_command)
     lines.append("같은 결과를 다시 만들거나 다른 환경에서 검증하려면 다음과 같이 실행합니다.")
+    if repro_note:
+        lines.append("")
+        lines.append(f"> ⚠ {repro_note}")
     lines.append("")
     lines.append("```bash")
     lines.append(repro)
@@ -1986,7 +2079,7 @@ def render_html(
     p.append(
         f'<div class="stat"><div class="num" style="color:'
         f'{"#c0392b" if block_n else "#1f2937"}">{block_n}</div>'
-        f'<div class="lab">{_esc(_DECISION_LABEL_KO[Decision.block])}</div></div>'
+        f'<div class="lab">{_esc(_DECISION_LABEL_KO[Decision.block] + _path_class_suffix(summary))}</div></div>'
     )
     p.append(
         f'<div class="stat"><div class="num" style="color:{sev_col}">{sev_label}</div>'
@@ -2048,9 +2141,8 @@ def render_html(
             p.append(dep_chips)
         if dep_row["count"]:
             p.append(
-                f'<div class="kv"><b>총 조치 대상 {summary.finding_count + dep_row["count"]}건</b> '
-                f'(소스 코드 {summary.finding_count}건 · 패키지 {dep_row["count"]}종) — '
-                "두 심각도는 서로 다른 기준으로 정해집니다(부록 '심각도 판정 기준').</div>"
+                f'<div class="kv"><b>총 조치 대상: 소스 코드 {summary.finding_count}건 + 패키지 {dep_row["count"]}종</b> '
+                "— 단위가 달라 더하지 않으며, 두 심각도는 서로 다른 기준으로 정해집니다(부록 '심각도 판정 기준').</div>"
             )
 
     if summary.finding_count == 0:
@@ -2096,7 +2188,9 @@ def render_html(
                     f'{_SEVERITY_LABEL_KO[g["severity"]]}</span> '
                     f"<b>{_esc(g['title'])}</b>"
                     f'<span class="meta2">{dec_ko} · {g["count"]}건 · 파일 {g["files"]}개 · '
-                    f'{_esc(g["rule_id"])}</span></li>'
+                    f'{_esc(g["rule_id"])}'
+                    + (f' · 낮춤: {_esc(g["adjusted"])}' if g.get("adjusted") else "")
+                    + '</span></li>'
                 )
             p.append("</ul>")
         if dep_row_top := _dep_domain_row(report):
@@ -2277,6 +2371,9 @@ def render_html(
     if report.external_surface:
         p.extend(_render_external_surface_html(report))
 
+    # === 보안 자세 관찰(정보) — 부재형 항목, 판정과 무관 =================
+    p.extend(_render_posture_html(report))
+
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     dep_prompt = _dep_fix_prompt_text(report)
     if report.findings or dep_prompt:
@@ -2313,7 +2410,7 @@ def render_html(
 
     # === 부록 (기술 정보) — 기본 접기 ====================================
     non_build_skips = [s for s in report.skipped_files if "빌드 산출물" not in (s.reason or "")]
-    repro = reproduce_command or f"gvskb scan {report.target} --profile {report.profile}"
+    repro, repro_note = _repro_command(report, reproduce_command)
     p.append('<details class="sec"><summary>부록 (가이드라인 분포·생략 파일·재현·재검증)'
              '</summary><div class="secbody">')
     if report.findings or dep_row:
@@ -2376,7 +2473,9 @@ def _fix_prompt_text(group: dict) -> str:
     f: Finding = group["sample"]
     sev = _SEVERITY_LABEL_KO[group["severity"]]
     dec = _DECISION_LABEL_KO.get(group["decision"], group["decision"].value)
-    locs = _locations_by_file(group["findings"])
+    # 프롬프트는 복사해서 AI 에 넘기는 블록이다 — 줄을 자르면("외 6건") AI 가 고칠
+    # 방법이 없다(실측 2026-08-29, 72건 룰). 길어도 전부 싣는다.
+    locs = _locations_by_file(group["findings"], limit_lines=10**9)
     out = [
         f"[{sev}/{dec}] {f.plain_title} ({group['rule_id']}) — {group['count']}건",
         f"위치: {locs}",
@@ -2458,7 +2557,12 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
 
 
 def _render_external_surface_html(report: ScanReport) -> list[str]:
-    """외부 연결 인벤토리 섹션(HTML) — 접기형. ⚠가 있으면 기본 펼침(절충)."""
+    """외부 연결 인벤토리 섹션(HTML) — 접기형, 항상 기본 닫힘.
+
+    예전엔 ⚠(개인정보 인접)가 있으면 기본 펼침이었다(절충). 다른 모든 접기 섹션
+    (분야별 상세 등)이 "기본은 닫힘 — 클릭해 펼친다"인 것과 어긋났다 — 저장한
+    리포트를 열 때마다 이 섹션만 이미 펼쳐진 채로 보였다. 통일한다.
+    """
     api = [c for c in report.external_surface if c.kind == "api"]
     pkg = [c for c in report.external_surface if c.kind == "package"]
     res = [c for c in report.external_surface if c.kind == "resource"]
@@ -2474,7 +2578,7 @@ def _render_external_surface_html(report: ScanReport) -> list[str]:
         head_extra = f' · <span style="color:#c0392b">{" · ".join(bits)}</span>'
     res_head = f" · 외부 리소스 {len(res)}" if res else ""
     out: list[str] = [
-        f'<details class="sec inv"{" open" if warn else ""}>'
+        '<details class="sec inv">'
         f"<summary>외부 연결 인벤토리 — API {n_api} · 플러그인 {n_pkg}{res_head}{head_extra}</summary>"
         '<div class="secbody">',
         '<div class="invnote">⚠ <b>사용 금지가 아닙니다.</b> 외부로 데이터를 보낼 수 있는 지점 '
@@ -2596,9 +2700,9 @@ def _render_rule_group_html(group: dict) -> list[str]:
         f'{_esc(_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT))}</code></span></div>'
     )
     out.append(
-        f'<div class="row"><span class="tag">{_esc(f.rule_id)}</span>'
+        f'<div class="row"><span class="tag">{_esc(_rule_label(f))}</span>'
         f'<span class="tag">{_esc(f.category)}</span>'
-        f'<span class="tag">{_esc(_confidence_label(f.confidence))}</span></div>'
+        f'<span class="tag">{_esc(_confidence_label(f.confidence, f.engine))}</span></div>'
     )
     if f.severity_adjusted:
         out.append(
@@ -2671,7 +2775,7 @@ def _render_suppressions_md(suppressed: list[Finding]) -> list[str]:
     for f in suppressed:
         reason = (f.suppress_reason or "").replace("|", "\\|")  # MD 표 파이프 이스케이프
         out.append(
-            f"| `{f.rule_id}` | `{f.location.file}:{f.location.line}` | "
+            f"| `{_rule_label(f)}` | `{f.location.file}:{f.location.line}` | "
             f"{_SEVERITY_LABEL_KO[f.severity]} | {reason} |"
         )
     out.append("")
@@ -2691,7 +2795,7 @@ def _render_suppressions_html(suppressed: list[Finding]) -> list[str]:
     ]
     for f in suppressed:
         out.append(
-            f"<tr><td>{_esc(f.rule_id)}</td>"
+            f"<tr><td>{_esc(_rule_label(f))}</td>"
             f"<td>{_esc(f.location.file)}:{f.location.line}</td>"
             f"<td>{_esc(_SEVERITY_LABEL_KO[f.severity])}</td>"
             f"<td>{_esc(f.suppress_reason or '')}</td></tr>"
@@ -2996,14 +3100,25 @@ def _env_grade_line(report: ScanReport) -> str | None:
         return None
     from .vcps import env_grade_summary
 
-    raw = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    # audit 최상위 env_grade 는 **부르는 쪽이 명시한 값**(--env)이고, 없으면 None 이다.
+    explicit = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    raw = explicit
+    if raw is None:
+        # 명시가 없어도 각 check 의 cooldown 판정에는 **적용된** 기본 등급이 실린다.
+        # 그 값으로 등급·기준일은 정확히 적되, 출처는 '기본값 적용'으로 남긴다 —
+        # 재점검(2026-08-29) 때 이 값을 '검사 실행 시 지정'으로 잘못 표기했다.
+        raw = next(
+            (((c.get("cooldown") or {}).get("env_grade")) for a in audits
+             for c in (a.get("checks") or []) if (c.get("cooldown") or {}).get("env_grade")),
+            None,
+        )
     grade, label, days = env_grade_summary(raw)
     # **누가 정했는지**를 함께 적는다. 이 도구는 실행환경을 탐지하지 않는다 —
     # 부르는 쪽이 넘긴 값이거나 기본값이다. 실측 오해: 개인 PC 에서 돌린 검사가
     # 'E2(내부서버 공용)' 로 찍혀 "왜 내 PC 가 내부서버냐"가 됐다. 값만 있고
     # 출처가 없으면 읽는 사람은 도구가 환경을 판단한 것으로 읽는다.
     origin = (
-        f"검사 실행 시 지정(`--env {grade}`)" if raw
+        f"검사 실행 시 지정(`--env {grade}`)" if explicit
         else "지정 없음 · 기본값 적용(이 도구는 실행환경을 자동 판별하지 않습니다)"
     )
     return (
@@ -3075,6 +3190,12 @@ def _pkg_verdict_label(check: dict) -> str:
         return f"⚠ 개별 취약점 {n}건"
     if check.get("verdict") == "cooldown_hold":
         return "⏸ 발행 직후 — 대기 권고"
+    if check.get("verdict") == "suspicious_name":
+        # 판정 칸에 적는다 — 비고 칸의 '타이포스쿼팅 의심'은 판정 칸이 초록이면 읽히지 않는다.
+        sim = ((check.get("heuristics") or {}).get("typosquat_suspects") or [{}])[0].get("similar_to")
+        return f"⚠ 이름 의심({sim}와 1자 차이)" if sim else "⚠ 이름 의심(타이포스쿼팅)"
+    if check.get("verdict") == "version_not_found":
+        return "❌ 요청 버전 없음(오타·자리차지 의심)"
     if check.get("verdict") == "registry_approved":
         # checked=False 면 '승인은 받았으나 이번에 대조하지 못함' — 구분해 보여준다.
         return "✅ 기관 승인(레지스트리)" if check.get("checked") else "✅ 기관 승인 · 대조 못 함"
@@ -3099,8 +3220,8 @@ def _pkg_note(check: dict) -> str:
     heur = check.get("heuristics") or {}
     if check.get("verdict") == "not_found":
         bits.append("AI가 지어낸 이름(슬롭스쿼팅) 가능성 — 공식 문서에서 이름 확인")
-    if heur.get("typosquat_warning"):
-        bits.append("타이포스쿼팅 의심")
+    if heur.get("typosquat_warning") and check.get("verdict") != "suspicious_name":
+        bits.append("타이포스쿼팅 의심(2자 차이)")
     if check.get("in_kev") or check.get("kev_signals"):
         bits.append("CISA KEV 신호")
     cd = check.get("cooldown") or {}
@@ -3398,6 +3519,48 @@ def _render_dependency_audit_html(report: ScanReport) -> list[str]:
     return out
 
 
+def _render_posture_md(report: ScanReport) -> list[str]:
+    notes = getattr(report, "posture_notes", None) or []
+    if not notes:
+        return []
+    out = ["## 보안 자세 관찰 (정보 · 판정과 무관)", "",
+           "> 룰은 코드에 *있는* 모양을 잡습니다. 아래는 *없어서* 생기는 항목으로, 차단·경고 수에 "
+           "들어가지 않습니다. 프록시·플랫폼에서 처리한다면 그 근거를 남기면 됩니다.", ""]
+    for n in notes:
+        out.append(f"### {n.get('title', '')}  `{n.get('id', '')}`")
+        out.append("")
+        out.append(n.get("detail", ""))
+        if n.get("files"):
+            out.append("")
+            out.append("- 진입점: " + " · ".join(f"`{f}`" for f in n["files"]))
+        if n.get("safe_fix"):
+            out.append(f"- 조치: {n['safe_fix']}")
+        if n.get("references"):
+            out.append("- 참고: " + " · ".join(n["references"]))
+        out.append("")
+    return out
+
+
+def _render_posture_html(report: ScanReport) -> list[str]:
+    notes = getattr(report, "posture_notes", None) or []
+    if not notes:
+        return []
+    p = ['<details class="sec"><summary>보안 자세 관찰 (정보 · 판정과 무관) '
+         f'<span class="cnt">{len(notes)}</span></summary>',
+         '<p class="muted">룰은 코드에 있는 모양을 잡습니다. 아래는 없어서 생기는 항목으로 차단·경고 수에 '
+         '들어가지 않습니다. 프록시·플랫폼에서 처리한다면 그 근거를 남기면 됩니다.</p>']
+    for n in notes:
+        p.append(f'<div class="card"><h4>{_esc(n.get("title", ""))} <span class="tag">{_esc(n.get("id", ""))}</span></h4>')
+        p.append(f'<p>{_esc(n.get("detail", ""))}</p>')
+        if n.get("files"):
+            p.append('<p>진입점: ' + " · ".join(f"<code>{_esc(f)}</code>" for f in n["files"]) + "</p>")
+        if n.get("safe_fix"):
+            p.append(f'<p><b>조치</b> {_esc(n["safe_fix"])}</p>')
+        p.append("</div>")
+    p.append("</details>")
+    return p
+
+
 def _render_external_surface_md(report: ScanReport) -> list[str]:
     """외부 연결 인벤토리 섹션(Markdown). MD는 접기가 없으므로 표로 펼쳐 출력."""
     api = [c for c in report.external_surface if c.kind == "api"]
@@ -3485,15 +3648,15 @@ def _render_finding_group_md(group: dict) -> list[str]:
     )
     out.append("")
     out.append(f"- **위치**: {_locations_by_file(findings, limit_files=_LOC_FILE_LIMIT)}")
-    out.append(f"- **룰**: `{f.rule_id}`")
+    out.append(f"- **룰**: `{_rule_label(f)}`")
     out.append(f"- **카테고리**: {f.category}")
-    out.append(f"- **판정 근거**: {_confidence_label(f.confidence)}")
+    out.append(f"- **판정 근거**: {_confidence_label(f.confidence, f.engine)}")
     # 등급을 낮췄으면 그 사실과 이유를 반드시 함께 보여준다 — 조용히 낮추면
     # 검토자가 "왜 low 인지" 판단할 근거를 잃는다.
     if f.severity_adjusted:
         out.append(f"- **심각도 조정**: {f.severity_adjusted}")
     if f.evidence:
-        out.append(f"- **{_evidence_label(f.evidence)}**: `{_oneline(f.evidence)}`")
+        out.append(f"- **{_evidence_label(f.evidence)}**: {_md_code(_oneline(f.evidence))}")
     if f.why_it_matters:
         out.append(f"- **왜 위험한가**: {f.why_it_matters.strip()}")
     if f.public_sector_impact:
@@ -3513,6 +3676,23 @@ def _render_finding_group_md(group: dict) -> list[str]:
         refs = ", ".join(f.references[:5])
         out.append(f"- **출처**: {refs}")
     return out
+
+
+def _md_code(text: str) -> str:
+    """인라인 코드. 증거에 백틱이 있으면 더 긴 펜스로 감싼다 — 검사 대상이 쓴
+    백틱 하나가 코드 구간을 닫고 뒤를 마크다운으로 해석시키지 않도록."""
+    if "`" not in text:
+        return f"`{text}`"
+    longest = max(len(m) for m in re.findall(r"`+", text))
+    fence = "`" * (longest + 1)
+    return f"{fence} {text} {fence}"
+
+
+def _rule_label(f) -> str:
+    """`KISA-PY-INPUT-02 (+GOV-CODE-EXEC-001)` — 한 문제를 본 다른 룰을 함께 적는다."""
+    if getattr(f, "also_matched", None):
+        return f"{f.rule_id} (+{', '.join(f.also_matched)})"
+    return f.rule_id
 
 
 def _oneline(text: str, limit: int = 160) -> str:

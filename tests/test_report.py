@@ -166,7 +166,7 @@ def test_render_html_includes_findings_and_safe_fix() -> None:
 def test_render_html_escapes_dynamic_content() -> None:
     # 코드에 HTML 메타문자가 있어도 레이아웃을 깨거나 주입되지 않도록 이스케이프.
     report = scan_code(
-        'el.innerHTML = "<img src=x onerror=alert(1)>"\n',
+        'el.innerHTML = "<img src=x onerror=alert(1)>" + name\n',
         filename="x.js",
         language="javascript",
     )
@@ -816,8 +816,9 @@ def test_fix_prompt_has_copy_buttons() -> None:
 
 def test_copy_button_text_is_escaped() -> None:
     # data-copy 에 들어가는 프롬프트 텍스트도 이스케이프돼야 한다(속성 주입 방지).
+    # 상수 리터럴만 대입하면 발견이 없다(13차) — 동적 결합으로 둔다.
     report = scan_code(
-        'el.innerHTML = "<img src=x onerror=alert(1)>"\n',
+        'el.innerHTML = "<img src=x onerror=alert(1)>" + name\n',
         filename="x.js", language="javascript",
     )
     html = render_html(report)

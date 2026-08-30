@@ -50,6 +50,9 @@ detection:
     # 줄바꿈으로 인자를 넘긴 경우 줄 끝에서 멈추므로 그대로 잡힌다(보수적).
     - "\\$\\([^)]*\\)\\.html\\s*\\(\\s*(?![\\s)])"
     - 'insertAdjacentHTML\s*\('
+  # 같은 코드를 다른 각도로 보는 룰과 한 묶음(GOV-HTML-DOM-XSS-001). 같은 줄에 함께 걸리면
+  # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
+  dedup_group: html-dom-xss
   category: kisa-secure-coding
   why_it_matters: >-
     innerHTML, outerHTML, document.write, jQuery .html(), React의

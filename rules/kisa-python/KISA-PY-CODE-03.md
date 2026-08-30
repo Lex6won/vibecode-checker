@@ -31,6 +31,9 @@ detection:
     - 'shelve\.open\s*\('
     - '(?:pd|pandas)\.read_pickle\s*\('
     - 'joblib\.load\s*\('
+    # yaml.load 에 Safe 계열 Loader 가 없으면 임의 객체 생성(python-ast 가 정본,
+    # 파싱 실패 파일용 보조). 2026-08-29 코퍼스 c_deser.py:8 미탐 보강.
+    - 'yaml\.load\s*\((?![^)]*Safe)'
   category: kisa-secure-coding
   why_it_matters: >-
     pickle/marshal 등은 객체 직렬화 포맷을 *그대로 재구성*하면서 __reduce__를

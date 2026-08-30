@@ -113,8 +113,12 @@ def apply_profile(findings: list[Finding], profile: ProfileSpec) -> list[Finding
                 continue
 
         new_decision = f.decision
-        if f.rule_id in profile.decision_overrides:
-            new_decision = Decision(profile.decision_overrides[f.rule_id])
+        # 병합된 발견은 also_matched 의 룰 id 로도 재정의를 받는다 — 여러 개면 가장 엄격한 쪽.
+        hit = [rid for rid in (f.rule_id, *getattr(f, "also_matched", [])) if rid in profile.decision_overrides]
+        if hit:
+            _order = {"block": 2, "warn": 1, "allow": 0}
+            chosen = max((profile.decision_overrides[r] for r in hit), key=lambda d: _order.get(d, 0))
+            new_decision = Decision(chosen)
         elif f.category in profile.category_overrides:
             new_decision = Decision(profile.category_overrides[f.category])
 

@@ -11,7 +11,7 @@ from gvskb.scanner import scan_code
 
 def _hits(code: str, filename: str, language: str) -> set[str]:
     r = scan_code(code, filename=filename, language=language)
-    return {f.rule_id for f in r.findings}
+    return {rid for f in r.findings for rid in (f.rule_id, *f.also_matched)}  # 병합된 근거 룰 포함(S-8)
 
 
 # ---------------------------------------------------------------------------
