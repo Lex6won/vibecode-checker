@@ -21,4 +21,5 @@
 - `status: proposed` · `source_layer: baseline` · `sources:` 에 가이드
   발행처·문서명·조항 필수 (원문 복제 금지 — 요약·인용·구조화만)
 - `examples.positive`/`negative` 필수 — 없으면 `validate-rules` 가 막습니다
-- 룰 파일 추가·수정 후 `gvskb ruleset --bump <버전>` 으로 룰셋 버전 갱신
+- 초안(`proposed`)은 집행되지 않으므로 룰셋 지문에 들어가지 않습니다 —
+  `ruleset --bump` 는 초안 추가 때가 아니라 **승격(approved 전환) 때** 합니다
