@@ -107,6 +107,31 @@ def _sha256(items: list[dict]) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# 로드 메모 — 같은 파일을 프로세스 안에서 반복 파싱하지 않는다.
+#
+# check_package 는 **패키지마다** IntelCache() 를 만들어 load() 를 부른다. 예전
+# 캐시(악성 목록 2.7MB)에서는 낭비 수준이었지만, osv-vulns(수십 MB)가 생기면
+# 락파일 900개 검사가 "30MB JSON 파싱 + sha256 재검증"을 900번 하게 된다 —
+# 검사가 분 단위로 느려진다. 파일의 (경로, mtime_ns, size) 가 같으면 파싱 결과를
+# 재사용한다. 파일이 바뀌면 서명이 달라져 자연히 다시 읽는다. 무결성 검증 실패
+# (None)도 메모한다 — 손상된 대용량 파일을 900번 재파싱하며 경고를 900줄 찍지
+# 않기 위해서다.
+# ---------------------------------------------------------------------------
+_LOAD_MEMO: dict[str, tuple[tuple[int, int], "CacheEntry | None"]] = {}
+_LOAD_MEMO_MAX = 8
+
+#: 이 항목 수를 넘는 캐시는 indent 없이 저장한다 — 사람이 읽을 크기가 아니고,
+#: indent=2 는 파일을 1.5배 안팎으로 키운다(osv 계열 수십 MB).
+_COMPACT_THRESHOLD_ITEMS = 10_000
+
+
+def _memo_put(key: str, sig: tuple[int, int], entry: "CacheEntry | None") -> None:
+    if len(_LOAD_MEMO) >= _LOAD_MEMO_MAX and key not in _LOAD_MEMO:
+        _LOAD_MEMO.pop(next(iter(_LOAD_MEMO)), None)
+    _LOAD_MEMO[key] = (sig, entry)
+
+
 class IntelCache:
     """Filesystem-backed cache for intel source results."""
 
@@ -136,16 +161,39 @@ class IntelCache:
             items=items,
             ecosystems=ecosystems,
         )
-        self.path_for(source_id).write_text(
-            json.dumps(entry.to_dict(), ensure_ascii=False, indent=2),
+        indent = None if len(items) > _COMPACT_THRESHOLD_ITEMS else 2
+        p = self.path_for(source_id)
+        p.write_text(
+            json.dumps(entry.to_dict(), ensure_ascii=False, indent=indent),
             encoding="utf-8",
         )
+        try:
+            st = p.stat()
+            _memo_put(str(p.resolve()), (st.st_mtime_ns, st.st_size), entry)
+        except OSError:
+            pass
         return entry
 
     def load(self, source_id: str) -> CacheEntry | None:
         p = self.path_for(source_id)
         if not p.exists():
             return None
+        sig: tuple[int, int] | None = None
+        key = ""
+        try:
+            st = p.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+            key = str(p.resolve())
+        except OSError:
+            pass
+        if sig is not None and key in _LOAD_MEMO and _LOAD_MEMO[key][0] == sig:
+            return _LOAD_MEMO[key][1]
+        entry = self._load_uncached(source_id, p)
+        if sig is not None:
+            _memo_put(key, sig, entry)
+        return entry
+
+    def _load_uncached(self, source_id: str, p: Path) -> CacheEntry | None:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError:

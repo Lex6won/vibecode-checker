@@ -76,6 +76,11 @@ def update_source(
                 cache_path=str(cache.path_for(source_id)) if prev else "",
                 error=f"fetch failed: {exc!s}",
             )
+        if adapter.merge is not None and prev is not None and prev.items:
+            # 창(window) 조회 소스는 이전 캐시와 병합해 **누적**한다. 병합 실패는
+            # 숨기지 않는다 — 조용히 새 수집분만 저장하면 누적이 사라졌다는 사실을
+            # 아무도 모른 채 캐시가 도로 얇아진다.
+            items = adapter.merge(prev.items, items)
         ecosystems = adapter.ecosystems() if adapter.ecosystems else None
         entry: CacheEntry = cache.save(source_id, url, items, ecosystems=ecosystems)
         return IntelUpdateResult(

@@ -599,15 +599,124 @@ def _coverage_gap_note(
     )
 
 
-def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dict:
+def _affected_intervals(aff: dict) -> list[tuple[str, str | None, bool]]:
+    """OSV ranges 를 (시작, 끝|None, 끝포함) 구간 목록으로 편다. 끝 None = 열린 구간.
+
+    introduced→fixed 는 [시작, 끝) 반개구간, introduced→last_affected 는
+    [시작, 끝] 폐구간이다. fixed 없이 끝나는 introduced 는 '그 이후 전부'다.
+    SEMVER/ECOSYSTEM 만 본다 — GIT 범위는 커밋 해시라 로컬 비교가 불가능하다.
+    """
+    out: list[tuple[str, str | None, bool]] = []
+    for rng in aff.get("ranges") or []:
+        if rng.get("type") not in ("SEMVER", "ECOSYSTEM"):
+            continue
+        start: str | None = None
+        for ev in rng.get("events") or []:
+            if not isinstance(ev, dict):
+                continue
+            if "introduced" in ev:
+                start = str(ev["introduced"])
+            elif "fixed" in ev:
+                out.append((start if start is not None else "0", str(ev["fixed"]), False))
+                start = None
+            elif "last_affected" in ev:
+                out.append((start if start is not None else "0", str(ev["last_affected"]), True))
+                start = None
+        if start is not None:
+            out.append((start, None, False))
+    return out
+
+
+def _version_in_affected(aff: dict, version: str) -> bool | None:
+    """이 버전이 affected 항목의 영향권인가 — True/False/**None(판정 불가)**.
+
+    None 은 False 가 아니다: 버전 표기를 해석하지 못했거나 advisory 가 비교
+    가능한 범위를 주지 않은 경우다. 호출자는 None 을 '검토 필요'로 다뤄야 한다 —
+    모름을 통과로 읽으면 미탐이 된다.
+    """
+    vers = [str(v) for v in (aff.get("versions") or [])]
+    vk = _version_key(version)
+    if vers:
+        if version in vers:
+            return True
+        if vk is not None and any(_version_key(v) == vk for v in vers):
+            return True
+    intervals = _affected_intervals(aff)
+    if vk is None:
+        # 버전을 못 읽었다 — 판정 재료(범위·열거)가 있으면 '모름', 아예 없으면
+        # 이 affected 항목은 어떤 버전도 지목하지 않는 것이므로 False.
+        return None if (intervals or vers) else False
+    decidable = bool(vers)
+    for start, end, inclusive in intervals:
+        sk = _version_key(start)
+        if sk is None:
+            continue
+        if end is None:
+            decidable = True
+            if vk >= sk:
+                return True
+            continue
+        ek = _version_key(end)
+        if ek is None:
+            continue
+        decidable = True
+        if sk <= vk and (vk < ek or (inclusive and vk == ek)):
+            return True
+    return False if decidable else None
+
+
+def _offline_vuln_hits(
+    items: list[dict], name: str, ecosystem_label: str, version: str | None,
+) -> tuple[list[dict], int]:
+    """캐시된 OSV 취약점 중 이 패키지(·버전)에 해당하는 목록과, 버전 판정 불가 수.
+
+    버전이 None 이면 이름 매칭 advisory 전부를 돌려준다 — 온라인의 버전 미지정
+    조회(전체 이력 반환)와 같은 의미이며, 호출자가 severity 를 medium 으로 캡핑한다.
+    """
+    from .installed_packages import _normalize as _norm_name
+
+    is_pypi = ecosystem_label.lower() == "pypi"
+    want = _norm_name(name) if is_pypi else name.lower()
+    matched: list[dict] = []
+    undetermined = 0
+    for v in items:
+        results: list[bool | None] = []
+        for aff in v.get("affected") or []:
+            pkg = aff.get("package") or {}
+            pkg_name = str(pkg.get("name") or "")
+            if not pkg_name:
+                continue
+            norm = _norm_name(pkg_name) if is_pypi else pkg_name.lower()
+            if norm != want:
+                continue
+            eco = str(pkg.get("ecosystem") or "")
+            if eco and eco.lower() != ecosystem_label.lower():
+                continue
+            results.append(True if version is None else _version_in_affected(aff, str(version)))
+        if not results:
+            continue
+        if any(r is True for r in results):
+            matched.append(v)
+        elif any(r is None for r in results):
+            undetermined += 1
+    return matched, undetermined
+
+
+def _offline_cache_check(
+    name: str, ecosystem: str, ecosystem_label: str, version: str | None = None,
+) -> dict:
     """Consult the local intel cache and return a unified PackageCheckResult dict.
 
-    오프라인은 실재·발행일·CVE 를 확인할 수 없다 — exists=None, max_cve=UNKNOWN
-    으로 '미확인'을 명시한다. 미확인은 '안전'이 아니다.
+    오프라인은 실재·발행일을 확인할 수 없다 — exists=None 으로 '미확인'을
+    명시한다. 미확인은 '안전'이 아니다. 알려진 취약점(CVE)은 **osv-vulns 캐시가
+    있으면 버전 범위까지 대조한다**(2026-08-31 신설) — 예전에는 캐시에 악성
+    피드·KEV 만 있어 이 경로가 구조적으로 CVE 를 볼 수 없었고, 그래서 망분리
+    환경은 취약 버전을 영영 '판정 불가'로만 받았다.
     """
     cache = IntelCache()
     osv_entry = cache.load("osv-malicious")
     kev_entry = cache.load("cisa-kev")
+    vulns_entry = cache.load("osv-vulns")
 
     base = dict(
         name=name,
@@ -621,7 +730,7 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
         checked_at=_now_iso(),
     )
 
-    if osv_entry is None and kev_entry is None:
+    if osv_entry is None and kev_entry is None and vulns_entry is None:
         # 캐시 없는 오프라인은 "통과"가 아니라 "판정 불가"다.
         return PackageCheckResult(
             **base,
@@ -660,6 +769,21 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
         kev_signals = _kev_signals_for(kev_entry.items, name)
         # KEV 매칭이 있으면 EPSS 악용확률·NVD CVSS를 병기해 우선순위 근거 제공.
         cache_sources_used.extend(_enrich_with_epss_nvd(kev_signals, cache))
+
+    # 알려진 취약점(비-MAL) 대조 — osv-vulns 캐시가 이 생태계를 담고 있을 때만.
+    vuln_hits: list[dict] = []
+    vuln_undetermined = 0
+    vulns_covered = False
+    if vulns_entry is not None:
+        cache_sources_used.append("osv-vulns")
+        cache_freshness["osv-vulns"] = vulns_entry.fetched_at
+        if vulns_entry.is_stale():
+            stale_sources.append("osv-vulns")
+        vulns_covered = ecosystem_label in (vulns_entry.ecosystems or ["PyPI"])
+        if vulns_covered:
+            vuln_hits, vuln_undetermined = _offline_vuln_hits(
+                vulns_entry.items, name, ecosystem_label, version,
+            )
 
     # 생태계 커버리지 — 악성 판정을 '깨끗함'으로 내리려면 osv-malicious 캐시가
     # *이 생태계를 실제로 담고 있어야* 한다. v1 캐시(ecosystems 미기록)는 당시
@@ -703,6 +827,57 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
             **base, checked=True, verdict="malicious", requires_review=True, note=note,
         ).model_dump(mode="json")
 
+    if vulns_covered and vuln_hits:
+        # 오프라인 CVE 대조 성공 — 예전에는 이 경로가 없어 "취약점 26건짜리
+        # pillow 12.2.0" 이 망분리에서 '판정 불가'로만 남았다. 온라인 경로와 같은
+        # 해석기(_advisory_rows·_max_cve_from_vulns·_recommended_version)를 써서
+        # 두 모드의 보고가 같은 모양·같은 권고 버전을 낸다.
+        rows = _advisory_rows(vuln_hits, name=name, eco=ecosystem_label)
+        kev_hits = _kev_cve_hits(vuln_hits, cache)
+        for sid in _enrich_with_epss_nvd(kev_hits, cache):
+            if sid not in cache_sources_used:
+                cache_sources_used.append(sid)
+        max_cve = _max_cve_from_vulns(vuln_hits)
+        in_kev = bool(kev_hits)
+        notes: list[str] = []
+        if version is None:
+            # 버전 미지정 = 전체 이력 — 온라인과 동일하게 medium 캡핑(과차단 방지).
+            sev = "medium"
+            notes.append(
+                f"버전 미지정 — 이 취약점 {len(vuln_hits)}건은 과거 버전 포함 전체 이력입니다. "
+                "사용할 버전을 지정해 재검사하세요(최신 버전은 조치됐을 수 있음)."
+            )
+        else:
+            sev = "high" if (in_kev or max_cve in ("HIGH", "CRITICAL")) else "medium"
+        if in_kev:
+            notes.append("이 패키지의 취약점이 CISA KEV(실제 악용 목록)에 있습니다 — 예외 없이 조치하세요.")
+        if vuln_undetermined:
+            notes.append(
+                f"추가로 advisory {vuln_undetermined}건은 버전 적용 여부를 해석하지 못해 "
+                "집계에서 제외했습니다 — 원문을 확인하세요."
+            )
+        if stale_sources:
+            notes.append(
+                f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 취약 판정(양성)은 유효합니다."
+            )
+        notes.append("오프라인 검사라 공식 저장소 실재·발행일(쿨다운)은 확인하지 못했습니다.")
+        base.update(
+            verdict_severity=sev,
+            vulnerability_count=len(vuln_hits),
+            advisories=rows,
+            max_cve=max_cve,
+            in_kev=in_kev or bool(kev_signals),
+            kev_signals=kev_signals + kev_hits,
+        )
+        return PackageCheckResult(
+            **base,
+            checked=True,
+            verdict="vulnerable",
+            requires_review=True,
+            recommended_version=_recommended_version(rows, version),
+            note=" ".join(notes),
+        ).model_dump(mode="json")
+
     if not osv_covers:
         # 이 생태계의 악성 피드가 캐시에 없다 → '깨끗함'이 아니라 '판정 불가'.
         #
@@ -738,6 +913,43 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
             ),
         ).model_dump(mode="json")
 
+    if vulns_covered and vuln_undetermined:
+        # 이름은 일치하는데 버전 적용 여부를 판정하지 못한 advisory 가 있다 —
+        # '이상 없음'으로 덮으면 그게 미탐이 된다. 모름은 모름으로 남긴다.
+        return PackageCheckResult(
+            **base,
+            checked=False,
+            verdict="unknown",
+            requires_review=True,
+            note=(
+                f"오프라인 캐시에 이 패키지의 advisory {vuln_undetermined}건이 있으나 "
+                f"버전 {version} 의 적용 여부를 해석하지 못했습니다('이상 없음'이 아닙니다). "
+                "버전 표기를 확인하거나 온라인 검사로 재확인하세요."
+            ),
+        ).model_dump(mode="json")
+
+    if vulns_covered:
+        # 악성 아님 + 알려진 취약점 없음 + 캐시 신선 — 오프라인에서 말할 수 있는
+        # 최대치의 '깨끗함'이다. 실재(슬롭스쿼팅)·발행일(쿨다운)은 여전히 미확인
+        # 이므로 검토 표시는 유지한다 — '깨끗함'과 '전부 확인함'은 다르다.
+        clean_kev_note = (
+            " 단, CISA KEV 목록에 이 이름과 일치하는 항목이 있습니다 — 우선 확인하세요."
+            if kev_signals else ""
+        )
+        base.update(max_cve="NONE")
+        return PackageCheckResult(
+            **base,
+            checked=True,
+            verdict="checked_clean",
+            requires_review=True,
+            note=(
+                "오프라인 캐시 대조: 악성 등록 없음 · 알려진 취약점(OSV) 없음. "
+                "다만 오프라인은 공식 저장소 실재(슬롭스쿼팅)와 발행일(쿨다운)을 "
+                "확인하지 못합니다 — 처음 쓰는 패키지라면 외부망에서 한 번 확인하세요."
+                + clean_kev_note
+            ),
+        ).model_dump(mode="json")
+
     # 여기까지 왔다는 것은 **"악성 피드에 없다"** 일 뿐, "알려진 취약점이 없다"가 아니다.
     #
     # 실측 사고: 하네스 두 개가 `.mcp.json` 에 GVSKB_MODE=offline 을 박아 두고 있어
@@ -762,8 +974,9 @@ def _offline_cache_check(name: str, ecosystem: str, ecosystem_label: str) -> dic
         note=(
             "오프라인 캐시에 **악성 등록은 없습니다**. 다만 오프라인에는 CVE 데이터가 "
             "없어 **알려진 취약점 여부는 확인하지 못했습니다**('이상 없음'이 아닙니다). "
-            "취약점까지 보려면 외부망에서 검사하거나(GVSKB_MODE 를 offline 로 고정하지 "
-            "마세요) 온라인 검사 결과를 반입하세요." + kev_note
+            "최신 인텔 번들(osv-vulns 포함)을 반입하면 오프라인에서도 알려진 취약점까지 "
+            "대조됩니다. 취약점까지 보려면 외부망에서 검사하거나(GVSKB_MODE 를 offline 로 "
+            "고정하지 마세요) 온라인 검사 결과를 반입하세요." + kev_note
         ),
     ).model_dump(mode="json")
 
@@ -1339,7 +1552,7 @@ async def check_package_impl(
         ).model_dump(mode="json")
 
     if _is_offline():
-        result = _offline_cache_check(name, ecosystem, eco)
+        result = _offline_cache_check(name, ecosystem, eco, version)
         if version is not None:
             result["version"] = version
         # 오프라인은 발행일을 알 수 없어 쿨다운 판정 불가(ok=None) — '통과' 아님.
