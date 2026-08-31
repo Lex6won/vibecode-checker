@@ -203,3 +203,19 @@ def test_test_workflow_has_packaging_job() -> None:
     assert "packaging" in (wf.get("jobs") or {}), "패키징 스모크 잡이 없다"
     scripts = _all_run_scripts(wf)
     assert "install_problem" in scripts, "설치 정합성 검사를 호출하지 않는다"
+
+
+def test_intel_workflow_enables_npm_ecosystem() -> None:
+    """배포 번들에 npm 이 담기려면 수집 스텝이 GVSKB_OSV_INCLUDE_NPM 을 켜야 한다.
+
+    실측(2026-08-31): 이 env 없이 운영되어 일일 번들에 PyPI 만 담겼고, 망분리
+    기관은 npm 악성·취약점을 구조적으로 대조하지 못했다. env 하나가 빠져도
+    워크플로는 초록불이므로 테스트로 고정한다.
+    """
+    wf = _load("update-intel.yml")
+    refresh = [s for s in _steps(wf) if s.get("id") == "refresh"]
+    assert refresh, "refresh 스텝이 없다"
+    env = refresh[0].get("env") or {}
+    assert str(env.get("GVSKB_OSV_INCLUDE_NPM", "")).strip().lower() in {"1", "true", "on", "yes"}, (
+        "수집 스텝에 GVSKB_OSV_INCLUDE_NPM 이 없다 — 번들에서 npm 이 조용히 빠진다"
+    )

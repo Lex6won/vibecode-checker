@@ -56,7 +56,7 @@ DEFAULT_THROTTLE_HOURS = 24
 
 # 자동 당김이 '있어야 한다'고 보는 핵심 소스 — 하나라도 없으면 낡음 이전에
 # '비어 있음'이므로 즉시 당김 대상이다.
-ESSENTIAL_SOURCES = ("osv-malicious", "cisa-kev")
+ESSENTIAL_SOURCES = ("osv-malicious", "osv-vulns", "cisa-kev")
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
