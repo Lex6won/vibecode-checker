@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+### 프로세스 — 새 보안 가이드 → 룰 반영 절차 표준화 — 2026-08-31
+
+새 국가·기관 보안 가이드가 발간되면 MD 변환본을 넣어 룰로 반영하는 반복
+가능한 절차를 만들었다: `.claude/skills/guide-to-rules` 스킬(에이전트용) +
+`CONTRIBUTING.md` 절차 문서(사람용) + `rules/guide-proposed/` 초안 디렉터리.
+핵심 안전장치는 기존 `status: proposed` 게이트 재사용 — 초안은 사람이
+`approved` 로 승격하기 전까지 검사에 영향을 주지 않는다(intel-proposed 의
+KEV 초안과 같은 구조, 단 자동 폐기 없음). 격차 분석 → 초안(examples 필수) →
+validate/evaluate/적대적 검증 → `ruleset --bump` → 사람 승격.
+
 ### 19차 — 오프라인 CVE 대조(osv-vulns) · npm 번들 포함 · NVD/EPSS 누적 — 2026-08-31
 
 오프라인(망분리) 패키지 검사의 구조적 공백 3건을 닫는다. 배경: 오프라인 캐시에는
