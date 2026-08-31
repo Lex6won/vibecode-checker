@@ -234,3 +234,92 @@ def test_server_status_exposes_ruleset_identity() -> None:
     assert rs["status"] == "ok", rs["message"]
     assert rs["version"] and rs["digest"]
     assert rs["pin_ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# ④ 지문의 범위 — 집행되는 룰만 (2026-09-01)
+#
+# 실측(2026-08-12~31): proposed 초안이 지문에 들어가 KEV 자동 초안 PR 이
+# `--fail-on error` 드리프트에 막혔고, 자동 병합이 전제인 경로라 사람이 버전을
+# 올릴 수 없어 **지식 카드 유입이 19일간 정지**했다. 지문은 판정 재현성을
+# 위한 것이고, proposed/deprecated 는 판정을 바꿀 수 없으므로 지문 밖이어야
+# 한다(스캐너의 status 게이트와 1:1).
+# ---------------------------------------------------------------------------
+
+
+def test_adding_proposed_rule_does_not_move_digest(tmp_path: Path) -> None:
+    """초안(proposed) 추가는 판정을 못 바꾼다 — 지문도 안 움직여야 한다.
+
+    움직이면 intel/guide 자동 초안 PR 이 영구히 드리프트 ERROR 에 막힌다.
+    """
+    d = _mk_rules_dir(tmp_path)
+    before = ruleset.compute_digest(load_all_rules(d))
+    proposed = _RULE.replace("TEST-PIN-001", "TEST-PIN-PROP") \
+                    .replace("status: approved", "status: proposed")
+    (d / "TEST-PIN-PROP.md").write_text(proposed, encoding="utf-8")
+    after = ruleset.compute_digest(load_all_rules(d))
+    assert before == after, "proposed 초안이 지문을 움직였다 — 자동 초안 PR 이 막힌다"
+
+
+def test_promoting_proposed_to_approved_moves_digest(tmp_path: Path) -> None:
+    """승격(approved 전환)은 판정 집합을 바꾼다 — 지문이 반드시 움직여야 한다."""
+    d = _mk_rules_dir(tmp_path)
+    proposed = _RULE.replace("TEST-PIN-001", "TEST-PIN-PROP") \
+                    .replace("status: approved", "status: proposed")
+    (d / "TEST-PIN-PROP.md").write_text(proposed, encoding="utf-8")
+    before = ruleset.compute_digest(load_all_rules(d))
+    (d / "TEST-PIN-PROP.md").write_text(
+        proposed.replace("status: proposed", "status: approved"), encoding="utf-8")
+    after = ruleset.compute_digest(load_all_rules(d))
+    assert before != after, "승격이 지문에 안 잡히면 판정 변경이 버전 없이 지나간다"
+
+
+def test_deprecated_rule_is_outside_digest(tmp_path: Path) -> None:
+    """deprecated 는 절대 집행되지 않는다 — 지문 밖이어야 한다."""
+    d = _mk_rules_dir(tmp_path)
+    before = ruleset.compute_digest(load_all_rules(d))
+    dep = _RULE.replace("TEST-PIN-001", "TEST-PIN-DEP") \
+               .replace("status: approved", "status: deprecated")
+    (d / "TEST-PIN-DEP.md").write_text(dep, encoding="utf-8")
+    assert before == ruleset.compute_digest(load_all_rules(d))
+
+
+def test_stale_rule_stays_inside_digest(tmp_path: Path) -> None:
+    """stale 은 재검토 기한 초과일 뿐 **여전히 집행된다** — 지문 안이어야 한다.
+
+    빠뜨리면 stale 룰의 패턴을 몰래 고쳐도 버전이 안 움직인다(과교정 방지).
+    """
+    d = _mk_rules_dir(tmp_path)
+    before = ruleset.compute_digest(load_all_rules(d))
+    stale = _RULE.replace("TEST-PIN-001", "TEST-PIN-STALE") \
+                 .replace("status: approved", "status: stale")
+    (d / "TEST-PIN-STALE.md").write_text(stale, encoding="utf-8")
+    after = ruleset.compute_digest(load_all_rules(d))
+    assert before != after, "stale 룰이 지문 밖이다 — 집행되는 룰이 버전 없이 바뀔 수 있다"
+
+
+def test_allow_proposed_mode_is_disclosed_in_report_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실험 모드(GVSKB_ALLOW_PROPOSED)는 보고서 신원에 스스로를 밝혀야 한다.
+
+    초안은 지문 밖이므로, 초안이 집행 중이라는 사실을 숨기면
+    "버전 X 로 재현된다"가 거짓 약속이 된다.
+    """
+    import gvskb.scanner as scanner_mod
+
+    monkeypatch.setenv("GVSKB_ALLOW_PROPOSED", "1")
+    scanner_mod.reset_ruleset_identity_cache()
+    try:
+        identity = scanner_mod._ruleset_identity()
+        assert identity["ruleset_note"], "실험 모드가 보고서 신원에 드러나지 않는다"
+        assert "재현되지 않습니다" in identity["ruleset_note"]
+    finally:
+        scanner_mod.reset_ruleset_identity_cache()
+
+    monkeypatch.delenv("GVSKB_ALLOW_PROPOSED")
+    scanner_mod.reset_ruleset_identity_cache()
+    try:
+        assert scanner_mod._ruleset_identity()["ruleset_note"] is None
+    finally:
+        scanner_mod.reset_ruleset_identity_cache()

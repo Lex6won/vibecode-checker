@@ -398,7 +398,8 @@ def _ruleset_identity() -> dict:
     global _RULESET_IDENTITY_CACHE
     if _RULESET_IDENTITY_CACHE is not None:
         return _RULESET_IDENTITY_CACHE
-    identity: dict = {"ruleset_version": None, "ruleset_digest": None, "ruleset_drift": None}
+    identity: dict = {"ruleset_version": None, "ruleset_digest": None,
+                      "ruleset_drift": None, "ruleset_note": None}
     try:
         from . import ruleset as _ruleset
         from .loader import load_all_rules
@@ -409,6 +410,14 @@ def _ruleset_identity() -> dict:
         identity["ruleset_version"] = verdict["version"]
         if verdict["status"] != "ok":
             identity["ruleset_drift"] = verdict["message"]
+        # 실험 모드 — 초안(proposed) 룰까지 집행 중. 초안은 룰셋 지문 밖이므로
+        # (지문은 승인 룰만 덮는다) 이 사실을 보고서가 스스로 밝혀야 한다.
+        # 조용히 두면 "버전 X로 재현된다"는 거짓 약속이 된다.
+        if os.environ.get("GVSKB_ALLOW_PROPOSED", "").lower() in {"1", "true", "yes"}:
+            identity["ruleset_note"] = (
+                "실험 모드(GVSKB_ALLOW_PROPOSED)로 초안(proposed) 룰이 집행 중입니다 — "
+                "초안은 룰셋 버전에 고정되지 않으므로 이 판정은 승인 룰만으로 재현되지 않습니다."
+            )
     except Exception:  # pragma: no cover - 방어: 신원 계산 실패가 검사를 막지 않는다
         pass
     _RULESET_IDENTITY_CACHE = identity
