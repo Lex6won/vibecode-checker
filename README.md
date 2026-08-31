@@ -351,7 +351,7 @@ gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳
 
 ### 위협 정보(인텔)는 매일 자동 갱신됩니다
 
-GitHub Actions가 **매일 03:00(KST)** 4개 피드(OSV 악성 패키지·CISA KEV·NVD·EPSS)를 수집해 검증 가능한 번들을 [`intel-latest` 릴리스](https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest)에 게시합니다.
+GitHub Actions가 **매일 03:00(KST)** 5개 소스(OSV 악성 패키지·OSV 취약점 DB·CISA KEV·NVD·EPSS)를 **PyPI·npm 두 생태계**에 대해 수집해 검증 가능한 번들을 [`intel-latest` 릴리스](https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest)에 게시합니다. NVD·EPSS는 매일 새 수집분을 기존 캐시에 **누적**해 시간이 지날수록 커버리지가 넓어집니다.
 
 - **인터넷 PC**: 별도 설정 없이 자동입니다. 서버 기동·검사 시점에 캐시 신선도를 확인하고 낡았으면 하루 1회 자동으로 받아옵니다(`GVSKB_AUTO_UPDATE=off` 로 끌 수 있음). 수동 갱신은 `gvskb update-intel --all`.
 - **망분리 PC**: [아래 절차](#망분리폐쇄망-환경에서-쓰기)대로 번들을 반입합니다. 관리자가 공유 폴더(`GVSKB_INTEL_DIR`)에 번들을 놓아두면 각 PC가 자동 반영합니다.
@@ -431,7 +431,8 @@ gvskb scan ./my-project --check-deps
 - 반입한 캐시는 읽을 때마다 **sha256 무결성을 재검증**합니다. 변조·손상된 캐시는 판정에 쓰지 않고 무시하며, 다시 받으라고 안내합니다.
 - 캐시가 기본 **30일**(`GVSKB_INTEL_MAX_AGE_DAYS` 로 조정)을 넘으면 '이상 없음' 판정을 '판정 보류'로 낮춥니다 — 오래된 데이터가 최신처럼 보이지 않게 합니다.
 - 보고서에 **어느 날짜 캐시 기준의 판정인지**(피드별 수집 시각)가 자동 표기됩니다. KEV 등재 취약점에는 EPSS 악용확률·CVSS 점수가 함께 실려 보안팀이 우선순위를 정할 수 있습니다.
-- 오프라인에서 확인하지 못한 것(패키지 실재 여부, CVE 목록 등)은 '판정 불가'로 명시합니다 — '안전'으로 바꿔 말하지 않습니다.
+- 반입 번들에는 **알려진 취약점 DB**(OSV 전체, 영향 버전 범위 포함)가 담겨, 망분리에서도 취약한 패키지 버전이 온라인 검사와 같은 기준으로 탐지되고 **올려야 할 버전까지 권고**됩니다(PyPI·npm).
+- 오프라인에서 확인하지 못한 것(패키지 실재 여부·발행일 등)은 '판정 불가'로 명시합니다 — '안전'으로 바꿔 말하지 않습니다.
 
 ---
 

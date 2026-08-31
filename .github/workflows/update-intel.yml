@@ -23,7 +23,8 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # npm 데이터셋(~220MB)을 함께 받으므로 여유를 둔다(실측: PyPI 34MB + npm 222MB).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +44,11 @@ jobs:
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           GVSKB_CACHE_DIR: ${{ github.workspace }}/.gvskb-cache
+          # npm 생태계 포함 — 사용자 PC 의 수동 update-intel 은 대역폭 보호로
+          # opt-in 이지만, **배포 번들은 npm 을 담아야 한다**. 이 한 줄이 없으면
+          # 망분리 기관은 npm 악성·취약점을 구조적으로 대조하지 못한다
+          # (실측 지적 2026-08-31: 켜지 않은 채 1년 넘게 PyPI 만 담고 있었다).
+          GVSKB_OSV_INCLUDE_NPM: "1"
         run: |
           SRC="${{ inputs.sources || 'all' }}"
           if [ "$SRC" = "all" ]; then
@@ -96,7 +102,7 @@ jobs:
             "매일 03:00 KST 자동 갱신되는 위협 인텔 반입 번들입니다." \
             "" \
             "- 갱신 시각(UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "- 소스: OSV malicious · CISA KEV · NVD recent · FIRST EPSS" \
+            "- 소스: OSV malicious+vulns (PyPI·npm) · CISA KEV · NVD recent(누적) · FIRST EPSS(누적)" \
             "- 검증: zip 내부 manifest.json(파일별 sha256) + 게시 sha256 사이드카" \
             "" \
             "망분리 반입: 외부망 PC에서 다운로드 → sha256 확인 → USB 이동 →" \

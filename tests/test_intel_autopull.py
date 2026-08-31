@@ -26,13 +26,24 @@ from gvskb.intel.cache import IntelCache
 
 
 def _seed_cache(cache_dir: Path, *, days_old: int = 0) -> None:
-    """osv-malicious + cisa-kev 캐시를 만든다(신선도 조작 가능)."""
+    """필수 소스(ESSENTIAL_SOURCES) 캐시를 전부 만든다(신선도 조작 가능).
+
+    목록을 하드코딩하지 않는다 — 필수 소스가 늘 때(osv-vulns, 2026-08-31)마다
+    이 헬퍼가 '필수 캐시 없음'에 걸려 테스트 3개가 엉뚱한 사유로 깨졌다.
+    """
     cache = IntelCache(cache_dir)
-    cache.save("osv-malicious", "https://example/osv", [{"id": "MAL-1"}], ecosystems=["PyPI"])
-    cache.save("cisa-kev", "https://example/kev", [{"cveID": "CVE-2026-1"}])
+    seed_items = {
+        "osv-malicious": [{"id": "MAL-1"}],
+        "osv-vulns": [{"id": "GHSA-1", "affected": []}],
+        "cisa-kev": [{"cveID": "CVE-2026-1"}],
+    }
+    for sid in autopull.ESSENTIAL_SOURCES:
+        eco = ["PyPI"] if sid.startswith("osv-") else None
+        cache.save(sid, f"https://example/{sid}", seed_items.get(sid, [{"id": sid}]),
+                   ecosystems=eco)
     if days_old:
         stamp = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat(timespec="seconds")
-        for sid in ("osv-malicious", "cisa-kev"):
+        for sid in autopull.ESSENTIAL_SOURCES:
             p = cache.path_for(sid)
             data = json.loads(p.read_text(encoding="utf-8"))
             data["fetched_at"] = stamp
@@ -137,7 +148,7 @@ def test_pull_from_shared_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("GVSKB_INTEL_DIR", str(share))
     r = maybe_auto_update(cache_dir=target, verbose=False)
     assert r.ok is True
-    assert set(r.sources_updated or []) == {"osv-malicious", "cisa-kev"}
+    assert set(r.sources_updated or []) == set(autopull.ESSENTIAL_SOURCES)
     assert IntelCache(target).load("cisa-kev") is not None     # 실제로 반입됨
 
 
