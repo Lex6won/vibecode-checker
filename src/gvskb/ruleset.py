@@ -23,6 +23,16 @@
 patterns · exclude_patterns · validators · flags · dedup_group · confidence
 제외: 제목 · why_it_matters · safe_fix · references · 본문(문서)
 
+**룰 단위로도 같은 원칙이 적용된다** — 지문은 **집행되는 룰(approved·stale)만**
+덮는다. `proposed` 는 기본 미집행(초안), `deprecated` 는 절대 미집행이므로
+이들을 넣으면 "판정이 하나도 안 바뀌었는데 버전이 움직이는" 반대 방향의
+오류가 생긴다. 실측(2026-08-12~31): KEV 자동 초안 PR 이 지문을 움직여
+`--fail-on error` 에 막히는 바람에 **지식 카드 유입이 19일간 정지**했다 —
+자동 병합이 전제인 경로는 사람이 버전을 올릴 수 없다. 초안이 승격되어
+`approved` 가 되는 순간 지문에 들어오고, 그때 사람이 버전을 올린다.
+예외인 실험 모드(`GVSKB_ALLOW_PROPOSED=1`, 초안도 집행)는 보고서가
+"이 판정은 승인 룰만으로 재현되지 않는다"를 스스로 밝힌다.
+
 ## 무엇을 보장하지 않는가
 
 지문은 **룰**만 덮는다. 엔진 코드(`scanners/*.py`)가 바뀌어도 판정은 바뀐다.
@@ -82,12 +92,26 @@ def _rule_fingerprint_payload(rule) -> dict:
     return out
 
 
+#: 지문에서 제외되는 상태 — 기본 모드에서 집행되지 않아 판정을 바꿀 수 없다
+#: (regex_scanner 의 status 게이트와 1:1). 모르는 상태값은 보수적으로 포함한다.
+_NON_ENFORCING_STATUSES = frozenset({"proposed", "deprecated"})
+
+
+def _status_str(rule) -> str:
+    return str(getattr(rule.status, "value", rule.status) or "")
+
+
 def compute_digest(rules) -> str:
-    """룰 목록의 판정 지문(blake2b 16바이트 hex).
+    """**집행되는** 룰(approved·stale)의 판정 지문(blake2b 16바이트 hex).
 
     `Rule` 객체 목록을 받는다. 순서에 흔들리지 않도록 id 로 정렬한다.
+    proposed/deprecated 는 판정에 쓰이지 않으므로 지문 밖이다 — 초안 추가로
+    버전이 움직이면 자동 초안 PR(intel·guide)이 영구히 드리프트에 막힌다.
     """
-    payload = [_rule_fingerprint_payload(r) for r in rules]
+    payload = [
+        _rule_fingerprint_payload(r) for r in rules
+        if _status_str(r) not in _NON_ENFORCING_STATUSES
+    ]
     payload.sort(key=lambda d: d["id"])
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.blake2b(blob.encode("utf-8"), digest_size=16).hexdigest()

@@ -1199,6 +1199,8 @@ def _criteria_cell(report: ScanReport) -> str:
     cell = f"엔진 {engine} · {ruleset}"
     if report.ruleset_drift:
         cell += f" ⚠ {report.ruleset_drift}"
+    if report.ruleset_note:
+        cell += f" ⚠ {report.ruleset_note}"
     return cell
 
 
@@ -2962,6 +2964,8 @@ def _ruleset_banners(report: "ScanReport") -> list[str]:
             f"⚠ **룰셋 버전이 실제 룰과 다릅니다** — {report.ruleset_drift} "
             "**이 판정은 선언한 버전으로 재현되지 않습니다.**"
         )
+    if report.ruleset_note:
+        out.append(f"⚠ {report.ruleset_note}")
     if mismatch := _ruleset.pin_mismatch(report.ruleset_version, report.ruleset_digest):
         out.append(mismatch)
     return out
