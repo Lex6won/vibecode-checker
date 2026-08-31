@@ -5,6 +5,39 @@
 
 ## [Unreleased]
 
+### 20차 — 룰셋 지문을 '집행되는 룰'로 정합화 (KEV 초안 19일 정체 해소) — 2026-09-01
+
+실측: `status: proposed` 초안이 룰셋 지문에 포함돼, CISA KEV 자동 초안 PR(#17)이
+2026-08-12부터 **19일간 `ruleset-digest-drift` ERROR 로 정체**했다(마지막 병합
+08-07, 잠금 도입 08-08). 자동 병합이 전제인 경로는 사람이 버전을 올릴 수 없어
+두 안전장치가 서로를 막는 설계 모순이었다 — 실패는 status-gate 에서 경고로
+강등돼 19일간 아무도 못 봤다.
+
+- `compute_digest()` 가 **집행되는 룰(approved·stale)만** 집계 — proposed/
+  deprecated 는 기본 모드에서 판정을 바꿀 수 없으므로 지문 밖(스캐너 status
+  게이트와 1:1). 판정 변화 0. 승격(approved 전환) 순간에만 지문이 움직여
+  사람의 `ruleset --bump` 가 요구된다 — 잠금의 원래 의도("판정을 바꾸는
+  필드만") 그대로.
+- 지문 정의가 바뀌었으므로 1회 bump: `2026.08.30f` → `2026.09.01a`.
+- 유일한 엣지(실험 모드 `GVSKB_ALLOW_PROPOSED`: 초안 집행되나 지문 밖) 봉쇄 —
+  `ScanReport.ruleset_note`(추가 필드) 신설, 보고서 신원 칸·결론 경고에
+  "이 판정은 승인 룰만으로 재현되지 않습니다"를 표시.
+- guide-to-rules 스킬·CONTRIBUTING·guide-proposed README 의 bump 안내를
+  "초안 추가 시"에서 "승격 시"로 정정.
+
+회귀 테스트 5건: 초안 추가→지문 불변 · 승격→변경 · deprecated 제외 ·
+stale 포함(집행되므로) · 실험 모드 보고서 공개.
+
+### 프로세스 — 새 보안 가이드 → 룰 반영 절차 표준화 — 2026-08-31
+
+새 국가·기관 보안 가이드가 발간되면 MD 변환본을 넣어 룰로 반영하는 반복
+가능한 절차를 만들었다: `.claude/skills/guide-to-rules` 스킬(에이전트용) +
+`CONTRIBUTING.md` 절차 문서(사람용) + `rules/guide-proposed/` 초안 디렉터리.
+핵심 안전장치는 기존 `status: proposed` 게이트 재사용 — 초안은 사람이
+`approved` 로 승격하기 전까지 검사에 영향을 주지 않는다(intel-proposed 의
+KEV 초안과 같은 구조, 단 자동 폐기 없음). 격차 분석 → 초안(examples 필수) →
+validate/evaluate/적대적 검증 → `ruleset --bump` → 사람 승격.
+
 ### 19차 — 오프라인 CVE 대조(osv-vulns) · npm 번들 포함 · NVD/EPSS 누적 — 2026-08-31
 
 오프라인(망분리) 패키지 검사의 구조적 공백 3건을 닫는다. 배경: 오프라인 캐시에는

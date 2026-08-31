@@ -467,6 +467,14 @@ class ScanReport(BaseModel):
             "룰이 바뀌었는데 버전이 그대로일 때의 설명. None이면 선언과 실제가 일치."
         ),
     )
+    ruleset_note: str | None = Field(
+        default=None,
+        description=(
+            "룰셋 신원에 대한 보조 경고(드리프트는 아님). 현재 용도: 실험 모드"
+            "(GVSKB_ALLOW_PROPOSED)로 초안 룰이 집행 중일 때 — 초안은 룰셋 버전에"
+            " 고정되지 않으므로 이 판정은 승인 룰만으로 재현되지 않는다."
+        ),
+    )
     intel_freshness: dict | None = Field(
         default=None,
         description="의존성·인텔 캐시 기준일(예: {'advisory_db': '2026-06-01'}). None이면 미표시.",
