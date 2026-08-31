@@ -72,10 +72,9 @@ PYTHONPATH=src python -m gvskb.cli evaluate          # 예시 기반 정밀도 �
 python -m pytest -q                                   # 회귀 0 확인
 ```
 
-- 새 룰 파일을 추가하면 룰셋 지문이 바뀌어 `validate-rules` 가
-  `ruleset-digest-drift` ERROR 를 낸다. **의도된 변경이므로 버전을 올린다**:
-  `PYTHONPATH=src python -m gvskb.cli ruleset --bump <YYYY.MM.DD 형식+접미사>`
-  (기존 lock 의 버전 표기 관례를 따른다. 예: `2026.08.30f` → `2026.09.01a`).
+- `status: proposed` 초안은 집행되지 않으므로 **룰셋 지문을 움직이지 않는다**
+  — `validate-rules` 에 드리프트가 뜨면 안 된다(뜨면 status 오타를 의심하라).
+  `ruleset --bump` 는 이 단계가 아니라 **승격(6단계)에서** 한다.
 - 적대적 검증: positive 를 살짝 비튼 변형(공백·대소문자·따옴표)이 잡히는지,
   negative 의 흔한 변형이 잡히지 않는지 `scan_code` 로 추가 확인.
 
@@ -93,5 +92,7 @@ python -m pytest -q                                   # 회귀 0 확인
 ## 6. 승격 (사람이 결정한 뒤에만)
 
 검토자가 승인하면: `status: proposed → approved` 로 바꾸고 파일을 주제에 맞는
-카테고리 디렉터리(예: `rules/scanner-builtin/`)로 옮긴 뒤, `ruleset --bump` ·
-검증 3종을 다시 돌린다. guide-proposed 에는 초안만 남는다.
+카테고리 디렉터리(예: `rules/scanner-builtin/`)로 옮긴다. **이 순간 룰이 지문에
+들어와 드리프트 ERROR 가 나는 것이 정상이다** — `ruleset --bump <새 버전>`
+(관례: `2026.08.30f` → `2026.09.01a`)으로 버전을 올리고 검증 3종을 다시
+돌린다. guide-proposed 에는 초안만 남는다.
