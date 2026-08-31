@@ -1268,7 +1268,7 @@ def build_parser() -> argparse.ArgumentParser:
         "update-intel",
         help="외부 보안 피드(CISA KEV, OSV 등)를 로컬 캐시에 갱신",
     )
-    upd.add_argument("--source", help="갱신할 단일 source id (예: cisa-kev, osv-malicious)")
+    upd.add_argument("--source", help="갱신할 단일 source id (예: cisa-kev, osv-malicious, osv-vulns)")
     upd.add_argument("--all", action="store_true", help="등록된 모든 출처 갱신")
     upd.add_argument("--from-cache", action="store_true",
                      help="네트워크 호출 없이 캐시 상태만 보고 (망분리 환경)")

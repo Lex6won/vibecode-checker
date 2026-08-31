@@ -1066,7 +1066,7 @@ def runtime_status_for_mcp() -> dict:
         from .intel.cache import IntelCache
         cache = IntelCache()
         intel: dict = {}
-        for sid in ("osv-malicious", "cisa-kev"):
+        for sid in ("osv-malicious", "osv-vulns", "cisa-kev"):
             entry = cache.load(sid)
             if entry is None:
                 intel[sid] = {"present": False}

@@ -5,6 +5,37 @@
 
 ## [Unreleased]
 
+### 19차 — 오프라인 CVE 대조(osv-vulns) · npm 번들 포함 · NVD/EPSS 누적 — 2026-08-31
+
+오프라인(망분리) 패키지 검사의 구조적 공백 3건을 닫는다. 배경: 오프라인 캐시에는
+악성 피드(MAL-)와 KEV 만 있어 **CVE 를 구조적으로 볼 수 없었고**(취약점 수십 건짜리
+버전이 '판정 불가'로만 남음), 일일 워크플로가 npm 생태계를 켜지 않아 번들에 PyPI 만
+담겼으며, NVD·EPSS 는 "최근 N일" 창으로 매일 **덮어써** 창 밖 데이터가 사라졌다.
+
+- **`osv-vulns` 캐시 신설** — OSV 전체 취약점(비-MAL)을 **영향 버전 범위**
+  (`affected[].ranges`·`versions`)까지 보존해 수집. 오프라인 검사가 introduced/
+  fixed/last_affected 구간과 버전 열거를 대조해 `vulnerable`(권고 버전 포함) /
+  `checked_clean` / `unknown`(버전 해석 불가 — 모름은 통과가 아님)을 낸다. 온라인
+  경로와 같은 해석기(`_advisory_rows` 등)를 재사용해 두 모드의 보고가 같은 모양.
+  KEV CVE-alias 교차 대조·EPSS/NVD 병기도 오프라인 취약 판정에 연결.
+- **일일 워크플로 npm 포함** — `GVSKB_OSV_INCLUDE_NPM=1`. 실측: MAL npm 221,190건
+  (55MB)·취약점 7,232건(6.2MB) — 번들 반입 가능 크기. 워크플로 테스트로 고정.
+- **NVD·EPSS 누적 병합** — `SourceAdapter.merge` 훅 신설. CVE ID 기준 병합·최신
+  우선·상한(`GVSKB_NVD_CACHE_MAX` 기본 5만 / `GVSKB_EPSS_CACHE_MAX` 기본 30만).
+- **캐시 로드 메모이제이션** — (경로·mtime·size) 서명 기준. 수십 MB 캐시를
+  패키지마다 재파싱하지 않는다(락파일 900개 = 900회 파싱 방지). 1만 항목 초과
+  캐시는 indent 없이 저장(파일 크기 ~1.5배 절감).
+
+**실데이터 검증(진짜 OSV zip)**: pillow 9.0.0→43건/CRITICAL/권고 12.3.0,
+django 3.2.0→52건, lodash 4.17.20→5건/권고 4.18.0, minimist 1.2.5→CRITICAL.
+**온라인 OSV API 와 교차검증 전 건 일치**(requests 2.32.5 의 2건, lodash 4.17.21
+의 3건은 실제 미수정 advisory — 오탐 아님). pyyaml 5.4·lodash 최신 clean 경로,
+npm 악성 샘플 malicious 판정 확인. 검사 속도: 캐시 적재 후 건당 ~0.05초.
+
+테스트 1909 → **1945**(신규 36: 버전 매칭 경계·커버리지 게이트·누적 병합·메모
+무효화·워크플로 env 고정). 기존 테스트 회귀 0(오프라인 '캐시 없음=판정 불가' 계약
+전부 유지).
+
 ### 문서 — README 수치·SBOM 설명 갱신 — 2026-08-30
 
 테스트·벤치마크·룰 개수 배지를 실측값으로 갱신(1589→1909·37/37→42/42·탐지 99→101). SBOM 절에 공급자 정보·의존성 관계 설명 추가.
