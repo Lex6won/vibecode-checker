@@ -53,15 +53,16 @@ _DESERIALIZATION_SINKS = {
 # Weak hash algorithms via hashlib.
 _WEAK_HASH_FUNCS = {"md5", "sha1", "md4"}
 _WEAK_HASH_NAMES = {"md5", "sha1", "md4"}
-_IGNORE_RE = re.compile(r"gvskb:\s*ignore(?:\s+([A-Za-z0-9_.:-]+))?", re.IGNORECASE)
-
-
 def _is_ignored(line: str, rule_id: str) -> bool:
-    match = _IGNORE_RE.search(line)
-    if not match:
-        return False
-    ignored_rule = match.group(1)
-    return ignored_rule is None or ignored_rule == rule_id
+    """인라인 무시 판정 — 공용 구현에 위임한다.
+
+    예전에는 여기서 줄 전체를 ``_IGNORE_RE.search`` 로 훑어, **문자열 리터럴 안의
+    문구로도** 검사가 꺼졌다(``label = "gvskb: ignore"``). 엔진마다 따로 구현하면
+    한쪽만 고쳐져 우회가 남으므로 판정을 한 곳으로 모은다.
+    """
+    from .regex_scanner import line_ignores_rule
+
+    return line_ignores_rule(line, rule_id, "python")
 
 
 def _attr_chain(node: ast.AST) -> str | None:

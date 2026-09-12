@@ -95,6 +95,67 @@ def test_python_ignore_text_inside_string_does_not_suppress() -> None:
     assert _rule_ids(code, "app.py")
 
 
+def test_url_in_string_cannot_disable_detection() -> None:
+    """회귀: URL 의 `//` 가 주석 시작으로 오인돼 검사가 꺼지던 우회.
+
+    실측(2026-09-12, 코드 검토에서 재현): 아래 한 줄이 `eval(user)` 탐지를
+    0건으로 만들었다. `'http://…'` 안의 `//` 를 주석 시작으로 보고, 뒤따르는
+    문구를 인라인 무시로 인정했기 때문이다. **검사 대상 코드가 자기 검사를
+    끌 수 있는** 상태였다.
+    """
+    bypass = "eval(user); const s = 'http://example/gvskb: ignore'\n"
+    plain = "eval(user);\n"
+
+    assert _rule_ids(plain, "app.js"), "전제: 무시가 없으면 잡힌다"
+    assert _rule_ids(bypass, "app.js") == _rule_ids(plain, "app.js"), (
+        "문자열 안의 URL 로 같은 줄 검사를 끌 수 있으면 게이트가 아니다"
+    )
+
+
+def test_url_in_double_quoted_string_cannot_disable_detection() -> None:
+    bypass = 'eval(user); const s = "https://x/gvskb: ignore";\n'
+    assert _rule_ids(bypass, "app.js"), "따옴표 종류가 달라도 막혀야 한다"
+
+
+def test_url_in_template_literal_cannot_disable_detection() -> None:
+    bypass = "eval(user); const s = `http://x/gvskb: ignore`;\n"
+    assert _rule_ids(bypass, "app.js"), "템플릿 리터럴도 문자열이다"
+
+
+def test_escaped_quote_does_not_end_the_string_early() -> None:
+    """이스케이프된 따옴표 때문에 문자열이 일찍 닫힌 것으로 오인되면 안 된다."""
+    bypass = "eval(user); const s = 'it\\'s http://x/gvskb: ignore';\n"
+    assert _rule_ids(bypass, "app.js")
+
+
+def test_real_comment_after_a_url_string_still_suppresses() -> None:
+    """반대 방향 회귀 — 좁히다가 정상 사용을 막으면 안 된다."""
+    code = "el.innerHTML = userInput; const u = 'http://x'; // gvskb: ignore\n"
+    assert _rule_ids(code, "app.js") == set(), (
+        "URL 문자열이 있어도 진짜 주석의 무시는 그대로 동작해야 한다"
+    )
+
+
+def test_js_taint_engine_also_rejects_the_string_bypass() -> None:
+    """엔진마다 따로 구현하면 한쪽만 고쳐져 우회가 남는다 — taint 엔진도 확인."""
+    from gvskb.scanners.js_taint import JsTaintScanner
+
+    code = (
+        "const q = \"SELECT * FROM t WHERE n = '\" + name + \"'\";\n"
+        "db.query(q); const u = 'http://x/gvskb: ignore';\n"
+    )
+    findings = JsTaintScanner().scan(code, filename="app.js", language="javascript")
+    assert findings, "문자열 안의 문구로 taint 탐지를 끌 수 있으면 안 된다"
+
+
+def test_ast_engine_also_rejects_the_string_bypass() -> None:
+    from gvskb.scanners.ast_scanner import PythonAstScanner
+
+    code = 'eval(user_input); label = "gvskb: ignore"\n'
+    findings = PythonAstScanner().scan(code, filename="app.py", language="python")
+    assert findings, "문자열 안의 문구로 AST 탐지를 끌 수 있으면 안 된다"
+
+
 # ---------------------------------------------------------------------------
 # 집계 — 면제가 보고서·포털에서 보이게 하려면 셀 수 있어야 한다
 # ---------------------------------------------------------------------------

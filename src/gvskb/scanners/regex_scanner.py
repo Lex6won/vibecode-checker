@@ -299,13 +299,58 @@ _COMMENT_MARKERS_BY_LANG: dict[str, tuple[str, ...]] = {
 #: 언어를 모를 때 — 흔한 표시를 모두 허용한다(무시를 놓치는 쪽보다 안전하다).
 _DEFAULT_COMMENT_MARKERS: tuple[str, ...] = ("#", "//", "/*", "<!--", "--")
 
+# 언어별 문자열 따옴표. 주석 표시가 **문자열 안에** 있으면 주석이 아니다.
+_QUOTE_CHARS_BY_LANG: dict[str, tuple[str, ...]] = {
+    "python": ("'", '"'),
+    "sql": ("'",),
+    "vbnet": ('"',),          # vbnet 은 ' 가 주석 표시라 따옴표에서 빼야 한다
+    "html": ('"', "'"), "xml": ('"', "'"),
+}
+_DEFAULT_QUOTE_CHARS: tuple[str, ...] = ("'", '"', "`")
+
 
 def _comment_start(line: str, eff_lang: str | None) -> int:
-    """이 줄에서 주석이 시작하는 위치. 없으면 -1."""
+    """이 줄에서 주석이 시작하는 위치. 없으면 -1.
+
+    **문자열 리터럴 안은 주석이 아니다.** 단순히 ``line.find("//")`` 로 찾으면
+    URL 하나로 검사를 끌 수 있었다(실측 2026-09-12, 코드 검토에서 재현)::
+
+        eval(user); const s = 'http://example/gvskb: ignore'
+
+    ``'http://…'`` 의 ``//`` 가 주석 시작으로 오인돼, 뒤따르는 문구가 인라인 무시로
+    인정되면서 그 줄의 regex 검사가 통째로 꺼졌다. 검사 대상 코드가 **자기 검사를
+    끌 수 있는** 상태였고, 이 도구가 검사하는 것이 대개 남이 쓴(또는 AI 가 만든)
+    코드라는 점에서 게이트로서 성립하지 않는다.
+
+    그래서 따옴표와 이스케이프를 추적하며 왼쪽부터 훑는다.
+
+    알려진 한계: 정규식 리터럴(``/\\/\\//``)은 추적하지 않는다. 그 안의 ``//`` 를
+    주석 시작으로 볼 수 있다. 문자열 경로와 달리 공격자가 코드 위치에 정규식을
+    두어야 해서 실익이 없고, 완전한 JS 렉서를 들이는 비용이 더 크다고 보았다.
+    """
     markers = _COMMENT_MARKERS_BY_LANG.get(eff_lang or "", _DEFAULT_COMMENT_MARKERS)
-    positions = [line.find(m) for m in markers]
-    hits = [p for p in positions if p >= 0]
-    return min(hits) if hits else -1
+    quotes = _QUOTE_CHARS_BY_LANG.get(eff_lang or "", _DEFAULT_QUOTE_CHARS)
+    quote = ""
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
+        if quote:
+            if ch == "\\":
+                i += 2          # 이스케이프 — 다음 글자는 따옴표라도 문자열을 닫지 않는다
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in quotes:
+            quote = ch
+            i += 1
+            continue
+        for marker in markers:
+            if line.startswith(marker, i):
+                return i
+        i += 1
+    return -1
 
 
 def _inline_ignore_match(line: str, eff_lang: str | None):
@@ -328,6 +373,20 @@ def _ignored_rule_ids(line: str, eff_lang: str | None = None) -> set[str] | None
     if not rule_id:
         return None
     return {rule_id}
+
+
+def line_ignores_rule(line: str, rule_id: str, eff_lang: str | None = None) -> bool:
+    """이 줄의 인라인 무시 주석이 ``rule_id`` 를 끄는가 — **모든 엔진의 공용 판정**.
+
+    엔진마다 따로 구현하면 한쪽만 고쳐져 우회가 남는다. 실제로 그랬다:
+    ``js_taint`` 와 ``ast_scanner`` 는 각자 ``_IGNORE_RE.search(line)`` 를 썼고
+    주석 여부를 전혀 보지 않아, 문자열 안의 문구로도 억제됐다. 판정은 여기 한
+    곳에서만 한다.
+    """
+    ignored = _ignored_rule_ids(line, eff_lang)
+    if ignored is None:
+        return True
+    return rule_id in ignored
 
 
 def count_inline_ignores(code: str, eff_lang: str | None = None) -> int:
