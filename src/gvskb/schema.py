@@ -417,7 +417,86 @@ class AuditEvent(BaseModel):
     )
 
 
+#: 이 JSON 을 읽는 자동화(포털·하네스·레지스트리)와의 계약 버전.
+#:
+#: 왜 필요한가: 소비자들이 **없는 필드를 읽고 조용히 틀린 값을 쓰는** 사고가 두 번
+#: 반복됐다(2026-08-30 의존성 집계 0건, 2026-09-12 배포 판정 역전). 버전이 없으면
+#: 소비자는 자기가 무엇을 읽고 있는지 확인할 방법이 없다. 필드를 **없애거나 뜻을
+#: 바꿀 때** 올린다(필드 추가는 역호환이므로 올리지 않는다).
+SCAN_REPORT_SCHEMA_VERSION = 1
+
+
+class ScanCoverage(BaseModel):
+    """검사 범위가 온전했는가 — 기계가 읽는 형태.
+
+    예전에는 이 사실이 ``skipped_files[].reason`` **한국어 문장 안에만** 있었고,
+    포털·하네스가 그 문장을 정규식으로 뒤져 판단했다(`max_files=` 글자 매칭).
+    문구를 한 번 다듬으면 두 소비자가 동시에 "전부 검사 완료"로 착각하는 구조라,
+    사실을 값으로 옮긴다. 문장은 사람용으로 그대로 남는다.
+    """
+
+    truncated: bool = Field(
+        default=False,
+        description="파일 수 상한(max_files)에 걸려 검사되지 않은 파일이 있는가",
+    )
+    over_limit_count: int = Field(
+        default=0, description="상한 초과로 검사되지 않은 '검사 대상' 파일 수"
+    )
+    max_files: int = Field(default=0, description="이번 검사에 적용된 파일 수 상한")
+    scanned_count: int = Field(default=0, description="실제로 검사한 파일 수")
+    skipped_count: int = Field(default=0, description="검사에서 제외된 파일 수(사유 포함)")
+
+
+class EngineUnavailable(BaseModel):
+    """돌지 못한 엔진과 그 사유."""
+
+    name: str
+    reason: str = ""
+
+
+class ScanEngines(BaseModel):
+    """이번 검사에서 **실제로 돌아간** 엔진.
+
+    semgrep 은 네이티브 Windows 를 지원하지 않아 기관 PC 에서 조용히 빠진다.
+    regex·taint 검사는 남지만 JS/TS 정밀 분석 한 겹이 사라지는데, 결과에는 그
+    사실이 없었다. 그래서 개발자 PC 와 기관 PC 의 보고서가 **똑같이 '이상 없음'**
+    으로 보였다 — "검사했는데 깨끗함"과 "그 검사는 안 돌았음"이 구분되지 않는 것은
+    이 도구가 가장 경계하는 조용한 초록불이다.
+    """
+
+    used: list[str] = Field(default_factory=list, description="정상 수행된 엔진 이름")
+    unavailable: list[EngineUnavailable] = Field(
+        default_factory=list, description="설치·플랫폼 문제로 수행되지 않은 엔진"
+    )
+    failed: list[EngineUnavailable] = Field(
+        default_factory=list, description="수행 중 오류로 중단된 엔진"
+    )
+
+
+class SourceSnapshot(BaseModel):
+    """무엇을 검사했는가 — 대상 소스의 신원.
+
+    보고서에는 "어떤 기준(엔진·룰셋)으로 판정했나"는 있었지만 **"어느 시점 소스를
+    보았나"** 가 없었다. 결재 붙임으로 제출되는 문서인데 대상이 특정되지 않아,
+    검사 뒤 코드를 고쳐 배포해도 보고서만으로는 구분할 수 없었다.
+    """
+
+    commit: str | None = Field(default=None, description="검사 시점 git 커밋 해시(없으면 None)")
+    branch: str | None = Field(default=None, description="검사 시점 브랜치 이름")
+    dirty: bool | None = Field(
+        default=None,
+        description="커밋되지 않은 변경이 있었는가. True 면 커밋 해시만으로 재현되지 않는다",
+    )
+    lockfiles: dict[str, str] = Field(
+        default_factory=dict,
+        description="락파일 경로 → sha256. 패키지 판정을 재현할 수 있게 한다",
+    )
+
+
 class ScanReport(BaseModel):
+    #: 이 결과를 읽는 자동화와의 계약 버전. 소비자는 모르는 버전을 만나면
+    #: '통과'가 아니라 '판정 불가'로 다뤄야 한다.
+    schema_version: int = SCAN_REPORT_SCHEMA_VERSION
     target: str
     language: str | None = None
     scenario: str | None = None
@@ -534,6 +613,21 @@ class ScanReport(BaseModel):
             "승인된 예외(.gvskb-exceptions.yaml) 적용 요약 — "
             "{'applied': N, 'expired': [...], 'invalid': [...]}. None이면 예외 없음."
         ),
+    )
+    coverage: ScanCoverage = Field(
+        default_factory=ScanCoverage,
+        description=(
+            "검사 범위의 온전함(구조화). `skipped_files` 의 한국어 문장을 파싱하던 "
+            "소비자들이 이 값을 읽도록 신설 — 문구 변경이 게이트를 조용히 무력화하던 결함."
+        ),
+    )
+    engines: ScanEngines = Field(
+        default_factory=ScanEngines,
+        description="실제로 수행된 / 수행되지 못한 검사 엔진. 판정의 깊이를 읽는 사람이 알게 한다.",
+    )
+    source_snapshot: SourceSnapshot | None = Field(
+        default=None,
+        description="검사 대상 소스의 신원(git 커밋·락파일 해시). git 저장소가 아니면 None.",
     )
     disclaimer: str = (
         "이 결과는 자동 보안 보조 검토입니다. 공공기관 운영 반영 전에는 기관 보안 담당자의 "
