@@ -1004,6 +1004,45 @@ def _detect_lockfile(manifest_text: str) -> str | None:
     return None
 
 
+def _unsupported_env_grade_result(ecosystem: str, requested: str | None) -> dict:
+    """판정할 수 없는 실행환경 등급 — **검사하지 않고** 즉시 끝낸다.
+
+    예전에는 모르는 등급(E3 등)을 조용히 기본 등급(E1)으로 바꿔 검사한 뒤
+    "검토 필요" 표시만 붙였다. 그러면 결과 자체는 **개인 PC 기준으로 계산된 값**
+    인데 문서에는 대민 검사를 한 것처럼 남는다. 계산해 놓고 경고를 붙이는 것보다,
+    **답하지 않는 것**이 정직하고 방어도 강하다.
+
+    E3(대민·개인정보·인증)는 체커가 의도적으로 받지 않는 등급이다 — 이 등급의
+    판단은 사람·기관 절차의 몫이며 정적 점검 도구가 대신할 수 없다.
+    """
+    grade = str(requested or "").upper() or "(미상)"
+    return {
+        "ecosystem": ecosystem,
+        "parsed_count": 0,
+        "checked_count": 0,
+        "unchecked_count": 0,
+        "blocked": False,
+        "requires_review": True,
+        "verdict": "unsupported_env_grade",
+        "requested_env_grade": grade,
+        "env_grade": None,          # 적용된 등급 없음 — 검사 자체를 하지 않았다
+        "env_grade_supported": False,
+        "packages": [],
+        "checks": [],
+        "note": (
+            f"실행환경 등급 {grade} 는 이 도구의 판정 대상이 아닙니다"
+            "(지원: E0·E1·E2). E3(대민·개인정보·인증·핵심 행정정보)는 "
+            "기관 보안 절차에서 사람이 판단합니다."
+        ),
+        "disclaimer": (
+            "검사를 수행하지 않았습니다 — '안전'도 '위험'도 아닙니다. "
+            "낮은 등급으로 바꿔 검사하면 그 결과는 이 업무의 기준이 아닙니다."
+        ),
+        "engine_version": _engine_version(),
+        "checked_at": _now_iso(),
+    }
+
+
 def _unparsed_result(ecosystem: str, note: str) -> dict:
     """파싱 0건은 '안전(ok)'이 아니라 '검사되지 않음'이다 — 거짓 통과 방지."""
     return {
@@ -1300,6 +1339,12 @@ async def audit_manifest(
     from ..scanner import parse_manifest_packages  # 지연 import — 경량 경로 유지
     from .lockfiles import parse_lockfile
 
+    # 판정할 수 없는 등급이면 **파싱도 하지 않고** 끝낸다. CLI(`--env` choices)와
+    # MCP(Literal)는 E3 를 막지만, 이 함수를 **직접 import 해서 호출하는 경로**
+    # (포털 패키지 게이트)는 그 두 문지기를 지나치지 않는다. 마지막 문은 여기다.
+    if not env_grade_supported(env_grade):
+        return _unsupported_env_grade_result(ecosystem, env_grade)
+
     source_kind = "manifest"
     lock = parse_lockfile(manifest_text, filename)
     dependency_graph: list[dict] = []
@@ -1474,11 +1519,8 @@ async def audit_manifest(
     requires_review = (
         blocked or unchecked > 0 or has_vulns or truncated > 0
         or any(c.get("requires_review") for c in checks)
-        # 판정할 수 없는 실행환경 등급으로 요청받았다면(예: E3 대민·개인정보),
-        # 이 결과는 자동 승인의 근거가 될 수 없다. 조용히 기본 등급으로 바꿔
-        # 통과시키는 대신 **사람 검토로 올린다**.
-        or not env_grade_supported(env_grade)
     )
+    # (판정 불가 등급은 함수 진입부에서 이미 끝났다 — 여기까지 오지 않는다.)
     verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
     return {
         "source_kind": source_kind,          # manifest | lockfile
@@ -1557,6 +1599,25 @@ async def check_package_impl(
             checked=False,
             verdict="error",
             error=f"unsupported ecosystem: {ecosystem} (allowed: pypi, npm)",
+            engine_version=_engine_version(),
+            checked_at=_now_iso(),
+        ).model_dump(mode="json")
+
+    # 판정할 수 없는 실행환경 등급은 **검사 전에** 끝낸다. 기본 등급으로 계산한
+    # 뒤 "검토 필요"를 붙이면, 그 수치가 이 업무의 기준인 것처럼 읽힌다.
+    if not env_grade_supported(env_grade):
+        return PackageCheckResult(
+            name=name,
+            version=version,
+            ecosystem=ecosystem,
+            checked=False,
+            verdict="unsupported_env_grade",
+            requires_review=True,
+            note=(
+                f"실행환경 등급 {normalize_env_grade(env_grade)} 는 판정 대상이 아닙니다"
+                "(지원: E0·E1·E2). E3(대민·개인정보·인증)는 기관 보안 절차에서 "
+                "사람이 판단합니다 — 낮은 등급으로 바꿔 얻은 결과는 이 업무의 기준이 아닙니다."
+            ),
             engine_version=_engine_version(),
             checked_at=_now_iso(),
         ).model_dump(mode="json")
@@ -1731,9 +1792,6 @@ async def check_package_impl(
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)
-        # 판정할 수 없는 실행환경 등급(E3 등)으로 요청받은 결과는 자동 승인의
-        # 근거가 될 수 없다 — 쿨다운이 기본 등급으로 적용됐기 때문이다.
-        or not env_grade_supported(env_grade)
     )
 
     advisory_rows = _advisory_rows(vulns, name=name, eco=eco)

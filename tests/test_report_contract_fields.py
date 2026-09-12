@@ -147,6 +147,55 @@ def test_supported_grades_stay_supported() -> None:
     assert env_grade_supported(None) is True, "미지정은 기본 등급 사용 — 지원 대상이다"
 
 
+def test_audit_manifest_refuses_unsupported_grade_without_checking() -> None:
+    """E3 는 낮은 등급으로 바꿔 계산하지 않고 **검사 자체를 하지 않는다**.
+
+    기본 등급으로 계산한 뒤 "검토 필요"만 붙이면, 그 수치가 이 업무의 기준인 것
+    처럼 읽힌다. 답하지 않는 것이 정직하다.
+    """
+    import asyncio
+
+    from gvskb.tools.check_package import audit_manifest
+
+    result = asyncio.run(audit_manifest("flask==2.0.0\n", ecosystem="pypi", env_grade="E3"))
+
+    assert result["verdict"] == "unsupported_env_grade"
+    assert result["requires_review"] is True
+    assert result["env_grade"] is None, "적용된 등급이 없어야 한다 — 검사하지 않았으므로"
+    assert result["requested_env_grade"] == "E3"
+    assert result["checks"] == [], "패키지를 하나도 검사하지 않아야 한다"
+    assert result["checked_count"] == 0
+
+
+def test_check_package_refuses_unsupported_grade_without_network() -> None:
+    """단일 패키지 경로도 같다 — 네트워크를 쓰지 않고 즉시 끝난다."""
+    import asyncio
+
+    from gvskb.tools.check_package import check_package_impl
+
+    result = asyncio.run(check_package_impl("flask", ecosystem="pypi", env_grade="E3"))
+
+    assert result["verdict"] == "unsupported_env_grade"
+    assert result["checked"] is False
+    assert result["requires_review"] is True
+
+
+def test_supported_grade_still_runs_the_audit(monkeypatch) -> None:
+    """좁히다가 정상 경로를 막으면 안 된다(반대 방향 회귀).
+
+    오프라인 모드로 고정한다 — 네트워크 의존 테스트는 CI 에서 흔들린다.
+    """
+    import asyncio
+
+    monkeypatch.setenv("GVSKB_MODE", "offline")
+    from gvskb.tools.check_package import audit_manifest
+
+    result = asyncio.run(audit_manifest("flask==2.0.0\n", ecosystem="pypi", env_grade="E2"))
+    assert result["verdict"] != "unsupported_env_grade"
+    assert result["env_grade"] == "E2", "적용된 등급이 결과에 남아야 한다"
+    assert result["parsed_count"] == 1, "정상 등급에서는 패키지를 실제로 파싱해야 한다"
+
+
 # ---------------------------------------------------------------------------
 # 인라인 무시 집계 — 면제가 보고서에 드러나야 한다
 # ---------------------------------------------------------------------------

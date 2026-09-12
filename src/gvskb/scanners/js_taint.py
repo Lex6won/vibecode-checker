@@ -24,7 +24,7 @@ import re
 
 from ..schema import Finding
 from .base import ScannerAdapter
-from .regex_scanner import _IGNORE_RE, build_finding, lookup_rule, redact_evidence
+from .regex_scanner import build_finding, line_ignores_rule, lookup_rule, redact_evidence
 
 _JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte")
 _JS_LANGS = {"javascript", "typescript", "js", "ts"}
@@ -98,10 +98,10 @@ class JsTaintScanner(ScannerAdapter):
                 m = pattern.search(line)
                 if not m or m.group(1) not in tainted:
                     continue
-                if _IGNORE_RE.search(line):
-                    ignore = _IGNORE_RE.search(line)
-                    if ignore and (ignore.group(1) is None or ignore.group(1) == rule_id):
-                        continue
+                # 인라인 무시는 **주석 안에 있을 때만** 인정한다. 예전에는 줄
+                # 어디에 있든 인정해서, URL 문자열 하나로 검사를 끌 수 있었다.
+                if line_ignores_rule(line, rule_id, "javascript"):
+                    continue
                 rule = lookup_rule(rule_id)
                 if rule is None:
                     continue
