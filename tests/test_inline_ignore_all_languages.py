@@ -1,6 +1,6 @@
 """인라인 무시(`gvskb: ignore`)는 **모든 언어**에서 동작해야 한다.
 
-실측 결함(2026-09-12): `RegexScanner.scan_code` 의 인라인 무시 검사가
+실측 결함(2026-09-12): `RegexScanner.scan` 의 인라인 무시 검사가
 ``if is_python and ...`` 안에 갇혀 있어 **파이썬에서만** 동작했다. 그런데 룰
 카드는 자바스크립트 사용자에게도 같은 주석을 안내한다 —
 
@@ -22,7 +22,7 @@ from gvskb.scanners.regex_scanner import RegexScanner, count_inline_ignores
 
 
 def _rule_ids(code: str, filename: str) -> set[str]:
-    return {f.rule_id for f in RegexScanner().scan_code(code, filename=filename)}
+    return {f.rule_id for f in RegexScanner().scan(code, filename=filename)}
 
 
 # ---------------------------------------------------------------------------

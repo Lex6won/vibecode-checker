@@ -741,6 +741,10 @@ class PackageCheckResult(BaseModel):
         "checked_stale", "checked_clean", "unknown", "error",
         # 기관 레지스트리 판정 — 이 도구의 관측이 아니라 기관의 결정이다.
         "registry_approved", "registry_rejected",
+        # 판정 대상이 아닌 실행환경 등급(E3 대민·개인정보 등)으로 요청받았다.
+        # `unknown`(검사했는데 모름)과 다르다 — **검사 자체를 하지 않았다.**
+        # 낮은 등급으로 바꿔 계산한 값을 이 업무의 기준인 것처럼 내놓지 않는다.
+        "unsupported_env_grade",
     ] = "unknown"
     verdict_severity: Literal["info", "low", "medium", "high", "critical"] = "info"
     requires_review: bool = True
