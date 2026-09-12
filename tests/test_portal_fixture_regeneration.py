@@ -77,6 +77,23 @@ def test_contract_fields_the_portal_reads_are_present(payload) -> None:
     assert payload["engine_version"], "버전이 없으면 포털이 낡은 fixture 를 탐지할 수 없다"
 
 
+def test_generator_metadata_names_the_checker_commit(script, payload) -> None:
+    """버전만으로는 같은 0.3.0 안의 변경을 구분할 수 없다 — 커밋 해시가 함께 남아야 한다."""
+    metadata = script.generator_metadata(payload)
+    assert metadata["kind"] == "portal_fixture_generator"
+    # 이 테스트는 저장소 안에서 돌므로 커밋 해시가 있어야 한다.
+    assert isinstance(metadata["checker_commit"], str) and len(metadata["checker_commit"]) == 40
+    assert metadata["engine_version"] == payload["engine_version"]
+    assert metadata["schema_version"] == payload["schema_version"]
+    assert len(metadata["generator_sha256"]) == 64
+    assert metadata["checker_worktree_dirty"] in (True, False)
+
+
+def test_metadata_sits_next_to_the_fixture(script, tmp_path) -> None:
+    out = tmp_path / "gate-blocked-by-kev.json"
+    assert script.metadata_path_for(out) == tmp_path / "gate-blocked-by-kev.meta.json"
+
+
 def test_regeneration_refuses_to_write_a_meaningless_fixture(script, payload) -> None:
     """전제가 깨진 결과는 쓰지 않는다 — 깨진 fixture 는 없는 것보다 나쁘다.
 

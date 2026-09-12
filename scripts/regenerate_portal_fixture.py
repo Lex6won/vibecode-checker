@@ -42,8 +42,10 @@ KEV 데이터가 아니라 **KEV 근거가 있을 때 게이트가 무엇을 내
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -151,10 +153,56 @@ def verify(payload: dict) -> list[str]:
     return problems
 
 
+def _git_output(*arguments: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(REPOSITORY_ROOT), *arguments],
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def generator_metadata(payload: dict) -> dict:
+    """이 fixture 가 **어느 체커 커밋**에서 나왔는지를 기록한다.
+
+    산출물에는 체커 버전(engine_version)만 있다. 같은 0.3.0 안에서 게이트
+    계산이나 차단 사유 형식이 바뀌면 버전으로는 구분할 수 없고, 결재 증적으로
+    되짚을 때 "그 판정을 만든 코드가 정확히 무엇이었나"에 답할 수 없다.
+    그래서 버전 옆에 커밋 해시를 함께 남긴다.
+
+    pip 로 설치된 체커에는 git 이력이 없으므로 이 값은 **재생성 스크립트가 저장소
+    안에서 실행될 때만** 채워진다. 모르면 null — 지어내지 않는다.
+    """
+    commit = _git_output("rev-parse", "HEAD")
+    dirty = _git_output("status", "--porcelain", "--untracked-files=no")
+    return {
+        "kind": "portal_fixture_generator",
+        "checker_commit": commit,
+        # 커밋되지 않은 변경이 섞였으면 그 해시로는 재현할 수 없다. 사실을 적는다.
+        "checker_worktree_dirty": bool(dirty) if commit else None,
+        "engine_version": payload.get("engine_version"),
+        "schema_version": payload.get("schema_version"),
+        "ruleset_version": payload.get("ruleset_version"),
+        "ruleset_digest": payload.get("ruleset_digest"),
+        "generator_script": Path(__file__).name,
+        "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "generated_at": payload.get("generated_at"),
+    }
+
+
+def metadata_path_for(out: Path) -> Path:
+    """`gate-blocked-by-kev.json` → `gate-blocked-by-kev.meta.json`"""
+    return out.with_name(f"{out.stem}.meta.json")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, default=None,
-                        help="기록할 경로. 생략하면 표준출력으로 내보낸다.")
+                        help="기록할 경로. 생략하면 표준출력으로 내보낸다. 지정하면 옆에 .meta.json 도 남긴다.")
     args = parser.parse_args()
 
     payload = build_report()
@@ -171,7 +219,12 @@ def main() -> int:
     else:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(text, encoding="utf-8")
-        print(f"기록했습니다: {args.out} (체커 {payload['engine_version']}, 계약 v{payload['schema_version']})",
+        metadata = generator_metadata(payload)
+        metadata_path_for(args.out).write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        commit = (metadata["checker_commit"] or "커밋 미상")[:12]
+        print(f"기록했습니다: {args.out} (체커 {payload['engine_version']} @ {commit}, 계약 v{payload['schema_version']})",
               file=sys.stderr)
     return 0
 
