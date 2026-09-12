@@ -102,7 +102,9 @@ def test_source_snapshot_is_none_outside_a_git_repo(tmp_path) -> None:
 
 @pytest.mark.skipif(not _git_available(), reason="git 이 없는 환경")
 def test_source_snapshot_records_commit_and_dirty_state(tmp_path) -> None:
-    run = lambda *a: subprocess.run(["git", "-C", str(tmp_path), *a], capture_output=True, check=True)
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], capture_output=True, check=True)
+
     run("init")
     run("config", "user.email", "test@example.com")
     run("config", "user.name", "test")

@@ -24,7 +24,7 @@ import re
 
 from ..schema import Finding
 from .base import ScannerAdapter
-from .regex_scanner import build_finding, line_ignores_rule, lookup_rule, redact_evidence
+from .regex_scanner import InlineIgnores, build_finding, lookup_rule, redact_evidence
 
 _JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte")
 _JS_LANGS = {"javascript", "typescript", "js", "ts"}
@@ -88,6 +88,10 @@ class JsTaintScanner(ScannerAdapter):
 
         findings: list[Finding] = []
         tainted: set[str] = set()
+        # JS 는 같은 줄 무시를 인정하지 않는다(정규식 리터럴과 나눗셈을 문맥 없이
+        # 구분할 수 없어, 주석 위치 판정이 원리적으로 불안하다). 단독 주석 줄의
+        # 지시만 본다 — 판정이 모호하지 않은 형태다.
+        ignores = InlineIgnores(code, "javascript")
         for line_no, line in enumerate(code.splitlines(), start=1):
             stripped = line.strip()
             if stripped.startswith(("//", "/*", "*")):
@@ -98,9 +102,7 @@ class JsTaintScanner(ScannerAdapter):
                 m = pattern.search(line)
                 if not m or m.group(1) not in tainted:
                     continue
-                # 인라인 무시는 **주석 안에 있을 때만** 인정한다. 예전에는 줄
-                # 어디에 있든 인정해서, URL 문자열 하나로 검사를 끌 수 있었다.
-                if line_ignores_rule(line, rule_id, "javascript"):
+                if ignores.suppresses(line_no, rule_id):
                     continue
                 rule = lookup_rule(rule_id)
                 if rule is None:

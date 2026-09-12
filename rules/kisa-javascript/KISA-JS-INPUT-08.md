@@ -85,4 +85,9 @@ router.post("/patched", (req, res) => {
 ## False positive 주의
 - 정적 XML 문자열을 파싱하는 경우(사용자 입력 미포함)는 매칭되지 않습니다. `req.`/`request.`가 포함된 호출만 잡습니다.
 - `noent: false`로 명시적으로 비활성화한 호출은 매칭에서 제외됩니다.
-- 신뢰된 내부 XML 처리(예: 정적 설정 파일)는 `gvskb: ignore` 주석으로 예외 처리할 수 있습니다.
+- 신뢰된 내부 XML 처리(예: 정적 설정 파일)는 해당 줄 **바로 윗줄에 단독 주석**으로 억제할 수 있습니다. JS/TS 는 같은 줄 끝 형태를 인정하지 않습니다(정규식 리터럴 때문에 주석 위치를 안전하게 판정할 수 없어, 우회 경로가 생깁니다).
+
+  ```js
+  // gvskb: ignore KISA-JS-INPUT-08
+  parser.parseFromString(configXml, "text/xml");
+  ```
