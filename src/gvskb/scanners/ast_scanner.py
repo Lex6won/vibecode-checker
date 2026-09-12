@@ -146,7 +146,10 @@ class _Visitor(ast.NodeVisitor):
     """Collects ``(rule_id, line_no, evidence)`` triples while walking the tree."""
 
     def __init__(self, source_lines: list[str], aliases: dict[str, str] | None = None) -> None:
+        from .regex_scanner import InlineIgnores
+
         self.source_lines = source_lines
+        self._ignores = InlineIgnores("\n".join(source_lines), "python")
         self.aliases = aliases or {}
         self.hits: list[tuple[str, int, str]] = []
 
@@ -156,7 +159,10 @@ class _Visitor(ast.NodeVisitor):
         return ""
 
     def _record(self, rule_id: str, lineno: int) -> None:
-        if 1 <= lineno <= len(self.source_lines) and _is_ignored(self.source_lines[lineno - 1], rule_id):
+        # 같은 줄 형태와 **바로 윗줄 단독 주석** 형태를 모두 본다. 두 번째 형태는
+        # 룰 카드가 안내하는 사용법이면서(주석을 위에 다는 습관) 판정이 모호하지
+        # 않아, 다른 언어에서도 같은 규칙을 쓴다.
+        if self._ignores.suppresses(lineno, rule_id):
             return
         self.hits.append((rule_id, lineno, self._evidence(lineno)))
 

@@ -86,4 +86,9 @@ socket.emit('password', enc);
 - 평문 컬럼명 대신 `passwordHash`/`hash`/`encrypted_password`를 쓰는 SQL은 매칭되지 않습니다(`bcrypt|cipher|hash|aes` 키워드를 인근에서 제외 조건으로 검사).
 - `https://` 도메인 호출은 평문 전송 패턴에서 제외합니다.
 - socket.emit 채널명이 단순 메시지 (`'message'`, `'chat'`)인 경우는 매칭하지 않습니다.
-- 외부 라이브러리가 컬럼명을 `password`로 강제하는 경우(예: passport 내부) `gvskb: ignore` 주석으로 예외 처리하세요.
+- 외부 라이브러리가 컬럼명을 `password`로 강제하는 경우(예: passport 내부)는 해당 줄 **바로 윗줄에 단독 주석**으로 억제하세요. JS/TS 는 같은 줄 끝 형태를 인정하지 않습니다.
+
+  ```js
+  // gvskb: ignore KISA-JS-SEC-05
+  const { password } = req.body;
+  ```

@@ -309,6 +309,101 @@ _QUOTE_CHARS_BY_LANG: dict[str, tuple[str, ...]] = {
 _DEFAULT_QUOTE_CHARS: tuple[str, ...] = ("'", '"', "`")
 
 
+# 같은 줄 끝에 붙인 무시를 **인정해도 되는** 언어.
+#
+# 왜 언어를 가리는가: "이 위치가 주석 안인가"를 코드가 섞인 줄에서 판정하려면
+# 그 언어의 어휘 구조를 정확히 알아야 한다. `#` 계열은 문자열만 추적하면 끝나
+# 손으로 짠 스캐너로도 안전하다(정규식 리터럴도, 나눗셈/정규식 모호성도 없다).
+#
+# 반면 JS/TS 계열은 그렇지 않다. 실측(2026-09-13, 코덱스 재검토)::
+#
+#     eval(user); const r = /\//; const marker = "gvskb: ignore";
+#
+# 정규식 리터럴 `/\//` 안의 `/` 둘이 `//` 로 보여 주석 시작으로 오인됐고, 그 줄의
+# 탐지가 꺼졌다. 문자열 우회(`'http://…'`)를 막은 뒤에도 남은 구멍이다.
+#
+# **완전한 JS 렉서를 손으로 만드는 대신, 같은 줄 인정을 포기한다.** JS 는 정규식
+# 리터럴과 나눗셈을 문맥 없이는 구분할 수 없어(`a = b / c / d`), 파서 없이 이
+# 문제를 닫는 방법이 없다. 파서를 들이는 비용보다, **판정이 필요 없는 자리로
+# 옮기는 것**이 안전하다 — 아래 '단독 주석 줄' 방식.
+#
+# 호환성: JS 의 같은 줄 무시는 2026-09-12 이전에 **아예 동작하지 않았다**.
+# 잃는 사용자가 없다.
+_SAME_LINE_IGNORE_LANGS: frozenset[str] = frozenset({
+    "python", "ruby", "shell", "powershell", "data", "config",
+})
+
+
+def _is_standalone_comment_line(line: str, eff_lang: str | None) -> bool:
+    """줄 **전체가** 주석으로 시작하는가.
+
+    이쪽은 판정이 모호하지 않다 — 줄 맨 앞이 주석 표시면 그 줄은 주석이다.
+    코드 한가운데서 주석 시작을 찾아내야 하는 문제가 아예 없어진다.
+    """
+    stripped = line.lstrip()
+    if not stripped:
+        return False
+    markers = _COMMENT_MARKERS_BY_LANG.get(eff_lang or "", _DEFAULT_COMMENT_MARKERS)
+    return stripped.startswith(markers)
+
+
+class InlineIgnores:
+    """한 파일의 인라인 무시 지시를 미리 계산해 두고 줄 단위로 묻는다.
+
+    인정하는 형태는 둘뿐이다.
+
+    1. **단독 주석 줄** — 모든 언어. 그 줄의 지시는 **바로 다음 줄**에 적용된다
+       (``// eslint-disable-next-line`` 과 같은 관례)::
+
+           // gvskb: ignore KISA-JS-INPUT-04
+           el.innerHTML = userInput;
+
+    2. **같은 줄 끝** — ``#`` 주석 언어만(python·shell·yaml 등). 어휘 구조가
+       단순해 문자열 추적만으로 안전하게 판정된다::
+
+           eval(user_input)  # gvskb: ignore
+
+    JS/TS 계열의 같은 줄 형태는 **인정하지 않는다**(위 상수 주석 참조).
+    """
+
+    __slots__ = ("_by_line",)
+
+    def __init__(self, code: str, eff_lang: str | None = None) -> None:
+        same_line_ok = (eff_lang or "") in _SAME_LINE_IGNORE_LANGS
+        by_line: dict[int, set[str] | None] = {}
+
+        def _merge(line_no: int, ids: set[str] | None) -> None:
+            if line_no not in by_line:
+                by_line[line_no] = ids
+                return
+            existing = by_line[line_no]
+            # None 은 '전부 끄기'다 — 한쪽이라도 None 이면 전부 끈다.
+            by_line[line_no] = None if existing is None or ids is None else existing | ids
+
+        lines = code.splitlines()
+        for line_no, line in enumerate(lines, start=1):
+            match = _IGNORE_RE.search(line)
+            if match is None:
+                continue
+            ids = None if not match.group(1) else {match.group(1)}
+            if _is_standalone_comment_line(line, eff_lang):
+                _merge(line_no + 1, ids)      # 다음 줄에 적용
+            elif same_line_ok and _inline_ignore_match(line, eff_lang) is not None:
+                _merge(line_no, ids)
+        # 파일 끝에 붙은 지시는 가리킬 줄이 없다 — 집계에서 뺀다(없는 면제를 세지 않는다).
+        self._by_line = {n: ids for n, ids in by_line.items() if n <= len(lines)}
+
+    def suppresses(self, line_no: int, rule_id: str) -> bool:
+        if line_no not in self._by_line:
+            return False
+        ids = self._by_line[line_no]
+        return ids is None or rule_id in ids
+
+    def directive_count(self) -> int:
+        """무시 지시가 적용된 줄 수 — 보고서·포털이 면제 현황으로 표시한다."""
+        return len(self._by_line)
+
+
 def _comment_start(line: str, eff_lang: str | None) -> int:
     """이 줄에서 주석이 시작하는 위치. 없으면 -1.
 
@@ -376,13 +471,17 @@ def _ignored_rule_ids(line: str, eff_lang: str | None = None) -> set[str] | None
 
 
 def line_ignores_rule(line: str, rule_id: str, eff_lang: str | None = None) -> bool:
-    """이 줄의 인라인 무시 주석이 ``rule_id`` 를 끄는가 — **모든 엔진의 공용 판정**.
+    """**같은 줄** 무시만 보는 단순 판정 — 줄 하나만 있고 문맥이 없는 호출자용.
+
+    같은 줄 형태를 인정하는 언어(``#`` 주석 계열)에서만 참이 될 수 있다. 그 밖의
+    언어는 항상 False 이며, 단독 주석 줄 형태는 :class:`InlineIgnores` 가 본다.
 
     엔진마다 따로 구현하면 한쪽만 고쳐져 우회가 남는다. 실제로 그랬다:
     ``js_taint`` 와 ``ast_scanner`` 는 각자 ``_IGNORE_RE.search(line)`` 를 썼고
-    주석 여부를 전혀 보지 않아, 문자열 안의 문구로도 억제됐다. 판정은 여기 한
-    곳에서만 한다.
+    주석 여부를 전혀 보지 않아, 문자열 안의 문구로도 억제됐다.
     """
+    if (eff_lang or "") not in _SAME_LINE_IGNORE_LANGS:
+        return False
     ignored = _ignored_rule_ids(line, eff_lang)
     if ignored is None:
         return True
@@ -390,32 +489,14 @@ def line_ignores_rule(line: str, rule_id: str, eff_lang: str | None = None) -> b
 
 
 def count_inline_ignores(code: str, eff_lang: str | None = None) -> int:
-    """인라인 무시 주석이 붙은 **줄 수**.
+    """인라인 무시 지시가 적용된 **줄 수**.
 
     승인된 예외(`.gvskb-exceptions.yaml`)는 승인자·사유·만료가 있어야 유효하지만,
     인라인 주석은 아무 근거 없이 그 줄의 검사를 끈다. 세지 않으면 보고서에도
     포털 심사 화면에도 흔적이 남지 않아, 지적을 끄고 '이상 없음'을 받는 경로가
     보이지 않는다. **숨기지 말고 센다.**
     """
-    total = 0
-    for line in code.splitlines():
-        if _inline_ignore_match(line, eff_lang) is not None:
-            total += 1
-    return total
-
-
-def _suppressed_by_inline_ignore(line: str, rule: dict, eff_lang: str | None) -> bool:
-    """언어와 무관한 인라인 무시 판정.
-
-    예전에는 이 검사가 `if is_python and ...` 안에 갇혀 있어 **파이썬에서만**
-    동작했다. 그런데 룰 카드(KISA-JS-INPUT-08·KISA-JS-SEC-05 등)는 자바스크립트
-    사용자에게도 `gvskb: ignore` 를 쓰라고 안내한다. 안내대로 해도 경고가 그대로
-    나오면 사용자는 도구를 신뢰하지 않게 된다 — 문서와 구현이 어긋난 자리였다.
-    """
-    ignored = _ignored_rule_ids(line, eff_lang)
-    if ignored is None:
-        return True
-    return rule["rule_id"] in ignored
+    return InlineIgnores(code, eff_lang).directive_count()
 
 
 def _suppresses_rule(
@@ -833,6 +914,7 @@ class RegexScanner(ScannerAdapter):
         is_python = _is_python(eff_lang, filename)
         docstring_lines = _python_docstring_lines(code) if is_python else set()
         comment_lines = _comment_lines(code, eff_lang, filename) if not is_python else set()
+        ignores = InlineIgnores(code, eff_lang)
         for line_no, line in enumerate(code.splitlines(), start=1):
             is_comment = line_no in comment_lines
             for rule in RULES:
@@ -843,8 +925,9 @@ class RegexScanner(ScannerAdapter):
                 if is_comment and rule["category"] not in _COMMENT_SKIP_EXEMPT_CATEGORIES:
                     continue
                 # 인라인 무시는 **모든 언어**에 적용된다 — 룰 카드가 JS 사용자에게도
-                # 안내하는 장치이므로 파이썬 전용이어서는 안 된다.
-                if _suppressed_by_inline_ignore(line, rule, eff_lang):
+                # 안내하는 장치이므로 파이썬 전용이어서는 안 된다. 다만 인정하는
+                # 형태는 언어마다 다르다(InlineIgnores 참조).
+                if ignores.suppresses(line_no, rule["rule_id"]):
                     continue
                 if is_python and _suppresses_rule(
                     line=line,

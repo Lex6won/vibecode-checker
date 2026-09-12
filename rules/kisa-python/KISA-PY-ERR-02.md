@@ -96,6 +96,6 @@ except IndexError:
 ```
 
 ## False positive 주의
-- *의도적인 무시*(예: `FileNotFoundError`를 `pass`로 처리)는 패턴 상으로는 매칭됩니다. 의도가 분명할 때는 같은 줄 또는 다음 줄에 `# gvskb: ignore KISA-PY-ERR-02`로 억제하세요.
+- *의도적인 무시*(예: `FileNotFoundError`를 `pass`로 처리)는 패턴 상으로는 매칭됩니다. 의도가 분명할 때는 같은 줄 끝 또는 **바로 윗줄 단독 주석**으로 `# gvskb: ignore KISA-PY-ERR-02`를 적어 억제하세요(Python 은 두 형태 모두 인정합니다).
 - 본 룰은 `except X: pass`/`except X: ...`/`except X: continue` 세 가지 *비어있는 단일 라인 핸들러*만 잡습니다. `except X: log_it(e)` 같은 비어있지 않은 핸들러는 매칭되지 않습니다.
 - 멀티라인 빈 핸들러(`except X:`<br>`    pass` 형태)는 같은 라인이 아니므로 본 라인 단위 정규식은 잡지 않습니다 — `except X: pass`처럼 한 줄로 쓴 경우만 검출합니다. AST 어댑터에서 보강할 수 있습니다.

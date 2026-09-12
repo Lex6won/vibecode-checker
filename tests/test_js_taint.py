@@ -107,11 +107,27 @@ def test_python_file_not_scanned_by_js_taint() -> None:
 
 
 def test_gvskb_ignore_suppresses_finding() -> None:
+    """JS 의 무시 지시는 **단독 주석 줄**로 쓴다(바로 다음 줄에 적용).
+
+    같은 줄 끝 형태는 더 이상 인정하지 않는다 — JS 는 정규식 리터럴과 나눗셈을
+    문맥 없이 구분할 수 없어, 코드 한가운데서 "여기가 주석인가"를 판정하는 것이
+    원리적으로 불안하다(실측 우회: ``const r = /\\//;``).
+    """
+    code = (
+        "const q = `SELECT ${x}`;\n"
+        "// gvskb: ignore KISA-JS-INPUT-01\n"
+        "db.query(q);\n"
+    )
+    assert _taint_hits(code) == {}
+
+
+def test_same_line_ignore_no_longer_suppresses_in_js() -> None:
+    """같은 줄 형태는 JS 에서 무시되지 않는다 — 우회 경로를 닫은 결과."""
     code = (
         "const q = `SELECT ${x}`;\n"
         "db.query(q); // gvskb: ignore KISA-JS-INPUT-01\n"
     )
-    assert _taint_hits(code) == {}
+    assert _taint_hits(code) != {}
 
 
 def test_untracked_variable_at_sink_not_flagged() -> None:

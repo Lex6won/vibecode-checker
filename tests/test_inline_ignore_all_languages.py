@@ -42,25 +42,48 @@ def test_python_finding_is_detected_without_ignore() -> None:
 # 언어별 인라인 무시
 # ---------------------------------------------------------------------------
 
-def test_javascript_bare_ignore_suppresses_every_rule_on_that_line() -> None:
+def test_javascript_standalone_comment_suppresses_next_line() -> None:
+    """JS 는 **단독 주석 줄**로 쓴다 — 지시는 바로 다음 줄에 적용된다."""
     before = _rule_ids("el.innerHTML = userInput;\n", "app.js")
-    after = _rule_ids("el.innerHTML = userInput; // gvskb: ignore\n", "app.js")
+    after = _rule_ids("// gvskb: ignore\nel.innerHTML = userInput;\n", "app.js")
     assert before, "전제: 무시가 없으면 잡힌다"
     assert after == set()
 
 
-def test_typescript_ignore_works() -> None:
+def test_typescript_standalone_comment_works() -> None:
     before = _rule_ids("el.innerHTML = userInput;\n", "app.ts")
-    after = _rule_ids("el.innerHTML = userInput; // gvskb: ignore\n", "app.ts")
+    after = _rule_ids("// gvskb: ignore\nel.innerHTML = userInput;\n", "app.ts")
     assert before
     assert after == set()
 
 
-def test_javascript_block_comment_ignore_works() -> None:
+def test_javascript_block_comment_line_works() -> None:
     before = _rule_ids("el.innerHTML = userInput;\n", "app.js")
-    after = _rule_ids("el.innerHTML = userInput; /* gvskb: ignore */\n", "app.js")
+    after = _rule_ids("/* gvskb: ignore */\nel.innerHTML = userInput;\n", "app.js")
     assert before
     assert after == set()
+
+
+def test_javascript_same_line_ignore_is_not_honored() -> None:
+    """JS 의 같은 줄 형태는 인정하지 않는다 — 이것이 우회를 닫은 방법이다.
+
+    JS 는 정규식 리터럴과 나눗셈을 문맥 없이 구분할 수 없어(`a = b / c / d`),
+    코드 한가운데서 주석 시작 위치를 정확히 찾는 것이 파서 없이는 불가능하다.
+    손으로 짠 스캐너를 계속 기우는 대신 **판정이 필요 없는 형태만** 인정한다.
+    """
+    code = "el.innerHTML = userInput; // gvskb: ignore\n"
+    assert _rule_ids(code, "app.js"), "같은 줄 무시는 JS 에서 동작하지 않아야 한다"
+
+
+def test_standalone_directive_applies_to_only_one_line() -> None:
+    """지시 하나가 파일 전체를 끄지 않는다 — 다음 한 줄에만 적용된다."""
+    code = (
+        "// gvskb: ignore\n"
+        "el.innerHTML = a;\n"
+        "el.innerHTML = b;\n"
+    )
+    found = _rule_ids(code, "app.js")
+    assert found, "두 번째 줄은 계속 잡혀야 한다"
 
 
 def test_python_ignore_still_works() -> None:
@@ -128,11 +151,36 @@ def test_escaped_quote_does_not_end_the_string_early() -> None:
     assert _rule_ids(bypass, "app.js")
 
 
-def test_real_comment_after_a_url_string_still_suppresses() -> None:
+def test_regex_literal_cannot_disable_detection() -> None:
+    """회귀: 정규식 리터럴의 `/` 가 주석 시작으로 오인되던 우회.
+
+    실측(2026-09-13, 코덱스 재검토에서 실행 재현)::
+
+        eval(user); const r = /\\//; const marker = "gvskb: ignore";
+        → 탐지 0건
+
+    문자열 우회를 막은 뒤에도 남아 있던 구멍이다. JS 는 정규식 리터럴과 나눗셈을
+    문맥 없이 구분할 수 없어서, 손으로 짠 주석 판별기로는 이 계열을 닫을 수 없다.
+    그래서 JS 의 **같은 줄 무시를 인정하지 않는 것**으로 방향을 바꿨다.
+    """
+    bypass = 'eval(user); const r = /\\//; const marker = "gvskb: ignore";\n'
+    plain = "eval(user);\n"
+
+    assert _rule_ids(plain, "app.js"), "전제: 무시가 없으면 잡힌다"
+    assert _rule_ids(bypass, "app.js"), (
+        "정규식 리터럴로 같은 줄 검사를 끌 수 있으면 게이트가 아니다"
+    )
+
+
+def test_standalone_comment_after_a_url_string_still_suppresses() -> None:
     """반대 방향 회귀 — 좁히다가 정상 사용을 막으면 안 된다."""
-    code = "el.innerHTML = userInput; const u = 'http://x'; // gvskb: ignore\n"
+    code = (
+        "const u = 'http://x';\n"
+        "// gvskb: ignore\n"
+        "el.innerHTML = userInput;\n"
+    )
     assert _rule_ids(code, "app.js") == set(), (
-        "URL 문자열이 있어도 진짜 주석의 무시는 그대로 동작해야 한다"
+        "URL 문자열이 있어도 단독 주석 줄의 무시는 그대로 동작해야 한다"
     )
 
 
@@ -174,7 +222,9 @@ def test_count_inline_ignores_ignores_string_literals() -> None:
 
 
 def test_count_inline_ignores_handles_javascript() -> None:
-    assert count_inline_ignores("x(); // gvskb: ignore\n", "javascript") == 1
+    # JS 는 단독 주석 줄 형태만 센다 — 같은 줄 형태는 애초에 동작하지 않는다.
+    assert count_inline_ignores("// gvskb: ignore\nx();\n", "javascript") == 1
+    assert count_inline_ignores("x(); // gvskb: ignore\n", "javascript") == 0
 
 
 def test_count_inline_ignores_returns_zero_for_clean_code() -> None:
