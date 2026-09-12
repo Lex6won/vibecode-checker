@@ -3104,9 +3104,26 @@ def _env_grade_line(report: ScanReport) -> str | None:
         return None
     from .vcps import env_grade_summary
 
-    # audit 최상위 env_grade 는 **부르는 쪽이 명시한 값**(--env)이고, 없으면 None 이다.
-    explicit = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
-    raw = explicit
+    # 요청값과 적용값을 나눠 읽는다.
+    #
+    # 예전에는 audit 최상위 `env_grade` 가 **부르는 쪽이 명시한 값**(없으면 None)
+    # 이었다. 그런데 그 값은 지원하지 않는 등급이 들어와도 그대로 에코돼,
+    # "E3 로 점검함"과 "E1 쿨다운 적용"이 한 문서에 공존했다. 그래서 최상위
+    # `env_grade` 는 **적용값**으로 바꾸고 요청값은 `requested_env_grade` 로 옮겼다.
+    #
+    # 여기서는 두 세대의 JSON 을 모두 읽어야 한다. 새 형식은 요청 필드의 존재로
+    # 구분한다 — 구버전 보고서를 `gvskb report` 로 다시 렌더해도 출처 표기가
+    # 틀리지 않게 하기 위해서다.
+    new_format = any("requested_env_grade" in a for a in audits)
+    if new_format:
+        explicit = next(
+            (a.get("requested_env_grade") for a in audits if a.get("requested_env_grade")), None
+        )
+        applied = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+    else:
+        explicit = next((a.get("env_grade") for a in audits if a.get("env_grade")), None)
+        applied = explicit
+    raw = applied or explicit
     if raw is None:
         # 명시가 없어도 각 check 의 cooldown 판정에는 **적용된** 기본 등급이 실린다.
         # 그 값으로 등급·기준일은 정확히 적되, 출처는 '기본값 적용'으로 남긴다 —
