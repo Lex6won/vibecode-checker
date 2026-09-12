@@ -67,10 +67,42 @@ def load_vcps_config() -> dict:
     return merged
 
 
+def normalize_env_grade(env_grade: str | None) -> str | None:
+    """등급 표기를 정규화한다(공백·대소문자).
+
+    ``"e2"`` 는 목록에 없는 값으로 취급돼 조용히 기본 등급으로 떨어졌다. 등급은
+    판정 기준을 바꾸는 값이라, 표기 차이로 기준이 달라지면 안 된다.
+    """
+    if env_grade is None:
+        return None
+    text = str(env_grade).strip().upper()
+    return text or None
+
+
+def env_grade_supported(env_grade: str | None) -> bool:
+    """이 등급을 체커가 판정할 수 있는가.
+
+    ``None``(미지정)은 기본 등급을 쓰겠다는 뜻이므로 지원 대상이다. 반대로
+    ``E3`` 처럼 **의도적으로 지원하지 않는** 등급과, 오타 같은 미상 값은 False 다.
+
+    왜 구분이 필요한가: 예전에는 모르는 등급이 조용히 기본값(E1)으로 바뀌었는데,
+    호출자에게는 그 사실이 전달되지 않았다. 그래서 대민(E3) 작업을 개인 PC 기준
+    으로 검사하면서 기록에는 요청 등급이 그대로 남는 상태가 만들어졌다 —
+    검사를 느슨하게 하고 기록은 세게 남기는, 가장 나쁜 조합이다.
+    """
+    grade = normalize_env_grade(env_grade)
+    return grade is None or grade in VALID_ENV_GRADES
+
+
 def cooldown_days_for(env_grade: str | None) -> tuple[int, str]:
-    """(적용 쿨다운 일수, 적용된 등급) — 미지정이면 default_env 기준."""
+    """(적용 쿨다운 일수, **실제 적용된** 등급) — 미지정·미지원이면 default_env 기준.
+
+    돌려주는 등급은 요청값이 아니라 **적용값**이다. 호출자는 이 값을 기록해야
+    하며, 요청값과 다를 수 있다는 것을 ``env_grade_supported`` 로 확인해야 한다.
+    """
     cfg = load_vcps_config()
-    grade = env_grade if env_grade in VALID_ENV_GRADES else str(cfg.get("default_env", "E1"))
+    normalized = normalize_env_grade(env_grade)
+    grade = normalized if normalized in VALID_ENV_GRADES else str(cfg.get("default_env", "E1"))
     envs = cfg.get("environments", {})
     entry = envs.get(grade) or {}
     days = entry.get("cooldown_days")

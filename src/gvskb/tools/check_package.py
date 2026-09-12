@@ -20,7 +20,7 @@ import httpx
 
 from ..intel.cache import IntelCache
 from ..schema import CooldownCheck, PackageCheckResult, PackageRegistryMetadata
-from ..vcps import cooldown_days_for, license_verdict
+from ..vcps import cooldown_days_for, env_grade_supported, license_verdict, normalize_env_grade
 from .package_metadata import fetch_registry_metadata
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
@@ -1474,6 +1474,10 @@ async def audit_manifest(
     requires_review = (
         blocked or unchecked > 0 or has_vulns or truncated > 0
         or any(c.get("requires_review") for c in checks)
+        # 판정할 수 없는 실행환경 등급으로 요청받았다면(예: E3 대민·개인정보),
+        # 이 결과는 자동 승인의 근거가 될 수 없다. 조용히 기본 등급으로 바꿔
+        # 통과시키는 대신 **사람 검토로 올린다**.
+        or not env_grade_supported(env_grade)
     )
     verdict = "blocked" if blocked else ("review_required" if requires_review else "ok")
     return {
@@ -1499,7 +1503,13 @@ async def audit_manifest(
         # 실제 설치 버전이 아닐 수 있다 — 배너 1줄로만 알린다.
         "bounded_version_count": bounded,
         "hold_count": hold,             # 쿨다운 대기(HOLD) 수 — 위험 확정이 아니라 대기 권고
-        "env_grade": env_grade,
+        # 등급은 **적용값**을 적는다. 예전에는 전달받은 값을 그대로 에코해서,
+        # 지원하지 않는 등급(E3)을 넘기면 쿨다운은 기본값(E1)으로 적용되는데
+        # 결과 최상위에는 "E3" 가 찍혔다 — 한 문서 안에서 "E3 로 점검함"과
+        # "E1 쿨다운 적용"이 공존하는, 기록이 사실과 다른 상태였다.
+        "env_grade": cooldown_days_for(env_grade)[1],
+        "requested_env_grade": normalize_env_grade(env_grade),
+        "env_grade_supported": env_grade_supported(env_grade),
         "blocked": blocked,
         "requires_review": requires_review,
         "verdict": verdict,
@@ -1721,6 +1731,9 @@ async def check_package_impl(
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)
+        # 판정할 수 없는 실행환경 등급(E3 등)으로 요청받은 결과는 자동 승인의
+        # 근거가 될 수 없다 — 쿨다운이 기본 등급으로 적용됐기 때문이다.
+        or not env_grade_supported(env_grade)
     )
 
     advisory_rows = _advisory_rows(vulns, name=name, eco=eco)

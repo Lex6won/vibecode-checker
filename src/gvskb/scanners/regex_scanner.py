@@ -280,14 +280,83 @@ def _comment_lines(code: str, eff_lang: str | None, filename: str) -> set[int]:
     return lines
 
 
-def _ignored_rule_ids(line: str) -> set[str] | None:
+# 언어별 주석 시작 표시. 인라인 무시(`gvskb: ignore`)는 **주석 안에 있을 때만**
+# 인정한다 — 예전에는 줄 어디에 있든 인정해서, 검사 대상 코드의 *문자열 리터럴*이
+# 그 문구를 담기만 해도 그 줄의 모든 룰이 꺼졌다(`msg = "gvskb: ignore 라고 쓰세요"`).
+# 검사받는 쪽이 자기 검사를 끌 수 있는 통로라 좁힌다.
+_COMMENT_MARKERS_BY_LANG: dict[str, tuple[str, ...]] = {
+    "python": ("#",),
+    "ruby": ("#",), "shell": ("#",), "powershell": ("#",),
+    "data": ("#",), "config": ("#",),
+    "javascript": ("//", "/*"), "typescript": ("//", "/*"),
+    "java": ("//", "/*"), "kotlin": ("//", "/*"), "scala": ("//", "/*"),
+    "go": ("//", "/*"), "rust": ("//", "/*"), "c": ("//", "/*"), "cpp": ("//", "/*"),
+    "csharp": ("//", "/*"), "php": ("//", "/*", "#"), "swift": ("//", "/*"),
+    "objc": ("//", "/*"), "vbnet": ("'",),
+    "html": ("<!--",), "xml": ("<!--",),
+    "sql": ("--", "/*"),
+}
+#: 언어를 모를 때 — 흔한 표시를 모두 허용한다(무시를 놓치는 쪽보다 안전하다).
+_DEFAULT_COMMENT_MARKERS: tuple[str, ...] = ("#", "//", "/*", "<!--", "--")
+
+
+def _comment_start(line: str, eff_lang: str | None) -> int:
+    """이 줄에서 주석이 시작하는 위치. 없으면 -1."""
+    markers = _COMMENT_MARKERS_BY_LANG.get(eff_lang or "", _DEFAULT_COMMENT_MARKERS)
+    positions = [line.find(m) for m in markers]
+    hits = [p for p in positions if p >= 0]
+    return min(hits) if hits else -1
+
+
+def _inline_ignore_match(line: str, eff_lang: str | None):
+    """주석 안에 있는 `gvskb: ignore` 매치. 없으면 None."""
     match = _IGNORE_RE.search(line)
+    if match is None:
+        return None
+    start = _comment_start(line, eff_lang)
+    if start < 0 or match.start() < start:
+        return None
+    return match
+
+
+def _ignored_rule_ids(line: str, eff_lang: str | None = None) -> set[str] | None:
+    """이 줄이 끄는 룰 id 집합. ``None`` 이면 **모든 룰**을 끈다(id 미지정)."""
+    match = _inline_ignore_match(line, eff_lang)
     if not match:
         return set()
     rule_id = match.group(1)
     if not rule_id:
         return None
     return {rule_id}
+
+
+def count_inline_ignores(code: str, eff_lang: str | None = None) -> int:
+    """인라인 무시 주석이 붙은 **줄 수**.
+
+    승인된 예외(`.gvskb-exceptions.yaml`)는 승인자·사유·만료가 있어야 유효하지만,
+    인라인 주석은 아무 근거 없이 그 줄의 검사를 끈다. 세지 않으면 보고서에도
+    포털 심사 화면에도 흔적이 남지 않아, 지적을 끄고 '이상 없음'을 받는 경로가
+    보이지 않는다. **숨기지 말고 센다.**
+    """
+    total = 0
+    for line in code.splitlines():
+        if _inline_ignore_match(line, eff_lang) is not None:
+            total += 1
+    return total
+
+
+def _suppressed_by_inline_ignore(line: str, rule: dict, eff_lang: str | None) -> bool:
+    """언어와 무관한 인라인 무시 판정.
+
+    예전에는 이 검사가 `if is_python and ...` 안에 갇혀 있어 **파이썬에서만**
+    동작했다. 그런데 룰 카드(KISA-JS-INPUT-08·KISA-JS-SEC-05 등)는 자바스크립트
+    사용자에게도 `gvskb: ignore` 를 쓰라고 안내한다. 안내대로 해도 경고가 그대로
+    나오면 사용자는 도구를 신뢰하지 않게 된다 — 문서와 구현이 어긋난 자리였다.
+    """
+    ignored = _ignored_rule_ids(line, eff_lang)
+    if ignored is None:
+        return True
+    return rule["rule_id"] in ignored
 
 
 def _suppresses_rule(
@@ -298,12 +367,7 @@ def _suppresses_rule(
     docstring_lines: set[int],
     python_comments_enabled: bool,
 ) -> bool:
-    ignored = _ignored_rule_ids(line)
-    if ignored is None:
-        return True
-    if rule["rule_id"] in ignored:
-        return True
-
+    """파이썬 주석·독스트링 줄을 건너뛸지 판단한다(인라인 무시는 호출자가 먼저 본다)."""
     category = str(rule.get("category") or "")
     if category in _COMMENT_SKIP_EXEMPT_CATEGORIES:
         return False  # secret-scanning rules keep matching inside comments
@@ -718,6 +782,10 @@ class RegexScanner(ScannerAdapter):
                 # JS/TS/HTML comment-only line: skip every rule except the
                 # secret-scanning ones (which look for keys inside comments).
                 if is_comment and rule["category"] not in _COMMENT_SKIP_EXEMPT_CATEGORIES:
+                    continue
+                # 인라인 무시는 **모든 언어**에 적용된다 — 룰 카드가 JS 사용자에게도
+                # 안내하는 장치이므로 파이썬 전용이어서는 안 된다.
+                if _suppressed_by_inline_ignore(line, rule, eff_lang):
                     continue
                 if is_python and _suppresses_rule(
                     line=line,

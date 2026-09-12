@@ -45,12 +45,16 @@ from .schema import (
     EXPOSURE_CATEGORIES,
     VALUE_BASED_RULE_IDS,
     Decision,
+    EngineUnavailable,
     ExternalConnection,
     Finding,
+    ScanCoverage,
+    ScanEngines,
     ScanReport,
     ScanSummary,
     Severity,
     SkippedFile,
+    SourceSnapshot,
 )
 
 # Adapter run order. Earlier adapters establish baseline findings; later
@@ -60,6 +64,120 @@ _ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanne
 
 # Engine precision ranking — higher number wins on collisions.
 _ENGINE_PRECISION = {"regex": 0, "python-ast": 1, "js-taint": 1, "semgrep": 2}
+
+#: 엔진이 없을 때 사용자에게 보일 사유. "없음"만으로는 무엇을 잃었는지 모른다.
+_ENGINE_UNAVAILABLE_REASON = {
+    "semgrep": (
+        "semgrep 실행 파일 또는 룰이 없습니다 — JS/TS AST 정밀 분석이 수행되지 "
+        "않았습니다(네이티브 Windows 미지원). regex·taint 검사는 수행됐습니다."
+    ),
+}
+
+
+def _run_adapter(adapter, code: str, *, failures: dict[str, str], **kwargs) -> list[Finding]:
+    """어댑터 1개를 돌리고, 실패하면 **사실로 기록**한 뒤 계속 진행한다.
+
+    엔진 하나가 죽었다고 검사 전체를 중단하면 아무 결과도 못 준다. 그렇다고
+    조용히 넘기면 "그 엔진이 안 돈 결과"가 "깨끗한 결과"와 같아 보인다 —
+    이 프로젝트가 가장 경계하는 침묵이다. 그래서 계속하되 남긴다.
+    """
+    try:
+        return list(adapter.scan(code, **kwargs))
+    except Exception as exc:  # noqa: BLE001 — 엔진 실패가 검사를 막으면 안 된다(사실은 남긴다)
+        failures.setdefault(getattr(adapter, "name", "unknown"), f"{type(exc).__name__}: {exc}")
+        return []
+
+
+def _language_of(filename: str) -> str | None:
+    """파일명에서 언어를 추론한다(인라인 무시 집계의 주석 표시 판단용)."""
+    from .scanners.regex_scanner import _infer_language
+
+    return _infer_language(filename, None)
+
+
+def source_snapshot_for(root: Path) -> SourceSnapshot | None:
+    """검사 대상 소스의 신원 — git 커밋·브랜치·작업트리 상태.
+
+    제출 보고서가 **어느 시점 코드**에 대한 것인지 특정한다. git 저장소가 아니거나
+    git 이 없으면 ``None`` — 모르는 것을 지어내지 않는다.
+
+    ``dirty=True`` 는 커밋되지 않은 변경이 있었다는 뜻이고, 그러면 커밋 해시만으로는
+    이 판정이 재현되지 않는다. 숨기지 않고 값으로 남긴다.
+    """
+    import subprocess
+
+    def _git(*args: str) -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    commit = _git("rev-parse", "HEAD")
+    if not commit:
+        return None
+    status = _git("status", "--porcelain")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return SourceSnapshot(
+        commit=commit,
+        branch=branch or None,
+        dirty=bool(status) if status is not None else None,
+        lockfiles=_lockfile_digests(root),
+    )
+
+
+#: 판정 재현에 필요한 락파일 — 이 해시가 같으면 패키지 판정 대상도 같다.
+_LOCKFILE_NAMES = (
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "poetry.lock", "Pipfile.lock", "uv.lock", "requirements.txt",
+)
+
+
+def _lockfile_digests(root: Path) -> dict[str, str]:
+    """루트 바로 아래 락파일들의 sha256. 읽기 실패는 조용히 건너뛴다."""
+    out: dict[str, str] = {}
+    for name in _LOCKFILE_NAMES:
+        p = root / name
+        try:
+            if p.is_file():
+                out[name] = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return out
+
+
+def engine_status(failures: dict[str, str] | None = None) -> ScanEngines:
+    """이번 검사에서 어떤 엔진이 돌았고 무엇이 빠졌는가.
+
+    보고서가 판정의 **깊이**를 말하게 하는 값이다. 같은 코드라도 semgrep 이 없는
+    PC 에서는 JS/TS 정밀 분석이 빠진 채 '이상 없음'이 나오는데, 예전에는 그
+    차이가 결과 어디에도 남지 않아 두 보고서가 똑같아 보였다.
+    """
+    failures = failures or {}
+    used: list[str] = []
+    unavailable: list[EngineUnavailable] = []
+    failed: list[EngineUnavailable] = []
+    for adapter in _ADAPTERS:
+        name = getattr(adapter, "name", "unknown")
+        if name in failures:
+            failed.append(EngineUnavailable(name=name, reason=failures[name]))
+            continue
+        check = getattr(adapter, "is_available", None)
+        try:
+            available = bool(check()) if callable(check) else True
+        except Exception:  # noqa: BLE001 — 가용성 조회 실패도 '미가용'으로 다룬다
+            available = False
+        if available:
+            used.append(name)
+        else:
+            unavailable.append(EngineUnavailable(
+                name=name,
+                reason=_ENGINE_UNAVAILABLE_REASON.get(name, "이 환경에서 사용할 수 없습니다"),
+            ))
+    return ScanEngines(used=used, unavailable=unavailable, failed=failed)
 
 SEVERITY_RANK = {
     Severity.low: 0,
@@ -639,14 +757,17 @@ def scan_code(
     """``collapse_duplicates=False`` 는 룰별 정확도 평가용 — dedup_group 으로
     묶인 룰이 서로를 가려 재현율이 0으로 보이는 것을 막는다."""
     raw: list[Finding] = []
+    engine_failures: dict[str, str] = {}
     for adapter in _ADAPTERS:
-        raw.extend(adapter.scan(
+        raw.extend(_run_adapter(
+            adapter,
             code,
             filename=filename,
             language=language,
             scenario=scenario,
             profile=profile,
             categories=categories,
+            failures=engine_failures,
         ))
     # HTML 의 인라인 <script> 는 JavaScript 다. JS 룰은 languages=[javascript, typescript]
     # 라 .html 에서는 한 줄도 돌지 않았다 — 포털 `my-scans.html` 의 innerHTML XSS 를
@@ -656,13 +777,15 @@ def scan_code(
     script_view = _html_script_view(code, filename, language)
     if script_view is not None:
         for adapter in _ADAPTERS:
-            raw.extend(adapter.scan(
+            raw.extend(_run_adapter(
+                adapter,
                 script_view,
                 filename=filename,
                 language="javascript",
                 scenario=scenario,
                 profile=profile,
                 categories=categories,
+                failures=engine_failures,
             ))
     from .scanners.ast_scanner import python_ast_parsed
     raw = _drop_regex_when_ast_owns(raw, python_ast_parsed(code, filename, language))
@@ -697,6 +820,8 @@ def scan_code(
         profile_fallback=profile_fallback,
         summary=_summary(findings),
         findings=findings,
+        engines=engine_status(engine_failures),
+        coverage=ScanCoverage(scanned_count=1),
         # 인메모리 조각도 "이 파일을 검사함"으로 기록 — 발견 0이 "검사 안 됨"이
         # 아니라 "위험 없음"으로 올바르게 결론나게 한다.
         scanned_files=[filename],
@@ -1163,6 +1288,8 @@ def scan_path(
     inc = frozenset(e.lower() for e in (include_exts or DEFAULT_INCLUDE_EXTS))
     exc = frozenset(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
     skipped: list[SkippedFile] = []
+    engine_failures: dict[str, str] = {}             # 엔진 이름 → 실패 사유(파일 전체 누적)
+    inline_ignored = 0                               # `gvskb: ignore` 주석이 붙은 줄 수
     vendor_bundles: list[dict] = []                  # 벤더 번들 식별 결과(SCA 대상)
     external: list[ExternalConnection] = []          # 외부 연결 인벤토리 누적
     manifest_files: list[tuple[Path, str]] = []      # (경로, ecosystem) — 플러그인 목록용
@@ -1366,6 +1493,13 @@ def scan_path(
             hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), []
         ).append(rel)
         report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
+        # 엔진 실패·미가용은 파일마다 같지만, 실패는 파일별로 다를 수 있으므로 누적한다.
+        for item in report.engines.failed:
+            engine_failures.setdefault(item.name, item.reason)
+        # 인라인 무시 주석이 붙은 줄 수 — 승인자·사유 없이 검사를 끄는 경로이므로
+        # 숨기지 않고 센다(보고서·포털 심사 화면이 이 값을 표시한다).
+        from .scanners.regex_scanner import count_inline_ignores
+        inline_ignored += count_inline_ignores(text, _language_of(rel))
         posture.observe(rel, text, runtime=path_class(rel) == "runtime")
         file_findings = report.findings
         # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
@@ -1412,11 +1546,15 @@ def scan_path(
     sup = apply_suppressions(all_findings, load_exceptions(root))
     active = [f for f in all_findings if not f.suppressed]
     suppression_summary = None
-    if sup.applied or sup.expired or sup.invalid:
+    if sup.applied or sup.expired or sup.invalid or inline_ignored:
         suppression_summary = {
             "applied": sup.applied,
             "expired": sup.expired,
             "invalid": sup.invalid,
+            # 인라인 무시는 승인자·사유·만료가 **없이** 검사를 끄는 경로다.
+            # 승인된 예외와 같은 칸에 넣지 않고 따로 센다 — 심사자가 둘을
+            # 구분해서 봐야 한다.
+            "inline_ignored": inline_ignored,
         }
 
     _eff_profile, _profile_fallback = _profile_resolution(profile, load_profile(profile))
@@ -1429,6 +1567,17 @@ def scan_path(
         findings=all_findings,
         scanned_files=scanned,
         skipped_files=skipped,
+        # 범위 절단을 **값으로** 알린다. 예전에는 아래 skipped_files 의 한국어
+        # 문장 안에만 있어서, 소비자가 문자열을 뒤져 판단해야 했다.
+        coverage=ScanCoverage(
+            truncated=bool(over_limit_count),
+            over_limit_count=over_limit_count,
+            max_files=max_files,
+            scanned_count=len(scanned),
+            skipped_count=len(skipped),
+        ),
+        engines=engine_status(engine_failures),
+        source_snapshot=source_snapshot_for(root) if root.is_dir() else None,
         external_surface=dedupe_connections(external),
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),
