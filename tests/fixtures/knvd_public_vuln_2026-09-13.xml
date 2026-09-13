@@ -1,0 +1,452 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>보안취약점 정보포털</title>
+    <link>https://knvd.krcert.or.kr</link>
+    <description>이곳은 보안취약점 정보포털 사이트 입니다</description>
+    <language>KO</language>
+    <pubDate>Mon, 20 Jul 2026 02:49:48 GMT</pubDate>
+    <generator>knvd.krcert.or.kr</generator>
+    <item>
+      <title>CVE-2026-24498 | EFM-Networks ipTIME 유무선공유기 제품군 보안 기능 우회</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=69a0f1b935077431ee7dd391</link>
+      <description>#### CVE-2026-24498 | EFM-Networks ipTIME 유무선공유기 제품군 보안 기능 우회 2026.02.27
+
+##### □ 개요
+
+o EFM-Networks社의 ipTIME 유무선 공유기 제품군에서 발생하는 보안 기능 우회 취약점
+
+| CVE | CVSS | 심각도 | CWE | 영향 |
+| --- | --- | --- | --- | --- |
+| CVE-2026-24498 | 6.0 | Medium | CWE-200 | CAPEC-115 |
+
+##### □ 설명
+
+o EFM-Networks ipTIME 유무선공유기 제품군의 보안 기능을 우회하여 공격자가 와이파이 비밀번호 평문 획득 가능한 취약점
+
+##### □ 영향받는 제품 및 해결 방안
+
+| 제품 | 영향받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| ipTIME T5008 | 15.26.8 이하 | 15.27.2 |
+| ipTIME AX2004M | 15.26.8 이하 | 15.27.2 |
+| ipTIME AX3000Q | 15.26.8 이하 | 15.27.2 |
+| ipTIME AX6000M | 15.26.8 이하 | 15.27.2 |
+
+ ※ 하단의 참고사이트를 확인하여 업데이트 수행
+
+##### □ 참고사이트
+
+o https://iptime.com/iptime/?page_id=126&amp;dffid=1&amp;dfsid=15&amp;dftid=589&amp;uid=26901&amp;mod=document
+
+##### □ 기여자
+
+o 해당 취약점은 한국인터넷진흥원(KISA)를 통해 윤상원님께서 신고해주셨습니다.
+
+##### □ 작성: 위협대응단 AI취약점대응팀
+
+
+
+---
+
+키워드 [CVE-2026-24498](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=CVE-2026-24498),  [ipTIME](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=ipTIME)</description>
+      <category>취약점정보</category>
+      <pubDate>Fri, 27 Feb 2026 01:22:01 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2026-24497 | 심테크시스템 Thinkwise 버퍼오버플로우</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=69a0f07a35077431ee7dd378</link>
+      <description>#### CVE-2026-24497 | 심테크시스템 Thinkwise 버퍼오버플로우 2026.02.27
+
+##### □ 개요
+
+o 심테크시스템社의 ThinkWise 프로그램에서 발생하는 버퍼 오버플로우 취약점
+
+| CVE | CVSS | 심각도 | CWE | 영향 |
+| --- | --- | --- | --- | --- |
+| CVE-2026-24497 | 8.4 | High | CWE-121 | CAPEC-253 |
+
+##### □ 설명
+
+o 심테크시스템 ThinkWise의 버퍼 오버플로우 취약점으로 공격자가 원격으로 코드 실행 가능
+
+##### □ 영향받는 제품 및 버전
+
+| 제품 | 영향받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| ThinkWise | 7 이상 ~ 23 미만 | 23 |
+
+ ※ 하단의 참고사이트를 확인하여 업데이트 수행
+
+##### □ 참고사이트
+
+o https://www.thinkwise.co.kr/bbs/board.php?bo_table=patch&amp;wr_id=19352
+
+##### □ 기여자
+
+o 해당 취약점은 한국인터넷진흥원(KISA)를 통해 오성훈님께서 신고해주셨습니다.
+
+##### □ 작성:&amp;nbsp;위협대응단 AI취약점대응팀
+
+
+
+---
+
+키워드 [CVE-2026-24497](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=CVE-2026-24497),  [ThinkWise](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=ThinkWise)</description>
+      <category>취약점정보</category>
+      <pubDate>Fri, 27 Feb 2026 01:16:42 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2025-29867 | 한글과컴퓨터 한컴오피스 Type Confusion 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=69829f3dc689017ea59437c6</link>
+      <description>#### CVE-2025-29867 | 한글과컴퓨터 한컴오피스 Type Confusion 취약점 2026.02.04
+
+##### □ 개요
+
+o 한글과컴퓨터社 한컴오피스에서 발생하는 임의 코드 실행 취약점
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| Type Confusion | 임의 코드 실행 | High | 8.5 | CVE-2025-29867 |
+
+##### □ 설명
+
+o 한컴오피스의 DOC 문서 처리 과정에서 입력값 검증이 미흡하여 발생하는 임의 코드 실행 취약점(CVE-2025-29867)
+
+##### □ 영향받는 제품 및 해결 방안
+
+| 제품 | 영향 받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| 한컴오피스 2018 | 10.0.0.12681 미만 | 10.0.0.12681 |
+| 한컴오피스 2020 | 11.0.0.8916 미만 | 11.0.0.8916 |
+| 한컴오피스 2022 | 12.0.0.4426 미만 | 12.0.0.4426 |
+| 한컴오피스 2024 | 13.0.0.3050 미만 | 13.0.0.3050 |
+
+ ※ 하단의 참고사이트를 확인하여 업데이트 수행
+
+##### □ 참고사이트
+
+o  https://www.hancom.com/support/downloadCenter/download
+
+##### □ 작성
+
+o 위협분석단 취약점분석팀</description>
+      <category>취약점정보</category>
+      <pubDate>Wed, 04 Feb 2026 01:22:05 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2025-29864 | 이스트소프트 알집 Mark of the Web 우회 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=692d425e145d3d7da6fe2e3e</link>
+      <description>#### CVE-2025-29864 | 이스트소프트 알집 Mark of the Web 우회 취약점 2025.12.01
+
+##### □ 개요
+
+o 이스트소프트社 알집에서 발생하는 Mark of the Web(MoTW) 우회 취약점
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| Mark of the Web(MoTW) | 보안 기능 우회 | Medium | 6.2 | CVE-2025-29864 |
+
+##### □ 설명
+
+o 알집을 통해 압축 해제 시 Zone.Identifier 스트림 정보가 생성되지 않아 발생하는 Mark of the Web(MoTW) 우회 취약점 발생(CVE-2025-29864)
+
+##### □ 영향받는 제품 및 해결 방안
+
+| 제품 | 영향 받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| 알집 | 12.01 이상 ~ 12.29 이하 | 12.30 이상 |
+
+ ※ 하단의 참고사이트를 확인하여 업데이트 수행
+
+##### □ 참고사이트
+
+o https://altools.co.kr/product/ALZIP
+
+##### □ 기타
+
+o 해당 취약점은 KrCert를 통해 이정욱님께서 제공해주셨습니다.
+
+##### □ 작성
+
+o 위협분석단 취약점분석팀
+
+---
+
+키워드 [CVE-2025-29864](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=CVE-2025-29864),  [알집](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=%EC%95%8C%EC%A7%91)</description>
+      <category>취약점정보</category>
+      <pubDate>Mon, 01 Dec 2025 07:23:10 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2025-29866 | 태그프리 제품 부적절한 권한 검증 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=688b0d7fdfcef906ab3e8c42</link>
+      <description>#### CVE-2025-29866 | 태그프리 제품 부적절한 권한 검증 취약점 2025.07.31
+
+##### □ 개요
+
+o 태그프리社의 X-Free Uploader에서 발생하는 부적절한 권한 검증 취약점
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| 부적절한 권한 검증 | 데이터 변조 | High | 8.8 | CVE-2025-29866 |
+
+##### □ 설명
+
+o X-Free Uploader의 파일 삭제 기능에서 사용 권한 없는 임의 파일을 삭제 가능(CVE-2025-29866)
+
+##### □ 영향받는 제품 및 해결 방안
+
+| 제품 | 영향받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| TAGFREE X-Free Uploader | XFU 1.0.1.0084 | XFU 1.0.1.0085 |
+| TAGFREE X-Free Uploader | XFU 2.0.1.0034 | XFU 2.0.1.0035 |
+
+ ※ 하단의 참고사이트를 확인하여 업데이트 수행
+
+##### □ 참고사이트
+
+o https://www.tagfree.com/bbs/board.php?bo_table=wb_xfu_update
+
+##### □ 기타
+
+o 해당 취약점은 KrCert를 통해 이우진님께서 제공해주셨습니다.
+
+##### □ 작성: 위협분석단 취약점분석팀
+
+
+
+---
+
+키워드 [X-Free Uploader](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=X-Free%20Uploader),  [CVE-2025-29866](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=CVE-2025-29866)</description>
+      <category>취약점정보</category>
+      <pubDate>Thu, 31 Jul 2025 06:30:23 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2025-29865 | 태그프리 제품 파일 다운로드 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=688b08bddfcef906ab3e8c1e</link>
+      <description>#### CVE-2025-29865 | 태그프리 제품 파일 다운로드 취약점 2025.07.31
+
+##### □ 개요
+
+o 태그프리社의 X-Free Uploader에서 발생하는 파일 다운로드 취약점
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| 파일 다운로드 | 정보 유노출 | High | 8.7 | CVE-2025-29865 |
+
+##### □ 설명
+
+o X-Free Uploader의 파일 다운로드 기능에서 서버와 통신하는 파라미터 값에 대한 검증이 미흡하여 임의 파일 다운로드 가능(CVE-2025-29865)
+
+##### □ 영향받는 제품 및 해결 방안
+
+| 제품 | 영향받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| TAGFREE X-Free Uploader | XFU 1.0.1.0084 | XFU 1.0.1.0085 |
+| TAGFREE X-Free Uploader | XFU 2.0.1.0034 | XFU 2.0.1.0035 |
+
+ ※ 하단의 참고사이트를 확인하여 업데이트 수행
+
+##### □ &amp;nbsp;참고사이트
+
+o https://www.tagfree.com/bbs/board.php?bo_table=wb_xfu_update
+
+##### □ 기타
+
+o 해당 취약점은 KrCert를 통해 이우진님께서 제공해주셨습니다.
+
+##### □ 작성: 위협분석단 취약점분석팀&amp;nbsp;
+
+
+
+---
+
+키워드 [X-Free Uploader](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=X-Free%20Uploader),  [CVE-2025-29865](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=CVE-2025-29865)</description>
+      <category>취약점정보</category>
+      <pubDate>Thu, 31 Jul 2025 06:10:05 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2024-23843 | 지니언스 NAC SQL Injection 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=6729e8ae1daaab53bd184933</link>
+      <description>#### CVE-2024-23843 | 지니언스 NAC SQL Injection 취약점 2024.11.05
+
+##### □ 개요
+
+o 지니언스社의 Genian NAC에서 발생하는 SQL Injection 취약점
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| SQL Injection | 정보 유노출 | Low | 2.2 | CVE-2024-23843 |
+
+##### □ 설명
+
+o Genian NAC 관리콘솔에서 데이터 검색 시 사용자 입력 값 검증 미흡으로 인해 SQL Injection 취약점 발생 (CVE-2024-23843)
+
+##### □ 영향받는 제품
+
+| 제품명 | 영향받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| Genian NAC V5.0 | 5.0.60 이하 | 5.0.61 이상 |
+| Genian NAC LTS V5.0 | 5.0.55 LTS(Revision 125558 이하) | 5.0.55 LTS(Revision 125559 이상) |
+| Genian NAC LTS V5.0 | 5.0.56 LTS(Revision 125560 이하) | 5.0.56 LTS(Revision 125561 이상) |
+
+##### □ 해결 방안
+
+o 취약점이 해결된 버전으로 제품 업데이트 수행
+
+##### □ 참고
+
+o https://docs.genians.com/nac/5.0/release/ko/advisories/GN-SA-2024-001.html
+
+##### □ 기여자
+
+o 해당 취약점은 KrCERT/CC를 통해 박찬님께서 제공해주셨습니다
+
+##### □ 작성: 위협분석단 취약점분석팀
+
+
+
+---
+
+키워드 [Genian NAC](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=Genian%20NAC),  [CVE-2024-23843](https://knvd.krcert.or.kr/keywordResult?searchOption=KEYWORD&amp;content=CVE-2024-23843)</description>
+      <category>취약점정보</category>
+      <pubDate>Tue, 05 Nov 2024 09:43:10 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2023-45801 | 나다텔 DVR 부적절한 인증 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=65d866744410a805dddb8b30</link>
+      <description>#### CVE-2023-45801 | 나다텔 DVR 부적절한 인증 취약점 2024.02.26
+
+##### □ 개요
+
+o 나다텔社의 DVR에서 부적절한 인증 취약점으로 인해 발생하는 정보 노출
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| 부적절한 인증 | 정보 노출 | High | 7.5 | CVE-2023-45801 |
+
+##### □ 설명
+
+o Nadatel DVR에서 사용되는 소프트웨어의 부적절한 인증으로 인해 영상 정보가 노출되는 취약점 발생(CVE-2023-45801)
+
+##### □ 영향받는 제품 및 버전
+
+| 제품 | 영향 받는 버전 |
+| --- | --- |
+| at-0402r at-0815r at-1623r at-0402l at-0815l at-1623l at-0402e at-0815e at-1623e at-0402m at-0815m at-1623m at-0413m at-0823m at-1643m at-0413s at-0823s at-1643s | 3.0.0 ~ 9.8.0 |
+
+##### □ 해결방안
+
+o 취약점이 해결된 버전(v9.9.0) 이상의 버전으로 제품 업데이트 수행(제조사 문의)
+
+##### □ 참고
+
+o http://www.nadatel.com
+
+o https://nvd.nist.gov/vuln/detail/CVE-2023-45801
+
+##### □ 기타
+
+o 해당 취약점은 KrCert를 통해 박준영님께서 제공해주셨습니다
+
+##### □ 작성
+
+o 침해사고분석단 취약점분석팀</description>
+      <category>취약점정보</category>
+      <pubDate>Fri, 23 Feb 2024 09:33:40 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2023-45800 | 한비로 그룹웨어 SQL Injection 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=65d864d04410a805dddb8b2f</link>
+      <description>#### CVE-2023-45800 | 한비로 그룹웨어 SQL Injection 취약점 2024.02.26
+
+##### □ 개요
+
+o 한비로社의 그룹웨어 제품에서 SQL Injection 취약점 발견 
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| SQL Injection | 정보유출 | High | 7.5 | CVE-2023-45800 |
+
+##### □ 설명
+
+o 한비로 그룹웨어 제품 3.8.79 부터 3.8.81.1 이전 버전에서 SQL Injection 취약점이 확인되었으며, 해당 취약점으로 인해 정보 유출 발생 가능
+
+##### □ 영향받는 제품 및 버전
+
+| 제품 | 영향 받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| 한비로 그룹웨어 | 3.8.79 ~ 3.8.81.1 이전 | 3.8.81.1 |
+
+##### □ 해결방안
+
+o 취약점이 해결된 버전(3.8.81.1)으로 제품 업데이트 수행
+
+##### □ 참고
+
+o https://hanbiro.com/ 
+o https://nvd.nist.gov/vuln/detail/CVE-2023-45800
+
+##### □ 기타
+
+o 해당 취약점은 KrCert를 통해 임재연님께서 제공해주셨습니다
+
+##### □ 작성
+
+o 침해사고분석단 취약점분석팀</description>
+      <category>취약점정보</category>
+      <pubDate>Fri, 23 Feb 2024 09:26:40 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+    <item>
+      <title>CVE-2023-45799 | 엠엘소프트 파일 다운로드 및 실행 취약점</title>
+      <link>https://knvd.krcert.or.kr/info/vuln/public/detail?id=65d8626e4410a805dddb8b2d</link>
+      <description>#### CVE-2023-45799 | 엠엘소프트 파일 다운로드 및 실행 취약점 2024.02.26
+
+##### □ 개요
+
+o 엠엘소프트社의 TCO!stream 프로그램에서 발생하는 파일 다운로드 및 실행 취약점 
+
+| 취약점 종류 | 영향 | 심각도 | CVSS 점수 | CVE ID |
+| --- | --- | --- | --- | --- |
+| 파일 다운로드 및 실행 | 코드 실행 | High | 7.2 | CVE-2023-45799 |
+
+##### □ 설명
+
+o MLSoft TCO!stream 버전 8.0.22.1115 이하에서는 권한 유효성 검사 부족으로 인해 임의의 파일을 다운로드하고 실행 가능
+
+##### □ 영향받는 제품 및 버전
+
+| 제품 | 영향 받는 버전 | 해결 버전 |
+| --- | --- | --- |
+| TCO!stream | 8.0.22.1115 이하 | 8.0.23.215 |
+
+##### □ 해결방안
+
+o 취약점이 해결된 버전(8.0.23.215) 이상의 버전으로 제품 업데이트 수행
+
+##### □ 참고
+
+o http://mlsoft.com/notice-20230228
+
+##### □ 기타
+
+o 해당 취약점은 KrCert를 통해 송태현님께서 제공해주셨습니다
+
+##### □ 작성
+
+o 침해사고분석단 취약점분석팀</description>
+      <category>취약점정보</category>
+      <pubDate>Fri, 23 Feb 2024 09:16:30 GMT</pubDate>
+      <author>knvd.krcert.or.kr</author>
+    </item>
+  </channel>
+</rss>
