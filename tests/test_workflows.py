@@ -69,9 +69,14 @@ def _steps(workflow: dict, job: str = "refresh") -> list[dict]:
 def test_intel_workflow_declares_required_permissions() -> None:
     wf = _load("update-intel.yml")
     perms = wf.get("permissions") or {}
-    # 룰 카드 커밋(contents)·PR 생성과 자동 병합(pull-requests)에 필요하다.
-    assert perms.get("contents") == "write"
-    assert perms.get("pull-requests") == "write"
+    # 최소 권한(2026-09-13): 워크플로 기본은 읽기, 릴리스 자산 갱신에 필요한
+    # contents: write 는 refresh 잡에만 준다. PR 생성·자동 병합은 INTEL_PR_TOKEN(PAT)
+    # 으로 하므로 GITHUB_TOKEN 에 pull-requests: write 는 필요 없다 — 들고 있으면
+    # 그 자체가 불필요한 권한이다.
+    assert perms == {"contents": "read"}
+    job_perms = wf["jobs"]["refresh"].get("permissions") or {}
+    assert job_perms.get("contents") == "write"
+    assert "pull-requests" not in job_perms
     # actions: write 는 `gh workflow run` 우회책 때문에 받았던 권한이다.
     # 그 우회책이 제거됐으므로 권한도 반납한다(최소 권한). 다시 필요해졌다면
     # 그건 우회책이 되살아났다는 뜻이니 여기서 멈추고 다시 판단해야 한다.

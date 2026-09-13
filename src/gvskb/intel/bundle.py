@@ -24,6 +24,7 @@ import hashlib
 import json
 import re
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -108,7 +109,9 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
     with zf:
         try:
             manifest = json.loads(zf.read(MANIFEST_NAME).decode("utf-8"))
-        except (KeyError, json.JSONDecodeError):
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError,
+                zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
+            # manifest 자체가 손상된 경우(압축 스트림 오류 포함)도 예외를 흘리지 않고 거부한다.
             return {"ok": False, "error": "manifest.json이 없거나 손상됐습니다 — 정식 export 번들이 아닙니다.",
                     "sources": []}
 
@@ -140,6 +143,11 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
             except KeyError:
                 return {"ok": False, "sources": [],
                         "error": f"번들에 '{fname}'이 없습니다(manifest와 불일치) — 반입 중단."}
+            except (zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError) as exc:
+                # 압축 스트림 손상(비트 뒤집힘 등)은 sha256 비교 이전에 zlib 에서 터진다.
+                # 예외를 흘리면 자동 당김(autopull)이 서버 기동을 멈춘다 — 거부로 바꾼다.
+                return {"ok": False, "sources": [],
+                        "error": f"'{fname}' 압축 데이터 손상({type(exc).__name__}) — 이동 중 변조·손상 가능. 반입을 전체 중단합니다."}
             if _sha256_bytes(data) != f.get("sha256"):
                 return {"ok": False, "sources": [],
                         "error": f"'{fname}' sha256 불일치 — 이동 중 변조·손상 가능. 반입을 전체 중단합니다."}
