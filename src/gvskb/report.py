@@ -3297,6 +3297,8 @@ _ADVISORY_SEVERITY_KO = {
 #: 취약점 목록에서 한 화면에 펼칠 상한. 넘으면 접되 **접은 개수를 반드시 적는다**
 #: (조용한 절단 금지 — 이 결함이 정확히 그렇게 생겼다).
 _ADVISORY_SHOW_LIMIT = 12
+#: advisory 1건당 함께 보여줄 KNVD 공지 수 상한 — 근거 링크지 목록이 아니다.
+_KNVD_NOTICE_SHOW_LIMIT = 2
 
 
 _ADVISORY_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{1,14}-[A-Za-z0-9][A-Za-z0-9.\-]{2,60}$")
@@ -3340,7 +3342,16 @@ def _advisory_lines(check: dict) -> list[tuple[str, str | None]]:
         summary = _oneline(str(a.get("summary") or ""), 110)
         aid = a.get("id") or "(ID 미상)"
         out.append((f"{aid} [{sev}]{fixed_txt} — {summary}", advisory_url(aid)))
-    hidden = len(advisories) - len(out)
+        # KNVD(KISA) 국내 공지 — 정확한 CVE 일치로만 붙은 보조 근거. 제목은 일반
+        # 텍스트이며 렌더러가 이스케이프한다. 판정과 무관하므로 안내 줄로만 싣는다.
+        for n in (a.get("knvd_notices") or [])[:_KNVD_NOTICE_SHOW_LIMIT]:
+            when = str(n.get("published_at") or "")[:10]
+            title = _oneline(str(n.get("title") or ""), 90)
+            out.append((
+                f"↳ KISA 보안공지({n.get('cve_id') or ''}{', ' + when if when else ''}): {title}",
+                n.get("source_url") if str(n.get("source_url") or "").startswith("https://") else None,
+            ))
+    hidden = len(advisories) - len([a for a in advisories[:_ADVISORY_SHOW_LIMIT]])
     if hidden > 0:
         out.append((f"… 외 {hidden}건 (전체 목록은 결과 JSON 의 advisories 참조)", None))
     # 수집한 목록이 집계 수치보다 적으면 그 사실을 적는다 — 숫자만 크고 내역이

@@ -139,21 +139,25 @@ def _enrich_with_epss_nvd(kev_signals: list[dict], cache: "IntelCache") -> list[
     """
     if not kev_signals:
         return []
+    from ..intel.lookup import epss_by_cve, nvd_by_cve
+    from ..intel.sources.nvd import is_rejected
+
     used: list[str] = []
-    epss_entry = cache.load("epss-recent")
-    nvd_entry = cache.load("nvd-recent")
-    epss_by_cve = {i.get("cve"): i for i in (epss_entry.items if epss_entry else [])}
-    nvd_by_cve = {i.get("id"): i for i in (nvd_entry.items if nvd_entry else [])}
+    # 인덱스는 캐시 파일당 한 번만 만든다(intel/lookup.py 메모) — 예전에는 호출마다
+    # NVD 5만 건으로 dict 를 새로 만들어 락파일 검사에서 그 비용을 패키지 수만큼 냈다.
+    epss_index = epss_by_cve(cache.load("epss-recent"))
+    nvd_index = nvd_by_cve(cache.load("nvd-recent"))
     hit_epss = hit_nvd = False
     for sig in kev_signals:
         cve = sig.get("cveID")
-        e = epss_by_cve.get(cve)
+        e = epss_index.get(str(cve))
         if e:
             hit_epss = True
             sig["epss_score"] = e.get("epss")            # 30일 내 악용 관측 확률(0~1)
             sig["epss_percentile"] = e.get("percentile")
-        n = nvd_by_cve.get(cve)
-        if n:
+        n = nvd_index.get(str(cve))
+        # Rejected 로 바뀐 CVE 의 점수는 활성 근거가 아니다 — 병기하지 않는다.
+        if n and not is_rejected(n):
             hit_nvd = True
             sig["cvss31_base_score"] = n.get("cvss31_base_score")
             sig["cvss31_severity"] = n.get("cvss31_severity")
@@ -538,6 +542,33 @@ def _kev_cve_hits(vulns: list[dict], cache: IntelCache | None = None) -> list[di
     return hits
 
 
+def _attach_knvd_evidence(rows: list[dict], vulns: list[dict], cache: IntelCache | None = None) -> list[str]:
+    """OSV advisory 행마다 **정확한 CVE 일치**로 KNVD(KISA) 국내 보안공지를 붙인다.
+
+    조건 세 가지가 모두 맞을 때만 붙는다: ① OSV 가 이 패키지의 취약점을 확인했고
+    (rows 가 그 결과다) ② 그 항목에 정확한 CVE alias 가 있고 ③ KNVD 공지에 같은
+    CVE ID 가 있다. 이름 유사도·제목 부분 문자열·제조사 추측은 하지 않는다.
+
+    **판정에는 아무 영향이 없다** — verdict·severity·requires_review·max_cve 는 이
+    함수가 건드리지 않는다. 담당자가 읽을 한국어 근거 링크만 추가한다. 행마다
+    ``knvd_notices`` 키를 항상 둔다(없으면 빈 목록) — 있을 때만 키가 생기면 소비자가
+    스키마를 예측할 수 없다. Returns the KNVD source_ids actually used.
+    """
+    from ..intel.lookup import cve_ids_of, knvd_notices_for
+
+    cache = cache or IntelCache()
+    used: list[str] = []
+    for row, vuln in zip(rows, vulns):
+        notices, sids = knvd_notices_for(cve_ids_of(vuln), cache)
+        row["knvd_notices"] = notices
+        for sid in sids:
+            if sid not in used:
+                used.append(sid)
+    for row in rows[len(vulns):]:
+        row.setdefault("knvd_notices", [])
+    return used
+
+
 def _evaluate_cooldown(
     meta: PackageRegistryMetadata | None,
     env_grade: str | None,
@@ -835,6 +866,10 @@ def _offline_cache_check(
         rows = _advisory_rows(vuln_hits, name=name, eco=ecosystem_label)
         kev_hits = _kev_cve_hits(vuln_hits, cache)
         for sid in _enrich_with_epss_nvd(kev_hits, cache):
+            if sid not in cache_sources_used:
+                cache_sources_used.append(sid)
+        # KNVD 국내 공지(정확한 CVE 일치) — 근거 링크만 붙고 판정은 그대로다.
+        for sid in _attach_knvd_evidence(rows, vuln_hits, cache):
             if sid not in cache_sources_used:
                 cache_sources_used.append(sid)
         max_cve = _max_cve_from_vulns(vuln_hits)
@@ -1795,6 +1830,10 @@ async def check_package_impl(
     )
 
     advisory_rows = _advisory_rows(vulns, name=name, eco=eco)
+    # KNVD 국내 공지(정확한 CVE 일치, 로컬 캐시) — 온라인에서도 근거 링크만 붙는다.
+    online_cache_sources = ["cisa-kev"] if kev_cache["state"] in ("ok", "stale") else []
+    if vulns:
+        online_cache_sources.extend(_attach_knvd_evidence(advisory_rows, vulns, _intel))
 
     return PackageCheckResult(
         **base,
@@ -1818,7 +1857,7 @@ async def check_package_impl(
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
         # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
         # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.
-        cache_sources_used=["cisa-kev"] if kev_cache["state"] in ("ok", "stale") else [],
+        cache_sources_used=online_cache_sources,
         cache_freshness=(
             {"cisa-kev": str(kev_cache["fetched_at"])} if kev_cache["fetched_at"] else {}
         ),
