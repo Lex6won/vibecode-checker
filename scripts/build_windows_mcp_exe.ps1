@@ -66,7 +66,7 @@ try {
     sha256 = $hash
     pyinstaller_version = $PyInstallerVersion
     production_approved = $false
-    note = "기관 서명·승인 전 로컬 시험 후보입니다. 운영 배포에 사용하지 마세요."
+    note = "Local test candidate only. Institutional signing and approval are still required before production use."
   }
   $record | ConvertTo-Json -Depth 4
 } finally {
