@@ -471,6 +471,14 @@ class ScanEngines(BaseModel):
     failed: list[EngineUnavailable] = Field(
         default_factory=list, description="수행 중 오류로 중단된 엔진"
     )
+    # 이 검사 대상에서 **반드시 돌았어야 하는** 엔진. 언어별 필수 엔진 판정을
+    # 소비자(포털)가 하드코딩하지 않도록 체커가 계산해 준다: regex 는 항상,
+    # Python 소스가 있으면 python-ast, JS/TS 소스가 있으면 js-taint. semgrep 은
+    # 보조 엔진이라 들어가지 않는다. required 에 있는 엔진이 failed·unavailable 이면
+    # 소비자는 그 결과를 통과로 읽으면 안 된다(incomplete).
+    required: list[str] = Field(
+        default_factory=list, description="대상 언어 기준 필수 엔진(없으면 판정 불가)"
+    )
 
 
 class SourceSnapshot(BaseModel):

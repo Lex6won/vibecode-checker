@@ -666,12 +666,22 @@ def _cmd_status(args: argparse.Namespace) -> int:
     from . import __version__
     from . import diagnostics
 
+    from .ruleset import read_lock
+    from .scanners.regex_scanner import _resolve_rules_dir
+    from .schema import SCAN_REPORT_SCHEMA_VERSION
+
+    lock = read_lock(_resolve_rules_dir()) or {}
     payload = {
         "schema_version": 1,
         "installed": True,
         "version": __version__,
         "install_identity": diagnostics.install_identity(),
         "runtime_freshness": diagnostics.runtime_freshness(),
+        # 포털이 "예상한 체커와 실행본이 같은가"를 값으로 대조하는 데 쓰는 세 가지.
+        # 버전 문자열만으로는 같은 0.3.0 안의 다른 커밋을 구분할 수 없다.
+        "install_digest": diagnostics.install_digest(),
+        "ruleset": {"version": lock.get("version"), "digest": lock.get("digest")},
+        "scan_report_schema_version": SCAN_REPORT_SCHEMA_VERSION,
     }
     if args.json:
         sys.stdout.write(json.dumps(payload, ensure_ascii=False))
