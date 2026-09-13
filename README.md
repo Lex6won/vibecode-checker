@@ -237,6 +237,18 @@ MCP 설정 파일에 서버를 등록합니다. **Claude Desktop·Cursor·Claude
 
 > **신뢰하는 환경에서만 연결하세요** — MCP `scan_path` 도구는 지정한 경로의 로컬 파일을 읽습니다(검사 목적). 연결한 AI 클라이언트가 임의 경로 스캔을 요청할 수 있으므로 민감 디렉터리는 가리키지 마세요. 자세한 내용은 [SECURITY.md](SECURITY.md) 참고.
 
+#### Windows 독립 실행 MCP 시험본 만들기
+
+하네스 설치 파일에 넣을 로컬 시험용 `gvskb-server.exe`는 다음 스크립트로 만듭니다. 이 절차는 신원 정보가 포함된 wheel을 먼저 만들고, 격리된 임시 환경에서 고정 버전 PyInstaller로 단일 실행 파일을 생성합니다.
+
+```powershell
+.\scripts\build_windows_mcp_exe.ps1 `
+  -PythonExecutable C:\Python311\python.exe `
+  -OutputDirectory C:\work\vibecode-local-release\checker
+```
+
+출력의 `production_approved`는 항상 `false`입니다. 이는 이 PC의 시험운영 후보일 뿐이며, 실제 서버 설치 후 기관 승인 커밋에서 다시 빌드하고 번들 서명·Authenticode 서명·새 PC 설치 검증을 마쳐야 운영 배포할 수 있습니다.
+
 ---
 
 ## 사용 방법
