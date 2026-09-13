@@ -42,6 +42,8 @@ eval_corpus/results/
 docs/*
 !docs/quickstart_ko.md
 !docs/windows_utf8.md
+# 인텔 소스 운영 기록 — 운영자가 workflow_dispatch 확인·NVD_API_KEY 설정 시 읽는다.
+!docs/38_NVD_KNVD_소스_인텔_강화_2026-09-13.md
 !docs/assets/
 !docs/assets/**
 
