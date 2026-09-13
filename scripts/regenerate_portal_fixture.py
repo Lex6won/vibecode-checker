@@ -178,7 +178,9 @@ def generator_metadata(payload: dict) -> dict:
     안에서 실행될 때만** 채워진다. 모르면 null — 지어내지 않는다.
     """
     commit = _git_output("rev-parse", "HEAD")
-    dirty = _git_output("status", "--porcelain", "--untracked-files=no")
+    # 추적되지 않는 새 파일도 오염이다. 규칙 파일 하나가 추가된 채로 만든 결과는
+    # 그 커밋 해시로 재현되지 않는다. 증적 문구는 엄밀해야 한다.
+    dirty = _git_output("status", "--porcelain", "--untracked-files=all")
     return {
         "kind": "portal_fixture_generator",
         "checker_commit": commit,
