@@ -8,14 +8,23 @@ name: update-intel
 # 예전 구조는 매번 빈 캐시에서 시작했다 — 코드에 병합 함수가 있어도 러너에는
 # 이전 캐시가 없어서 실제 배포본은 한 번도 누적된 적이 없었다(실측 2026-09-13).
 #
-# 순서: checkout → 설치 → 이전 intel-latest 복원(sha256 검증 → import) → 새 수집
-# (정상 소스 갱신·실패 소스는 마지막 정상본 유지) → 소스별 상태표 → 번들 export
-# → rolling release 갱신 → 룰 PR → 최종 게이트.
+# 순서(게시는 맨 뒤 — 게이트가 빨간불이면 공개 번들은 바뀌지 않는다):
+#   checkout → 설치 → 이전 번들 복원(sha256 검증 → import) → 새 수집
+#   → 소스별 상태·필수 소스·freshness 게이트(실패 = 잡 중단)
+#   → 번들 export → 번들 import 재검증 → 릴리스 교체 → (운영 채널만) 룰 PR → 요약
+#
+# 채널:
+#   - schedule(main) 및 dispatch channel=prod → `intel-latest`(운영, 매일 자동)
+#   - dispatch channel=test(기본값)           → `intel-latest-test`(수집 코드 변경 검증용)
+#   두 채널 모두 **운영 번들(intel-latest)을 복원**해서 시작한다 — 시험 채널은
+#   "지금 코드로 운영 번들을 갱신하면 무엇이 나오는가"를 보는 것이지 별도 데이터
+#   계보가 아니다. 운영 이전 시 인텔 캐시/번들은 그대로 옮긴다.
 #
 # 안전 조건:
 # - 이전 번들이 손상(sha256 불일치·반입 거부)이면 새 번들을 게시하지 않는다.
 # - NVD 가 페이지 일부만 받았으면 어댑터가 예외를 내고 기존 NVD 캐시가 남는다.
 # - 한 소스가 실패해도 다른 정상 소스를 빈 데이터로 덮지 않는다(소스별 파일).
+# - 필수 소스 없음·정상본 없는 수집 실패·캐시 나이 초과는 게시 전에 잡을 멈춘다.
 # - 첫 실행(이전 번들 없음)은 bootstrap 으로 명시한다.
 # - Actions cache 는 쓰지 않는다 — 보존 수단은 릴리스 자산 + 실행별 artifact.
 # - 스케줄과 수동 실행이 겹치지 않도록 concurrency 를 둔다(취소 없이 직렬화).
@@ -32,6 +41,12 @@ on:
         description: "Which sources to refresh (--source value or 'all')"
         required: false
         default: "all"
+      channel:
+        description: "게시 채널 — test: intel-latest-test(코드 검증) · prod: intel-latest(운영)"
+        required: false
+        default: "test"
+        type: choice
+        options: ["test", "prod"]
 
 # 최소 권한 원칙 — 기본은 읽기. 릴리스 갱신에 필요한 쓰기는 잡 단위로만 준다.
 # 룰 PR 은 INTEL_PR_TOKEN(PAT) 으로 만들므로 GITHUB_TOKEN 에 pull-requests 권한은 필요 없다.
@@ -45,7 +60,10 @@ concurrency:
 env:
   GVSKB_CACHE_DIR: ${{ github.workspace }}/.gvskb-cache
   BUNDLE_NAME: gvskb-intel-bundle.zip
-  #: 캐시 나이 허용치(일). 이 날수만큼 연속 실패한 소스가 있으면 잡을 빨간불로 만든다.
+  #: 운영 번들 태그. 복원은 항상 여기서 한다.
+  PROD_TAG: intel-latest
+  TEST_TAG: intel-latest-test
+  #: 캐시 나이 허용치(일). 이 날수만큼 연속 실패한 소스가 있으면 게시 전에 잡을 멈춘다.
   #: 하루 실패는 경고(마지막 정상본 유지), 계속 실패는 오류 — 조용히 낡는 것을 막는다.
   MAX_SOURCE_AGE_DAYS: "3"
 
@@ -53,7 +71,7 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # intel-latest 릴리스 자산 갱신
+      contents: write   # 릴리스 자산 갱신
     # npm 데이터셋(~220MB)을 함께 받고 NVD 를 페이지 순회하므로 여유를 둔다.
     timeout-minutes: 40
     steps:
@@ -70,7 +88,23 @@ jobs:
           python -m pip install ".[dev]"
 
       # ------------------------------------------------------------------
+      # 0) 채널 결정 — schedule 은 운영, 수동은 입력값(기본 test).
+      # ------------------------------------------------------------------
+      - name: 게시 채널 결정
+        id: channel
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.channel }}" = "prod" ]; then
+            echo "name=prod" >> "$GITHUB_OUTPUT"
+            echo "tag=$PROD_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=test" >> "$GITHUB_OUTPUT"
+            echo "tag=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
       # 1) 이전 번들 복원 — 누적의 전제. 상태: restored | bootstrap | corrupt
+      #    항상 운영 번들(PROD_TAG)에서 복원한다(채널 주석 참고).
       # ------------------------------------------------------------------
       - name: 이전 intel-latest 번들 복원
         id: restore
@@ -79,12 +113,12 @@ jobs:
         run: |
           set -u
           mkdir -p prev "$GVSKB_CACHE_DIR"
-          if ! gh release view intel-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if ! gh release view "$PROD_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "state=bootstrap" >> "$GITHUB_OUTPUT"
             echo "이전 릴리스 없음 — bootstrap(첫 실행)으로 시작합니다."
             exit 0
           fi
-          if ! gh release download intel-latest --repo "$GITHUB_REPOSITORY" \
+          if ! gh release download "$PROD_TAG" --repo "$GITHUB_REPOSITORY" \
                -p "$BUNDLE_NAME" -p "$BUNDLE_NAME.sha256" -D prev --clobber; then
             echo "state=bootstrap" >> "$GITHUB_OUTPUT"
             echo "릴리스는 있으나 번들 자산이 없음 — bootstrap 으로 시작합니다."
@@ -132,81 +166,126 @@ jobs:
           cat intel-result.json
 
       # ------------------------------------------------------------------
-      # 3) 소스별 상태표 — freshness · item count · 커버리지 · 이번 갱신 결과.
-      #    나이 초과(연속 실패)·정상본 없는 실패가 있으면 exit 1 → 게이트가 읽는다.
+      # 3) 게시 전 게이트 — 소스별 상태표(freshness · item count · 커버리지 · 이번
+      #    갱신 결과)를 기록하고, 필수 소스 없음·정상본 없는 실패·나이 초과면
+      #    여기서 잡이 멈춘다. 이 단계가 실패하면 아래 export·게시는 실행되지 않는다.
       # ------------------------------------------------------------------
-      - name: 소스별 상태 기록
+      - name: 소스별 상태 기록 · 게시 조건 검사
         id: sources
-        if: steps.restore.outcome == 'success'
-        continue-on-error: true
+        if: steps.restore.outcome == 'success' && steps.refresh.outcome == 'success'
         run: |
+          set +e
           python scripts/intel_summary.py --cache-dir "$GVSKB_CACHE_DIR" \
             --results intel-result.json --max-age-days "$MAX_SOURCE_AGE_DAYS" \
-            --title "이번 실행 후 인텔 소스 상태 (복원: ${{ steps.restore.outputs.state }})" \
-            | tee sources-summary.md
+            --title "이번 실행 후 인텔 소스 상태 (복원: ${{ steps.restore.outputs.state }} · 채널: ${{ steps.channel.outputs.name }})" \
+            > sources-summary.md
+          gate=$?
+          set -e
+          cat sources-summary.md
           cat sources-summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.refresh.outputs.exit_code }}" = "2" ]; then
+            echo "::error::정상본이 없는 소스 수집 실패(error) — 번들을 게시하지 않습니다."
+            exit 1
+          fi
+          if [ "$gate" != "0" ]; then
+            echo "::error::게시 조건 미달(필수 소스 없음 또는 캐시 나이 초과) — 번들을 게시하지 않습니다."
+            exit 1
+          fi
+          if [ "${{ steps.refresh.outputs.exit_code }}" = "1" ]; then
+            echo "::warning::일부 소스 수집 실패 — 마지막 정상본을 유지한 채 게시합니다(연속되면 ${MAX_SOURCE_AGE_DAYS}일 뒤 오류)."
+          fi
 
       # ------------------------------------------------------------------
-      # 산출물 1: 검증 가능한 인텔 번들(고정 URL). 복원이 정상이었고 수집 단계가
-      # 실행됐으면 게시한다 — 일부 소스 실패는 마지막 정상본이 포함되므로 게시가
-      # 맞다(아무것도 안 하면 사용자 캐시가 더 낡는다). 정상본 없는 실패(error)나
-      # 나이 초과는 게시 후 게이트가 빨간불로 알린다.
+      # 4) 번들 export → 5) 반입 재검증 — 게시할 파일을 소비자와 같은 경로로 한 번
+      #    더 읽어 본다. 만든 쪽의 sha256 만 믿지 않는다.
       # ------------------------------------------------------------------
       - name: Export verified intel bundle
         id: bundle
-        if: steps.restore.outcome == 'success' && steps.refresh.outcome == 'success'
+        if: steps.sources.outcome == 'success'
         run: |
           gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"
           sha256sum "$BUNDLE_NAME" > "$BUNDLE_NAME.sha256"
           cat "$BUNDLE_NAME.sha256"
 
-      - name: Upload bundle artifact (traceability)
+      - name: 번들 반입 재검증
+        id: verify
         if: steps.bundle.outcome == 'success'
+        run: |
+          sha256sum -c "$BUNDLE_NAME.sha256"
+          gvskb intel-bundle import "$BUNDLE_NAME" --cache-dir "$RUNNER_TEMP/verify-cache" --json > verify-result.json
+          cat verify-result.json
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          res = json.loads(Path("verify-result.json").read_text(encoding="utf-8"))
+          if not res.get("ok"):
+              print("::error::번들 반입 재검증 실패:", res.get("error")); sys.exit(1)
+          expected = sorted(p.stem for p in Path(__import__("os").environ["GVSKB_CACHE_DIR"]).glob("*.json") if not p.name.startswith("."))
+          got = sorted(res.get("sources") or [])
+          if expected != got:
+              print(f"::error::번들 소스 목록 불일치: 캐시 {expected} vs 번들 {got}"); sys.exit(1)
+          print("번들 반입 재검증 통과:", got)
+          PY
+
+      - name: Upload bundle artifact (traceability)
+        if: steps.verify.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: gvskb-intel-bundle-${{ github.run_id }}
+          name: gvskb-intel-bundle-${{ steps.channel.outputs.name }}-${{ github.run_id }}
           path: |
             gvskb-intel-bundle.zip
             gvskb-intel-bundle.zip.sha256
           retention-days: 30
 
-      - name: Publish bundle to rolling release (intel-latest)
+      # ------------------------------------------------------------------
+      # 6) 게시 — 모든 조건을 통과한 뒤에만 공개 번들을 교체한다.
+      # ------------------------------------------------------------------
+      - name: Publish bundle to rolling release
         id: publish
-        if: steps.bundle.outcome == 'success'
+        if: steps.verify.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RESTORE_STATE: ${{ steps.restore.outputs.state }}
+          TAG: ${{ steps.channel.outputs.tag }}
+          CHANNEL: ${{ steps.channel.outputs.name }}
         run: |
-          # 고정 태그 intel-latest — 다운로드 URL이 매일 동일하게 유지된다:
-          #   releases/download/intel-latest/gvskb-intel-bundle.zip
+          # 고정 태그 — 다운로드 URL이 매일 동일하게 유지된다:
+          #   releases/download/<tag>/gvskb-intel-bundle.zip
           # --latest=false: 코드 릴리스의 'Latest' 자리를 차지하지 않는다.
-          if ! gh release view intel-latest >/dev/null 2>&1; then
-            gh release create intel-latest \
-              --title "일일 위협 인텔 번들 (자동 갱신)" \
-              --notes "placeholder" --latest=false
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$CHANNEL" = "prod" ]; then
+              title="일일 위협 인텔 번들 (자동 갱신)"
+            else
+              title="위협 인텔 번들 — 시험 채널(수집 코드 검증용)"
+            fi
+            gh release create "$TAG" --title "$title" --notes "placeholder" --latest=false --prerelease
           fi
-          gh release upload intel-latest "$BUNDLE_NAME" "$BUNDLE_NAME.sha256" --clobber
+          gh release upload "$TAG" "$BUNDLE_NAME" "$BUNDLE_NAME.sha256" --clobber
           {
-            echo "매일 03:17 KST 자동 갱신되는 위협 인텔 반입 번들입니다."
+            if [ "$CHANNEL" = "prod" ]; then
+              echo "매일 03:17 KST 자동 갱신되는 위협 인텔 반입 번들입니다."
+            else
+              echo "**시험 채널** — 수집 코드 변경을 검증하기 위한 번들입니다. 운영 배포본은 \`$PROD_TAG\` 입니다."
+            fi
             echo
-            echo "- 갱신 시각(UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "- 누적 방식: 이전 번들 복원(${RESTORE_STATE}) 후 새 수집분 병합 — NVD·EPSS·KNVD 는 시간이 지날수록 넓어집니다"
+            echo "- 갱신 시각(UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ) · 채널: $CHANNEL · 커밋: $GITHUB_SHA"
+            echo "- 누적 방식: 운영 번들 복원(${RESTORE_STATE}) 후 새 수집분 병합 — NVD·EPSS·KNVD 는 시간이 지날수록 넓어집니다"
             echo "- 소스: OSV malicious+vulns (PyPI·npm) · CISA KEV · NVD recent(전 페이지, 누적) · FIRST EPSS(누적) · KNVD 공식 RSS 2종(누적)"
             echo "- KNVD 는 피드가 최신 10건만 제공하므로 **누적분이며 전체 DB 가 아닙니다**"
-            echo "- 검증: zip 내부 manifest.json(파일별 sha256) + 게시 sha256 사이드카"
+            echo "- 검증: zip 내부 manifest.json(파일별 sha256) + 게시 sha256 사이드카 + 게시 전 반입 재검증"
             echo
             if [ -f sources-summary.md ]; then cat sources-summary.md; echo; fi
             echo "망분리 반입: 외부망 PC에서 다운로드 → sha256 확인 → USB 이동 →"
             echo "\`gvskb intel-bundle import gvskb-intel-bundle.zip\` → \`gvskb doctor --offline\`"
           } > release-notes.md
-          gh release edit intel-latest --notes-file release-notes.md
+          gh release edit "$TAG" --notes-file release-notes.md
 
       # ------------------------------------------------------------------
-      # 산출물 2: KEV → proposed 룰 PR (사람 검토 게이트)
+      # 산출물 2: KEV → proposed 룰 PR (사람 검토 게이트) — 운영 채널에서만.
       # ------------------------------------------------------------------
       - name: Detect changes in proposed rules
         id: detect
-        if: steps.refresh.outcome == 'success'
+        if: steps.refresh.outcome == 'success' && steps.channel.outputs.name == 'prod'
         run: |
           # git diff 는 untracked(신규) 파일을 보지 못한다 — 새 proposed 룰은
           # 항상 신규 파일이므로 status --porcelain 으로 감지해야 PR이 생성된다.
@@ -244,7 +323,7 @@ jobs:
       # `changed` 와 무관하게 **매번** 돈다 — 토큰 만료를 하루 안에 드러내기 위해서다.
       - name: PR 생성 토큰 점검(만료 조기 발견)
         id: prtoken
-        if: steps.refresh.outcome == 'success'
+        if: steps.refresh.outcome == 'success' && steps.channel.outputs.name == 'prod'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.INTEL_PR_TOKEN }}
@@ -293,21 +372,25 @@ jobs:
           gh pr merge --squash --auto "${{ steps.cpr.outputs.pull-request-number }}"
 
       # ------------------------------------------------------------------
-      # 최종 게이트 — "무엇이 진짜 실패인가"를 분명히 한다.
+      # 최종 요약 게이트 — "무엇이 진짜 실패인가"를 분명히 한다.
       #
-      # 빨간불(exit 1): 이전 번들 손상 · 수집 단계 자체가 실행 불가 · 정상본 없는
-      #   소스 실패(error) · 캐시 나이 초과(연속 실패) · 번들 export/게시 실패.
-      # 노란불(warning): 일부 소스 실패이나 마지막 정상본 유지(warn) · 룰 PR 토큰 문제.
+      # 빨간불(exit 1): 이전 번들 손상 · 수집 단계 실행 불가 · 게시 조건 미달
+      #   (필수 소스 없음·정상본 없는 실패·나이 초과) · export/재검증/게시 실패.
+      #   이 경우 공개 번들은 바뀌지 않았다(게시가 맨 뒤이므로).
+      # 노란불(warning): 일부 소스 실패이나 마지막 정상본 유지 · 룰 PR 토큰 문제.
       # ------------------------------------------------------------------
       - name: 최종 상태 게이트
         if: always()
         env:
+          CHANNEL: ${{ steps.channel.outputs.name }}
+          TAG: ${{ steps.channel.outputs.tag }}
           RESTORE: ${{ steps.restore.outcome }}
           RESTORE_STATE: ${{ steps.restore.outputs.state }}
           REFRESH: ${{ steps.refresh.outcome }}
           REFRESH_RC: ${{ steps.refresh.outputs.exit_code }}
           SOURCES: ${{ steps.sources.outcome }}
           BUNDLE: ${{ steps.bundle.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
           PUBLISH: ${{ steps.publish.outcome }}
           AUTOMERGE: ${{ steps.automerge.outcome }}
           PR_NUM: ${{ steps.cpr.outputs.pull-request-number }}
@@ -315,58 +398,56 @@ jobs:
           PR_TOKEN_STATE: ${{ steps.prtoken.outputs.state }}
         run: |
           {
-            echo "### 인텔 갱신 결과"
+            echo "### 인텔 갱신 결과 (채널: ${CHANNEL:-?} → ${TAG:-?})"
             echo "- 이전 번들 복원: \`${RESTORE_STATE:-unknown}\` (step ${RESTORE})"
             echo "- 인텔 수집: step \`${REFRESH}\`, update-intel exit \`${REFRESH_RC:-n/a}\` (0 ok · 1 warn · 2 error)"
-            echo "- 소스 상태 게이트: \`${SOURCES:-skipped}\` (failure = 나이 초과 또는 정상본 없는 실패)"
-            echo "- 번들 export: \`${BUNDLE:-skipped}\` · 게시: \`${PUBLISH:-skipped}\`"
-            echo "- 룰 PR: \`${AUTOMERGE:-none}\` ${PR_NUM:+(#$PR_NUM)} · PR 토큰: \`${PR_TOKEN_STATE:-unknown}\`"
+            echo "- 게시 조건 게이트: \`${SOURCES:-skipped}\`"
+            echo "- 번들 export: \`${BUNDLE:-skipped}\` · 반입 재검증: \`${VERIFY:-skipped}\` · 게시: \`${PUBLISH:-skipped}\`"
+            echo "- 룰 PR: \`${AUTOMERGE:-none}\` ${PR_NUM:+(#$PR_NUM)} · PR 토큰: \`${PR_TOKEN_STATE:-n/a}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
           fail=0
           if [ "$RESTORE_STATE" = "corrupt" ] || [ "$RESTORE" != "success" ]; then
-            echo "::error::이전 번들 복원 실패(${RESTORE_STATE:-unknown}) — 손상된 번들을 덮어쓰지 않기 위해 게시하지 않았습니다. 릴리스 자산을 확인하세요."
-            echo "> ❌ **이전 번들 복원 실패** — 새 번들을 게시하지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::이전 번들 복원 실패(${RESTORE_STATE:-unknown}) — 손상된 번들을 덮어쓰지 않기 위해 게시하지 않았습니다."
+            echo "> ❌ **이전 번들 복원 실패** — 공개 번들은 바뀌지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
             fail=1
           fi
           if [ "$REFRESH" != "success" ]; then
             echo "::error::인텔 수집 단계가 실행되지 못했습니다."
-            echo "> ❌ **인텔 수집 단계 실패**" >> "$GITHUB_STEP_SUMMARY"
-            fail=1
-          elif [ "${REFRESH_RC:-0}" = "2" ]; then
-            echo "::error::정상본이 없는 소스 수집 실패(error) — 번들에 그 소스가 빠져 있습니다. 위 상태표를 확인하세요."
-            echo "> ❌ **정상본 없는 소스 실패** — 상태표의 error 소스를 확인하세요." >> "$GITHUB_STEP_SUMMARY"
-            fail=1
-          elif [ "${REFRESH_RC:-0}" = "1" ]; then
-            echo "::warning::일부 소스 수집 실패 — 마지막 정상본을 유지한 채 번들을 게시했습니다. 상태표를 확인하세요."
-            echo "> ⚠️ **일부 소스 실패(정상본 유지)** — 연속되면 ${MAX_SOURCE_AGE_DAYS}일 뒤 오류로 승격됩니다." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ "$SOURCES" = "failure" ]; then
-            echo "::error::소스 상태 게이트 실패 — 캐시 나이 초과(연속 실패) 또는 정상본 없는 실패가 있습니다."
-            echo "> ❌ **소스 상태 게이트 실패** — 위 상태표의 '문제' 열을 확인하세요." >> "$GITHUB_STEP_SUMMARY"
+            echo "> ❌ **인텔 수집 단계 실패** — 공개 번들은 바뀌지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
             fail=1
           fi
-          if [ "$REFRESH" = "success" ] && { [ "$BUNDLE" != "success" ] || [ "$PUBLISH" != "success" ]; }; then
-            echo "::error::번들 export/게시 실패 — intel-latest 릴리스가 갱신되지 않았습니다."
+          if [ "$SOURCES" != "success" ] && [ "$REFRESH" = "success" ]; then
+            echo "::error::게시 조건 미달 — 상태표의 문제 열을 확인하세요. 공개 번들은 바뀌지 않았습니다."
+            echo "> ❌ **게시 조건 미달** — 공개 번들은 바뀌지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
+            fail=1
+          fi
+          if [ "$SOURCES" = "success" ] && { [ "$BUNDLE" != "success" ] || [ "$VERIFY" != "success" ] || [ "$PUBLISH" != "success" ]; }; then
+            echo "::error::번들 export/재검증/게시 실패 — ${TAG} 가 갱신되지 않았습니다."
             echo "> ❌ **번들 배포 실패** — 사용자가 최신 번들을 받을 수 없습니다." >> "$GITHUB_STEP_SUMMARY"
             fail=1
           fi
-          if [ "$PR_TOKEN_STATE" = "missing" ]; then
-            echo "::warning::INTEL_PR_TOKEN 시크릿이 없습니다 — 새 KEV 가 나와도 룰 PR 을 만들지 못합니다."
-            echo "> ⚠️ **INTEL_PR_TOKEN 미설정** — 룰 카드 반영 경로가 끊겨 있습니다(번들은 별도)." >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$PR_TOKEN_STATE" = "invalid" ]; then
-            echo "::warning::INTEL_PR_TOKEN 으로 저장소를 조회하지 못했습니다 — 만료·폐기·권한 축소를 확인하세요."
-            echo "> ⚠️ **INTEL_PR_TOKEN 무효** — 만료되었거나 권한이 부족합니다(번들은 별도)." >> "$GITHUB_STEP_SUMMARY"
+          if [ "${REFRESH_RC:-0}" = "1" ]; then
+            echo "> ⚠️ **일부 소스 실패(정상본 유지)** — 연속되면 ${MAX_SOURCE_AGE_DAYS}일 뒤 게시가 멈춥니다." >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ "$CHANGED" = "true" ] && [ "$PR_TOKEN_STATE" != "ok" ]; then
-            echo "::warning::새 proposed 룰이 있으나 PR 을 만들지 못했습니다(토큰 상태: ${PR_TOKEN_STATE:-unknown})."
-            echo "> ⚠️ 새 룰 카드가 저장소에 반영되지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ -n "$PR_NUM" ] && [ "$AUTOMERGE" != "success" ]; then
-            echo "::warning::룰 PR #$PR_NUM 자동 병합 실패 — 번들과는 무관합니다. PR 을 확인하세요."
-            echo "> ⚠️ 룰 PR #$PR_NUM 처리 실패(번들과 무관). 수동 확인 필요." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CHANNEL" = "prod" ]; then
+            if [ "$PR_TOKEN_STATE" = "missing" ]; then
+              echo "::warning::INTEL_PR_TOKEN 시크릿이 없습니다 — 새 KEV 가 나와도 룰 PR 을 만들지 못합니다."
+              echo "> ⚠️ **INTEL_PR_TOKEN 미설정** — 룰 카드 반영 경로가 끊겨 있습니다(번들은 별도)." >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$PR_TOKEN_STATE" = "invalid" ]; then
+              echo "::warning::INTEL_PR_TOKEN 으로 저장소를 조회하지 못했습니다 — 만료·폐기·권한 축소를 확인하세요."
+              echo "> ⚠️ **INTEL_PR_TOKEN 무효** — 만료되었거나 권한이 부족합니다(번들은 별도)." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ "$CHANGED" = "true" ] && [ "$PR_TOKEN_STATE" != "ok" ]; then
+              echo "::warning::새 proposed 룰이 있으나 PR 을 만들지 못했습니다(토큰 상태: ${PR_TOKEN_STATE:-unknown})."
+              echo "> ⚠️ 새 룰 카드가 저장소에 반영되지 않았습니다." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ -n "$PR_NUM" ] && [ "$AUTOMERGE" != "success" ]; then
+              echo "::warning::룰 PR #$PR_NUM 자동 병합 실패 — 번들과는 무관합니다. PR 을 확인하세요."
+              echo "> ⚠️ 룰 PR #$PR_NUM 처리 실패(번들과 무관). 수동 확인 필요." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
           if [ "$fail" = "1" ]; then
             exit 1
           fi
-          echo "> ✅ 번들 배포 완료 — 이전 번들(${RESTORE_STATE}) 위에 누적된 최신 위협 인텔을 사용자가 받습니다." >> "$GITHUB_STEP_SUMMARY"
+          echo "> ✅ ${TAG} 게시 완료 — 운영 번들(${RESTORE_STATE}) 위에 누적된 최신 위협 인텔입니다." >> "$GITHUB_STEP_SUMMARY"
