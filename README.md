@@ -345,13 +345,15 @@ gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳
 | **행안부 SW 개발보안 가이드** | 49개 보안약점 |
 | **국정원 AI 보안 가이드북 (2025)** | AI 위협·대책 45룰 |
 | **OWASP** | LLM Top 10 · Agentic Top 10 · AI Testing Guide |
-| **실시간 취약점 피드** | OSV.dev · CISA KEV · NVD · FIRST EPSS |
+| **실시간 취약점 피드** | OSV.dev · CISA KEV · NVD · FIRST EPSS · KISA KNVD 공식 RSS(국내 보안공지, 보조 근거) |
 
 룰은 총 **328개**입니다 — 탐지 룰 101개(검사에서 발견을 만드는 룰) + 참조 룰 227개(발견의 근거·출처로 인용되는 지식 룰). 모든 룰은 Markdown 파일로 정의되어 누구나 읽고 검토할 수 있습니다.
 
 ### 위협 정보(인텔)는 매일 자동 갱신됩니다
 
-GitHub Actions가 **매일 03:00(KST)** 5개 소스(OSV 악성 패키지·OSV 취약점 DB·CISA KEV·NVD·EPSS)를 **PyPI·npm 두 생태계**에 대해 수집해 검증 가능한 번들을 [`intel-latest` 릴리스](https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest)에 게시합니다. NVD·EPSS는 매일 새 수집분을 기존 캐시에 **누적**해 시간이 지날수록 커버리지가 넓어집니다.
+GitHub Actions가 **매일 03:17(KST)** 7개 소스(OSV 악성 패키지·OSV 취약점 DB·CISA KEV·NVD·EPSS·KNVD 보안공지·KNVD 공개 취약점)를 **PyPI·npm 두 생태계**에 대해 수집해 검증 가능한 번들을 [`intel-latest` 릴리스](https://github.com/Lex6won/vibecode-checker/releases/tag/intel-latest)에 게시합니다. 갱신 잡은 **이전 번들을 먼저 복원한 뒤** 새 수집분을 병합하므로 NVD(최근 7일, 전 페이지)·EPSS·KNVD는 시간이 지날수록 커버리지가 넓어집니다. KNVD 피드는 최신 10건만 제공하므로 캐시는 **누적분이며 KNVD 전체 DB가 아닙니다**.
+
+역할 구분: PyPI/npm 패키지의 취약점과 영향 버전은 **OSV가 주 근거**입니다. NVD는 CVSS 병기·상태(Rejected) 확인용 보조 정보이고, KNVD는 OSV 취약점의 CVE와 **정확히 같은 CVE ID**일 때만 한국어 보안공지 링크로 붙습니다 — 이름 유사도 매칭은 하지 않으며, NVD·KNVD로 판정(verdict·severity)이 바뀌지 않습니다.
 
 - **인터넷 PC**: 별도 설정 없이 자동입니다. 서버 기동·검사 시점에 캐시 신선도를 확인하고 낡았으면 하루 1회 자동으로 받아옵니다(`GVSKB_AUTO_UPDATE=off` 로 끌 수 있음). 수동 갱신은 `gvskb update-intel --all`.
 - **망분리 PC**: [아래 절차](#망분리폐쇄망-환경에서-쓰기)대로 번들을 반입합니다. 관리자가 공유 폴더(`GVSKB_INTEL_DIR`)에 번들을 놓아두면 각 PC가 자동 반영합니다.
@@ -395,7 +397,7 @@ GitHub Actions가 **매일 03:00(KST)** 5개 소스(OSV 악성 패키지·OSV �
 외부 통신에 대해 먼저 알아두실 것:
 
 1. **소스 코드는 외부로 전송되지 않습니다.** 모든 정적 분석은 로컬에서 수행됩니다.
-2. 외부 통신은 패키지 취약점 조회에 한정되며(OSV·CISA·NVD·EPSS 공개 API), 보내는 것은 패키지명·버전·CVE ID 같은 공개 식별자뿐입니다.
+2. 외부 통신은 패키지 취약점 조회에 한정되며(OSV·CISA·NVD·EPSS 공개 API, KNVD 공식 RSS), 보내는 것은 패키지명·버전·CVE ID 같은 공개 식별자뿐입니다. NVD·KNVD는 검사 중에 접속하지 않고 GitHub Actions가 미리 받은 로컬 캐시만 읽습니다.
 3. `GVSKB_MODE=offline` 설정 시 외부 통신을 완전히 차단하고, 반입한 캐시와 로컬 룰만으로 동작합니다.
 
 ### 위협 정보 반입 절차
@@ -403,7 +405,7 @@ GitHub Actions가 **매일 03:00(KST)** 5개 소스(OSV 악성 패키지·OSV �
 **1단계 (외부망 PC) — 번들 확보.** 매일 자동 생성되는 공식 번들을 받는 방법(A, 권장)과 직접 수집하는 방법(B)이 있습니다.
 
 ```bash
-# 방법 A — 공식 번들 내려받기 (매일 03:00 KST 갱신)
+# 방법 A — 공식 번들 내려받기 (매일 03:17 KST 갱신)
 curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip
 curl -LO https://github.com/Lex6won/vibecode-checker/releases/download/intel-latest/gvskb-intel-bundle.zip.sha256
 sha256sum -c gvskb-intel-bundle.zip.sha256      # OK 확인 후 반입 매체로 이동

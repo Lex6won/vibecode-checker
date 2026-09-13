@@ -5,6 +5,36 @@
 
 ## [Unreleased]
 
+### 22차 — NVD 수집 누락 수정 · KNVD 공식 RSS 보조 근거 · 일일 인텔 누적 복원 — 2026-09-13
+
+외부 인텔이 "빠짐없이 받히고, 정확한 CVE 에만 보조 근거로 붙고, 판정은 흔들지
+않는" 구조로 바뀐다. 지원 범위는 그대로다(Python·JS·TS 소스, PyPI·npm 의존성).
+
+- **NVD 전 페이지 수집** — `resultsPerPage=2000` 한 페이지만 받고 성공으로
+  저장하던 결함을 고쳤다(실측 2026-09-13: 최근 7일 창 totalResults 7,149건 중
+  2,000건만 읽었다). startIndex 순회 + resultsPerPage/startIndex/totalResults
+  검증, 반복 페이지·빈 페이지·합계 변경·페이지 상한은 실패, 429 는
+  Retry-After(상한)·제한 백오프, 5xx·네트워크 오류는 제한 재시도. 페이지 하나라도
+  실패하면 **부분 결과를 저장하지 않는다**(이전 캐시 유지). 같은 CVE 는
+  lastModified 최신 항목, Rejected 상태는 활성 근거로 쓰지 않는다. 판정에 쓰지
+  않는 설명문(600자)은 캐시에서 뺐다.
+- **KNVD 공식 RSS 2종**(`knvd-security-notice`·`knvd-public-vuln`) — 제목·공식
+  링크·게시 시각·정확히 추출한 CVE/CWE·일반 텍스트 요약만 저장. 응답 크기 상한,
+  DTD/외부 엔티티 거부, HTTPS+`knvd.krcert.or.kr` 최종 URL 검증, 링크 기준 중복
+  제거, 캐시 상한. OSV 취약점의 CVE alias 와 **정확히 같은 CVE** 일 때만
+  advisory 행에 `knvd_notices`(source·source_url·cve_id·published_at·fetched_at·
+  match_method=exact_cve)로 붙는다. 캐시 유무로 verdict·severity·requires_review·
+  게이트 판정은 바뀌지 않는다(테스트로 고정). 피드는 최신 10건만 주므로 "KNVD
+  전체 DB" 가 아니다.
+- **일일 갱신 잡의 누적 복원** — 매번 빈 캐시에서 시작해 병합 함수가 있어도
+  배포본이 누적되지 않던 문제. 이전 `intel-latest` 번들을 sha256 검증 후 반입한
+  뒤 수집하고, 손상이면 게시하지 않는다. 소스별 갱신 결과·항목 수·수집 시각·
+  커버리지 범위를 Job Summary 와 릴리스 노트에 기록하고, 연속 실패(캐시 나이
+  초과)는 오류로 승격한다. cron 정각 회피(03:17 KST), concurrency 직렬화,
+  최소 권한(기본 contents: read).
+- **CVE 조회 인덱스 메모**(`intel/lookup.py`) — NVD·EPSS·KNVD 인덱스를 캐시
+  파일당 한 번만 만든다. 예전에는 호출마다 NVD 전체로 dict 를 새로 만들었다.
+
 ### 21차 — 소비자 계약을 값으로 고정 · 인라인 무시 전 언어 적용 · 등급 조용한 폴백 제거 — 2026-09-12
 
 포털·하네스와의 연동 점검에서 나온 결함을 닫는다. 공통 원인은 하나다 —
