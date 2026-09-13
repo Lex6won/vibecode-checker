@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import sys
@@ -321,6 +322,45 @@ def _git_head_commit(start: Path) -> tuple[str | None, str | None]:
     return None, None
 
 
+BUILD_INFO_FILENAME = "build_info.json"
+
+
+def build_info() -> dict:
+    """wheel 빌드 시 패키지 안에 기록된 신원(build_commit·built_at·package_version). 없으면 {}."""
+    try:
+        p = Path(_gvskb_path()) / BUILD_INFO_FILENAME
+        if not p.is_file():
+            return {}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — 진단이 서버를 막으면 안 된다
+        return {}
+
+
+def install_digest() -> dict:
+    """설치된 패키지 파일 전체의 sha256 — "실행 중인 코드가 정확히 무엇인가"의 두 번째 근거.
+
+    커밋 SHA 는 빌드 시점의 주장이고, 이 digest 는 지금 디스크에 있는 파일의 사실이다.
+    둘을 함께 두면 "커밋은 맞는데 설치 후 파일이 바뀐" 상황을 잡을 수 있다.
+    __pycache__ 와 build_info.json 자체는 제외한다(설치 환경마다 달라지거나 자기 참조).
+    """
+    root = Path(_gvskb_path())
+    hasher = hashlib.sha256()
+    count = 0
+    try:
+        for f in sorted(root.rglob("*")):
+            if not f.is_file() or "__pycache__" in f.parts or f.name == BUILD_INFO_FILENAME:
+                continue
+            rel = f.relative_to(root).as_posix()
+            hasher.update(rel.encode("utf-8") + b"\0")
+            hasher.update(f.read_bytes())
+            hasher.update(b"\0")
+            count += 1
+    except Exception as exc:  # noqa: BLE001
+        return {"sha256": None, "file_count": count, "error": str(exc)}
+    return {"sha256": hasher.hexdigest(), "file_count": count}
+
+
 def install_identity() -> dict:
     """이 설치본이 **정확히 어느 코드인지**. 절대 예외를 던지지 않는다.
 
@@ -356,6 +396,16 @@ def install_identity() -> dict:
                 if commit:
                     identity["commit_id"] = commit
                     identity["commit_source"] = "direct_url.json (pip)"
+
+        if not identity["commit_id"]:
+            # wheel 설치본: 빌드 스크립트(scripts/build_wheel.py)가 패키지 안에
+            # 남긴 build_info.json 이 신원이다. wheel 에는 git 정보가 없으므로
+            # 이것이 없으면 설치본이 어느 커밋인지 말할 수 없다.
+            build = build_info()
+            if build.get("build_commit"):
+                identity["commit_id"] = str(build["build_commit"])
+                identity["commit_source"] = "build_info.json (wheel 빌드 시 기록)"
+                identity["build"] = build
 
         if not identity["commit_id"]:
             module_dir = Path(_gvskb_path())

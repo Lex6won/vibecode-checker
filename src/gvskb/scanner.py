@@ -95,6 +95,14 @@ def _language_of(filename: str) -> str | None:
     return _infer_language(filename, None)
 
 
+def _scanned_languages(filename: str, language: str | None) -> set[str]:
+    """이 파일이 어떤 언어로 검사됐는가 — ``engines.required`` 계산용."""
+    from .scanners.regex_scanner import _infer_language
+
+    lang = _infer_language(filename, language)
+    return {lang} if lang else set()
+
+
 def source_snapshot_for(root: Path) -> SourceSnapshot | None:
     """검사 대상 소스의 신원 — git 커밋·브랜치·작업트리 상태.
 
@@ -149,12 +157,43 @@ def _lockfile_digests(root: Path) -> dict[str, str]:
     return out
 
 
-def engine_status(failures: dict[str, str] | None = None) -> ScanEngines:
+#: 언어별 필수 엔진. regex 는 언어와 무관하게 항상 필수다. semgrep 은 보조다.
+_REQUIRED_ENGINE_BY_LANGUAGE = {
+    "python": "python-ast",
+    "javascript": "js-taint",
+    "typescript": "js-taint",
+    # HTML 의 인라인 <script> 는 javascript 로 한 번 더 검사한다(scan_code 참고).
+    "html": "js-taint",
+}
+
+
+#: required 의 출력 순서 — 언어 집합과 무관하게 항상 이 순서다(소비자 대조 안정성).
+_REQUIRED_ENGINE_ORDER = ("regex", "python-ast", "js-taint")
+
+
+def required_engines(languages: Iterable[str] | None) -> list[str]:
+    """검사 대상 언어 집합 → 필수 엔진 목록(고정 순서, 중복 없음)."""
+    wanted = {"regex"}
+    for lang in languages or ():
+        engine = _REQUIRED_ENGINE_BY_LANGUAGE.get(str(lang or "").lower())
+        if engine:
+            wanted.add(engine)
+    return [engine for engine in _REQUIRED_ENGINE_ORDER if engine in wanted]
+
+
+def engine_status(
+    failures: dict[str, str] | None = None,
+    *,
+    languages: Iterable[str] | None = None,
+) -> ScanEngines:
     """이번 검사에서 어떤 엔진이 돌았고 무엇이 빠졌는가.
 
     보고서가 판정의 **깊이**를 말하게 하는 값이다. 같은 코드라도 semgrep 이 없는
     PC 에서는 JS/TS 정밀 분석이 빠진 채 '이상 없음'이 나오는데, 예전에는 그
     차이가 결과 어디에도 남지 않아 두 보고서가 똑같아 보였다.
+
+    ``languages`` 는 실제로 검사한 파일들의 언어 집합 — 여기서 ``required`` 를
+    계산한다. 필수 엔진이 failed·unavailable 이면 소비자는 통과로 읽지 않는다.
     """
     failures = failures or {}
     used: list[str] = []
@@ -177,7 +216,8 @@ def engine_status(failures: dict[str, str] | None = None) -> ScanEngines:
                 name=name,
                 reason=_ENGINE_UNAVAILABLE_REASON.get(name, "이 환경에서 사용할 수 없습니다"),
             ))
-    return ScanEngines(used=used, unavailable=unavailable, failed=failed)
+    return ScanEngines(used=used, unavailable=unavailable, failed=failed,
+                       required=required_engines(languages))
 
 SEVERITY_RANK = {
     Severity.low: 0,
@@ -820,7 +860,7 @@ def scan_code(
         profile_fallback=profile_fallback,
         summary=_summary(findings),
         findings=findings,
-        engines=engine_status(engine_failures),
+        engines=engine_status(engine_failures, languages=_scanned_languages(filename, language)),
         coverage=ScanCoverage(scanned_count=1),
         # 인메모리 조각도 "이 파일을 검사함"으로 기록 — 발견 0이 "검사 안 됨"이
         # 아니라 "위험 없음"으로 올바르게 결론나게 한다.
@@ -1289,6 +1329,7 @@ def scan_path(
     exc = frozenset(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
     skipped: list[SkippedFile] = []
     engine_failures: dict[str, str] = {}             # 엔진 이름 → 실패 사유(파일 전체 누적)
+    languages_seen: set[str] = set()                 # 검사한 파일의 언어 집합 → engines.required
     inline_ignored = 0                               # `gvskb: ignore` 주석이 붙은 줄 수
     vendor_bundles: list[dict] = []                  # 벤더 번들 식별 결과(SCA 대상)
     external: list[ExternalConnection] = []          # 외부 연결 인벤토리 누적
@@ -1496,6 +1537,7 @@ def scan_path(
         # 엔진 실패·미가용은 파일마다 같지만, 실패는 파일별로 다를 수 있으므로 누적한다.
         for item in report.engines.failed:
             engine_failures.setdefault(item.name, item.reason)
+        languages_seen.update(_scanned_languages(rel, None))
         # 인라인 무시 주석이 붙은 줄 수 — 승인자·사유 없이 검사를 끄는 경로이므로
         # 숨기지 않고 센다(보고서·포털 심사 화면이 이 값을 표시한다).
         from .scanners.regex_scanner import count_inline_ignores
@@ -1576,7 +1618,7 @@ def scan_path(
             scanned_count=len(scanned),
             skipped_count=len(skipped),
         ),
-        engines=engine_status(engine_failures),
+        engines=engine_status(engine_failures, languages=languages_seen),
         source_snapshot=source_snapshot_for(root) if root.is_dir() else None,
         external_surface=dedupe_connections(external),
         scan_mode=_current_scan_mode(),
