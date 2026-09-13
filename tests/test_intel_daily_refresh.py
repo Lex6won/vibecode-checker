@@ -49,10 +49,12 @@ def _step_index(steps: list[dict], step_id: str) -> int:
 
 def test_workflow_restores_previous_bundle_before_refresh(workflow: dict) -> None:
     steps = _steps(workflow)
-    restore, refresh, bundle = (_step_index(steps, s) for s in ("restore", "refresh", "bundle"))
-    assert restore < refresh < bundle, "복원 → 수집 → export 순서여야 누적이 성립한다"
+    restore, refresh, sources, bundle, verify, publish = (
+        _step_index(steps, s) for s in ("restore", "refresh", "sources", "bundle", "verify", "publish")
+    )
+    assert restore < refresh < sources < bundle < verify < publish,         "복원 → 수집 → 게시 조건 게이트 → export → 반입 재검증 → 게시 순서여야 한다"
     run = steps[restore]["run"]
-    assert "gh release download intel-latest" in run
+    assert 'gh release download "$PROD_TAG"' in run
     assert "sha256sum -c" in run, "이전 번들은 sha256 검증을 통과해야 반입한다"
     assert "gvskb intel-bundle import" in run
     assert "state=bootstrap" in run and "state=corrupt" in run and "state=restored" in run
@@ -63,8 +65,44 @@ def test_workflow_does_not_publish_when_previous_bundle_is_corrupt(workflow: dic
     steps = _steps(workflow)
     restore = steps[_step_index(steps, "restore")]
     assert restore.get("continue-on-error") is not True, "복원 실패는 잡을 멈춰야 새 번들을 덮어쓰지 않는다"
-    bundle = steps[_step_index(steps, "bundle")]
-    assert "steps.restore.outcome == 'success'" in bundle.get("if", "")
+    refresh = steps[_step_index(steps, "refresh")]
+    assert "steps.restore.outcome == 'success'" in refresh.get("if", "")
+    # 게이트 → export → 재검증 → 게시가 사슬로 묶여 있어 앞 단계 실패 = 게시 없음.
+    sources = steps[_step_index(steps, "sources")]
+    assert "steps.refresh.outcome == 'success'" in sources.get("if", "")
+    assert sources.get("continue-on-error") is not True, "게시 조건 게이트는 실패 시 잡을 멈춰야 한다"
+    assert "steps.sources.outcome == 'success'" in steps[_step_index(steps, "bundle")].get("if", "")
+    assert "steps.bundle.outcome == 'success'" in steps[_step_index(steps, "verify")].get("if", "")
+    assert "steps.verify.outcome == 'success'" in steps[_step_index(steps, "publish")].get("if", "")
+
+
+def test_workflow_gate_runs_before_publish_and_blocks_on_error_or_missing(workflow: dict) -> None:
+    steps = _steps(workflow)
+    sources = steps[_step_index(steps, "sources")]
+    run = sources["run"]
+    assert "--max-age-days" in run and "intel_summary.py" in run
+    assert 'exit_code }}" = "2"' in run and "exit 1" in run, "정상본 없는 실패(exit 2)는 게시 전에 멈춰야 한다"
+    assert '"$gate" != "0"' in run, "필수 소스 없음·나이 초과(요약 스크립트 exit 1)도 게시 전에 멈춰야 한다"
+    verify = steps[_step_index(steps, "verify")]
+    assert "gvskb intel-bundle import" in verify["run"] and "sha256sum -c" in verify["run"]
+
+
+def test_workflow_channels_schedule_is_prod_and_dispatch_defaults_to_test(workflow: dict) -> None:
+    triggers = workflow.get(True) or workflow.get("on")
+    channel = triggers["workflow_dispatch"]["inputs"]["channel"]
+    assert channel["default"] == "test" and set(channel["options"]) == {"test", "prod"}
+    steps = _steps(workflow)
+    decide = steps[_step_index(steps, "channel")]["run"]
+    assert "github.event_name }}\" = \"schedule\"" in decide and "name=prod" in decide
+    assert workflow["env"]["PROD_TAG"] == "intel-latest" and workflow["env"]["TEST_TAG"] == "intel-latest-test"
+    # 복원은 채널과 무관하게 운영 번들에서 — 시험 채널은 별도 데이터 계보가 아니다.
+    restore = steps[_step_index(steps, "restore")]["run"]
+    assert 'gh release download "$PROD_TAG"' in restore and "TEST_TAG" not in restore
+    # 룰 PR 은 운영 채널에서만.
+    for sid in ("detect", "prtoken"):
+        assert "steps.channel.outputs.name == 'prod'" in steps[_step_index(steps, sid)].get("if", "")
+    publish = steps[_step_index(steps, "publish")]
+    assert publish["env"]["TAG"] == "${{ steps.channel.outputs.tag }}"
 
 
 def test_workflow_serializes_runs_and_avoids_top_of_hour(workflow: dict) -> None:
@@ -91,7 +129,7 @@ def test_workflow_records_per_source_status_and_gates(workflow: dict) -> None:
     assert "scripts/intel_summary.py" in sources["run"] and "--max-age-days" in sources["run"]
     gate = steps[-1]
     assert gate.get("if") == "always()"
-    assert "REFRESH_RC" in gate["run"] and "state=corrupt" not in gate["run"]
+    assert "REFRESH_RC" in gate["run"] and "VERIFY" in gate["run"]
     assert "exit 1" in gate["run"]
 
 
