@@ -223,6 +223,7 @@ class FakeResp:
 
 def test_nvd_adapter_normalizes_cve_records() -> None:
     payload = {
+        "resultsPerPage": 1, "startIndex": 0, "totalResults": 1,
         "vulnerabilities": [
             {"cve": {
                 "id": "CVE-2026-12345",
@@ -258,7 +259,8 @@ def test_nvd_adapter_sends_api_key_header_when_env_set(monkeypatch: pytest.Monke
     class FakeClient:
         def get(self, url, params=None, headers=None):
             seen_headers.update(headers or {})
-            return FakeResp({"vulnerabilities": []})
+            return FakeResp({"resultsPerPage": 0, "startIndex": 0, "totalResults": 0,
+                             "vulnerabilities": []})
 
     nvd.fetch_nvd_recent(FakeClient())
     assert seen_headers.get("apiKey") == "test-key"
