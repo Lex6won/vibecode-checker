@@ -453,15 +453,142 @@ def _block_comment_mask(lines: list[str]) -> list[bool]:
     return mask
 
 
+_FUNC_OPEN_HINT_RE = re.compile(r"(?:\)\s*(?::\s*[\w<>\[\]|, .]+)?|=>|\bfunction\b[^{]*|\bcatch\b[^{]*)\s*$")
+_DECL_RE = re.compile(r"(?<![\w$.])(const|let|var)\s+([A-Za-z_$][\w$]*)")
+
+
+class _ScopeMap:
+    """줄 → 스코프 사슬. 중괄호를 세어 함수·블록 범위를 만든다(문자열·템플릿·주석은 건너뜀).
+
+    변수 상태를 **범위 + 이름**으로 나누기 위한 것이다. 파일 전체를 한 이름으로 합치면
+    `function bad(req){ let html = req.body.x }` 의 html 이 `function safe(){ const html = '…' }`
+    의 html 을 오염시킨다(Codex 재현 2026-09-19). 반대로 줄 순서만 따르면 sink 뒤의
+    다른 함수에서 일어나는 오염을 놓친다(적대적 검증 2026-09-18). 그래서:
+
+    - 같은 함수 안에서만 쓰이는 변수 → **순서대로**(마지막 할당이 이긴다, `+=` 는 합침)
+    - 다른 함수에서도 할당되는 변수(모듈 변수·클로저) → **모든 할당을 합침**(오염이 우선)
+    """
+
+    def __init__(self, lines: list[str], comment: list[bool]) -> None:
+        self.chain: list[tuple[int, ...]] = []
+        self.kind: dict[int, str] = {0: "function"}          # 모듈도 하나의 함수 범위로 본다
+        self.parent: dict[int, int] = {0: 0}
+        stack = [0]
+        next_id = 1
+        for i, line in enumerate(lines):
+            if comment[i] or line.strip().startswith(("//", "*")):
+                self.chain.append(tuple(stack))
+                continue
+            deepest = tuple(stack)
+            for kind_hint, ch in self._braces(line):
+                if ch == "{":
+                    sid = next_id
+                    next_id += 1
+                    self.kind[sid] = "function" if kind_hint else "block"
+                    self.parent[sid] = stack[-1]
+                    stack.append(sid)
+                    if len(stack) > len(deepest):
+                        deepest = tuple(stack)
+                elif len(stack) > 1:
+                    stack.pop()
+            self.chain.append(deepest)
+
+    @staticmethod
+    def _braces(line: str):
+        """줄의 최상위 중괄호들을 (함수 여는 괄호인가, 문자) 순서로 낸다."""
+        out = []
+        in_str: str | None = None
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if in_str:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == in_str:
+                    in_str = None
+            elif ch in ("'", '"'):
+                in_str = ch
+            elif ch == "`":
+                j = _find_backtick_end(line, i + 1)
+                if j == -1:
+                    break                       # 여러 줄 템플릿 — 이 줄의 나머지는 건너뛴다
+                i = j
+            elif ch == "/" and line[i + 1:i + 2] == "/":
+                break
+            elif ch == "{":
+                before = line[:i].rstrip()
+                out.append((bool(_FUNC_OPEN_HINT_RE.search(before)) or before.endswith(("=>",)), "{"))
+            elif ch == "}":
+                out.append((False, "}"))
+            i += 1
+        return out
+
+    def func_of(self, sid: int) -> int:
+        while self.kind.get(sid) != "function":
+            sid = self.parent[sid]
+        return sid
+
+
 class _Classifier:
     def __init__(self, lines: list[str], project, local_defs: set[str], local_safe: set[str]) -> None:
         self.lines = lines
         self.project = project
         self.local_defs = local_defs
         self.local_safe = local_safe
-        self.state: dict[str, tuple[str, bool]] = {}       # 식별자 → (state, direct_source)
         self.comment = _block_comment_mask(lines)
+        self.scopes = _ScopeMap(lines, self.comment)
+        # (범위 id, 이름) → [(줄 index, 연산, 상태, direct)] — 할당 이력
+        self.vars: dict[tuple[int, str], list[tuple[int, str, str, bool]]] = {}
+        self.cur = 0                                  # 지금 분류 중인 줄 index
         self.func_returns = self._index_function_returns()
+
+    # ── 범위 인식 변수 상태 ───────────────────────────────────────────────
+    def _declaring_scope(self, name: str, line: int, declared: bool) -> int:
+        """이름이 속한 범위. 선언이면 현재 범위(`var` 는 함수 범위), 아니면 사슬에서 찾고 없으면 모듈."""
+        chain = self.scopes.chain[line]
+        if declared:
+            return chain[-1]
+        for sid in reversed(chain):
+            if (sid, name) in self.vars:
+                return sid
+        return 0
+
+    def _record(self, name: str, line: int, op: str, state: str, direct: bool, declared: bool = False) -> None:
+        sid = self._declaring_scope(name, line, declared)
+        hist = self.vars.setdefault((sid, name), [])
+        if not any(h[0] == line and h[1] == op and h[2] == state for h in hist):   # 2바퀴 중복 방지
+            hist.append((line, op, state, direct))
+
+    def _lookup(self, name: str, line: int | None = None) -> tuple[str, bool] | None:
+        line = self.cur if line is None else line
+        chain = self.scopes.chain[line]
+        sid = next((s for s in reversed(chain) if (s, name) in self.vars), None)
+        if sid is None:
+            return None
+        hist = self.vars[(sid, name)]
+        my_func = self.scopes.func_of(chain[-1])
+        same_func = all(self.scopes.func_of(self.scopes.chain[h[0]][-1]) == my_func for h in hist)
+        if same_func:
+            before = [h for h in hist if h[0] <= line]
+            if before:
+                state: tuple[str, bool] | None = None
+                for _ln, op, st, direct in before:
+                    if op == "+=" and state is not None:
+                        m = self._merge([SinkVerdict(state[0], "", state[1]), SinkVerdict(st, "", direct)])
+                        state = (m.state, state[1] or direct)
+                    else:
+                        state = (st, direct)
+                return state
+        # 다른 함수에서도 할당된다(또는 사용 뒤에 선언) — 모든 할당을 합친다. 오염이 우선.
+        merged: tuple[str, bool] | None = None
+        for _ln, _op, st, direct in hist:
+            if merged is None:
+                merged = (st, direct)
+            else:
+                m = self._merge([SinkVerdict(merged[0], "", merged[1]), SinkVerdict(st, "", direct)])
+                merged = (m.state, merged[1] or direct)
+        return merged
 
     def _is_comment_line(self, i: int) -> bool:
         return self.comment[i] or self.lines[i].strip().startswith(("//", "/*", "*"))
@@ -523,36 +650,15 @@ class _Classifier:
             j += 1
         return "\n".join(buf), j - idx      # 닫히지 않음 — 보수적으로 그대로
 
-    def _set_state(self, name: str, state: str, direct: bool) -> None:
-        """이름의 상태를 **합친다**(덮어쓰지 않는다) — 파일 전체 기준, 오염이 우선.
-
-        줄 순서대로 덮어쓰면 뚫린다(적대적 검증 2026-09-18)::
-
-            let html = '';                                   // CONST
-            function render(){ el.innerHTML = html; }        // sink 가 먼저 나온다
-            function load(){ html = await fetch(…).then(r => r.json()); render(); }
-
-        sink 시점의 상태는 CONST 라 발견이 **삭제**됐다. 같은 파일에서 그 이름에 한 번이라도
-        외부 값이 들어오면 오염으로 본다(TAINTED > UNKNOWN > SANITIZED > CONST).
-        상수 재할당으로 오염을 해제하는 SQL 쪽 규칙은 여기 적용하지 않는다 — 이쪽은
-        삭제(CONST)가 걸린 판정이라 보수적이어야 한다.
-        """
-        prev = self.state.get(name)
-        if prev is None:
-            self.state[name] = (state, direct)
-            return
-        merged = self._merge([SinkVerdict(prev[0], "", prev[1]), SinkVerdict(state, "", direct)])
-        self.state[name] = (merged.state, prev[1] or direct)
-
     def _bind_iteration_vars(self, text: str) -> None:
-        """``rows.map(r => …)`` 의 ``r`` 은 ``rows`` 의 출처를 물려받는다."""
+        """``rows.map(r => …)`` 의 ``r`` 은 ``rows`` 의 출처를 물려받는다(현재 줄의 범위에 선언)."""
         for m in _CALLBACK_BIND_RE.finditer(text):
             root, param = m.group(1), m.group(2)
-            st = self.state.get(root)
+            st = self._lookup(root)
             if st is not None:
-                self._set_state(param, st[0], st[1])
+                self._record(param, self.cur, "=", st[0], st[1], declared=True)
             elif _TAINTED_NAME_RE.search(root):
-                self._set_state(param, TAINTED, False)
+                self._record(param, self.cur, "=", TAINTED, False, declared=True)
 
     # ── 식 분류 ───────────────────────────────────────────────────────────
     def classify_expr(self, expr: str, depth: int = 0, params: set[str] | None = None) -> SinkVerdict:
@@ -603,9 +709,9 @@ class _Classifier:
             if _SOURCE_RE.search(expr):
                 return SinkVerdict(TAINTED, "외부 출처(URL·요청·입력값·응답)가 식에 직접 있음", direct_source=True)
             self._bind_iteration_vars(expr)
-            if base in self.state and "." in wrapper:
-                st = self.state[base]
-                return SinkVerdict(st[0], f"변수 {base} 의 출처", st[1])
+            st_base = self._lookup(base) if "." in wrapper else None
+            if st_base is not None:
+                return SinkVerdict(st_base[0], f"변수 {base} 의 출처", st_base[1])
             if "." in wrapper and (params is None or base not in params) and _TAINTED_NAME_RE.search(base):
                 return SinkVerdict(TAINTED, f"이름이 입력값을 뜻함({base})")
             return SinkVerdict(UNKNOWN, f"{wrapper}() 반환값 — 출처 추적 불가")
@@ -652,7 +758,7 @@ class _Classifier:
             root = m.group(1)
             if params is not None and root in params:
                 return SinkVerdict(UNKNOWN, f"매개변수 {root} — 호출자에 따라 다름")
-            st = self.state.get(root)
+            st = self._lookup(root)
             if st is not None:
                 return SinkVerdict(st[0], f"변수 {root} 의 출처", st[1])
             if _TAINTED_NAME_RE.search(root):
@@ -700,10 +806,10 @@ class _Classifier:
         return _cut_at_statement_end(expr), (start - i) + used
 
     def _collect_states(self) -> None:
-        """1차: 파일 전체의 할당·순회 바인딩으로 이름 → 상태를 모은다(합침, 덮어쓰기 아님).
+        """1차: 파일 전체의 할당·순회 바인딩으로 (범위, 이름) → 할당 이력을 모은다.
 
         두 번 돈다 — 나중 줄의 변수를 참조하는 앞 줄의 할당이 첫 바퀴에서 UNKNOWN 으로
-        남는 것을 두 번째 바퀴가 메운다. 상태는 합쳐지므로 바퀴가 늘어도 나빠지지 않는다.
+        남는 것을 두 번째 바퀴가 메운다(같은 줄·같은 상태의 이력은 중복 기록하지 않는다).
         """
         n = len(self.lines)
         for _round in range(2):
@@ -713,35 +819,40 @@ class _Classifier:
                 if self._is_comment_line(i):
                     i += 1
                     continue
+                self.cur = i
                 consumed = 1
                 fo = _FOR_OF_RE.search(line)
                 if fo:
-                    st = self.state.get(fo.group(2))
+                    st = self._lookup(fo.group(2))
                     if st is not None:
-                        self._set_state(fo.group(1), st[0], st[1])
+                        self._record(fo.group(1), i, "=", st[0], st[1], declared=True)
+                # sink 줄도 할당은 모은다(`function r(){ const html = '…'; el.innerHTML = html; }`).
+                # 다만 sink 의 여러 줄 템플릿 본문은 건너뛴다.
                 sink = self._sink_at(i)
-                if sink is not None:
-                    i += sink[1]
-                    continue
                 a = _ASSIGN_RE.match(line)
                 if a:
                     # 줄 머리의 할당 — 여러 줄 템플릿을 따라간다
-                    name, rhs = a.group(1), a.group(3).strip()   # `=`·`+=` 모두 합침(덮어쓰기 없음)
+                    name, op, rhs = a.group(1), a.group(2), a.group(3).strip()
+                    declared = bool(_DECL_RE.match(line.strip()))
                     rhs, consumed = self._collect_expr(rhs, i)
                     v = self.classify_expr(_cut_at_statement_end(rhs))
                     if v.state == UNPARSED:
                         v = SinkVerdict(UNKNOWN, v.reason)
-                    self._set_state(name, v.state, v.direct_source)
-                else:
-                    # 한 줄 안의 문장들(`function f(){ html = …; }`) — 같은 줄 안에서만 본다
-                    for stmt in _split_statements(line)[1:] if line.count("`") % 2 == 0 else []:
+                    self._record(name, i, op, v.state, v.direct_source, declared)
+                # 한 줄 안의 나머지 문장들(`const load = () => { html = …; }`) — 같은 줄 안에서만 본다.
+                # 줄 머리 할당의 RHS 안쪽(화살표 함수 본문)에 든 할당도 여기서 잡힌다.
+                if line.count("`") % 2 == 0:
+                    for stmt in _split_statements(line)[1:]:
                         a2 = _ASSIGN_RE.match(stmt)
                         if not a2:
                             continue
                         v = self.classify_expr(a2.group(3).strip())
                         if v.state == UNPARSED:
                             v = SinkVerdict(UNKNOWN, v.reason)
-                        self._set_state(a2.group(1), v.state, v.direct_source)
+                        self._record(a2.group(1), i, a2.group(2), v.state, v.direct_source,
+                                     bool(_DECL_RE.match(stmt.strip())))
+                if sink is not None:
+                    consumed = max(consumed, sink[1])
                 i += consumed
 
     def run(self) -> dict[int, SinkVerdict]:
@@ -757,6 +868,7 @@ class _Classifier:
             if sink is None:
                 i += 1
                 continue
+            self.cur = i
             expr, consumed = sink
             v = self.classify_expr(expr)
             if v.state != UNPARSED:          # 읽지 못한 것은 판정하지 않는다 — regex 차단이 남는다
