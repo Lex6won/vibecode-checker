@@ -102,6 +102,7 @@ _DEF_RE = re.compile(
 )
 # 본문이 정화 호출을 **반환**하는 함수 — 이름과 무관하게 정화 함수다(`return sanitizeForRender(x)`).
 _RETURN_SANITIZER_RE = re.compile(r"\breturn\s+(?:[\w$]+\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(")
+_CALL_NAME_RE = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*)\s*\(")
 
 # `__html:` 뒤의 식에서 **머리 식별자**만 뽑는다(`processHtml(` → processHtml).
 _HTML_VALUE_RE = re.compile(r"__html\s*:\s*([A-Za-z_$][\w$]*)")
@@ -127,20 +128,48 @@ _STYLE_REASON = (
 
 # ── 프로젝트 정화 함수 색인 ─────────────────────────────────────────────────
 
+def _norm_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./").lower()
+
+
+_IMPORT_NAMED_RE = re.compile(r"""import\s*(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]""")
+_IMPORT_NS_RE = re.compile(r"""import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s*['"]([^'"]+)['"]""")
+_REQUIRE_NAMED_RE = re.compile(r"""(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)""")
+_REQUIRE_NS_RE = re.compile(r"""(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)""")
+_SCRIPT_SRC_RE = re.compile(r"""<script\b[^>]*\bsrc\s*=\s*['"]([^'"]+)['"]""", re.IGNORECASE)
+_MODULE_SUFFIXES = ("", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".mts", ".cts", "/index.js", "/index.ts", "/index.mjs")
+
+
+@dataclass
+class _ImportMap:
+    names: dict[str, str | None]        # 지역 이름 → 모듈 키(트리 안) · None(패키지·미해결)
+    namespaces: dict[str, str | None]   # `import * as u` / `const u = require()` 별칭 → 모듈 키
+    scripts: list[str]                  # HTML `<script src>` 로 같은 전역을 공유하는 모듈 키
+
+
 @dataclass
 class ProjectSanitizers:
     """검사 트리 전체에서 찾은 정화 함수 정의 — 파일 경계를 넘어 본문을 본다.
 
-    ``verified`` 는 어느 파일에서든 본문이 정화하는 것으로 확인된 이름,
-    ``unverified`` 는 정의는 찾았지만 어느 정의도 정화하지 않는 이름이다.
-    한 이름이 두 파일에서 다르게 정의됐으면 verified 가 이긴다 — 본문 근거가 있다.
+    파일별로 (정화 함수, 모든 정의)를 기억하고, 호출한 쪽의 ``import``·``require``·
+    ``<script src>`` 를 따라 **실제로 연결된 정의**를 본다. 연결을 알 수 없을 때만
+    트리 전체 이름으로 떨어지는데, 그때도 같은 이름이 어느 파일에서는 정화하고 어느
+    파일에서는 정화하지 않으면(``ambiguous``) 인정하지 않는다.
+
+    왜 이렇게까지 하나 — 적대적 검증(Codex, 2026-09-19): ``safe-helper.js`` 의 정상
+    ``esc()`` 와 ``unsafe-helper.js`` 의 ``return s`` 짜리 ``esc()`` 가 공존할 때, 후자를
+    import 한 페이지의 ``el.innerHTML = esc(location.hash)`` 가 **발견 0건**이 됐다.
+    "안전한 정의가 하나라도 있으면 믿는다"는 규칙이 진짜 XSS 를 지웠다.
     """
 
     verified: set[str] = field(default_factory=set)
     unverified: set[str] = field(default_factory=set)
+    ambiguous: set[str] = field(default_factory=set)
+    by_file: dict[str, tuple[set[str], set[str]]] = field(default_factory=dict)
     files_indexed: int = 0
+    _imports: dict[str, _ImportMap] = field(default_factory=dict, repr=False)
 
-    def add_file(self, code: str) -> None:
+    def add_file(self, code: str, path: str = "") -> None:
         # 정화 함수가 있을 리 없는 파일은 색인하지 않는다(성능 가드) — 어휘 이름·엔티티·
         # 텍스트 노드 어느 것도 없으면 본문 판정이 참이 될 수 없다.
         if not _INDEX_HINT_RE.search(code):
@@ -150,19 +179,136 @@ class ProjectSanitizers:
             return
         sanitizers, _helpers, defs = local_sanitizer_index(lines, None)
         self.files_indexed += 1
+        if path:
+            self.by_file[_norm_path(path)] = (set(sanitizers), set(defs))
+        non = {d for d in defs if d not in sanitizers}
+        # 한 이름이 여기서는 정화, 저기서는 비정화 → 모호. 어느 쪽도 믿지 않는다.
+        self.ambiguous |= (sanitizers & self.unverified) | (non & self.verified)
         self.verified |= sanitizers
-        self.unverified |= {d for d in defs if d not in sanitizers}
-        self.unverified -= self.verified
+        self.unverified |= non
+        self.verified -= self.ambiguous
+        self.unverified -= self.ambiguous
+
+    # ── import 연결 ────────────────────────────────────────────────────────
+    def _resolve_module(self, spec: str, from_file: str) -> str | None:
+        """모듈 지정자 → 트리 안 파일 키. 패키지(`lodash`)나 못 찾으면 None."""
+        if not spec.startswith((".", "/")) and not from_file.lower().endswith((".html", ".htm")):
+            return None                                   # 패키지 — 트리 밖
+        base_dir = _norm_path(from_file).rsplit("/", 1)[0] if "/" in _norm_path(from_file) else ""
+        candidates: list[str] = []
+        if spec.startswith("/"):
+            candidates.append(_norm_path(spec))
+        else:
+            joined = (base_dir + "/" + spec) if base_dir else spec
+            parts: list[str] = []
+            for seg in joined.replace("\\", "/").split("/"):
+                if seg in ("", "."):
+                    continue
+                if seg == "..":
+                    if parts:
+                        parts.pop()
+                    continue
+                parts.append(seg)
+            candidates.append("/".join(parts).lower())
+            candidates.append(_norm_path(spec))            # HTML 의 src 는 사이트 루트 기준일 수 있다
+        for cand in candidates:
+            for sfx in _MODULE_SUFFIXES:
+                key = cand + sfx
+                if key in self.by_file:
+                    return key
+        # 마지막 수단: 경로 꼬리 일치(`/js/util.js` ↔ `public/js/util.js`)
+        tail = candidates[-1].lstrip("/")
+        for key in self.by_file:
+            if key.endswith("/" + tail) or key.endswith("/" + tail + ".js"):
+                return key
+        return None
+
+    def imports_of(self, filename: str, code: str) -> _ImportMap:
+        cached = self._imports.get(filename)
+        if cached is not None:
+            return cached
+        names: dict[str, str | None] = {}
+        namespaces: dict[str, str | None] = {}
+        scripts: list[str] = []
+        for rx in (_IMPORT_NAMED_RE, _REQUIRE_NAMED_RE):
+            for m in rx.finditer(code):
+                target = self._resolve_module(m.group(2), filename)
+                for item in m.group(1).split(","):
+                    item = item.strip()
+                    if not item:
+                        continue
+                    parts = re.split(r"\s+as\s+|\s*:\s*", item)
+                    local = parts[-1].strip()
+                    if local:
+                        names[local] = target
+        for rx in (_IMPORT_NS_RE, _REQUIRE_NS_RE):
+            for m in rx.finditer(code):
+                namespaces[m.group(1)] = self._resolve_module(m.group(2), filename)
+        if filename.lower().endswith((".html", ".htm", ".xhtml")):
+            for m in _SCRIPT_SRC_RE.finditer(code):
+                target = self._resolve_module(m.group(1), filename)
+                if target:
+                    scripts.append(target)
+        result = _ImportMap(names, namespaces, scripts)
+        self._imports[filename] = result
+        return result
+
+    def resolve(self, name: str, filename: str | None, code: str | None) -> bool | None:
+        """이 파일에서 ``name`` 호출이 가리키는 정의가 정화하는가. 모르면 None(어휘로 판단)."""
+        short = name.rsplit(".", 1)[-1]
+        if filename and code is not None:
+            imp = self.imports_of(filename, code)
+            if "." in name:
+                ns = name.split(".", 1)[0]
+                if ns in imp.namespaces:
+                    target = imp.namespaces[ns]
+                    return None if target is None else self._lookup_in(target, short)
+            if short in imp.names:
+                target = imp.names[short]
+                return None if target is None else self._lookup_in(target, short)
+            for target in imp.scripts:
+                found = self._lookup_in(target, short)
+                if found is not None:
+                    return found
+        if short in self.ambiguous:
+            return False
+        if short in self.verified:
+            return True
+        if short in self.unverified:
+            return False
+        return None
+
+    def _lookup_in(self, key: str, short: str) -> bool | None:
+        entry = self.by_file.get(key)
+        if entry is None:
+            return None
+        sanitizers, defs = entry
+        if short in sanitizers:
+            return True
+        if short in defs:
+            return False
+        return None                                        # 재수출 등 — 모른다
 
 
 _INDEX_HINT_RE = re.compile(
     rf"(?i)\b(?:{_SANITIZER_VOCAB})\s*\(|&lt;|&amp;|&#60;|&#x3c;|createTextNode|\.textContent\s*=|\.innerText\s*=",
 )
 _PROJECT: ContextVar[ProjectSanitizers | None] = ContextVar("gvskb_project_sanitizers", default=None)
+_FILE: ContextVar[tuple[str, str] | None] = ContextVar("gvskb_current_file", default=None)
 
 
 def current_project() -> ProjectSanitizers | None:
     return _PROJECT.get()
+
+
+@contextmanager
+def use_file(filename: str, code: str):
+    """지금 판정 중인 파일 — 정화 함수 이름을 import 로 연결할 때 쓴다."""
+    token = _FILE.set((filename, code))
+    try:
+        yield
+    finally:
+        _FILE.reset(token)
 
 
 @contextmanager
@@ -188,10 +334,10 @@ def sanitizer_name_ok(
     if name in local_defs or short in local_defs:
         return False
     if project is not None:
-        if name in project.verified or short in project.verified:
-            return True
-        if name in project.unverified or short in project.unverified:
-            return False
+        cur = _FILE.get()
+        resolved = project.resolve(name, cur[0] if cur else None, cur[1] if cur else None)
+        if resolved is not None:
+            return resolved
     if name.startswith(("DOMPurify.", "he.", "_.", "lodash.")):
         return True
     return bool(_SANITIZER_NAME_RE.match(short))
@@ -250,37 +396,49 @@ def local_sanitizer_index(
     # 호출을 반환한다 — 이 이름으로 감싼 값은 정화된 값이다. **헬퍼**(helpers)는 본문
     # 어딘가에서 정화를 부를 뿐이다(`_row()` 가 `${esc(m.name)}…${field}` 를 반환) —
     # 그 반환값 전체가 정화됐다고는 말할 수 없다. 헬퍼는 warn(추론)까지만 내린다.
-    sanitizers: set[str] = set()
-    changed = True
-    rounds = 0
-    while changed and rounds <= len(bodies):
-        changed = False
-        rounds += 1
-        for name, body in bodies.items():
-            if name in sanitizers:
-                continue
-            if _body_escapes(body):
-                sanitizers.add(name)
-                changed = True
-                continue
-            for rm in _RETURN_SANITIZER_RE.finditer(body):
-                if sanitizer_name_ok(rm.group(1), all_names, sanitizers, project):
-                    sanitizers.add(name)
-                    changed = True
-                    break
+    # 본문마다 "반환하는 호출 이름"과 "부르는 호출 이름"을 **한 번만** 뽑아 둔다. 예전에는
+    # 본문 × 알려진 정화 함수 수만큼 정규식을 돌려 정화 함수 3천 + 일반 함수 3천인
+    # 0.27MB 파일이 329초 걸렸다(적대적 검증 2026-09-19). 지금은 워크리스트로 선형이다.
+    returns_of: dict[str, set[str]] = {n: {m.group(1) for m in _RETURN_SANITIZER_RE.finditer(b)} for n, b in bodies.items()}
+    calls_of: dict[str, set[str]] = {n: set(_CALL_NAME_RE.findall(b)) for n, b in bodies.items()}
+    sanitizers: set[str] = {n for n, b in bodies.items() if _body_escapes(b)}
+    # 반환 호출이 (지역 정의가 아닌) 어휘·트리 정화 함수면 바로 정화 함수다.
+    for name, rets in returns_of.items():
+        if name in sanitizers:
+            continue
+        if any(r not in all_names and sanitizer_name_ok(r, all_names, sanitizers, project) for r in rets):
+            sanitizers.add(name)
+    # 지역 정화 함수를 반환하는 사슬 — 역방향 의존으로 전파(각 간선 한 번씩).
+    dependents: dict[str, list[str]] = {}
+    for name, rets in returns_of.items():
+        for r in rets:
+            if r in all_names:
+                dependents.setdefault(r, []).append(name)
+    work = list(sanitizers)
+    while work:
+        s = work.pop()
+        for dep in dependents.get(s, ()):
+            if dep not in sanitizers:
+                sanitizers.add(dep)
+                work.append(dep)
     helpers: set[str] = set(sanitizers)
-    for name, body in bodies.items():
+    external_ok: dict[str, bool] = {}
+    for name, calls in calls_of.items():
         if name in helpers:
             continue
-        for call in _SANITIZER_RE.finditer(body):
-            cname = call.group(0).rstrip("( \t").rsplit(".", 1)[-1]
-            if sanitizer_name_ok(cname, all_names, sanitizers, project):
+        for c in calls:
+            if c == name:
+                continue
+            if c in sanitizers:
                 helpers.add(name)
                 break
-        else:
-            known = sanitizers | (project.verified if project is not None else set())
-            if any(re.search(rf"\b{re.escape(s)}\s*\(", body) for s in known if s != name):
+            if c in all_names:
+                continue
+            if c not in external_ok:
+                external_ok[c] = bool(_SANITIZER_RE.match(c + "(")) and sanitizer_name_ok(c, all_names, sanitizers, project)
+            if external_ok[c]:
                 helpers.add(name)
+                break
     return sanitizers, helpers, all_names
 
 

@@ -1022,6 +1022,25 @@ def scan_code(
 ) -> ScanReport:
     """``collapse_duplicates=False`` 는 룰별 정확도 평가용 — dedup_group 으로
     묶인 룰이 서로를 가려 재현율이 0으로 보이는 것을 막는다."""
+    # 판정 중인 파일을 문맥으로 둔다 — 정화 함수 이름을 이 파일의 import 로 연결하기 위해.
+    from .scanners.html_sink_context import use_file
+    with use_file(filename, code):
+        return _scan_code_impl(
+            code, filename=filename, language=language, scenario=scenario, profile=profile,
+            categories=categories, collapse_duplicates=collapse_duplicates,
+        )
+
+
+def _scan_code_impl(
+    code: str,
+    *,
+    filename: str,
+    language: str | None,
+    scenario: str | None,
+    profile: str,
+    categories: set[str] | None,
+    collapse_duplicates: bool,
+) -> ScanReport:
     raw: list[Finding] = []
     engine_failures: dict[str, str] = {}
     for adapter in _ADAPTERS:
@@ -1790,7 +1809,7 @@ def scan_path(
         text_idx, _why = _read_text(f)
         if text_idx is not None and not _looks_minified(text_idx):
             try:
-                project.add_file(text_idx)
+                project.add_file(text_idx, _rel(f, root, is_dir))
             except Exception:  # noqa: BLE001 — 색인 실패가 검사를 막으면 안 된다
                 continue
 
@@ -1857,8 +1876,10 @@ def scan_path(
                         ))
             scanned.append(rel)
             # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
-            external.extend(extract_api_connections(text, rel))
-            external.extend(extract_static_resources(text, rel))
+            # 업로드 데이터(사용자 제출 XML 등)의 URL 은 이 앱의 연결이 아니다 — 싣지 않는다.
+            if path_class(rel) != "upload-data":
+                external.extend(extract_api_connections(text, rel))
+                external.extend(extract_static_resources(text, rel))
             if f.name.lower() == "package.json":
                 external.extend(
                     inventory_packages(parse_manifest_packages(text, "npm"), rel)

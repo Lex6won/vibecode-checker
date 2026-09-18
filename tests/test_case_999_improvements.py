@@ -405,3 +405,92 @@ def test_classifier_scales_on_sink_heavy_file() -> None:
     assert time.perf_counter() - t < 8.0
     xss = [f for f in r.findings if f.rule_id == "KISA-JS-INPUT-04"]
     assert len(xss) == 400 and all(f.decision == Decision.warn for f in xss)
+
+
+# ---------------------------------------------------------------------------
+# 2차 적대적 검증(Codex, 2026-09-19) — 동명 정화 함수 · 변수 범위 · 이차 시간
+# ---------------------------------------------------------------------------
+
+def test_conflicting_esc_definitions_follow_the_import(tmp_path: Path) -> None:
+    """safe-helper 의 정상 esc 와 unsafe-helper 의 `return s` esc 가 공존한다.
+    unsafe 쪽을 import 한 페이지의 `esc(location.hash)` 는 발견 0건이었다(P0 미탐)."""
+    (tmp_path / "safe-helper.js").write_text("export " + _ESC, encoding="utf-8")
+    (tmp_path / "unsafe-helper.js").write_text("export function esc(s){ return s; }\n", encoding="utf-8")
+    (tmp_path / "page.js").write_text(
+        "import { esc } from './unsafe-helper.js';\nel.innerHTML = esc(location.hash);\n", encoding="utf-8"
+    )
+    (tmp_path / "ok.js").write_text(
+        "import { esc } from './safe-helper.js';\nel.innerHTML = esc(location.hash);\n", encoding="utf-8"
+    )
+    r = scan_path(tmp_path)
+    by_file = {f.location.file.replace("\\", "/"): f for f in r.findings if f.rule_id == "KISA-JS-INPUT-04"}
+    assert "page.js" in by_file and by_file["page.js"].decision == Decision.block, by_file
+    assert "ok.js" not in by_file, "정상 esc 를 import 한 쪽은 직접 정화 → 발견 없음"
+
+
+def test_conflicting_esc_without_import_is_not_trusted(tmp_path: Path) -> None:
+    """import 가 없어 연결을 모르면, 트리 안에서 뜻이 갈리는 이름은 믿지 않는다."""
+    (tmp_path / "a.js").write_text(_ESC, encoding="utf-8")
+    (tmp_path / "b.js").write_text("function esc(s){ return s; }\n", encoding="utf-8")
+    (tmp_path / "page.js").write_text("el.innerHTML = esc(location.hash);\n", encoding="utf-8")
+    hits = [f for f in scan_path(tmp_path).findings if f.rule_id == "KISA-JS-INPUT-04"]
+    assert hits and hits[0].decision == Decision.block
+
+
+def test_html_script_src_links_the_escape_definition(tmp_path: Path) -> None:
+    (tmp_path / "js").mkdir()
+    (tmp_path / "js" / "util.js").write_text(_ESC, encoding="utf-8")
+    (tmp_path / "page.html").write_text(
+        '<script src="/js/util.js"></script>\n<script>\nel.innerHTML = esc(location.hash);\n</script>\n',
+        encoding="utf-8",
+    )
+    assert not [f for f in scan_path(tmp_path).findings if f.rule_id == "KISA-JS-INPUT-04"]
+
+
+def test_same_variable_name_in_different_functions_does_not_cross_taint() -> None:
+    """Codex 재현 1 — bad() 의 html 이 safe() 의 html 을 오염시키면 안 된다."""
+    code = (
+        "function bad(req) {\n  let html = req.body.note;\n}\n\n"
+        "function safe() {\n  const html = '<p>safe</p>';\n  el.innerHTML = html;\n}\n"
+    )
+    assert not _xss(code)
+
+
+def test_reassignment_order_within_one_function_is_respected() -> None:
+    """Codex 재현 2 — 같은 함수 안에서 상수로 재할당하면 sink 시점 값은 상수다."""
+    assert not _xss("let html = req.body.note;\nhtml = '<p>safe</p>';\nel.innerHTML = html;\n")
+    hits = _xss("let html = '<p>';\nhtml = req.body.note;\nel.innerHTML = html;\n")
+    assert hits and hits[0].decision == Decision.block
+
+
+def test_module_variable_assigned_in_another_function_stays_tainted() -> None:
+    """범위 인식이 예전 우회(다른 함수의 나중 오염)를 되살리면 안 된다."""
+    code = "let html = '';\nconst load = () => { html = location.hash; };\nfunction render(){ el.innerHTML = html; }\n"
+    hits = _xss(code)
+    assert hits and hits[0].decision == Decision.block
+
+
+def test_shadowed_local_constant_is_not_tainted_by_outer() -> None:
+    code = "let html = req.body.x;\nfunction render(){ const html = '<b>ok</b>'; el.innerHTML = html; }\n"
+    assert not _xss(code)
+
+
+def test_mixed_sanitizer_and_plain_functions_scale_linearly() -> None:
+    """정화 함수 3천 + 일반 함수 3천 = 0.27MB 가 329초 걸렸다(본문 × 알려진 이름 정규식)."""
+    code = "\n".join(
+        (f"function f{i}(x){{ return x.replace(/</g,'&lt;'); }}" if i % 2 else f"function g{i}(x){{ return x + {i}; }}")
+        for i in range(6000)
+    ) + "\nel.innerHTML = f1(a);\n"
+    t = time.perf_counter()
+    scan_code(code, filename="big.js")
+    assert time.perf_counter() - t < 15.0
+
+
+def test_upload_data_urls_are_not_external_connections(tmp_path: Path) -> None:
+    (tmp_path / "public" / "uploads").mkdir(parents=True)
+    (tmp_path / "public" / "uploads" / "case.xml").write_text(
+        '<doc><link>https://vendor.example.com/api/v1/items</link></doc>\n', encoding="utf-8"
+    )
+    (tmp_path / "app.js").write_text('fetch("https://api.openai.com/v1/chat");\n', encoding="utf-8")
+    hosts = {c.target for c in scan_path(tmp_path).external_surface}
+    assert hosts == {"api.openai.com"}
