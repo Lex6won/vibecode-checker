@@ -726,7 +726,7 @@ class _Classifier:
                 a = _ASSIGN_RE.match(line)
                 if a:
                     # 줄 머리의 할당 — 여러 줄 템플릿을 따라간다
-                    name, op, rhs = a.group(1), a.group(2), a.group(3).strip()
+                    name, rhs = a.group(1), a.group(3).strip()   # `=`·`+=` 모두 합침(덮어쓰기 없음)
                     rhs, consumed = self._collect_expr(rhs, i)
                     v = self.classify_expr(_cut_at_statement_end(rhs))
                     if v.state == UNPARSED:
