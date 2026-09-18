@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .intel import DEFAULT_PROPOSED_DIR, promote_kev_to_rules
 from .report import render_html, render_markdown
-from .scanner import DEFAULT_MAX_FILES, scan_path
+from .scanner import DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_FILES, scan_path
 from .schema import ScanReport
 
 EXIT_OK = 0
@@ -65,6 +65,8 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
         parts += ["--scenario", args.scenario]
     if args.max_files and args.max_files != SCAN_MAX_FILES_DEFAULT:
         parts += ["--max-files", str(args.max_files)]
+    if getattr(args, "max_file_bytes", None) and args.max_file_bytes != DEFAULT_MAX_FILE_BYTES:
+        parts += ["--max-file-bytes", str(args.max_file_bytes)]
     if getattr(args, "check_deps", False):
         parts += ["--check-deps"]
     if getattr(args, "include_installed", False):
@@ -400,6 +402,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         scenario=args.scenario,
         profile=args.profile,
         max_files=args.max_files,
+        max_file_bytes=getattr(args, "max_file_bytes", None) or DEFAULT_MAX_FILE_BYTES,
     )
 
     # --check-deps: 발견된 매니페스트(requirements.txt·package.json)의 패키지
@@ -1122,6 +1125,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--max-files", type=int, default=SCAN_MAX_FILES_DEFAULT,
                       help=f"최대 검사 파일 수 (기본 {SCAN_MAX_FILES_DEFAULT})")
+    scan.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES,
+                      help=f"파일 하나의 크기 상한(바이트, 기본 {DEFAULT_MAX_FILE_BYTES:,}). "
+                           "넘는 실행 소스는 coverage.oversized_source_files 에 남고 승인 판정이 나오지 않습니다")
     scan.add_argument(
         "--check-deps", action="store_true",
         help="의존성 매니페스트(requirements*.txt·package.json)의 취약·악성 패키지 검사를 "

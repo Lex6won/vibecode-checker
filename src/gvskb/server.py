@@ -15,6 +15,7 @@ from .loader import load_all_rules
 from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
 from .scanner import (
+    DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_FILES,
     detect_secrets_and_pii as detect_secrets_and_pii_impl,
     scan_code as scan_code_impl,
@@ -466,6 +467,10 @@ def scan_path(
     max_files: Annotated[int, Field(description=(
         f"최대 검사 파일 수 (기본 {DEFAULT_MAX_FILES:,}). 초과분은 skipped_files에 사유와 함께 기록"
     ))] = DEFAULT_MAX_FILES,
+    max_file_bytes: Annotated[int, Field(description=(
+        f"파일 하나의 크기 상한(바이트, 기본 {DEFAULT_MAX_FILE_BYTES:,}). 넘는 실행 소스는 "
+        "coverage.oversized_source_files 에 남고 게이트는 승인을 내리지 않는다"
+    ))] = DEFAULT_MAX_FILE_BYTES,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
 ) -> dict:
     """파일 또는 폴더를 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
@@ -483,6 +488,7 @@ def scan_path(
         scenario=scenario,
         profile=profile,
         max_files=max_files,
+        max_file_bytes=max_file_bytes,
         caller=caller or "",
     )
     return attach_gate(report).model_dump(mode="json")

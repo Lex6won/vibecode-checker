@@ -86,15 +86,32 @@ def test_constant_literal_innerhtml_is_not_reported(code):
     assert not [f for f in scan_code(code + "\n", filename="a.js").findings if f.rule_id == "KISA-JS-INPUT-04"]
 
 
+# ── 동적 값은 출처로 나뉜다(2026-09-18, 실측 999건 사례) ──
+# 외부 출처(URL·요청·입력값·응답)이거나 이름이 입력값을 뜻하면 **차단**(js-taint 발견),
+# 출처를 못 찾으면 발견은 남되 **warn(정밀 검토)** — 엔진이 보고도 못 찾은 것과
+# 엔진이 못 읽은 것(닫히지 않은 템플릿)은 다르다. 후자는 차단이 그대로 남는다.
+@pytest.mark.parametrize("code", [
+    'el.innerHTML = `<p>${location.hash}</p>`;',
+    'el.innerHTML = "<b>" + userInput + "</b>";',
+    'el.innerHTML = params.get("q") || "";',
+    'el.innerHTML = `\n  <td>${req.body.name}</td>\n`;',
+    'el.innerHTML = `',          # 닫는 백틱 없음 — 읽지 못한 것은 차단 유지(보수적)
+])
+def test_dynamic_innerhtml_with_external_source_stays_blocked(code):
+    hits = [f for f in scan_code(code + "\n", filename="a.js").findings if f.rule_id == "KISA-JS-INPUT-04"]
+    assert hits and hits[0].decision.value == "block", code
+
+
 @pytest.mark.parametrize("code", [
     'el.innerHTML = `<p>${name}</p>`;',
     'el.innerHTML = `\n  <td>${row.name}</td>\n`;',
-    'el.innerHTML = "<b>" + name + "</b>";',
     "el.innerHTML = '<i>' + label;",
     'el.innerHTML = html;',
-    'el.innerHTML = params.get("q") || "";',
-    'el.innerHTML = `',          # 닫는 백틱 없음 — 보수적으로 유지
 ])
-def test_dynamic_innerhtml_stays_blocked(code):
+def test_dynamic_innerhtml_of_unknown_origin_is_kept_as_review(code):
+    """출처 미상 — 발견은 **남는다**(삭제 아님). 판정만 차단에서 검토로 내리고 이유를 적는다."""
     hits = [f for f in scan_code(code + "\n", filename="a.js").findings if f.rule_id == "KISA-JS-INPUT-04"]
-    assert hits and hits[0].decision.value == "block", code
+    assert hits, code
+    assert hits[0].decision.value == "warn", code
+    assert hits[0].severity.value == "high", "심각도는 그대로 — 판정만 검토로"
+    assert "정밀 검토" in (hits[0].severity_adjusted or ""), hits[0].severity_adjusted

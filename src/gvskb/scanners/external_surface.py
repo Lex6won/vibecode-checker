@@ -262,6 +262,22 @@ _CALL_CTX = re.compile(
     re.IGNORECASE,
 )
 _COMMENT_LINE = re.compile(r"^\s*(?:#|//|/\*|\*|<!--|\"\"\"|\'\'\')")
+
+# XML 네임스페이스·스키마 식별자 — URL 모양이지만 **아무도 접속하지 않는다**.
+# 실측(2026-09-16): `xmlns="http://www.w3.org/2000/svg"`·OOXML 스키마·Dublin Core 가
+# "운영 중 외부 전송 · 운영주체 미상"으로 11건 올라왔다. 호스트로 걸러 인벤토리에서 뺀다.
+_NAMESPACE_HOSTS = frozenset({
+    "www.w3.org", "w3.org", "schemas.openxmlformats.org", "purl.org", "schemas.microsoft.com",
+    "schemas.xmlsoap.org", "xmlns.com", "ns.adobe.com", "schemas.android.com", "java.sun.com",
+    "xmlns.jcp.org", "www.springframework.org", "maven.apache.org", "www.hancom.co.kr",
+    "www.opengis.net", "schemas.datacontract.org", "xml.apache.org", "www.omg.org",
+})
+# 줄 자체가 네임스페이스 선언이면 호스트와 무관하게 연결이 아니다.
+_NAMESPACE_DECL = re.compile(r"\bxmlns(?::[\w-]+)?\s*=|schemaLocation\s*=|<!DOCTYPE\b", re.IGNORECASE)
+
+
+def _is_namespace_url(host: str, line: str) -> bool:
+    return host.lower() in _NAMESPACE_HOSTS or bool(_NAMESPACE_DECL.search(line))
 _TABLE_LINE = re.compile(r"^\s*[\(\[\{]?\s*[\"\'][^\"\']*[\"\']\s*[,:]")   # ("host", …) · "host": …
 
 
@@ -364,7 +380,7 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
         hosts_on_line: list[tuple[str, str | None]] = []  # (host, api_version)
         for m in _URL_RE.finditer(line):
             host = m.group(1)
-            if _INTERNAL_HOST.match(host):
+            if _INTERNAL_HOST.match(host) or _is_namespace_url(host, line):
                 continue
             ver_m = _APIVER_RE.search(m.group(2) or "")
             hosts_on_line.append((host, ver_m.group(1) if ver_m else None))
