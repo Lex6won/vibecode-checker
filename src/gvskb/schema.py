@@ -326,10 +326,19 @@ class ScanSummary(BaseModel):
     #: 를 읽어야 한다. 이 필드를 판정으로 쓰면 "소스 차단 = 배포 차단"이라는 옛
     #: 의미가 되살아난다(실측 2026-08-29: 포털이 폴백으로 이 값을 읽고 있었다).
     blocked: bool = False
+    #: ``blocked`` 와 같은 값에 **뜻이 드러나는 이름**을 붙인 것 — "소스에 차단 등급
+    #: 발견이 있다"는 사실이지 배포 판정이 아니다. 실측(2026-09-16)에서 `blocked=true`
+    #: 와 `gate.verdict=conditional` 이 한 보고서에 함께 있어 읽는 사람이 혼동했다.
+    #: 계약 v1 안에서 이름을 바꾸지 않고 **추가**한다.
+    has_block_level_findings: bool = False
     #: 고유 (파일, 줄) 수 — 같은 줄에 GOV·KISA 두 룰이 걸리면 finding_count 는 2,
     #: location_count 는 1. 담당자가 고칠 단위는 위치다.
     location_count: int = 0
     block_location_count: int = 0
+    #: 근거 강도별 건수(confirmed · likely · pattern-only). ``block_by_confidence`` 는
+    #: 그중 차단 등급만. "차단 875건" 이 "확인 1 + 패턴 후보 874" 임을 값으로 보이기 위한 것.
+    by_confidence: dict[str, int] = Field(default_factory=dict)
+    block_by_confidence: dict[str, int] = Field(default_factory=dict)
     #: 경로 성격별 집계 — runtime(운영 코드) · test(테스트 경로) · sample(fixtures·examples·
     #: corpus 같은 시험·예제 경로). 값은 {"total": n, "block": n}. **판정은 바꾸지 않는다** —
     #: "차단 13건"이 "운영 0 + 시험 13"임을 읽는 사람이 바로 알게 하려는 집계다(개선요청 #34 A-3).
@@ -445,6 +454,23 @@ class ScanCoverage(BaseModel):
     max_files: int = Field(default=0, description="이번 검사에 적용된 파일 수 상한")
     scanned_count: int = Field(default=0, description="실제로 검사한 파일 수")
     skipped_count: int = Field(default=0, description="검사에서 제외된 파일 수(사유 포함)")
+    # 크기 상한(2026-09-18). 실측에서 `server.js` 1MB 가 상한에 걸려 빠졌는데 위의
+    # `truncated` 는 파일 **수** 상한만 알아 false 였다 — 유일한 서버 파일이 빠진 검사가
+    # 온전한 검사로 읽혔다. 실행 소스가 빠지면 `complete=false` 이고 게이트는 승인하지 않는다.
+    max_file_bytes: int = Field(default=0, description="이번 검사에 적용된 파일 크기 상한(바이트)")
+    oversized_source_count: int = Field(
+        default=0, description="크기 상한을 넘어 검사되지 않은 **실행 소스** 파일 수"
+    )
+    oversized_source_files: list[str] = Field(
+        default_factory=list, description="그 경로(최대 50개 — 건수는 oversized_source_count 가 전부)"
+    )
+    oversized_data_count: int = Field(
+        default=0, description="크기 상한을 넘은 데이터·설정·마크업 파일 수(실행 소스 아님)"
+    )
+    complete: bool = Field(
+        default=True,
+        description="검사 대상 실행 소스를 빠짐없이 봤는가(파일 수·크기 상한 어느 쪽에도 걸리지 않음)",
+    )
 
 
 class EngineUnavailable(BaseModel):
@@ -498,6 +524,15 @@ class SourceSnapshot(BaseModel):
     lockfiles: dict[str, str] = Field(
         default_factory=dict,
         description="락파일 경로 → sha256. 패키지 판정을 재현할 수 있게 한다",
+    )
+    # 소스 결속(2026-09-18). 커밋 해시는 "무엇이 커밋됐나"이고 아래는 **"무엇을 읽었나"**다.
+    # dirty=True 여도 이 값이 같으면 같은 소스에 대한 판정이다.
+    content_tree_hash: str | None = Field(
+        default=None, description="검사한 파일들의 (경로, 내용 sha256) 를 정렬해 묶은 sha256"
+    )
+    file_count: int = Field(default=0, description="content_tree_hash 에 들어간 파일 수")
+    file_hashes: dict[str, str] = Field(
+        default_factory=dict, description="검사한 파일 경로(`/` 구분) → 내용 sha256"
     )
 
 

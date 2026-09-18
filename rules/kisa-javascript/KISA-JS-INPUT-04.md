@@ -32,8 +32,10 @@ detection:
     # `sanitizer-allowlist-substring` 이 이 두 줄을 지목했다 — 자기 도구가 자기
     # 룰의 남은 결함을 찾은 사례다). 정화 판단은 함수 **본문**을 볼 수 있는
     # `scanners/html_sink_context.py` 가 하고, 결과는 삭제가 아니라 감쇄다.
-    - '\.innerHTML\s*=\s*'
-    - '\.outerHTML\s*=\s*'
+    # `+=` 도 주입이다(실측 사례에서 `el.innerHTML += row` 가 한 건도 안 잡혔다).
+    # `==` 비교는 제외한다 — `if (el.innerHTML == '')` 는 읽기다.
+    - '\.innerHTML\s*\+?=(?!=)\s*'
+    - '\.outerHTML\s*\+?=(?!=)\s*'
     - 'document\.write(?:ln)?\s*\('
     # 여기서는 **거르지 않는다**. 예전에는 같은 줄에 `sanitize` 라는 글자가
     # 있으면 발견을 통째로 취소했는데, 두 가지가 잘못이었다:
@@ -78,11 +80,13 @@ examples:
   language: javascript
   positive:
     - "el.innerHTML = userInput;"
+    - "el.innerHTML += userInput;"
     - "document.write(payload);"
     - "$(target).html(raw);"
     - "<div dangerouslySetInnerHTML={{__html: post.content}} />"
   negative:
     - "el.textContent = userInput;"
+    - "if (el.innerHTML == '') render();"
     - "const safe = DOMPurify.sanitize(rawHtml);"
     - "el.innerHTML = DOMPurify.sanitize(richHtml);"
     - "<div dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(html)}} />"

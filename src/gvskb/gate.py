@@ -263,6 +263,13 @@ def gate_status(report: ScanReport) -> dict:
         conditional_criteria.append("source")
 
     exposure = _exposure_counts(report)
+    # 검사 범위 결손 — 실행 소스가 크기·수 상한에 걸려 빠졌다. 실측(2026-09-16):
+    # 유일한 서버 파일 `server.js` 가 빠졌는데 판정은 '조건부'였고 아무도 몰랐다.
+    # 빠진 채로는 **승인을 내리지 않는다**: 다른 사유가 없으면 판정 불가, 있으면
+    # 조건부에 `coverage` 사유를 더한다. 차단은 차단이다.
+    coverage_gap = _coverage_gap(report)
+    if coverage_gap:
+        conditional_criteria.append("coverage")
     # 소스를 한 건도 보지 못했으면 '안전'이 아니라 '판정 불가'다.
     undetermined = (
         not blocked
@@ -270,6 +277,10 @@ def gate_status(report: ScanReport) -> dict:
         and report.summary.finding_count == 0
         and not vuln
         and not unchecked
+    ) or (
+        not blocked
+        and coverage_gap
+        and conditional_criteria == ["coverage"]
     )
 
     if blocked:
@@ -297,9 +308,26 @@ def gate_status(report: ScanReport) -> dict:
         "dependency_vulnerable": vuln,
         "dependency_unchecked": unchecked,
         "dependency_not_found": not_found,
+        "coverage_gap": coverage_gap,
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
-                          block_count, vuln, unchecked),
+                          block_count, vuln, unchecked, coverage_gap),
     }
+
+
+def _coverage_gap(report: ScanReport) -> str:
+    """검사 범위 결손을 사람이 읽는 한 문장으로. 없으면 빈 문자열."""
+    cov = getattr(report, "coverage", None)
+    if cov is None:
+        return ""
+    parts: list[str] = []
+    oversized = getattr(cov, "oversized_source_count", 0) or 0
+    if oversized:
+        names = ", ".join((getattr(cov, "oversized_source_files", None) or [])[:3])
+        more = f" 외 {oversized - 3}개" if oversized > 3 else ""
+        parts.append(f"실행 소스 {oversized}개가 크기 상한을 넘어 검사되지 않음({names}{more})")
+    if getattr(cov, "truncated", False):
+        parts.append(f"파일 수 상한으로 {cov.over_limit_count}개가 검사되지 않음")
+    return " · ".join(parts)
 
 
 def _reason(
@@ -310,8 +338,14 @@ def _reason(
     block_count: int,
     vuln: int,
     unchecked: int,
+    coverage_gap: str = "",
 ) -> str:
     if verdict == "undetermined":
+        if coverage_gap:
+            return (
+                f"판정 불가 — {coverage_gap}. **빠진 파일이 안전하다는 뜻이 아닙니다.** "
+                "파일을 나누거나 `--max-file-bytes`/`--max-files` 를 올려 다시 검사하세요."
+            )
         return "판정 불가 — 검사된 파일이 0개입니다. 경로·확장자를 확인하세요."
     if verdict == "blocked":
         names = ", ".join(
@@ -332,6 +366,8 @@ def _reason(
                 f" 더불어 패키지 {unchecked}종은 **판정 불가**입니다 — "
                 "'안전'이라는 뜻이 아닙니다."
             )
+        if coverage_gap:
+            head += f" 검사 범위 결손도 있습니다({coverage_gap})."
         return head
     if verdict == "approved":
         return "조치할 항목이 없습니다."
@@ -343,8 +379,12 @@ def _reason(
         parts.append(f"판정 불가 {unchecked}종")
     if block_count:
         parts.append(f"소스 높은 위험 {block_count}건")
+    if coverage_gap:
+        parts.append(f"검사 범위 결손({coverage_gap})")
     body = " · ".join(parts) or "확인할 항목"
     tail = ""
+    if coverage_gap:
+        tail += " **검사되지 않은 실행 소스가 있습니다 — 그 파일은 판정 밖입니다.**"
     if unchecked:
         # 판정 불가를 세기만 하고 뜻을 안 적으면, 담당자는 '차단 없음'만 읽고
         # 넘어간다. **확인하지 못한 것은 안전한 것이 아니다.**

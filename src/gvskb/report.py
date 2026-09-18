@@ -175,6 +175,16 @@ def _confidence_summary_line(report: "ScanReport") -> str:
     tail = ""
     if counts.get("pattern-only"):
         tail = " — 패턴 일치 항목은 값의 출처를 직접 확인한 뒤 판단하세요"
+    # 차단 등급만 따로 — "차단 875건"이 "확인 1 + 패턴 후보 874"임이 보여야 한다.
+    bbc = getattr(report.summary, "block_by_confidence", None) or {}
+    block_total = sum(bbc.values())
+    if block_total:
+        bparts = [
+            f"{label} {bbc[k]}"
+            for k, label in (("confirmed", "확인"), ("likely", "유력"), ("pattern-only", "패턴 후보"))
+            if bbc.get(k)
+        ]
+        tail += f" · 차단 {block_total}건 중 {' / '.join(bparts)}"
     return f"- 판정 근거: {' · '.join(parts)}{tail}"
 
 # Map a reference fragment to a human-readable guideline group. Order matters —
@@ -579,7 +589,10 @@ def _short_reason(reason: str) -> str:
     return _skip_reason_group(reason or "")
 
 
-_PATH_CLASS_KO = {"runtime": "운영 코드", "test": "테스트", "sample": "시험·예제"}
+_PATH_CLASS_KO = {
+    "runtime": "운영 코드", "test": "테스트", "sample": "시험·예제",
+    "upload-data": "업로드 데이터(데이터 위생)", "build-tool": "빌드·시드 도구",
+}
 
 
 def _path_class_suffix(summary) -> str:
@@ -1485,6 +1498,9 @@ def render_markdown(
     if _src_trunc := _source_truncation_banner(report):
         lines.append(f"> {_src_trunc}")
         lines.append("")
+    if _big := _oversized_source_banner(report):
+        lines.append(f"> {_big}")
+        lines.append("")
     # 룰셋이 선언과 다르면 **이 판정은 재현되지 않는다** — 결론 옆에서 말한다.
     for _rs in _ruleset_banners(report):
         lines.append(f"> {_rs}")
@@ -2228,6 +2244,8 @@ def render_html(
         p.append(f'<div class="depwarn">{_esc(_trunc_banner).replace("**", "")}</div>')
     if _src_trunc := _source_truncation_banner(report):
         p.append(f'<div class="depwarn">{_esc(_src_trunc).replace("**", "")}</div>')
+    if _big := _oversized_source_banner(report):
+        p.append(f'<div class="depwarn">{_esc(_big).replace("**", "")}</div>')
     for _rs in _ruleset_banners(report):
         p.append(f'<div class="depwarn">{_esc(_rs).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
@@ -2999,6 +3017,27 @@ def _source_truncation_banner(report: "ScanReport") -> str | None:
             "검사하세요(CLI `--max-files`)."
         )
     return None
+
+
+def _oversized_source_banner(report: "ScanReport") -> str | None:
+    """크기 상한을 넘어 **열어보지 못한 실행 소스**를 결론 근처에서 알린다.
+
+    실측(2026-09-16): 유일한 서버 파일 `server.js`(1,027,071B)가 상한 1,000,000 에
+    걸려 빠졌는데 보고서 어디에도 그 사실이 무게 있게 실리지 않았다 — 제외 목록
+    2,704건 속 한 줄이었다. 미검사 핵심 파일은 발견 목록과 같은 무게다.
+    """
+    cov = getattr(report, "coverage", None)
+    n = getattr(cov, "oversized_source_count", 0) if cov is not None else 0
+    if not n:
+        return None
+    files = list(getattr(cov, "oversized_source_files", None) or [])[:5]
+    more = f" 외 {n - len(files)}개" if n > len(files) else ""
+    limit = getattr(cov, "max_file_bytes", 0) or 0
+    return (
+        f"⚠ **실행 소스 {n}개가 크기 상한({limit:,} 바이트)을 넘어 검사되지 않았습니다** — "
+        f"{', '.join(files)}{more}. **빠진 파일은 판정 밖이며 '이상 없음'이 아닙니다.** "
+        "파일을 나누거나 `--max-file-bytes` 를 올려 다시 검사하세요."
+    )
 
 
 def _intel_cache_banner(audits: list[dict]) -> str | None:

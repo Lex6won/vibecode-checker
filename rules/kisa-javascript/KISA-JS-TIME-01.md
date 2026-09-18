@@ -22,8 +22,10 @@ verified_at: 2026-06-03
 review_due: 2026-12-03
 detection:
   patterns:
-    - "function\\s+([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*\\{(?:(?!\\breturn\\b[^;]*;|\\bif\\s*\\(|\\bthrow\\b|\\?\\s*[^:]+:)[\\s\\S]){0,200}?\\breturn\\b[^;{}]*\\b\\1\\s*\\("
-    - "const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:function\\s*\\([^)]*\\)|\\([^)]*\\)\\s*=>)\\s*\\{(?:(?!\\bif\\s*\\(|\\?\\s*[^:]+:|\\bthrow\\b)[\\s\\S]){0,200}?\\breturn\\b[^;{}]*\\b\\1\\s*\\("
+    # `(?<![.\\w$])` — 같은 이름의 **멤버 호출**(`return window.Lib.guessFields(x)`)은
+    # 자기 재귀가 아니다. 실측(2026-09-16)에서 위임 래퍼 한 줄이 재귀로 잡혔다.
+    - "function\\s+([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*\\{(?:(?!\\breturn\\b[^;]*;|\\bif\\s*\\(|\\bthrow\\b|\\?\\s*[^:]+:)[\\s\\S]){0,200}?\\breturn\\b[^;{}]*(?<![.\\w$])\\1\\s*\\("
+    - "const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:function\\s*\\([^)]*\\)|\\([^)]*\\)\\s*=>)\\s*\\{(?:(?!\\bif\\s*\\(|\\?\\s*[^:]+:|\\bthrow\\b)[\\s\\S]){0,200}?\\breturn\\b[^;{}]*(?<![.\\w$])\\1\\s*\\("
     - "while\\s*\\(\\s*(?:true|1)\\s*\\)\\s*\\{(?:(?!\\bbreak\\b|\\breturn\\b|\\bthrow\\b)[\\s\\S]){0,400}\\}"
     - "for\\s*\\(\\s*;\\s*;\\s*\\)\\s*\\{(?:(?!\\bbreak\\b|\\breturn\\b|\\bthrow\\b)[\\s\\S]){0,400}\\}"
   category: kisa-secure-coding
@@ -61,6 +63,8 @@ examples:
     - "function factorial(x) { if (x === 0) return 1; return x * factorial(x - 1); }"
     - "const sum = (n) => { if (n <= 0) return 0; return n + sum(n - 1); };"
     - "while (true) { const job = queue.pop(); if (!job) break; handle(job); }"
+    - "function guessFields(text) { return window.VendorContactExtract.guessFields(text); }"
+    - "const parse = (s) => { return lib.parse(s); };"
 ---
 
 ## 무엇이 위험한가

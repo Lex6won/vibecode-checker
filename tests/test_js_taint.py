@@ -39,11 +39,25 @@ def test_multiline_eval_of_built_string() -> None:
 
 
 def test_multiline_innerhtml_assignment() -> None:
+    """윗줄에서 조립한 값이 아랫줄 sink 에 닿는다 — 이름이 입력값(`userComment`)이면 오염."""
+    code = (
+        'const htmlStr = "<p>" + userComment + "</p>";\n'
+        "document.getElementById('box').innerHTML = htmlStr;\n"
+    )
+    assert "KISA-JS-INPUT-04" in _taint_hits(code)
+
+
+def test_multiline_innerhtml_of_unknown_origin_is_review_not_block() -> None:
+    """출처를 알 수 없는 이름(`comment`)은 js-taint 가 발견을 내지 않고, regex 발견이
+    차단 → 검토(warn)로 내려간다(2026-09-18 정책). 발견 자체는 남는다."""
     code = (
         'const htmlStr = "<p>" + comment + "</p>";\n'
         "document.getElementById('box').innerHTML = htmlStr;\n"
     )
-    assert "KISA-JS-INPUT-04" in _taint_hits(code)
+    assert _taint_hits(code) == {}
+    r = scan_code(code, filename="app.js")
+    xss = [f for f in r.findings if f.rule_id == "KISA-JS-INPUT-04"]
+    assert xss and xss[0].decision.value == "warn" and "정밀 검토" in (xss[0].severity_adjusted or "")
 
 
 def test_taint_propagates_through_simple_copy() -> None:

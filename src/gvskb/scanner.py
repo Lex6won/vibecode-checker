@@ -103,11 +103,28 @@ def _scanned_languages(filename: str, language: str | None) -> set[str]:
     return {lang} if lang else set()
 
 
-def source_snapshot_for(root: Path) -> SourceSnapshot | None:
-    """검사 대상 소스의 신원 — git 커밋·브랜치·작업트리 상태.
+def content_tree_hash(file_hashes: dict[str, str]) -> str:
+    """검사한 파일들의 (경로, 내용 sha256) 를 정렬해 하나로 묶은 sha256.
 
-    제출 보고서가 **어느 시점 코드**에 대한 것인지 특정한다. git 저장소가 아니거나
-    git 이 없으면 ``None`` — 모르는 것을 지어내지 않는다.
+    커밋 해시는 "무엇이 커밋됐나"이고 이 값은 **"무엇을 실제로 읽었나"**다. 작업트리가
+    dirty 여도(실측 999건 사례: `dirty=true`, 재현 불가) 이 값이 같으면 같은 소스를
+    본 것이다. 경로는 `/` 로 정규화한다 — Windows 와 Linux 에서 같은 값이 나와야 한다.
+    """
+    h = hashlib.sha256()
+    for path in sorted(file_hashes):
+        h.update(path.encode("utf-8", "replace"))
+        h.update(b"\0")
+        h.update(file_hashes[path].encode("ascii"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def source_snapshot_for(root: Path, *, file_hashes: dict[str, str] | None = None) -> SourceSnapshot | None:
+    """검사 대상 소스의 신원 — git 커밋·브랜치·작업트리 상태 + 읽은 내용의 해시.
+
+    제출 보고서가 **어느 시점 코드**에 대한 것인지 특정한다. git 정보는 저장소가
+    아니거나 git 이 없으면 ``None`` — 모르는 것을 지어내지 않는다. 그래도 읽은
+    파일의 내용 해시(``content_tree_hash``·``file_hashes``)는 git 과 무관하게 남긴다.
 
     ``dirty=True`` 는 커밋되지 않은 변경이 있었다는 뜻이고, 그러면 커밋 해시만으로는
     이 판정이 재현되지 않는다. 숨기지 않고 값으로 남긴다.
@@ -125,15 +142,19 @@ def source_snapshot_for(root: Path) -> SourceSnapshot | None:
         return out.stdout.strip() if out.returncode == 0 else None
 
     commit = _git("rev-parse", "HEAD")
-    if not commit:
+    hashes = dict(file_hashes or {})
+    if not commit and not hashes:
         return None
-    status = _git("status", "--porcelain")
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    status = _git("status", "--porcelain") if commit else None
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD") if commit else None
     return SourceSnapshot(
-        commit=commit,
+        commit=commit or None,
         branch=branch or None,
         dirty=bool(status) if status is not None else None,
         lockfiles=_lockfile_digests(root),
+        content_tree_hash=content_tree_hash(hashes) if hashes else None,
+        file_count=len(hashes),
+        file_hashes=hashes,
     )
 
 
@@ -634,16 +655,213 @@ _SAMPLE_PATH_SEGMENTS = {
 }
 
 
+# 업로드 데이터 — 사용자가 제출한 파일이 저장되는 자리. 실측(999건 사례)에서
+# `public/uploads/**/*.XML` 의 카드번호 2건이 "소스 취약점"으로 올라왔다. 코드가
+# 아니라 **데이터 위생** 문제이고, 그 자리의 코드 모양 발견은 실행 코드가 아니다.
+# `media` 는 넣지 않는다 — 옛 Django 프로젝트는 `media/js/` 에 실행 코드를 둔다.
+_UPLOAD_DATA_SEGMENTS = {
+    "uploads", "upload", "_uploads", "uploaded", "attachments", "attachment",
+    "userfiles", "user-files", "user_files", "user_uploads",
+}
+# 빌드·시드 도구 — 최상위 디렉터리 이름 또는 파일 이름으로 본다. 표시만 하고
+# **제외하지 않는다**: 빌드 스크립트의 `vm.runInContext` 는 공급망 위험이다(실측 `_seed/*/build.js`).
+_BUILD_TOOL_TOP_SEGMENTS = {
+    "_seed", "seed", "seeds", "scripts", "script", "tools", "devtools", "dev-tools",
+    "build-scripts", "ci", ".github", ".gitlab", ".circleci",
+}
+_BUILD_TOOL_FILE_RE = re.compile(
+    r"^(?:build[\w.-]*|gulpfile|gruntfile|webpack(?:\.[\w-]+)?\.config|vite\.config|rollup\.config"
+    r"|esbuild(?:\.[\w-]+)?|postcss\.config|tailwind\.config|babel\.config|jest\.config"
+    r"|vitest\.config|tsup\.config)\.[cm]?[jt]sx?$|^setup\.py$",
+    re.IGNORECASE,
+)
+
+PATH_CLASSES: tuple[str, ...] = ("runtime", "test", "sample", "upload-data", "build-tool")
+
+
 def path_class(filename: str) -> str:
-    """runtime · test · sample — 경로의 성격(집계 전용, 판정과 무관)."""
+    """runtime · test · sample · upload-data · build-tool — 경로의 성격.
+
+    집계·표시용이다. 판정에 쓰는 것은 ``upload-data`` 의 코드 모양 발견 감쇄 하나뿐
+    (``attenuate_upload_data_findings``)이고, ``build-tool`` 은 표시만 한다.
+    """
     if not filename or filename == "<memory>":
         return "runtime"
     parts = [p.lower() for p in filename.replace("\\", "/").split("/") if p]
-    if any(p in _SAMPLE_PATH_SEGMENTS for p in parts[:-1]):
+    dirs = parts[:-1]
+    if any(p in _UPLOAD_DATA_SEGMENTS for p in dirs):
+        return "upload-data"
+    if any(p in _SAMPLE_PATH_SEGMENTS for p in dirs):
         return "sample"
     if is_test_path(filename):
         return "test"
+    if (dirs and dirs[0] in _BUILD_TOOL_TOP_SEGMENTS) or _BUILD_TOOL_FILE_RE.match(parts[-1]):
+        return "build-tool"
     return "runtime"
+
+
+_UPLOAD_DATA_REASON = (
+    "업로드 데이터 경로 — 실행되는 소스가 아니라 사용자 제출 파일. 코드 모양 발견은 "
+    "참고용이며, 업로드 파일을 실행·제공하는 경로는 별도로 검토하세요"
+)
+
+
+def attenuate_upload_data_findings(findings: list[Finding], filename: str) -> list[Finding]:
+    """업로드 데이터 경로의 **코드 모양** 발견을 low·warn 으로 낮춘다.
+
+    값 기반 발견(비밀·개인정보)은 그대로 둔다 — 업로드 폴더에 든 카드번호는 저장소에
+    커밋된 개인정보이고, 그 자리가 `public/` 아래면 웹으로 노출된다. 그것은 데이터
+    위생 문제로 보고서가 따로 묶는다(``by_path_class``).
+    """
+    if path_class(filename) != "upload-data":
+        return findings
+    adjusted: list[Finding] = []
+    for finding in findings:
+        if (
+            finding.category in _VALUE_BASED_CATEGORIES
+            or finding.rule_id in VALUE_BASED_RULE_IDS
+            or finding.severity == Severity.low
+        ):
+            adjusted.append(finding)
+            continue
+        adjusted.append(finding.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{finding.severity.value} → low · {_UPLOAD_DATA_REASON}",
+        }))
+    return adjusted
+
+
+# ── 예외 삼킴 룰의 프런트엔드/백엔드 구분 ──────────────────────────────────
+# 실측(999건 사례): KISA-JS-ERR-03 119건 중 111건이 HTML 화면 코드의 `catch(e){}` 였다.
+# 룰의 근거(가이드 §제4절 3)는 **키 조회·인증 실패가 삼켜져 기본값으로 진행**되는
+# 서버 측 사고다. 화면 폴백(`try { render() } catch(e){}`)과 같은 등급으로 두면
+# 진짜 위험이 섞여 보이지 않는다. 낮추되 지우지 않고, 민감 문맥이면 낮추지 않는다.
+_SWALLOWED_EXCEPTION_RULE_IDS = frozenset({"KISA-JS-ERR-02", "KISA-JS-ERR-03"})
+_FRONTEND_SIGNAL_RE = re.compile(
+    r"\b(?:document|window|localStorage|sessionStorage|navigator)\s*\.|\baddEventListener\s*\(|\bquerySelector",
+)
+_BACKEND_SIGNAL_RE = re.compile(
+    r"\brequire\s*\(|\bmodule\.exports\b|\bprocess\.env\b|\bexpress\s*\(|\bapp\.(?:get|post|put|delete|use|listen)\s*\("
+    r"|\bres\.(?:status|json|send|cookie)\s*\(|\bfrom\s+['\"](?:fs|http|https|crypto|path|express|koa|fastify|pg|mysql2?"
+    r"|mongoose|sequelize|jsonwebtoken|bcrypt\w*|child_process)['\"]",
+)
+_SENSITIVE_CTX_RE = re.compile(
+    r"(?i)token|auth|login|passw|secret|crypt|\bsign|verify|permission|\brole|sql|query\s*\(|\bdb\.|session"
+    r"|cookie|payment|결제|인증|권한|암호|세션|키\s*조회|private",
+)
+_FRONTEND_EXC_REASON = (
+    "프런트엔드 화면 코드의 예외 삼킴 — 화면 폴백으로 보임(±6줄에 인증·암호·DB·세션 문맥 없음). "
+    "서버 측 키 조회·인증 실패를 삼키는 경우가 아니면 기능 안정성 문제로 다루세요"
+)
+_SENSITIVE_CTX_WINDOW = 6
+
+
+def is_frontend_js(code: str, filename: str) -> bool:
+    """이 파일이 브라우저에서 도는 화면 코드인가(HTML 이거나, DOM 신호만 있고 Node 신호가 없음)."""
+    low = filename.lower()
+    if low.endswith((".html", ".htm", ".xhtml")):
+        return True
+    if _BACKEND_SIGNAL_RE.search(code):
+        return False
+    return bool(_FRONTEND_SIGNAL_RE.search(code))
+
+
+def attenuate_frontend_exception_findings(
+    findings: list[Finding], code: str, filename: str,
+) -> list[Finding]:
+    if not any(f.rule_id in _SWALLOWED_EXCEPTION_RULE_IDS for f in findings):
+        return findings
+    if not is_frontend_js(code, filename):
+        return findings
+    lines = code.splitlines()
+    adjusted: list[Finding] = []
+    for f in findings:
+        if f.rule_id not in _SWALLOWED_EXCEPTION_RULE_IDS or f.severity == Severity.low:
+            adjusted.append(f)
+            continue
+        idx = f.location.line - 1
+        window = "\n".join(lines[max(0, idx - _SENSITIVE_CTX_WINDOW): idx + _SENSITIVE_CTX_WINDOW + 1])
+        if _SENSITIVE_CTX_RE.search(window):
+            adjusted.append(f)          # 민감 문맥 — 등급 유지
+            continue
+        adjusted.append(f.model_copy(update={
+            "severity": Severity.low,
+            "decision": Decision.warn if f.decision == Decision.block else f.decision,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{f.severity.value} → low · {_FRONTEND_EXC_REASON}",
+        }))
+    return adjusted
+
+
+# ── 카드번호 룰의 필드 문맥 ────────────────────────────────────────────────
+# Luhn 을 통과한 16자리는 카드번호일 가능성이 높지만, 실측(999건 사례)의 2건은
+# `<자재코드>4014-…</자재코드>` — 자재·품목 코드였다. 결제 문맥이면 그대로 두고,
+# 코드·품목 문맥이면 낮춘다(지우지 않는다 — Luhn 통과는 여전히 근거다).
+_CARD_RULE_ID = "GOV-PII-CARD-001"
+_CARD_PAYMENT_CTX_RE = re.compile(
+    r"(?i)card|카드|\bpan\b|payment|결제|cvv|cvc|expir|유효기간|billing|checkout|cardholder|신용|체크카드",
+)
+_CARD_NONPAYMENT_CTX_RE = re.compile(
+    r"(?i)자재|자원|품목|물품|상품|부품|규격|코드|\bcode\b|\bsku\b|\bitem\w*\b|\bpart\w*\b|serial|일련|barcode|모델|model",
+)
+_CARD_CTX_REASON = (
+    "카드번호 형식(Luhn 통과)이지만 필드 문맥이 자재·품목·코드 값으로 보임 — "
+    "결제 정보가 아닌지 확인하세요. 결제 문맥이면 즉시 제거·재발급 대상입니다"
+)
+
+
+def attenuate_card_context_findings(findings: list[Finding], code: str) -> list[Finding]:
+    if not any(f.rule_id == _CARD_RULE_ID for f in findings):
+        return findings
+    lines = code.splitlines()
+    adjusted: list[Finding] = []
+    for f in findings:
+        if f.rule_id != _CARD_RULE_ID or f.decision != Decision.block:
+            adjusted.append(f)
+            continue
+        idx = f.location.line - 1
+        window = "\n".join(lines[max(0, idx - 1): idx + 2]) if 0 <= idx < len(lines) else ""
+        if _CARD_PAYMENT_CTX_RE.search(window) or not _CARD_NONPAYMENT_CTX_RE.search(window):
+            adjusted.append(f)
+            continue
+        adjusted.append(f.model_copy(update={
+            "severity": Severity.medium,
+            "decision": Decision.warn,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{f.severity.value} → medium · {_CARD_CTX_REASON}",
+        }))
+    return adjusted
+
+
+# ── js-taint 출처 판정으로 XSS 차단을 단계화 ───────────────────────────────
+_HTML_XSS_RULE_IDS = frozenset({"KISA-JS-INPUT-04", "GOV-HTML-DOM-XSS-001"})
+
+
+def _attenuate_xss_by_taint(
+    findings: list[Finding], code: str, script_view: str | None,
+    filename: str, language: str | None, failures: dict[str, str],
+) -> list[Finding]:
+    """regex 의 HTML sink 차단을 js-taint 의 출처 판정(const/sanitized/tainted/unknown)에 맞춘다.
+
+    엔진이 실패했거나 sink 모양을 모르면 차단이 그대로 남는다(fail-closed).
+    """
+    if not any(f.rule_id in _HTML_XSS_RULE_IDS and f.decision == Decision.block for f in findings):
+        return findings
+    if "js-taint" in failures:
+        return findings
+    from .scanners.html_sink_context import attenuate_by_taint_verdict
+    from .scanners.js_taint import _is_js, classify_html_sinks
+    target = code if _is_js(filename, language) else script_view
+    if target is None:
+        return findings
+    try:
+        verdicts = classify_html_sinks(target)
+    except Exception as exc:  # noqa: BLE001 — 분류 실패는 엔진 실패로 기록하고 차단을 유지
+        failures.setdefault("js-taint", f"{type(exc).__name__}: {exc}")
+        return findings
+    return attenuate_by_taint_verdict(findings, verdicts)
 
 
 def _posture_notes(posture, skipped) -> list[dict]:
@@ -659,27 +877,35 @@ def _summary(findings: list[Finding]) -> ScanSummary:
     by_severity = {s.value: 0 for s in Severity}
     by_decision = {d.value: 0 for d in Decision}
     by_path_class: dict[str, dict[str, int]] = {
-        k: {"total": 0, "block": 0} for k in ("runtime", "test", "sample")
+        k: {"total": 0, "block": 0} for k in PATH_CLASSES
     }
+    by_confidence: dict[str, int] = {"confirmed": 0, "likely": 0, "pattern-only": 0}
+    block_by_confidence: dict[str, int] = {"confirmed": 0, "likely": 0, "pattern-only": 0}
     for finding in findings:
         by_severity[finding.severity.value] += 1
         by_decision[finding.decision.value] += 1
         cls = by_path_class[path_class(finding.location.file)]
         cls["total"] += 1
+        by_confidence[finding.confidence] = by_confidence.get(finding.confidence, 0) + 1
         if finding.decision == Decision.block and not finding.suppressed:
             cls["block"] += 1
+            block_by_confidence[finding.confidence] = block_by_confidence.get(finding.confidence, 0) + 1
+    blocked = any(f.decision == Decision.block for f in findings)
     return ScanSummary(
         finding_count=len(findings),
         by_severity=by_severity,
         by_decision=by_decision,
         highest_severity=_highest(findings),
-        blocked=any(f.decision == Decision.block for f in findings),
+        blocked=blocked,
+        has_block_level_findings=blocked,
         location_count=len({(f.location.file, f.location.line) for f in findings}),
         block_location_count=len({
             (f.location.file, f.location.line)
             for f in findings if f.decision == Decision.block and not f.suppressed
         }),
         by_path_class=by_path_class,
+        by_confidence=by_confidence,
+        block_by_confidence=block_by_confidence,
     )
 
 
@@ -836,10 +1062,19 @@ def scan_code(
     findings = apply_profile(findings, profile_spec)
     # 프로파일 뒤에 감쇄한다 — 프로파일의 decision 상향이 감쇄를 되돌리지 못하게.
     findings = attenuate_test_path_findings(findings, filename)
+    # 업로드 데이터 경로의 코드 모양 발견 — 실행 코드가 아니다(값 기반 발견은 그대로).
+    findings = attenuate_upload_data_findings(findings, filename)
     # HTML sink 의 문맥(정화 헬퍼 경유 · <style> CSS)도 같은 원칙으로 낮춘다 —
     # 삭제가 아니라 감쇄다. 판단이 틀렸을 때 위험이 사라지면 안 된다.
     from .scanners.html_sink_context import attenuate_html_sink_findings
     findings = attenuate_html_sink_findings(findings, code, filename)
+    # 남은 HTML sink 차단은 js-taint 의 출처 판정으로 단계화한다:
+    # 상수 → 없음 · 정화 → warn(추론) · 출처 미상 → warn(정밀 검토) · 외부 출처 → 차단.
+    findings = _attenuate_xss_by_taint(findings, code, script_view, filename, language, engine_failures)
+    # 화면 코드의 예외 삼킴은 서버 측 키·인증 실패 삼킴과 등급이 다르다(민감 문맥이면 유지).
+    findings = attenuate_frontend_exception_findings(findings, code, filename)
+    # Luhn 통과 카드번호가 자재·품목 코드 필드에 있으면 낮춘다(결제 문맥이면 유지).
+    findings = attenuate_card_context_findings(findings, code)
     # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
     # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
     findings = attenuate_prohibition_prose_findings(findings, code)
@@ -1206,7 +1441,27 @@ SYMLINK_SKIP_REASON = (
     "심볼릭 링크 — 검사 트리 밖을 가리킬 수 있어 따라가지 않았습니다"
     "(실제 파일을 넣어 다시 검사하세요)"
 )
-DEFAULT_MAX_FILE_BYTES = 1_000_000
+# 파일 크기 상한. 실측(2026-09-16, 999건 사례)에서 **`server.js` 1,027,071 바이트가
+# 1,000,000 상한에 걸려 검사되지 않았고**, coverage 는 `truncated=false` 였다 —
+# 유일한 서버 실행 파일이 빠졌는데 보고서는 온전한 검사처럼 읽혔다. 8MB 는 실측
+# 스캔 속도(≈1.75초/MB)로 한 파일 14초 안에 끝나는 값이고, 사람이 쓴 소스가 넘기
+# 어려운 크기다. 넘는 **실행 소스**는 coverage 에 값으로 남고 게이트가 승인을
+# 내리지 않는다(`coverage.oversized_source_files`).
+DEFAULT_MAX_FILE_BYTES = 8_000_000
+
+# 크기 상한 초과 시 "실행 소스"로 셀 확장자 — 데이터·마크업·설정은 따로 센다.
+# JSON 시드 13MB 가 빠진 것과 서버 JS 1MB 가 빠진 것은 무게가 다르다.
+_SOURCE_CODE_SUFFIXES: frozenset[str] = frozenset({
+    ".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+    ".java", ".kt", ".scala", ".go", ".rs", ".rb", ".php", ".cs", ".vb", ".swift", ".m",
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
+    ".vue", ".svelte", ".html", ".htm",
+})
+_OVERSIZED_LIST_MAX = 50        # coverage 에 실을 경로 수 상한(건수는 전부 센다)
+# 정화 함수 색인 대상 — sink 판정이 다른 파일의 정의를 본문으로 인정하기 위한 1차 읽기.
+_SANITIZER_INDEX_SUFFIXES: frozenset[str] = frozenset({
+    ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".html", ".htm",
+})
 
 
 def _profile_resolution(requested: str, spec) -> tuple[str, dict | None]:
@@ -1354,6 +1609,8 @@ def scan_path(
     # 있다는 이유로 버리면, 이 변경이 고치려는 사각지대가 그대로 되살아난다.
     pending_secret_files: list[Path] = []
     over_limit_count = 0        # 상한 초과로 검사되지 않은 '검사 대상' 파일 수
+    oversized_source: list[str] = []   # 크기 상한을 넘은 **실행 소스** 경로
+    oversized_data = 0                 # 크기 상한을 넘은 데이터·설정·마크업 파일 수
     is_dir = root.is_dir()
 
     if root.is_file():
@@ -1459,7 +1716,20 @@ def scan_path(
                     skipped.append(SkippedFile(path=_rel(p, root, is_dir), reason=f"stat error: {exc_io!s}"))
                     continue
                 if size > max_file_bytes:
-                    skipped.append(SkippedFile(path=_rel(p, root, is_dir), reason=f"too large ({size} bytes)"))
+                    rel_big = _rel(p, root, is_dir)
+                    if p.suffix.lower() in _SOURCE_CODE_SUFFIXES and path_class(rel_big) != "upload-data":
+                        # 실행 소스가 빠진 것은 범위 결손이다 — 값으로 남긴다.
+                        oversized_source.append(rel_big)
+                        skipped.append(SkippedFile(
+                            path=rel_big,
+                            reason=(
+                                f"too large ({size} bytes) — 실행 소스가 크기 상한({max_file_bytes:,})을 넘어 "
+                                "검사되지 않았습니다. 파일을 나누거나 --max-file-bytes 를 올려 다시 검사하세요"
+                            ),
+                        ))
+                    else:
+                        oversized_data += 1
+                        skipped.append(SkippedFile(path=rel_big, reason=f"too large ({size} bytes)"))
                     continue
                 if size == 0:
                     continue
@@ -1485,93 +1755,114 @@ def scan_path(
     all_findings: list[Finding] = []
     scanned: list[str] = []
     content_hashes: dict[str, list[str]] = {}   # 내용 해시 → 같은 내용 파일 경로들
+    file_hashes: dict[str, str] = {}            # 경로 → 내용 sha256 (소스 결속용)
     from .scanners.posture import PostureCollector
     posture = PostureCollector()   # 부재형 관찰(보안 헤더·쿠키 속성) — 판정과 무관
 
-    for f in files_to_scan:
-        rel = _rel(f, root, is_dir)
+    def _read_text(f: Path) -> tuple[str | None, str | None]:
+        """(본문, 건너뛴 사유). BOM 제거·cp949 폴백은 예전과 같다."""
         try:
             head = f.read_bytes()[:4096]
         except OSError as exc_io:
-            skipped.append(SkippedFile(path=rel, reason=f"read error: {exc_io!s}"))
-            continue
+            return None, f"read error: {exc_io!s}"
         if _looks_binary(head):
-            skipped.append(SkippedFile(path=rel, reason="binary content (NUL detected)"))
-            continue
+            return None, "binary content (NUL detected)"
         try:
             # utf-8-sig: BOM 을 **제거하고** 읽는다. utf-8 로 읽으면 BOM 이
             # U+FEFF 문자로 남아 `ast.parse` 가 SyntaxError 를 내고, AST 정밀
             # 엔진이 조용히 꺼진 채 regex 로만 검사된다(실측: Windows·한글
             # 환경에서 흔한 BOM 파일 2개에서 SQL 테인트 분석이 통째로 누락).
-            text = f.read_text(encoding="utf-8-sig")
+            return f.read_text(encoding="utf-8-sig"), None
         except UnicodeDecodeError:
             try:
-                text = f.read_text(encoding="cp949")
+                return f.read_text(encoding="cp949"), None
             except UnicodeDecodeError:
-                skipped.append(SkippedFile(path=rel, reason="encoding: not utf-8 or cp949"))
+                return None, "encoding: not utf-8 or cp949"
+
+    # 1차: 트리 전체의 정화 함수 색인. 프로젝트가 `lib/util.js` 에 둔 `esc()` 를
+    # 다른 파일의 sink 판정이 **본문으로** 인정할 수 있게 한다(이름만으로는 안 된다).
+    # JS·HTML 만 읽고 본문은 버린다 — 메모리에 트리를 올리지 않는다.
+    from .scanners.html_sink_context import ProjectSanitizers, use_project
+    project = ProjectSanitizers()
+    for f in files_to_scan:
+        if f.suffix.lower() not in _SANITIZER_INDEX_SUFFIXES:
+            continue
+        text_idx, _why = _read_text(f)
+        if text_idx is not None and not _looks_minified(text_idx):
+            try:
+                project.add_file(text_idx)
+            except Exception:  # noqa: BLE001 — 색인 실패가 검사를 막으면 안 된다
                 continue
-        # 이 도구가 만든 보고서는 폴더 이름과 무관하게 뺀다(자기 참조).
-        # 내용을 이미 읽은 뒤라 추가 I/O 는 없다.
-        if _looks_like_gvskb_report(text, f.suffix.lower()):
-            skipped.append(SkippedFile(path=rel, reason=SELF_REPORT_SKIP_REASON))
-            continue
-        # single-line 초장문/평균 줄 과대 = 미니파이드 번들. 룰 대량 오탐의 원인.
-        # 다만 **파일명에 `.min.` 이 없어도** 미니파이드 `.js` 는 벤더 라이브러리를
-        # 그대로 받아 둔 경우가 흔하다(`vendor/lib.js`). 이름 규칙으로만 걸면 그쪽이
-        # 통째로 사각지대로 남으므로, 내용으로 판정된 것도 컴포넌트 식별을 시도한다.
-        if _looks_minified(text):
-            if f.suffix.lower() in {".js", ".mjs", ".cjs"}:
-                vb = _identify_vendor_bundle_file(f, rel, detected_by="content", text=text)
-                if vb is not None:
-                    vendor_bundles.append(vb)
-                skipped.append(SkippedFile(path=rel, reason=VENDOR_BUNDLE_SKIP_REASON))
-            else:
-                skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
-            continue
-        # 내용 해시 — 같은 파일이 여러 경로에 복사돼 발견이 배수로 보이는 상황을
-        # 리포트가 "동일 파일 N곳"으로 설명할 수 있게 한다(예: ssl/ 폴더 복제).
-        content_hashes.setdefault(
-            hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), []
-        ).append(rel)
-        report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
-        # 엔진 실패·미가용은 파일마다 같지만, 실패는 파일별로 다를 수 있으므로 누적한다.
-        for item in report.engines.failed:
-            engine_failures.setdefault(item.name, item.reason)
-        languages_seen.update(_scanned_languages(rel, None))
-        # 인라인 무시 주석이 붙은 줄 수 — 승인자·사유 없이 검사를 끄는 경로이므로
-        # 숨기지 않고 센다(보고서·포털 심사 화면이 이 값을 표시한다).
-        from .scanners.regex_scanner import count_inline_ignores
-        inline_ignored += count_inline_ignores(text, _language_of(rel))
-        posture.observe(rel, text, runtime=path_class(rel) == "runtime")
-        file_findings = report.findings
-        # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
-        # 감쇄(비밀 자재 검사 결과는 그대로).
-        if _looks_like_rule_definition(text, f.suffix.lower()):
-            file_findings = attenuate_rule_definition_findings(file_findings)
-        all_findings.extend(file_findings)
-        # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
-        # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
-        if _is_secret_filename(f.name):
-            hit, evidence_no, evidence_line = _looks_like_secret_material(text)
-            if hit:
-                keyfile_rule = lookup_rule("GOV-SECRET-KEYFILE-001")
-                if keyfile_rule is not None:
-                    all_findings.append(build_finding(
-                        keyfile_rule, filename=rel, line_no=evidence_no,
-                        # 여기 증거는 **맨 자격증명 값**이다. `_redact_evidence`
-                        # 는 접두사·변수명을 단서로 삼아 이 모양을 못 가린다 —
-                        # 실측에서 세션 서명키가 보고서에 통째로 실렸다.
-                        evidence=_redact_secret_material(evidence_line),
-                        engine="secret-file",
-                    ))
-        scanned.append(rel)
-        # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
-        external.extend(extract_api_connections(text, rel))
-        external.extend(extract_static_resources(text, rel))
-        if f.name.lower() == "package.json":
-            external.extend(
-                inventory_packages(parse_manifest_packages(text, "npm"), rel)
-            )
+
+    with use_project(project):
+        for f in files_to_scan:
+            rel = _rel(f, root, is_dir)
+            text, why = _read_text(f)
+            if text is None:
+                skipped.append(SkippedFile(path=rel, reason=why or "read error"))
+                continue
+            # 이 도구가 만든 보고서는 폴더 이름과 무관하게 뺀다(자기 참조).
+            # 내용을 이미 읽은 뒤라 추가 I/O 는 없다.
+            if _looks_like_gvskb_report(text, f.suffix.lower()):
+                skipped.append(SkippedFile(path=rel, reason=SELF_REPORT_SKIP_REASON))
+                continue
+            # single-line 초장문/평균 줄 과대 = 미니파이드 번들. 룰 대량 오탐의 원인.
+            # 다만 **파일명에 `.min.` 이 없어도** 미니파이드 `.js` 는 벤더 라이브러리를
+            # 그대로 받아 둔 경우가 흔하다(`vendor/lib.js`). 이름 규칙으로만 걸면 그쪽이
+            # 통째로 사각지대로 남으므로, 내용으로 판정된 것도 컴포넌트 식별을 시도한다.
+            if _looks_minified(text):
+                if f.suffix.lower() in {".js", ".mjs", ".cjs"}:
+                    vb = _identify_vendor_bundle_file(f, rel, detected_by="content", text=text)
+                    if vb is not None:
+                        vendor_bundles.append(vb)
+                    skipped.append(SkippedFile(path=rel, reason=VENDOR_BUNDLE_SKIP_REASON))
+                else:
+                    skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
+                continue
+            # 내용 해시 — 같은 파일이 여러 경로에 복사돼 발견이 배수로 보이는 상황을
+            # 리포트가 "동일 파일 N곳"으로 설명할 수 있게 한다(예: ssl/ 폴더 복제).
+            digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+            content_hashes.setdefault(digest, []).append(rel)
+            file_hashes[rel.replace("\\", "/")] = digest
+            report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
+            # 엔진 실패·미가용은 파일마다 같지만, 실패는 파일별로 다를 수 있으므로 누적한다.
+            for item in report.engines.failed:
+                engine_failures.setdefault(item.name, item.reason)
+            languages_seen.update(_scanned_languages(rel, None))
+            # 인라인 무시 주석이 붙은 줄 수 — 승인자·사유 없이 검사를 끄는 경로이므로
+            # 숨기지 않고 센다(보고서·포털 심사 화면이 이 값을 표시한다).
+            from .scanners.regex_scanner import count_inline_ignores
+            inline_ignored += count_inline_ignores(text, _language_of(rel))
+            posture.observe(rel, text, runtime=path_class(rel) == "runtime")
+            file_findings = report.findings
+            # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
+            # 감쇄(비밀 자재 검사 결과는 그대로).
+            if _looks_like_rule_definition(text, f.suffix.lower()):
+                file_findings = attenuate_rule_definition_findings(file_findings)
+            all_findings.extend(file_findings)
+            # 이름이 비밀을 뜻하는 파일에 값처럼 보이는 내용이 있으면 별도 발행.
+            # 파일명 + 내용을 함께 봐야 하는 판정이라 regex 룰로는 만들 수 없다.
+            if _is_secret_filename(f.name):
+                hit, evidence_no, evidence_line = _looks_like_secret_material(text)
+                if hit:
+                    keyfile_rule = lookup_rule("GOV-SECRET-KEYFILE-001")
+                    if keyfile_rule is not None:
+                        all_findings.append(build_finding(
+                            keyfile_rule, filename=rel, line_no=evidence_no,
+                            # 여기 증거는 **맨 자격증명 값**이다. `_redact_evidence`
+                            # 는 접두사·변수명을 단서로 삼아 이 모양을 못 가린다 —
+                            # 실측에서 세션 서명키가 보고서에 통째로 실렸다.
+                            evidence=_redact_secret_material(evidence_line),
+                            engine="secret-file",
+                        ))
+            scanned.append(rel)
+            # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
+            external.extend(extract_api_connections(text, rel))
+            external.extend(extract_static_resources(text, rel))
+            if f.name.lower() == "package.json":
+                external.extend(
+                    inventory_packages(parse_manifest_packages(text, "npm"), rel)
+                )
 
     for mpath, eco in manifest_files:
         try:
@@ -1617,9 +1908,16 @@ def scan_path(
             max_files=max_files,
             scanned_count=len(scanned),
             skipped_count=len(skipped),
+            max_file_bytes=max_file_bytes,
+            oversized_source_count=len(oversized_source),
+            oversized_source_files=oversized_source[:_OVERSIZED_LIST_MAX],
+            oversized_data_count=oversized_data,
+            complete=not over_limit_count and not oversized_source,
         ),
         engines=engine_status(engine_failures, languages=languages_seen),
-        source_snapshot=source_snapshot_for(root) if root.is_dir() else None,
+        source_snapshot=(
+            source_snapshot_for(root, file_hashes=file_hashes) if root.is_dir() else None
+        ),
         external_surface=dedupe_connections(external),
         scan_mode=_current_scan_mode(),
         intel_freshness=_intel_freshness(),

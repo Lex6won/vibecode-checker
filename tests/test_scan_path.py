@@ -55,11 +55,16 @@ def test_scan_path_skips_binary_and_oversized(tmp_path: Path) -> None:
     big.write_text("x = 1\n" * 200_000, encoding="utf-8")  # > 1 MB
     (tmp_path / "blob.py").write_bytes(b"\x00\x01\x02binary")
 
-    report = scan_path(tmp_path)
+    # 기본 상한은 8MB 다(2026-09-18) — 여기서는 상한을 1MB 로 내려 절단 경로를 시험한다.
+    report = scan_path(tmp_path, max_file_bytes=1_000_000)
 
     skipped_reasons = {sf.path: sf.reason for sf in report.skipped_files}
     assert any("too large" in r for r in skipped_reasons.values())
     assert any("binary" in r for r in skipped_reasons.values())
+    # 실행 소스(.py)가 빠졌으므로 범위는 불완전하고, 값으로 남는다.
+    assert report.coverage.complete is False
+    assert report.coverage.oversized_source_count == 1
+    assert report.coverage.oversized_source_files == ["big.py"]
 
 
 def test_scan_path_returns_clean_report_for_safe_code(tmp_path: Path) -> None:
