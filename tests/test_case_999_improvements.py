@@ -494,3 +494,53 @@ def test_upload_data_urls_are_not_external_connections(tmp_path: Path) -> None:
     (tmp_path / "app.js").write_text('fetch("https://api.openai.com/v1/chat");\n', encoding="utf-8")
     hosts = {c.target for c in scan_path(tmp_path).external_surface}
     assert hosts == {"api.openai.com"}
+
+
+# ---------------------------------------------------------------------------
+# 3차 — 원본 소스(2026-09-19 zip)로 재검증하며 찾은 빈틈. 실제 f.note 모양 그대로.
+# ---------------------------------------------------------------------------
+
+_RT_SHAPE = (
+    "const esc = s => String(s == null ? '' : s).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;'}[c]));\n"
+    "let RT_FIELDS = null;\n"
+    "function _rtReadSingleRow() {\n"
+    "  const gt = k => { const el = document.querySelector(`#rtBody [data-k=\"t_${k}\"]`); return el ? el.textContent.trim() : ''; };\n"
+    "  return { name: '', target: gt('target'), note: gt('note') };\n"
+    "}\n"
+    "function rtAddField() {\n"
+    "  if (!RT_FIELDS) { RT_FIELDS = [_rtReadSingleRow()]; }\n"
+    "}\n"
+    "function rtRenderMulti() {\n"
+    "  let html = '';\n"
+    "  RT_FIELDS.forEach((f, i) => {\n"
+    "    html += `\n"
+    "    <tr data-fi=\"${i}\">\n"
+    "      <td>${esc(f.target)}</td>\n"
+    "      <td>${NOTE_CELL}</td>\n"
+    "    </tr>`;\n"
+    "  });\n"
+    "  $('rtBody').innerHTML = html;\n"
+    "}\n"
+)
+
+
+def test_real_stored_xss_shape_is_blocked_and_fixed_shape_is_review() -> None:
+    """실측 dept-consultation.html:1261 — 배열 리터럴 → 헬퍼 → 객체 리터럴 → textContent 경로."""
+    vuln = _xss(_RT_SHAPE.replace("${NOTE_CELL}", "${f.note}"))
+    assert vuln and vuln[0].decision == Decision.block and vuln[0].engine == "js-taint", \
+        [(f.decision, f.severity_adjusted) for f in vuln]
+    fixed = _xss(_RT_SHAPE.replace("${NOTE_CELL}", "${esc(f.note)}"))
+    assert fixed and fixed[0].decision == Decision.warn and "정화 호출" in (fixed[0].severity_adjusted or "")
+
+
+def test_callback_index_param_is_not_unknown() -> None:
+    code = _ESC + "el.innerHTML = rows.map((r, i) => `<td>${i + 1}</td><td>${esc(r.n)}</td>`).join('');\n"
+    hits = _xss(code)
+    assert hits and hits[0].decision == Decision.warn and "정화 호출" in (hits[0].severity_adjusted or "")
+
+
+def test_count_like_names_are_not_treated_as_input() -> None:
+    hits = _xss("el.innerHTML = `<b>${userHiddenCnt}</b>`;\n")
+    assert hits and hits[0].decision == Decision.warn, "…Cnt/…Count 는 숫자 — 이름만으로 오염이 아니다"
+    hits = _xss("el.innerHTML = `<b>${userName}</b>`;\n")
+    assert hits and hits[0].decision == Decision.block
