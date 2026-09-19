@@ -97,7 +97,8 @@ _SOURCE_RE = re.compile(
 # 찾았을 때 이 이름이면 UNKNOWN 이 아니라 TAINTED(유력)로 본다. `html`·`data`·
 # `content` 같은 일반 이름은 넣지 않는다 — 실측 사례의 정상 템플릿 변수들이다.
 _TAINTED_NAME_RE = re.compile(
-    r"(?i)^(?:[\w$]*?)(?:user\w*|input\w*|untrusted\w*|raw\w*|llm\w*|model_?output|prompt\w*"
+    r"(?i)^(?!.*(?:cnt|count|len|length|idx|index|num|total|sum|size|width|height)$)"   # userHiddenCnt 는 숫자다(실측)
+    r"(?:[\w$]*?)(?:user\w*|input\w*|untrusted\w*|raw\w*|llm\w*|model_?output|prompt\w*"
     r"|payload|params?|query|body|req|request)$",
 )
 # HTML 이 될 수 없는 값(숫자·길이·불리언) — 정화 없이도 안전.
@@ -107,6 +108,16 @@ _SAFE_EXPR_RE = re.compile(
     r"|[\w$.]+\s*\.\s*toFixed\s*\([^()]*\)|[\w$.]+\s*\.\s*toLocaleString\s*\([^()]*\))"
     r"(?:\s*[+\-*/%]\s*(?:\d+|[\w$.]+\s*\.\s*length))*$",
 )
+# 이름이 숫자를 뜻하는 멤버 — `f.id`·`f.size_bytes`·`row.count`. 실측(2026-09-19)에서 fetch 응답의
+# `${f.id}`·`_fmtSize(f.size_bytes)` 가 "확인된 XSS" 로 올라왔다(LLM 검증은 안전). 서버가 매기는
+# 숫자 필드는 HTML 이 되지 않는다. `menu_id` 같은 `_id` 는 넣되 `user_id`·`login_id` 는 사용자 문자열일 수 있어 뺀다.
+_NUMERIC_MEMBER_RE = re.compile(
+    r"^(?!.*\.\s*(?:user|login|member|account|email|mail)_id$)"       # 사용자 문자열일 수 있는 _id 는 제외
+    r"[\w$]+(?:\s*\.\s*[\w$]+)*\s*\.\s*(?:id|[a-z]+_id|size(?:_bytes)?|bytes|count|cnt|len|length|idx|index|num|total|qty"
+    r"|quantity|amount|seq|year|month|day|page|limit|offset|rank|width|height|ts|timestamp)$",
+)
+# 식 전체가 길이·숫자 서식으로 끝난다: `pool.filter(…).length` · `(a/1024).toFixed(0)`
+_NUMERIC_TAIL_RE = re.compile(r"\.\s*(?:length|size)$|\.\s*(?:toFixed|toLocaleString|toPrecision)\s*\([^()]*\)$")
 # 문자열 리터럴만 있는 삼항: cond ? 'a' : "b"
 _LITERAL_TERNARY_RE = re.compile(
     r"""^[^?]+\?\s*(['"])(?:(?!\1).)*\1\s*:\s*(['"])(?:(?!\2).)*\2\s*$""",
@@ -132,7 +143,8 @@ _RETURN_RE = re.compile(r"^\s*return\s+(.*)$")
 # 잡으면 fetch 응답 변수의 출처가 순회 변수로 이어지지 않는다(적대적 검증 2026-09-18).
 _CALLBACK_BIND_RE = re.compile(
     r"(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]*\])*?"
-    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)",
+    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)"
+    r"(?:\s*,\s*([A-Za-z_$][\w$]*))?",      # 두 번째 매개변수 = 인덱스(숫자) — 실측 `${i}` 가 출처 미상으로 남았다
 )
 _FOR_OF_RE = re.compile(r"\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+([A-Za-z_$][\w$]*)")
 _STRING_LITERAL_RE = re.compile(r"""^(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")$""", re.S)
@@ -352,6 +364,36 @@ def _cut_at_statement_end(expr: str) -> str:
             return expr[:i]
         i += 1
     return expr
+
+
+def _paren_balance(text: str) -> int:
+    """괄호 깊이(문자열·템플릿·주석 제외). 0 이면 닫혔다."""
+    depth = 0
+    in_str: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str or (in_str == "\n" and ch == "\n"):
+                in_str = None
+        elif ch in ("'", '"'):
+            in_str = ch
+        elif ch == "`":
+            j = _find_backtick_end(text, i + 1)
+            if j == -1:
+                return 1
+            i = j
+        elif ch == "/" and text[i + 1:i + 2] == "/":
+            in_str = "\n"                        # 줄 주석 — 줄 끝까지 건너뛴다
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        i += 1
+    return depth
 
 
 def _split_concat(expr: str) -> list[str]:
@@ -613,7 +655,7 @@ class _Classifier:
             returns: list[str] = []
             indent = len(line) - len(line.lstrip())
             # 한 줄 함수: `function f(a){ return `…`; }` — 정의 줄 자체의 return 도 본다.
-            same = re.search(r"\{\s*return\s+(.*)$", line[m.end():])
+            same = re.search(r"\breturn\s+(.*)$", line[m.end():])
             if same:
                 expr, _c = self._collect_expr(same.group(1).rstrip().rstrip("}").rstrip().rstrip(";"), i)
                 returns.append(expr)
@@ -653,12 +695,14 @@ class _Classifier:
     def _bind_iteration_vars(self, text: str) -> None:
         """``rows.map(r => …)`` 의 ``r`` 은 ``rows`` 의 출처를 물려받는다(현재 줄의 범위에 선언)."""
         for m in _CALLBACK_BIND_RE.finditer(text):
-            root, param = m.group(1), m.group(2)
+            root, param, index = m.group(1), m.group(2), m.group(3)
             st = self._lookup(root)
             if st is not None:
                 self._record(param, self.cur, "=", st[0], st[1], declared=True)
             elif _TAINTED_NAME_RE.search(root):
                 self._record(param, self.cur, "=", TAINTED, False, declared=True)
+            if index and index != "_":
+                self._record(index, self.cur, "=", CONST, False, declared=True)
 
     # ── 식 분류 ───────────────────────────────────────────────────────────
     def classify_expr(self, expr: str, depth: int = 0, params: set[str] | None = None) -> SinkVerdict:
@@ -674,6 +718,8 @@ class _Classifier:
             return SinkVerdict(UNKNOWN, "식이 너무 깊음")
         if _STRING_LITERAL_RE.match(expr):
             return SinkVerdict(CONST, "상수 문자열")
+        if _NUMERIC_TAIL_RE.search(expr) and _paren_balance(expr) == 0:
+            return SinkVerdict(CONST, "HTML 이 될 수 없는 값(길이·숫자 서식)")
         # 템플릿 리터럴
         if expr.startswith("`"):
             end = _find_backtick_end(expr, 1)
@@ -697,8 +743,11 @@ class _Classifier:
             if last in _NUMERIC_CALLS and "." not in wrapper:
                 return SinkVerdict(CONST, "숫자·불리언 변환값")
             if last in _PASSTHROUGH_CALLS:
+                if not inner.strip() and "." in wrapper:
+                    # `el.textContent.trim()` — 값은 수신자(el.textContent)다
+                    return self.classify_expr(wrapper.rsplit(".", 1)[0], depth + 1, params)
                 return self.classify_expr(inner, depth + 1, params)
-            if base in self.func_returns and depth < 2:
+            if base in self.func_returns and depth < 4:      # 배열 → 함수 → 객체 → 헬퍼 호출까지(실측 _rtReadSingleRow)
                 returns, fparams = self.func_returns[base]
                 args = _split_args(inner)
                 if any(self.classify_expr(a, depth + 1, params).state == TAINTED for a in args):
@@ -715,6 +764,17 @@ class _Classifier:
             if "." in wrapper and (params is None or base not in params) and _TAINTED_NAME_RE.search(base):
                 return SinkVerdict(TAINTED, f"이름이 입력값을 뜻함({base})")
             return SinkVerdict(UNKNOWN, f"{wrapper}() 반환값 — 출처 추적 불가")
+        # 배열·객체 리터럴 — 요소(값)들의 출처를 합친다. 실측: `RT_FIELDS = [_readRow()]` 가
+        # "식 해석 불가"로 남아 그 요소의 저장형 XSS 가 출처 미상에 머물렀다.
+        if expr.startswith("[") and expr.endswith("]"):
+            items = _split_args(expr[1:-1])
+            return self._merge([self.classify_expr(x, depth + 1, params) for x in items]) if items else SinkVerdict(CONST, "빈 배열")
+        if expr.startswith("{") and expr.endswith("}"):
+            values = []
+            for item in _split_args(expr[1:-1]):
+                k, sep, v = item.partition(":")
+                values.append(v if sep else k)          # `{a}` 축약은 변수 a 자체
+            return self._merge([self.classify_expr(x, depth + 1, params) for x in values]) if values else SinkVerdict(CONST, "빈 객체")
         # 결합
         if "+" in expr:
             parts = _split_concat(expr)
@@ -736,8 +796,8 @@ class _Classifier:
                 inner.extend(_split_template(expr[b + 1:end]))
                 pos = end + 1
             return self._classify_parts(inner, depth, params)
-        # HTML 이 될 수 없는 값, 리터럴 삼항
-        if _SAFE_EXPR_RE.match(expr) or _LITERAL_TERNARY_RE.match(expr):
+        # HTML 이 될 수 없는 값, 리터럴 삼항, 숫자 이름의 멤버
+        if _SAFE_EXPR_RE.match(expr) or _LITERAL_TERNARY_RE.match(expr) or _NUMERIC_MEMBER_RE.match(expr):
             return SinkVerdict(CONST, "HTML 이 될 수 없는 값")
         # 삼항은 두 가지(조건은 값이 아니다), 논리식(`a || ''`·`a ?? b`·`a && b`)은 모든 피연산자를 본다
         if " ? " in expr and " : " in expr:
@@ -801,6 +861,21 @@ class _Classifier:
             start = i + 1
             raw = self.lines[start].strip()
         expr, used = self._collect_expr(raw, start)
+        # `list.innerHTML = rows.map(f => {` — 블록 본문 화살표. 줄이 여는 괄호로 끝나면 괄호가
+        # 닫힐 때까지 이어 붙인다(실측: 본문 안 `return `…${esc(x)}…`` 를 못 보고 배열 변수의
+        # 출처만으로 '확인된 XSS' 를 냈다).
+        if expr.rstrip().endswith(("{", "(", "[")):
+            depth = 0
+            buf = [expr]
+            j = start + used
+            while j < n and j - start <= _TEMPLATE_MAX_LINES:
+                buf.append(self.lines[j])
+                joined = "\n".join(buf)
+                depth = _paren_balance(joined)
+                j += 1
+                if depth <= 0:
+                    break
+            expr, used = "\n".join(buf), j - start
         if call:
             expr = _strip_trailing_call_paren(expr)
         return _cut_at_statement_end(expr), (start - i) + used
@@ -821,6 +896,8 @@ class _Classifier:
                     continue
                 self.cur = i
                 consumed = 1
+                # `RT_FIELDS.forEach((f, i) => {` 처럼 문장 머리의 순회 — 콜백 매개변수를 이 줄의 범위에 묶는다
+                self._bind_iteration_vars(line)
                 fo = _FOR_OF_RE.search(line)
                 if fo:
                     st = self._lookup(fo.group(2))
