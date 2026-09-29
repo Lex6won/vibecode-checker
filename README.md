@@ -18,13 +18,13 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 
 <br/>
 
-<!-- 20초 소개 영상. 미리보기 GIF는 jsDelivr 경유(기관망에서 camo 프록시만 허용되는 사유는
-     아래 '보고서는 이렇게 생겼습니다' 절의 주석 참고). 클릭하면 GitHub 파일 뷰어에서
-     음성이 포함된 원본 MP4(docs/assets/vibecode-checker-promo.mp4)가 재생된다. -->
-<a href="https://github.com/Lex6won/vibecode-checker/blob/main/docs/assets/vibecode-checker-promo.mp4">
-  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/vibecode-checker-promo.gif" alt="vibecode-checker 20초 소개 영상 — AI가 짠 코드, 그대로 배포해도 될까? 한국 공공기관 기준 · 비전문가용 보고서 · 코드+패키지 통합 판정 · 망분리 지원" width="720"/>
-</a>
-<br/><sub>▶ 20초 소개 영상 — 이미지를 클릭하면 <b>음성이 포함된 원본 영상(MP4)</b>이 열립니다.</sub>
+<!-- 20초 소개 영상. GitHub에 업로드한 자산(user-attachments) 주소를 한 줄로 두면 GitHub가
+     재생·정지·구간 이동이 되는 동영상 플레이어로 렌더링한다(자동재생 없음).
+     원본 파일은 docs/assets/vibecode-checker-promo.mp4 에도 보관한다. -->
+
+https://github.com/user-attachments/assets/f2a817ae-0a8d-440f-a832-b78bcdd05540
+
+<sub>▶ 20초 소개 영상 — 재생 버튼을 누르면 시작합니다. (<a href="docs/assets/vibecode-checker-promo.mp4">원본 MP4 파일</a>)</sub>
 
 </div>
 
