@@ -16,6 +16,16 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 ![룰](https://img.shields.io/badge/보안_룰-탐지_103_·_참조_120-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
 
+<br/>
+
+<!-- 20초 소개 영상. 미리보기 GIF는 jsDelivr 경유(기관망에서 camo 프록시만 허용되는 사유는
+     아래 '보고서는 이렇게 생겼습니다' 절의 주석 참고). 클릭하면 GitHub 파일 뷰어에서
+     음성이 포함된 원본 MP4(docs/assets/vibecode-checker-promo.mp4)가 재생된다. -->
+<a href="https://github.com/Lex6won/vibecode-checker/blob/main/docs/assets/vibecode-checker-promo.mp4">
+  <img src="https://cdn.jsdelivr.net/gh/Lex6won/vibecode-checker@main/docs/assets/vibecode-checker-promo.gif" alt="vibecode-checker 20초 소개 영상 — AI가 짠 코드, 그대로 배포해도 될까? 한국 공공기관 기준 · 비전문가용 보고서 · 코드+패키지 통합 판정 · 망분리 지원" width="720"/>
+</a>
+<br/><sub>▶ 20초 소개 영상 — 이미지를 클릭하면 <b>음성이 포함된 원본 영상(MP4)</b>이 열립니다.</sub>
+
 </div>
 
 ---
