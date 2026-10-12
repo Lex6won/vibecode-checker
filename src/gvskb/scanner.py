@@ -1397,6 +1397,14 @@ VENDOR_BUNDLE_SKIP_REASON = (
     "벤더 번들(외부 라이브러리) — 소스 룰 검사 제외, 컴포넌트 취약점 검사 대상"
 )
 
+# 내용은 미니파이드인데 **어떤 라이브러리인지 식별되지 않은** 파일. 실측(2026-10-13,
+# 약관검색기): 앱이 직접 만든 검색 데이터 535개(`data/catalog.js`·해시 이름의 gzip 조각)가
+# "벤더 번들(외부 라이브러리)"로 적혀, 보고서만 보면 외부 라이브러리 535개가 있는 것처럼
+# 읽혔다. 라이브러리라는 근거(이름 `.min.`·배너·버전)가 하나도 없으면 그렇게 부르지 않는다.
+GENERATED_BUNDLE_SKIP_REASON = (
+    "미니파이드·생성 파일(라이브러리로 식별되지 않음) — 원본 소스 아님, 소스 룰 검사 제외"
+)
+
 SELF_REPORT_SKIP_REASON = (
     "이 도구가 만든 점검 보고서 — 자기 참조 방지를 위해 검사하지 않습니다"
 )
@@ -1556,10 +1564,23 @@ def _identify_vendor_bundle_file(
     return info
 
 
+# 본문에 박아 넣은 이미지·글꼴(`data:image/png;base64,…`). 코드가 아니라 자산이다.
+# 실측(2026-10-13, 약관검색기): 로고 한 장이 27,893자 한 줄이라 **메인 HTML 전체가**
+# "빌드 산출물"로 빠졌다. 그 파일에 인라인 스크립트가 있었다면 아무도 보지 않았다.
+_DATA_URI_RE = re.compile(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
+
+
 def _looks_minified(text: str) -> bool:
-    """내용 기반 미니파이드 판정: single-line 초장문 또는 평균 줄 과대."""
+    """내용 기반 미니파이드 판정: single-line 초장문 또는 평균 줄 과대.
+
+    `data:` URI 의 base64 본문은 길이에서 뺀다 — 자산이 길다고 코드가 압축된 것은 아니다.
+    """
     if len(text) < _MINIFIED_MIN_BYTES:
         return False
+    if "base64," in text:
+        text = _DATA_URI_RE.sub("data:…", text)
+        if len(text) < _MINIFIED_MIN_BYTES:
+            return False
     lines = text.splitlines() or [text]
     longest = max(len(ln) for ln in lines)
     if longest >= _MINIFIED_MAX_LINE:
@@ -1832,9 +1853,13 @@ def scan_path(
             if _looks_minified(text):
                 if f.suffix.lower() in {".js", ".mjs", ".cjs"}:
                     vb = _identify_vendor_bundle_file(f, rel, detected_by="content", text=text)
-                    if vb is not None:
+                    # 버전까지 읽힌 것만 벤더 번들이다. 이름도 평범하고 버전도 없으면
+                    # 프로젝트가 생성한 데이터·번들로 적는다(컴포넌트 검사 대상 아님).
+                    if vb is not None and vb.get("version"):
                         vendor_bundles.append(vb)
-                    skipped.append(SkippedFile(path=rel, reason=VENDOR_BUNDLE_SKIP_REASON))
+                        skipped.append(SkippedFile(path=rel, reason=VENDOR_BUNDLE_SKIP_REASON))
+                    else:
+                        skipped.append(SkippedFile(path=rel, reason=GENERATED_BUNDLE_SKIP_REASON))
                 else:
                     skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
                 continue

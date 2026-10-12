@@ -96,6 +96,7 @@ def test_scan_path_returns_skipped_entry_for_missing_path(tmp_path: Path) -> Non
 
 from gvskb.scanner import (  # noqa: E402
     BUILD_ARTIFACT_SKIP_REASON,
+    GENERATED_BUNDLE_SKIP_REASON,
     VENDOR_BUNDLE_SKIP_REASON,
 )
 
@@ -152,11 +153,14 @@ def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
     assert build == ["src/index-3f9a2c1b.js"]
     vendor = {s.path.replace("\\", "/") for s in report.skipped_files
               if s.reason == VENDOR_BUNDLE_SKIP_REASON}
-    assert vendor == {"src/widget.min.js", "src/inline.js"}
-    # 제외로 끝나지 않고 컴포넌트 후보로 남아야 한다(이름 신호 vs 내용 신호 구분).
-    assert {(b["name"], b["detected_by"]) for b in report.vendor_bundles} == {
-        ("widget", "name"), ("inline", "content"),
-    }
+    assert vendor == {"src/widget.min.js"}
+    # 이름 신호(`.min.`)는 버전을 못 읽어도 컴포넌트 후보로 남는다(판정 불가로 올린다).
+    assert {(b["name"], b["detected_by"]) for b in report.vendor_bundles} == {("widget", "name")}
+    # 내용만 미니파이드이고 라이브러리 근거(배너·버전)가 없으면 "외부 라이브러리"라 부르지
+    # 않는다 — 프로젝트가 생성한 데이터·번들로 적는다(실측: 약관검색기 data/*.js 535개).
+    generated = {s.path.replace("\\", "/") for s in report.skipped_files
+                 if s.reason == GENERATED_BUNDLE_SKIP_REASON}
+    assert generated == {"src/inline.js"}
 
 
 def test_scan_path_keeps_real_source_when_noise_present(tmp_path: Path) -> None:

@@ -114,7 +114,25 @@ _SAFE_EXPR_RE = re.compile(
 _NUMERIC_MEMBER_RE = re.compile(
     r"^(?!.*\.\s*(?:user|login|member|account|email|mail)_id$)"       # 사용자 문자열일 수 있는 _id 는 제외
     r"[\w$]+(?:\s*\.\s*[\w$]+)*\s*\.\s*(?:id|[a-z]+_id|size(?:_bytes)?|bytes|count|cnt|len|length|idx|index|num|total|qty"
-    r"|quantity|amount|seq|year|month|day|page|limit|offset|rank|width|height|ts|timestamp)$",
+    r"|quantity|amount|seq|year|month|day|page|limit|offset|rank|width|height|ts|timestamp"
+    # camelCase 도 같은 뜻이다: `item.pageNumber`·`row.rowCount` (실측 2026-10-13 약관검색기)
+    r"|[a-z]+(?:Number|Num|No|Count|Cnt|Index|Idx|Size|Length|Len|Total|Qty|Seq|Width|Height))$",
+)
+# 이름이 숫자를 뜻하는 **단독 식별자** — `pageNumber`·`rowCount`·`i`. 출처를 못 찾았을 때
+# UNKNOWN 대신 CONST 로 본다. 입력값 이름(`userNumber`)은 먼저 TAINTED 로 잡히므로 여기 오지 않는다.
+_NUMERIC_NAME_RE = re.compile(
+    r"^(?:[ijkn]|idx|index|count|cnt|total|len|length|size|num"
+    r"|[a-z]+(?:Number|Num|No|Count|Cnt|Index|Idx|Size|Length|Len|Total|Qty|Seq|Width|Height)"
+    r"|[a-z]+_(?:number|num|no|count|cnt|index|idx|size|length|len|total|qty|seq|width|height))$",
+)
+# URL 인코딩 — 출력에 `< > " &` 가 나올 수 없어 HTML 본문·큰따옴표 속성에서는 주입이 되지 않는다.
+# (`'` 는 남으므로 작은따옴표 속성은 사람이 본다 — 정화 추론과 같은 등급으로 둔다.)
+_URL_ENCODE_CALLS = {"encodeURIComponent", "encodeURI"}
+# `arr.map(esc)` · `arr.map(x => esc(x)).join('')` — 정화 함수를 인자로 넘기는 형태.
+_MAP_SANITIZER_RE = re.compile(
+    r"^(?P<recv>[^`]+?)\.\s*map\s*\(\s*(?:(?P<fn>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)"
+    r"|\(?\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)?\s*=>\s*(?P<body>[^{][^()]*\([^()]*\)))\s*\)"
+    r"(?:\s*\.\s*join\s*\([^)]*\))?$",
 )
 # 식 전체가 길이·숫자 서식으로 끝난다: `pool.filter(…).length` · `(a/1024).toFixed(0)`
 _NUMERIC_TAIL_RE = re.compile(r"\.\s*(?:length|size)$|\.\s*(?:toFixed|toLocaleString|toPrecision)\s*\([^()]*\)$")
@@ -125,6 +143,9 @@ _LITERAL_TERNARY_RE = re.compile(
 # 여러 줄 템플릿을 따라갈 상한 — 실측 최장 템플릿은 수십 줄이었다.
 _TEMPLATE_MAX_LINES = 400
 _FUNC_BODY_MAX_LINES = 200
+# 선언의 RHS 가 다음 줄로 이어지는 끝 모양과, 그것을 따라갈 상한(선언 한 개는 짧다).
+_DECL_CONTINUES = ("=>", "(", ",", "||", "&&", "+")
+_DECL_CONT_MAX_LINES = 20
 
 # HTML sink 모양 — 인자 식을 뽑아 분류한다. JSX `dangerouslySetInnerHTML` 은
 # 이 범위 밖이다(그쪽은 html_sink_context 가 헬퍼 본문을 본다).
@@ -145,6 +166,13 @@ _CALLBACK_BIND_RE = re.compile(
     r"(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]*\])*?"
     r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)"
     r"(?:\s*,\s*([A-Za-z_$][\w$]*))?",      # 두 번째 매개변수 = 인덱스(숫자) — 실측 `${i}` 가 출처 미상으로 남았다
+)
+# `(data.items || []).map((item) => …)` · `(rows ?? []).forEach(r => …)` — 빈 배열 폴백으로 감싼
+# 컬렉션. 위 규칙은 괄호 앞의 이름을 못 잡아 요소가 출처를 물려받지 못했다(실측 2026-10-13).
+_CALLBACK_BIND_PAREN_RE = re.compile(
+    r"\(\s*([A-Za-z_$][\w$]*)(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]*\])*\s*(?:\|\||\?\?)\s*\[\s*\]\s*\)"
+    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)"
+    r"(?:\s*,\s*([A-Za-z_$][\w$]*))?",
 )
 _FOR_OF_RE = re.compile(r"\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+([A-Za-z_$][\w$]*)")
 _STRING_LITERAL_RE = re.compile(r"""^(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")$""", re.S)
@@ -640,9 +668,14 @@ class _Classifier:
         return sanitizer_name_ok(name, self.local_defs, self.local_safe, self.project)
 
     # ── 함수 → return 식(한 홉) ────────────────────────────────────────────
-    def _index_function_returns(self) -> dict[str, tuple[list[str], set[str]]]:
-        """지역 함수 이름 → (return 식들, 매개변수 이름). sink 인자가 ``rowHtml(x)`` 일 때 한 홉 본다."""
-        out: dict[str, tuple[list[str], set[str]]] = {}
+    def _index_function_returns(self) -> dict[str, tuple[list[tuple[str, int]], set[str]]]:
+        """지역 함수 이름 → ([(return 식, 줄 index)], 매개변수 이름). sink 인자가 ``rowHtml(x)`` 일 때 한 홉 본다.
+
+        줄 index 를 함께 두는 이유: 반환식 안의 지역 변수(`const suffix = …; return `…${suffix}``)는
+        **그 함수의 범위**에서 찾아야 한다. 실측(2026-10-13 약관검색기 pdfUrl)에서 sink 줄의 범위로
+        찾다가 못 찾아 출처 미상이 됐다.
+        """
+        out: dict[str, tuple[list[tuple[str, int]], set[str]]] = {}
         for i, line in enumerate(self.lines):
             if self.comment[i]:
                 continue
@@ -652,13 +685,13 @@ class _Classifier:
             name = m.group(1) or m.group(3)
             params_raw = m.group(2) or m.group(4) or m.group(5) or m.group(6) or ""
             params = {p.strip().split("=")[0].strip().lstrip(".") for p in params_raw.split(",") if p.strip()}
-            returns: list[str] = []
+            returns: list[tuple[str, int]] = []
             indent = len(line) - len(line.lstrip())
             # 한 줄 함수: `function f(a){ return `…`; }` — 정의 줄 자체의 return 도 본다.
             same = re.search(r"\breturn\s+(.*)$", line[m.end():])
             if same:
                 expr, _c = self._collect_expr(same.group(1).rstrip().rstrip("}").rstrip().rstrip(";"), i)
-                returns.append(expr)
+                returns.append((expr, i))
             j = i + 1
             end = min(len(self.lines), i + _FUNC_BODY_MAX_LINES)
             while j < end:
@@ -669,7 +702,7 @@ class _Classifier:
                 rm = _RETURN_RE.match(cur)
                 if rm:
                     expr, consumed = self._collect_expr(rm.group(1), j)
-                    returns.append(expr)
+                    returns.append((expr, j))
                     j += consumed
                     continue
                 j += 1
@@ -678,23 +711,42 @@ class _Classifier:
         return out
 
     def _collect_expr(self, head: str, idx: int) -> tuple[str, int]:
-        """줄 idx 에서 시작한 식이 여러 줄 템플릿이면 닫힐 때까지 이어 붙인다. (식, 소비한 줄 수)."""
+        """줄 idx 에서 시작한 식이 여러 줄이면 닫힐 때까지 이어 붙인다. (식, 소비한 줄 수).
+
+        여러 줄 템플릿뿐 아니라 **화살표 본문이 다음 줄로 넘어간 선언**도 따라간다 — 실측
+        (2026-10-13 약관검색기 app.js:79) `const validities = (…).map((item) =>` 줄바꿈 뒤 템플릿.
+        예전엔 첫 줄만 보고 출처 미상으로 남겨 정화된 값이 '높음'으로 올라갔다.
+        """
         first = head.find("`")
-        if first == -1 or _find_backtick_end(head, first + 1) != -1:
+        open_template = first != -1 and _find_backtick_end(head, first + 1) == -1
+        stripped = head.rstrip().rstrip(";").rstrip()
+        # 줄 끝이 명백히 이어지는 모양일 때만 따라간다. 괄호 계산만 믿으면 정규식 리터럴
+        # 속 따옴표(`/[&<>"']/g`)에 속아 멀쩡한 한 줄 선언을 "안 닫힘"으로 보고 뒤 줄을 삼킨다.
+        open_arrow = (not open_template) and stripped.endswith(_DECL_CONTINUES)
+        if not open_template and not open_arrow:
             return head.rstrip(";").strip(), 1
         buf = [head]
         j = idx + 1
-        while j < len(self.lines) and j - idx <= _TEMPLATE_MAX_LINES:
+        limit = _TEMPLATE_MAX_LINES if open_template else _DECL_CONT_MAX_LINES
+        while j < len(self.lines) and j - idx <= limit:
             buf.append(self.lines[j])
             joined = "\n".join(buf)
-            if _find_backtick_end(joined, first + 1) != -1:
-                return joined.rstrip(";").strip(), j - idx + 1
+            if open_template:
+                if _find_backtick_end(joined, first + 1) != -1:
+                    return joined.rstrip(";").strip(), j - idx + 1
+            else:
+                tail = joined.rstrip().rstrip(";").rstrip()
+                if not tail.endswith(_DECL_CONTINUES) and _paren_balance(tail) <= 0 and joined.count("`") % 2 == 0:
+                    return joined.rstrip(";").strip(), j - idx + 1
             j += 1
+        if not open_template:
+            return head.rstrip(";").strip(), 1          # 몇 줄 안에 안 닫힘 — 첫 줄만(예전 동작)
         return "\n".join(buf), j - idx      # 닫히지 않음 — 보수적으로 그대로
 
     def _bind_iteration_vars(self, text: str) -> None:
         """``rows.map(r => …)`` 의 ``r`` 은 ``rows`` 의 출처를 물려받는다(현재 줄의 범위에 선언)."""
-        for m in _CALLBACK_BIND_RE.finditer(text):
+        matches = list(_CALLBACK_BIND_RE.finditer(text)) + list(_CALLBACK_BIND_PAREN_RE.finditer(text))
+        for m in matches:
             root, param, index = m.group(1), m.group(2), m.group(3)
             st = self._lookup(root)
             if st is not None:
@@ -733,6 +785,18 @@ class _Classifier:
             elif tail and not tail.startswith((";", ")", ".trim(", ".replace(")):
                 verdict = SinkVerdict(UNKNOWN, "템플릿 뒤에 해석하지 못한 식")
             return verdict
+        # `arr.map(esc).join('')` · `arr.map(x => esc(x))` — 요소마다 정화 함수를 거친다.
+        # 실측(2026-10-13 약관검색기 app.js:85) `evidence.map(escapeHtml).join("<br>")`.
+        mm = _MAP_SANITIZER_RE.match(expr)
+        if mm and "`" not in expr:
+            fn = mm.group("fn")
+            if fn and self._accepts(fn):
+                return SinkVerdict(SANITIZED, f"map({fn}) — 요소마다 정화 호출")
+            if mm.group("body"):
+                self._record(mm.group("param"), self.cur, "=", UNKNOWN, False, declared=True)
+                body = self.classify_expr(mm.group("body"), depth + 1, params)
+                if body.state == SANITIZED:
+                    return SinkVerdict(SANITIZED, f"map(…) 본문 — {body.reason}")
         # 호출로 전체를 감쌈
         wrapper, inner = _strip_call_wrapper(expr)
         if wrapper:
@@ -747,12 +811,23 @@ class _Classifier:
                     # `el.textContent.trim()` — 값은 수신자(el.textContent)다
                     return self.classify_expr(wrapper.rsplit(".", 1)[0], depth + 1, params)
                 return self.classify_expr(inner, depth + 1, params)
+            if wrapper in _URL_ENCODE_CALLS:
+                return SinkVerdict(SANITIZED, f"{wrapper}() — URL 인코딩 결과에는 HTML 메타문자가 없음")
             if base in self.func_returns and depth < 4:      # 배열 → 함수 → 객체 → 헬퍼 호출까지(실측 _rtReadSingleRow)
                 returns, fparams = self.func_returns[base]
                 args = _split_args(inner)
                 if any(self.classify_expr(a, depth + 1, params).state == TAINTED for a in args):
                     return SinkVerdict(TAINTED, f"{base}() 인자에 외부 출처가 있음")
-                verdict = self._merge([self.classify_expr(r, depth + 1, fparams) for r in returns])
+                # 반환식은 **그 함수의 줄**에서 분류한다 — 함수 지역 변수가 그 범위에서 풀린다.
+                caller_line = self.cur
+                verdicts = []
+                try:
+                    for r, r_line in returns:
+                        self.cur = r_line
+                        verdicts.append(self.classify_expr(r, depth + 1, fparams))
+                finally:
+                    self.cur = caller_line
+                verdict = self._merge(verdicts)
                 verdict.reason = f"{base}() 반환식 — {verdict.reason}"
                 return verdict
             if _SOURCE_RE.search(expr):
@@ -823,6 +898,8 @@ class _Classifier:
                 return SinkVerdict(st[0], f"변수 {root} 의 출처", st[1])
             if _TAINTED_NAME_RE.search(root):
                 return SinkVerdict(TAINTED, f"이름이 입력값을 뜻함({root})")
+            if expr == root and _NUMERIC_NAME_RE.match(root):
+                return SinkVerdict(CONST, f"이름이 숫자를 뜻함({root})")
             return SinkVerdict(UNKNOWN, f"변수 {root} 의 출처를 찾지 못함")
         return SinkVerdict(UNKNOWN, "식 해석 불가")
 

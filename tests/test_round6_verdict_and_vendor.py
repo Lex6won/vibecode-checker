@@ -318,7 +318,7 @@ def test_unidentified_self_bundle_does_not_raise_alarm(tmp_path) -> None:
     """
     import asyncio
 
-    from gvskb.scanner import scan_path
+    from gvskb.scanner import GENERATED_BUNDLE_SKIP_REASON, scan_path
     from gvskb.tools.vendor_bundle import audit_vendor_bundles
 
     static = tmp_path / "static"
@@ -326,7 +326,10 @@ def test_unidentified_self_bundle_does_not_raise_alarm(tmp_path) -> None:
     (static / "app.js").write_text("var x=1;" * 400, encoding="utf-8")
 
     report = scan_path(tmp_path)
-    assert [b["detected_by"] for b in report.vendor_bundles] == ["content"]
+    # 라이브러리 근거가 없는 내용 신호는 컴포넌트 후보조차 아니다 — 보고서에
+    # "외부 라이브러리"로 적히지 않고(실측: 약관검색기 data/*.js 535개), 생성 파일로 남는다.
+    assert report.vendor_bundles == []
+    assert [s.reason for s in report.skipped_files if s.path.endswith("app.js")] == [GENERATED_BUNDLE_SKIP_REASON]
 
     audit = asyncio.run(audit_vendor_bundles(report.vendor_bundles))
     assert audit["unchecked_count"] == 0
