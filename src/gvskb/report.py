@@ -87,6 +87,8 @@ def _skip_reason_group(reason: str) -> str:
         return "검사 대상 확장자 아님"
     if "벤더 번들" in r:
         return "벤더 번들(외부 라이브러리 · 컴포넌트 검사로 이관)"
+    if "미니파이드·생성 파일" in r:
+        return "미니파이드·생성 파일(라이브러리 아님 · 원본 소스 아님)"
     if "빌드 산출물" in r:
         return "빌드 산출물(압축·번들)"
     if "매니페스트" in r:
