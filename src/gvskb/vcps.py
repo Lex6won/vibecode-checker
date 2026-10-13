@@ -13,6 +13,7 @@ VCPS-2026-01 지침 문서의 rules 블록(사본: ``config/vcps-rules.yaml``)�
 from __future__ import annotations
 
 import os
+import re
 import sys
 from functools import lru_cache
 from importlib import resources
@@ -126,15 +127,51 @@ def env_grade_summary(env_grade: str | None) -> tuple[str, str, int]:
     return grade, label, days
 
 
+_SPDX_OP_RE = re.compile(r"\b(?:AND|OR|WITH)\b")   # SPDX 연산자는 대문자 — 서술문의 'and' 와 구분
+_SPDX_SPLIT_OR = re.compile(r"\bOR\b")
+_SPDX_SPLIT_AND = re.compile(r"\bAND\b")
+_SPDX_WITH = re.compile(r"\bWITH\b.*$")
+#: 관대 → 엄격. OR 는 가장 관대한 쪽(선택권이 있다), AND 는 가장 엄격한 쪽(전부 따라야 한다).
+_VERDICT_RANK = {"allowed": 0, "unknown": 1, "review_required": 2}
+
+
 def license_verdict(license_str: str | None) -> str:
     """라이선스 문자열 → 'allowed' | 'review_required' | 'unknown'.
 
     SPDX 식별자 정확 일치(대소문자 무시)를 우선하고, 'MIT License' 같은
     서술형은 접두 일치로 관대하게 본다. 판단 불가는 'unknown' — 차단 아님.
+
+    **복합식**(`MIT AND AGPL-3.0-only`, `LGPL-3.0-only OR GPL-3.0-only`,
+    `GPL-3.0-only WITH GCC-exception-3.1`)은 항별로 판정한 뒤 합친다 — `AND` 는 가장
+    엄격한 항, `OR` 는 가장 관대한 항, `WITH` 예외는 기본 라이선스로 본다. 예전에는
+    문자열 **앞부분**으로만 봐서 `MIT AND AGPL-3.0-only` 가 허용, 순서를 바꾸면 검토가
+    됐다(코덱스 재현 2026-10-13).
     """
     if not license_str or not str(license_str).strip():
         return "unknown"
     s = str(license_str).strip()
+    if len(s) <= 200 and _SPDX_OP_RE.search(s):
+        return _compound_license_verdict(s)
+    return _single_license_verdict(s)
+
+
+def _compound_license_verdict(expr: str) -> str:
+    text = expr.replace("(", " ").replace(")", " ")
+    alternatives: list[str] = []
+    for alt in _SPDX_SPLIT_OR.split(text):
+        parts = []
+        for part in _SPDX_SPLIT_AND.split(alt):
+            base = _SPDX_WITH.sub("", part).strip()
+            if base:
+                parts.append(_single_license_verdict(base))
+        if parts:
+            alternatives.append(max(parts, key=_VERDICT_RANK.__getitem__))
+    if not alternatives:
+        return "unknown"
+    return min(alternatives, key=_VERDICT_RANK.__getitem__)
+
+
+def _single_license_verdict(s: str) -> str:
     s_low = s.lower()
     cfg = load_vcps_config()
     for lic in cfg.get("license_review_required", []):

@@ -1751,8 +1751,8 @@ async def check_package_impl(
         notes.append("npm에서 deprecated 로 표시된 패키지입니다 — 유지보수 중단 신호.")
     if lic_verdict == "review_required":
         notes.append(
-            f"라이선스({meta.license})는 배포 형태에 따라 제약이 있을 수 있어 검토가 필요합니다"
-            "(내부 운영 도구는 대체로 문제 없음)."
+            f"라이선스({meta.license})는 배포·네트워크 제공·수정 여부에 따라 소스 공개 등 "
+            "의무가 달라집니다 — 계약·법무 확인이 필요합니다(AGPL 은 네트워크 서비스 제공도 배포로 봅니다)."
         )
     if in_kev:
         notes.append("이 패키지의 취약점이 CISA KEV(실제 악용 목록)에 있습니다 — 예외 없이 조치하세요.")
