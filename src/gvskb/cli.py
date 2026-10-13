@@ -174,6 +174,20 @@ def _direct_dependency_names(
     return names
 
 
+def _auto_refresh_intel() -> None:
+    """`--check-deps` 직전 인텔 자동 갱신 — 실패·망분리·옵트아웃은 조용히 넘어간다."""
+    try:
+        from .intel.autopull import maybe_auto_update
+        res = maybe_auto_update(timeout=20.0, verbose=False)
+    except Exception:  # noqa: BLE001 — 갱신 실패가 검사를 막으면 안 된다
+        return
+    if getattr(res, "attempted", False):
+        if res.ok:
+            print(f"[gvskb] 인텔 캐시 자동 갱신 ← {res.source}", file=sys.stderr)
+        else:
+            print(f"[gvskb] ⚠ 인텔 자동 갱신 실패(검사는 계속): {res.error}", file=sys.stderr)
+
+
 def _run_dependency_audit(
     root: Path,
     report: ScanReport,
@@ -251,6 +265,10 @@ def _run_dependency_audit(
             file=sys.stderr,
         )
         return None
+
+    # 검사 전에 인텔 캐시를 **비차단**으로 갱신한다(하루 1회, 신선도 초과 시만, 실패해도 계속).
+    # 예전에는 MCP 서버 기동·`intel-sync` 때만 갱신돼 CLI/포털 경로의 캐시가 한 달 묵었다.
+    _auto_refresh_intel()
 
     async def _gather() -> list[dict]:
         out: list[dict] = []

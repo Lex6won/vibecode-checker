@@ -40,7 +40,10 @@ CACHE_VERSION = 2
 
 # 캐시 신선도 기준(일). 망분리 반입 캐시가 몇 달 묵어도 "깨끗함"으로 판정되지
 # 않도록, 초과 시 소비자(check_package·doctor)가 stale로 승격한다.
-DEFAULT_INTEL_MAX_AGE_DAYS = 30
+# 2일: KEV·OSV 악성 목록은 매일 바뀐다. 30일이던 때 서버 캐시가 한 달 묵은 채 판정을 냈다
+# (실측 2026-10-13, KEV 30건 누락). 온라인 PC 는 `scan --check-deps` 가 하루 1회 자동 갱신하므로
+# 짧아도 부담이 없고, 망분리 PC 는 보고서가 "N일 경과"를 정직하게 적는다.
+DEFAULT_INTEL_MAX_AGE_DAYS = 2
 
 
 def intel_max_age_days() -> int:

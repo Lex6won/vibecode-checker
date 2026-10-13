@@ -98,6 +98,35 @@ def _first_url(urls: object, keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _license_from_info(info: dict) -> str:
+    """라이선스: PEP 639 license_expression 우선, 없으면 license, 없으면 classifier."""
+    lic = (info.get("license_expression") or "").strip() or (info.get("license") or "").strip()
+    if not lic or len(lic) > 120:  # 라이선스 전문을 통째로 넣은 경우 — classifier 로 대체
+        for c in info.get("classifiers") or []:
+            if c.startswith("License ::"):
+                lic = c.split("::")[-1].strip()
+                break
+    return lic
+
+
+PYPI_VERSION_JSON_URL = "https://pypi.org/pypi/{name}/{version}/json"
+
+
+async def _pypi_version_license(name: str, version: str, timeout: float) -> str | None:
+    """검사한 **그 버전**의 라이선스. `/pypi/{name}/json` 의 info 는 최신판 것이라 구버전을
+    검사하면서 최신판 라이선스를 읽고 있었다(코덱스 재현 2026-10-13). 실패하면 None(최신판 유지)."""
+    url = PYPI_VERSION_JSON_URL.format(name=name, version=version)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        info = (resp.json() or {}).get("info") or {}
+    except Exception:  # noqa: BLE001 — 보조 조회 실패가 검사를 막으면 안 된다
+        return None
+    return _license_from_info(info) or None
+
+
 def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     info = data.get("info") or {}
     latest = info.get("version")
@@ -127,13 +156,7 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     if all_times:
         first_published = min(all_times)
 
-    # 라이선스: PEP 639 license_expression 우선, 없으면 license, 없으면 classifier.
-    lic = (info.get("license_expression") or "").strip() or (info.get("license") or "").strip()
-    if not lic or len(lic) > 120:  # 라이선스 전문을 통째로 넣은 경우 — classifier 로 대체
-        for c in info.get("classifiers") or []:
-            if c.startswith("License ::"):
-                lic = c.split("::")[-1].strip()
-                break
+    lic = _license_from_info(info)
 
     # 공급자·저장소 — SBOM supplier/externalReferences 의 원천(2026-08-30 신설).
     # 실측: pyyaml·numpy 는 `author` 가 채워지지만 flask·requests·django 는 비어
@@ -295,7 +318,14 @@ async def fetch_registry_metadata(
         )
 
     try:
-        return _parse_pypi(data, version) if eco == "pypi" else _parse_npm(data, version)
+        meta = _parse_pypi(data, version) if eco == "pypi" else _parse_npm(data, version)
+        # 핀 버전이 최신판과 다르면 그 버전의 라이선스를 따로 묻는다(요청 1회 추가).
+        if (eco == "pypi" and version and meta.version_exists
+                and meta.latest_version and meta.latest_version != version):
+            lic_v = await _pypi_version_license(name, version, timeout)
+            if lic_v:
+                meta.license = lic_v
+        return meta
     except Exception as exc:  # noqa: BLE001 — 파싱 결함이 검사 전체를 막으면 안 된다
         return PackageRegistryMetadata(
             exists=True,  # 200 응답 = 실재는 확인됨. 상세 메타만 실패.

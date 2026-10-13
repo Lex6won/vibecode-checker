@@ -59,6 +59,8 @@ _EXT_TO_LANG = {
     ".yaml": "data", ".yml": "data", ".json": "data", ".toml": "data",
     ".ini": "config", ".cfg": "config", ".conf": "config", ".env": "config",
     ".properties": "config",
+    # 서버 템플릿은 HTML 로 본다(스크립트·속성 안의 JS 가 검사 대상). 노트북은 JSON 데이터.
+    ".jsp": "html", ".ejs": "html", ".hbs": "html", ".ipynb": "data",
 }
 
 # A comment line cannot host a live vulnerability, so comment/docstring lines
@@ -189,6 +191,12 @@ def _infer_language(filename: str, language: str | None) -> str | None:
     for sep in ("/", "\\"):
         if sep in filename:
             filename = filename.rsplit(sep, 1)[-1]
+    low = filename.lower()
+    # 확장자 없는 설정 파일 — `.env.local` 의 suffix 는 `.local` 이라 언어를 못 받아 모든
+    # 언어 룰이 열렸다. 이름으로 config 를 준다.
+    if low.startswith(".env") or low in {".npmrc", ".pypirc", ".netrc", "_netrc", ".htpasswd",
+                                         ".git-credentials", ".pgpass", ".my.cnf", ".boto", ".s3cfg"}:
+        return "config"
     dot = filename.rfind(".")
     if dot >= 0:
         suffix = filename[dot:].lower()
@@ -265,17 +273,26 @@ def _comment_lines(code: str, eff_lang: str | None, filename: str) -> set[int]:
                 continue
         if is_js:
             if in_block:
-                lines.add(line_no)
                 if "*/" in raw:
                     in_block = False
+                    # `*/` 뒤에 코드가 있으면 그 줄은 주석이 아니다.
+                    if raw.split("*/", 1)[1].strip():
+                        continue
+                lines.add(line_no)
                 continue
             if stripped.startswith("//"):
                 lines.add(line_no)
                 continue
             if stripped.startswith("/*"):
-                lines.add(line_no)
-                if "*/" not in stripped[2:]:
+                end = stripped.find("*/", 2)
+                if end == -1:
                     in_block = True
+                    lines.add(line_no)
+                    continue
+                # `/**/ el.innerHTML = location.hash;` — 주석으로 시작할 뿐 코드 줄이다(우회 가능,
+                # 전면 점검 §3-1).
+                if not stripped[end + 2:].strip():
+                    lines.add(line_no)
                 continue
     return lines
 
@@ -529,6 +546,10 @@ def _resolve_rules_dir() -> Path:
     return Path(str(resources.files("gvskb").joinpath("rules")))
 
 
+#: 패턴 원문에 줄바꿈이 들어 있는가 — `\n` 또는 `[\s\S]`(아무 글자, 줄바꿈 포함).
+_MULTILINE_HINT_RE = re.compile(r"\\n|\[\\s\\S\]|\[\\S\\s\]")
+
+
 def _compile_rule(rule: Rule) -> dict | None:
     detection = rule.detection
     if detection is None:
@@ -546,11 +567,21 @@ def _compile_rule(rule: Rule) -> dict | None:
         flags |= _FLAG_NAMES.get(flag_name, 0)
 
     compiled: list[re.Pattern[str]] = []
+    line_patterns: list[re.Pattern[str]] = []
+    multi_patterns: list[re.Pattern[str]] = []
     for pattern in detection.patterns:
         try:
-            compiled.append(re.compile(pattern, flags))
+            pat = re.compile(pattern, flags)
         except re.error as exc:
             print(f"[regex_scanner] invalid regex in {rule.id}: {exc}", file=sys.stderr)
+            continue
+        compiled.append(pat)
+        # 줄바꿈을 품은 패턴(`\n`·`[\s\S]`)은 줄 단위 매칭으로는 **영원히 맞지 않는다** —
+        # 승인 룰 35개의 패턴이 그렇게 죽어 있었다(전면 점검 §3-4). 파일 단위로 따로 돈다.
+        if _MULTILINE_HINT_RE.search(pattern):
+            multi_patterns.append(re.compile(pattern, flags | re.MULTILINE))
+        else:
+            line_patterns.append(pat)
     if not compiled and not engine_only:
         return None
 
@@ -581,6 +612,8 @@ def _compile_rule(rule: Rule) -> dict | None:
         "decision": rule.decision_default or Decision.warn,
         "category": detection.category or (rule.domains[0] if rule.domains else "uncategorized"),
         "patterns": compiled,
+        "line_patterns": line_patterns,
+        "multi_patterns": multi_patterns,
         "excludes": excludes,
         "validators": validators,
         "dedup_group": detection.dedup_group,
@@ -960,7 +993,12 @@ class RegexScanner(ScannerAdapter):
         docstring_lines = _python_docstring_lines(code) if is_python else set()
         comment_lines = _comment_lines(code, eff_lang, filename) if not is_python else set()
         ignores = InlineIgnores(code, eff_lang)
-        active = _rules_that_can_match(code, eff_lang, categories)
+        # 줄이 한두 개뿐인 긴 본문(미니파이드)에 분류를 좁혀 돌릴 때는 파일 단위 선별이 곧 줄 단위
+        # 매칭과 같은 일을 두 번 하는 것이다 — 분류만으로 거른다.
+        if categories and code.count("\n") <= 2:
+            active = [r for r in RULES if r["category"] in categories]
+        else:
+            active = _rules_that_can_match(code, eff_lang, categories)
         for line_no, line in enumerate(code.splitlines(), start=1):
             is_comment = line_no in comment_lines
             for rule in active:
@@ -993,7 +1031,7 @@ class RegexScanner(ScannerAdapter):
                 # 계속 시도한다 — 한 룰의 여러 패턴 중 하나만 통과하면 된다.
                 validators = rule.get("validators") or ()
                 match = None
-                for pat in rule["patterns"]:
+                for pat in rule.get("line_patterns", rule["patterns"]):
                     candidate = pat.search(line)
                     if candidate is None:
                         continue
@@ -1011,7 +1049,65 @@ class RegexScanner(ScannerAdapter):
                     rule, filename=filename, line_no=line_no,
                     evidence=evidence, engine=self.name,
                 ))
+        findings.extend(self._scan_multiline(
+            code, filename, eff_lang, active, categories,
+            is_python=is_python, docstring_lines=docstring_lines,
+            comment_lines=comment_lines, ignores=ignores,
+        ))
         # 중복 묶기는 여기서 하지 않는다 — 룰별 정확도 평가(evaluate)는 "이 룰이
         # 잡았는가"를 물으므로, 묶어 버리면 가려진 룰의 재현율이 0으로 보인다.
         # 묶기는 scan_code 가 결과를 합칠 때 한다.
         return findings
+
+    def _scan_multiline(
+        self, code: str, filename: str, eff_lang: str | None, active: list[dict],
+        categories: set[str] | None, *, is_python: bool, docstring_lines: set[int],
+        comment_lines: set[int], ignores: InlineIgnores,
+    ) -> list[Finding]:
+        """줄바꿈을 품은 패턴을 **파일 전체**에 대고, 맞은 자리의 줄 번호를 역산한다.
+
+        같은 줄의 억제 규칙(인라인 무시·주석·독스트링·맥락 제외)은 줄 단위와 똑같이 적용한다.
+        """
+        out: list[Finding] = []
+        lines: list[str] | None = None
+        for rule in active:
+            multi = rule.get("multi_patterns") or ()
+            if not multi:
+                continue
+            if categories and rule["category"] not in categories:
+                continue
+            rule_langs = rule.get("languages") or set()
+            if rule_langs and eff_lang and eff_lang not in rule_langs:
+                continue
+            validators = rule.get("validators") or ()
+            seen_lines: set[int] = set()
+            for pat in multi:
+                for m in pat.finditer(code):
+                    if validators and not all(v(m.group(0)) for v in validators):
+                        continue
+                    line_no = code.count("\n", 0, m.start()) + 1
+                    if line_no in seen_lines:
+                        continue
+                    if lines is None:
+                        lines = code.splitlines()
+                    line = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
+                    if line_no in comment_lines and rule["category"] not in _COMMENT_SKIP_EXEMPT_CATEGORIES:
+                        continue
+                    if ignores.suppresses(line_no, rule["rule_id"]):
+                        continue
+                    if is_python and _suppresses_rule(
+                        line=line, line_no=line_no, rule=rule,
+                        docstring_lines=docstring_lines, python_comments_enabled=True,
+                    ):
+                        continue
+                    if any(ex.search(m.group(0)) or ex.search(line) for ex in rule.get("excludes") or ()):
+                        continue
+                    seen_lines.add(line_no)
+                    line_start = code.rfind("\n", 0, m.start()) + 1
+                    start = m.start() - line_start
+                    end = min(len(line), start + max(1, min(len(m.group(0)), len(line) - start)))
+                    out.append(build_finding(
+                        rule, filename=filename, line_no=line_no,
+                        evidence=evidence_for_match(line, start, end), engine=self.name,
+                    ))
+        return out
