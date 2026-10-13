@@ -87,6 +87,7 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "suspicious_name": "인기 패키지와 이름이 거의 같음(타이포스쿼팅 의심)",
     "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
     "source": "소스 코드 발견",
+    "license": "라이선스 검토 필요(GPL·AGPL 등 — 배포·네트워크 제공 형태에 따라 의무 발생)",
 }
 
 
@@ -143,6 +144,7 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
             "criteria": hits,
             "labels": [BLOCK_CRITERIA[h] for h in hits],
             "recommended_version": check.get("recommended_version"),
+            "latest_version": (check.get("registry_metadata") or {}).get("latest_version"),
         })
     return reasons
 
@@ -175,6 +177,30 @@ def _has_cooldown_hold(report: ScanReport) -> bool:
         (comp.get("check") or {}).get("verdict") == "cooldown_hold"
         for comp in _dep_merged_components(audits)
     )
+
+
+def _license_review_packages(report: ScanReport) -> list[dict]:
+    """라이선스 검토가 필요한 컴포넌트 — [{'name','version','license'}].
+
+    실측(2026-10-13 STARS): ultralytics AGPL-3.0 이 `license_verdict=review_required` 로
+    표에는 ⚠ 로 찍히는데 **종합 판정 사유에는 없어**, 취약 패키지와 소스 발견만 해소하면
+    '승인'이 났다. 배포 뒤 라이선스 문제는 보안 사고만큼 되돌리기 어렵다.
+    """
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    out: list[dict] = []
+    for comp in _dep_merged_components(audits):
+        check = comp.get("check") or {}
+        if check.get("license_verdict") != "review_required":
+            continue
+        out.append({
+            "name": check.get("name"), "version": check.get("version"),
+            "license": (check.get("registry_metadata") or {}).get("license"),
+        })
+    return out
 
 
 def _exposure_counts(report: ScanReport) -> dict:
@@ -261,6 +287,9 @@ def gate_status(report: ScanReport) -> dict:
         conditional_criteria.append("version_not_found")
     if report.summary.finding_count:
         conditional_criteria.append("source")
+    license_review = _license_review_packages(report)
+    if license_review:
+        conditional_criteria.append("license")
 
     exposure = _exposure_counts(report)
     # 검사 범위 결손 — 실행 소스가 크기·수 상한에 걸려 빠졌다. 실측(2026-09-16):
@@ -309,8 +338,10 @@ def gate_status(report: ScanReport) -> dict:
         "dependency_unchecked": unchecked,
         "dependency_not_found": not_found,
         "coverage_gap": coverage_gap,
+        "license_review": license_review,
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
-                          block_count, vuln, unchecked, coverage_gap),
+                          block_count, vuln, unchecked, coverage_gap,
+                          license_review=len(license_review)),
     }
 
 
@@ -339,6 +370,7 @@ def _reason(
     vuln: int,
     unchecked: int,
     coverage_gap: str = "",
+    license_review: int = 0,
 ) -> str:
     if verdict == "undetermined":
         if coverage_gap:
@@ -381,6 +413,8 @@ def _reason(
         parts.append(f"소스 높은 위험 {block_count}건")
     if coverage_gap:
         parts.append(f"검사 범위 결손({coverage_gap})")
+    if license_review:
+        parts.append(f"라이선스 검토 {license_review}종")
     body = " · ".join(parts) or "확인할 항목"
     tail = ""
     if coverage_gap:

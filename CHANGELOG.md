@@ -5,6 +5,32 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-14
+
+### 28차 — 안전한 SQL 오탐(읽기 전용 내장 함수) · 라이선스 검토를 게이트에 · 권고 버전 문구 · SPDX 복합식
+
+코덱스의 STARS 재분석(2026-10-13)을 코드로 재현해 반영했다. STARS 실소스(이 PC)로 v0.4.2 재점검 시
+소스 발견 2건이 남았고 둘 다 아래 첫 항목이었다.
+
+- **`dict(zip(ALL_COLUMNS, row))` 한 줄이 모듈 상수를 실격** — `py_const` 가 "함수 인자로 넘긴
+  컨테이너"를 `join/format` 외엔 전부 변형 가능으로 봤다. 가려지지 않은 읽기 전용 내장 함수
+  (`zip len enumerate sorted tuple list dict set min max sum map filter any all print str …`)는 예외.
+  `def zip`·`zip = …` 로 다시 묶였거나 사용자 함수에 넘긴 경우는 그대로 실격(적대 테스트).
+  효과: STARS 소스 발견 2→0, safe_check `wtemp_watch.py:440`(`len(cols)` 가 같은 원인) 1건 해소.
+- **라이선스 검토가 종합 판정에 없었다** — ultralytics AGPL-3.0 이 표에만 ⚠ 로 찍히고 게이트
+  사유에는 없어 취약 패키지·소스만 해소하면 '승인'이 났다. `conditional_criteria` 에 `license`
+  (조건부, 차단 아님) + 결론 박스 해소 방안에 패키지별 한 줄 + `gate.license_review` 필드.
+- **"안전한 상위 버전이 없습니다" 단정** — `_recommended_version` 이 권고 중 하나라도 수정판을
+  모르면 None 을 주는데 보고서가 그것을 '없음'으로 썼다(torch 2.7.0, 최신 2.14.1 존재). 이제
+  "수정 버전을 확정하지 못함 — 최신 X 로 올리고 재검사"와 "찾지 못함 — 대체 검토"를 구분.
+- **SPDX 복합식** — `MIT AND AGPL-3.0-only` 가 허용, 순서를 바꾸면 검토였다(앞부분 문자열 판정).
+  `AND` 는 가장 엄격한 항, `OR` 는 가장 관대한 항, `WITH` 예외는 기본 라이선스. 대문자 연산자만
+  인식(서술문 "MIT and BSD" 는 그대로).
+- AGPL 안내문 "내부 운영 도구는 대체로 문제 없음" → "배포·네트워크 제공·수정 여부에 따라 의무가
+  달라짐 — 계약·법무 확인". 보고서 한계 고지에 "str.format 키워드·text() 조립은 현재 판에서 놓칠
+  수 있음"(29차에서 메우고 제거).
+- 테스트: `tests/test_round22_readonly_builtins_license_gate.py`(16).
+
 ## [0.4.2] - 2026-10-13
 
 ### 27차 — "구판 체커로 만든 보고서가 스스로 말한다": 릴리스 대조 · `gvskb upgrade` · 태그=버전 강제

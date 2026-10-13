@@ -564,7 +564,8 @@ def _cat_ko(cat: str) -> str:
 _LIMIT_HEAD = "본 도구는 정적 분석 기반의 1차 보안 린터입니다."
 _LIMIT_ZERO = "발견 0건이 '안전'을 보장하지 않습니다."
 _LIMIT_BODY = (
-    "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입, 설계·인가·업무로직상 취약점, "
+    "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입(str.format 키워드 인자·SQLAlchemy text() 로 "
+    "조립한 SQL 은 현재 판에서 놓칠 수 있음 — Python SQL 삽입 0건이 곧 안전은 아님), 설계·인가·업무로직상 취약점, "
     "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 의존성(패키지) 취약점은 "
     "scan_dependencies(또는 gvskb check-package)로 별도 점검하세요."
 )
@@ -1003,7 +1004,7 @@ _CRITERIA_ROWS: tuple[tuple[str, str, str], ...] = (
      "악성 패키지 · 기관 레지스트리 거부 · 레지스트리에 없는 이름 · "
      "CISA KEV 등재 · CVSS CRITICAL"),
     ("warn", "조건부 승인",
-     "CVSS HIGH 이하 취약점 · 발행 직후 버전 · 판정 불가 · 소스 코드 발견"),
+     "CVSS HIGH 이하 취약점 · 발행 직후 버전 · 판정 불가 · 소스 코드 발견 · 라이선스 검토 필요"),
     ("ok", "승인", "조치할 항목 없음"),
 )
 
@@ -1026,18 +1027,51 @@ def _criteria_table_html(tone: str) -> str:
     return f'<table class="vcriteria">{rows}</table>'
 
 
-def _vulnerable_upgrades(report: ScanReport) -> list[tuple[str, str, str | None]]:
-    """취약 패키지를 (이름, 현재버전, 권고버전) 로 — 조치 문장을 만들기 위한 최소 정보."""
+def _vulnerable_upgrades(report: ScanReport) -> list[tuple[str, str, str | None, str | None]]:
+    """취약 패키지를 (이름, 현재버전, 권고버전, 최신버전) 로 — 조치 문장을 만들기 위한 최소 정보."""
     audits = _dep_audits(report)
     if not audits:
         return []
-    out: list[tuple[str, str, str | None]] = []
+    out: list[tuple[str, str, str | None, str | None]] = []
     for comp in _dep_merged_components(audits):
         c = comp.get("check") or {}
         if not (c.get("vulnerability_count") or c.get("is_malicious_package")):
             continue
         out.append((str(c.get("name")), str(c.get("version") or ""),
-                    c.get("recommended_version")))
+                    c.get("recommended_version"),
+                    (c.get("registry_metadata") or {}).get("latest_version")))
+    return out
+
+
+def _upgrade_hint(rec: str | None, latest: str | None, current: str | None) -> str:
+    """권고 버전이 없을 때 **왜 없는지**를 구분해 적는다.
+
+    `_recommended_version` 은 권고(advisory) 중 하나라도 수정판을 모르면 None 을 준다 —
+    '올리면 다 해결된다'는 거짓 안심을 막기 위한 보수적 선택이다. 그런데 보고서는 그 None 을
+    "안전한 상위 버전이 없습니다"로 **단정**했다(실측 2026-10-13 STARS: torch 2.7.0, 취약 15건,
+    최신 2.14.1 이 있는데도). 확정하지 못한 것과 없는 것은 다른 말이다.
+    """
+    if rec:
+        return f"**{rec} 이상**으로 올린 뒤 다시 검사하세요"
+    if latest and latest != (current or ""):
+        return (
+            "수정 버전을 확정하지 못했습니다(권고 일부에 수정판 정보 없음) — "
+            f"최신 **{latest}** 로 올린 뒤 다시 검사하세요"
+        )
+    return "안전한 상위 버전을 찾지 못했습니다 — 대체 패키지를 검토하세요"
+
+
+def _license_review_lines(report: ScanReport) -> list[str]:
+    """라이선스 검토 항목의 조치 문장 — 게이트 사유 `license` 와 같은 근거를 쓴다."""
+    from .gate import _license_review_packages
+
+    out: list[str] = []
+    for item in _license_review_packages(report)[:5]:
+        pkg = f"{item.get('name')} {item.get('version') or ''}".strip()
+        out.append(
+            f"`{pkg}` → 라이선스 **{item.get('license') or '미상'}** 검토: 배포·네트워크 제공·수정 "
+            "여부에 따라 소스 공개 등 의무가 달라집니다 — 계약·법무 확인 후 사유를 남기세요"
+        )
     return out
 
 
@@ -1049,18 +1083,14 @@ def _remedy_lines(report: ScanReport) -> list[str]:
     out: list[str] = []
     for r in g["block_reasons"][:5]:
         pkg = f"{r['package']} {r['version'] or ''}".strip()
-        rec = r.get("recommended_version")
-        fix = (f"**{rec} 이상**으로 올린 뒤 다시 검사하세요"
-               if rec else "**대체 패키지를 검토하세요** — 안전한 상위 버전이 없습니다")
+        fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"))
         out.append(f"`{pkg}` ({' · '.join(r['labels'])}) → {fix}")
     if len(g["block_reasons"]) > 5:
         out.append(f"외 {len(g['block_reasons']) - 5}종 — 아래 의존성 섹션 참조")
 
     if not g["blocked"]:
-        for name, ver, rec in _vulnerable_upgrades(report)[:5]:
-            fix = (f"**{rec} 이상**으로 올리세요" if rec
-                   else "안전한 상위 버전이 없습니다 — 대체 패키지를 검토하세요")
-            out.append(f"`{name} {ver}` → {fix}")
+        for name, ver, rec, latest in _vulnerable_upgrades(report)[:5]:
+            out.append(f"`{name} {ver}` → {_upgrade_hint(rec, latest, ver)}")
         extra = g["dependency_vulnerable"] - len(_vulnerable_upgrades(report)[:5])
         if extra > 0:
             out.append(f"외 취약 패키지 {extra}종 — 아래 '의존성(패키지) 취약점 검사' 참조")
@@ -1081,6 +1111,8 @@ def _remedy_lines(report: ScanReport) -> list[str]:
         out.append(
             f"⚠ **개인정보 {g['exposure']['pii']}건** — 값을 제거하고, 외부로 나간 "
             "이력이 있는지 기관 지침에 따라 확인하세요.")
+    # 라이선스 검토는 차단 여부와 무관하게 항상 적는다 — 해소 방법이 '업그레이드'가 아니다.
+    out.extend(_license_review_lines(report))
     return out
 
 

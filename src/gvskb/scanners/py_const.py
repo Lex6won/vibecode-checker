@@ -81,6 +81,35 @@ def _literal_iterable_elements_are_literal(node: ast.AST) -> bool:
     return False
 
 
+#: 인자를 **변형하지 않는** 내장 함수 — 컨테이너를 넘겨도 상수 자격을 잃지 않는다.
+#: `list(x)`·`dict(x)`·`sorted(x)` 는 사본을 만들고, 나머지는 읽기만 한다.
+_READONLY_BUILTINS: frozenset[str] = frozenset({
+    "zip", "len", "enumerate", "sorted", "reversed", "tuple", "list", "dict", "set",
+    "frozenset", "min", "max", "sum", "map", "filter", "any", "all", "print", "str",
+    "repr", "iter", "bool", "isinstance", "hash", "id", "next", "range",
+})
+
+
+def _bound_names(stmts: list[ast.stmt]) -> set[str]:
+    """이 서브트리(중첩 함수 포함)에서 **다시 묶인** 이름 — 대입·def/class·import·매개변수.
+
+    내장 함수 이름이 여기 있으면 그 호출은 더 이상 내장이 아니므로 읽기 전용으로 보지 않는다.
+    """
+    out: set[str] = set()
+    for top in stmts:
+        for node in ast.walk(top):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                out.add(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(node.name)
+            elif isinstance(node, ast.arg):
+                out.add(node.arg)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    out.add((a.asname or a.name).split(".")[0])
+    return out
+
+
 def _walk_scope(stmts: list[ast.stmt]) -> list[ast.stmt]:
     """중첩 블록(if/for/while/with/try)까지 펼치되 def/class 는 넘지 않는다."""
     out: list[ast.stmt] = []
@@ -195,6 +224,11 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                 container_disqualified.add(base.id)
 
     # 6) 함수 인자로 넘겨 변형될 수 있는 컨테이너도 보수적으로 실격
+    #    — 단, **가려지지 않은 읽기 전용 내장 함수**는 예외다. 실측(2026-10-13 STARS
+    #    stars_db.py): `dict(zip(ALL_COLUMNS, row))` 한 줄이 모듈 상수 ALL_COLUMNS 를
+    #    실격시켜 바인딩만 쓰는 SQL 2건이 '치명·유력'으로 남았다. zip/len/sorted 는
+    #    인자를 바꾸지 않는다. 같은 이름을 다시 정의했으면(`def zip`·`zip = …`) 예외 없음.
+    bound = _bound_names(stmts)
     for s in flat:
         for node in ast.walk(s):
             if not isinstance(node, ast.Call):
@@ -203,6 +237,10 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
             readonly = (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr in {"join", "format", "count", "index"}
+            ) or (
+                isinstance(node.func, ast.Name)
+                and node.func.id in _READONLY_BUILTINS
+                and node.func.id not in bound
             )
             if readonly:
                 continue
