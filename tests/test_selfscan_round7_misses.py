@@ -14,10 +14,13 @@ def _find(code: str, rule: str, filename: str = "app.py"):
 @pytest.mark.parametrize("code, conf", [
     # 인라인 결합, 동적 부분이 매개변수뿐 → 출처를 추적한 적 없으니 likely
     ("SYSTEM = 'you are a helpful bot'\ndef ask(user_input):\n    return client.chat.completions.create(messages=[{'role':'user','content': SYSTEM + user_input}])", "likely"),
-    # 스코프 안에서 대입을 따라 조립을 확인 → SQL 룰과 같은 규약으로 confirmed
-    ("def ask(user_input):\n    p = '요약: %s' % user_input\n    return client.chat.completions.create(messages=[{'content': p}])", "confirmed"),
-    ("def ask(user_input):\n    p = '지시: ' + user_input\n    return chain.invoke(p)", "confirmed"),
-    ("def ask(user_input):\n    p = f'{SYSTEM_PROMPT}\\n{user_input}'\n    return llm.predict(p)", "confirmed"),
+    # 스코프 안에서 대입을 따라 조립은 확인했지만 **출처**(요청·argv·stdin)는 못 봤다 —
+    # 근거 정책(2026-10-13)에서 confirmed 는 출처가 닿은 발견에만 쓴다 → likely
+    ("def ask(user_input):\n    p = '요약: %s' % user_input\n    return client.chat.completions.create(messages=[{'content': p}])", "likely"),
+    ("def ask(user_input):\n    p = '지시: ' + user_input\n    return chain.invoke(p)", "likely"),
+    ("def ask(user_input):\n    p = f'{SYSTEM_PROMPT}\\n{user_input}'\n    return llm.predict(p)", "likely"),
+    # 라우트 핸들러의 매개변수는 요청에서 온다 → confirmed
+    ("@app.post('/ask')\ndef ask(user_input):\n    p = '지시: ' + user_input\n    return chain.invoke(p)", "confirmed"),
 ])
 def test_prompt_injection_new_shapes_detected(code, conf):
     fs = _find(code, "GOV-LLM-PROMPT-INJECTION-001")

@@ -192,13 +192,20 @@ def test_prohibition_note_attenuates_but_keeps_finding(code: str, filename: str,
     ("os.system(model_output.strip())", "app.py", "LLM 출력 셸 실행"),
     ("element.innerHTML = llmResponse", "app.ts", "LLM 출력 DOM 삽입"),
 ])
-def test_real_execution_risk_still_blocks(code: str, filename: str, why: str) -> None:
+def test_real_execution_risk_is_not_attenuated_as_prose(code: str, filename: str, why: str) -> None:
     """데이터 파일이라고 실행형 룰을 통째로 끄면 이것들을 놓친다.
 
     처음에 그렇게 설계하려다 실측에서 걸렸다 — `package.json` 의 npm 스크립트와
     CI 워크플로의 `run:` 은 **데이터 파일에 담긴 실행 코드**다.
+
+    근거 정책(2026-10-13) 뒤로는 정규식만의 발견이 차단은 아니지만, 여기서 지키는 것은
+    '금지문·데이터 파일 감쇄로 **지워지거나 낮아지지 않는다**'이다 — 심각도가 그대로이고
+    감쇄 사유(금지문·문자열 리터럴)가 붙지 않아야 한다. `exec(` 같은 구문 자체가 약점인 룰은 여전히 차단.
     """
-    assert any(f.decision.value == "block" for f in _find(code, filename)), why
+    fs = _find(code, filename)
+    assert fs, why
+    assert all(f.severity.value in ("critical", "high") for f in fs), why
+    assert not any("금지·주의" in (f.severity_adjusted or "") or "문자열 리터럴" in (f.severity_adjusted or "") for f in fs), why
 
 
 @pytest.mark.parametrize("code, rule, why", [

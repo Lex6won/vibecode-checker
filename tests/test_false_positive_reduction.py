@@ -214,7 +214,9 @@ def test_injection_rules_are_not_attenuated_in_tests() -> None:
     code = 'cursor.execute("SELECT * FROM users WHERE id = %s" % user_id)'
     findings = scan_code(code, filename="tests/test_db.py", language="python").findings
     sqli = [f for f in findings if "KISA-PY-INPUT-01" in (f.rule_id, *f.also_matched)]
-    assert sqli and sqli[0].severity_adjusted is None
+    # 테스트 경로 감쇄는 붙지 않는다(심각도 그대로). 근거 정책(2026-10-13)의 '차단→검토' 표시는 별개다.
+    assert sqli and "테스트 코드 경로" not in (sqli[0].severity_adjusted or "")
+    assert sqli[0].severity == Severity.critical
 
 
 def test_attenuation_is_a_no_op_for_non_test_paths() -> None:

@@ -25,7 +25,6 @@ detection:
     - 'requests\.(?:get|post|put|delete|patch|head|options|request)\s*\([^)]*verify\s*=\s*False'
     - 'httpx\.(?:get|post|put|delete|patch|Client|AsyncClient)\s*\([^)]*verify\s*=\s*False'
     - 'aiohttp\.(?:TCPConnector|ClientSession)\s*\([^)]*(?:ssl|verify_ssl)\s*=\s*False'
-    - 'urllib3\.disable_warnings\s*\('
     - 'ssl\.SSLContext\s*\(\s*\)'
     - 'verify_mode\s*=\s*ssl\.CERT_NONE'
     - 'check_hostname\s*=\s*False'
@@ -50,7 +49,7 @@ detection:
     저수준 ssl:
         ctx = ssl.create_default_context()             # verify_mode=CERT_REQUIRED, check_hostname=True
         ctx.load_verify_locations(cafile="my-ca.pem")  # 사설 CA가 필요할 때만
-    `urllib3.disable_warnings`로 경고를 숨기는 행위 자체를 금지하세요.
+    `urllib3.disable_warnings`로 경고를 숨기지 말고, 숨겨야 할 경고가 나는 원인(verify=False)을 없애세요.
   references:
     - KISA Python 가이드 제2절 11
     - MOIS-49-SEC-11
@@ -63,9 +62,9 @@ examples:
   positive:
     - "import requests\nrequests.get('https://api.example.com', verify=False)"
     - "import ssl\ncontext = ssl.SSLContext()\ncontext.verify_mode = ssl.CERT_NONE"
-    - "import urllib3\nurllib3.disable_warnings()"
   negative:
     - "import requests\nrequests.get('https://api.example.com')"
+    - "import urllib3\nurllib3.disable_warnings()"
     - "import requests\nrequests.get('https://api.example.com', verify='/etc/ssl/certs/my-ca.pem')"
     - "import ssl\ncontext = ssl.create_default_context()"
 ---
@@ -95,4 +94,4 @@ with socket.create_connection((HOST, 443)) as sock, \
 ## False positive 주의
 - 본 룰은 `ssl.SSLContext()` *인자 없는 호출*만 잡습니다. `ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)` 처럼 클라이언트 컨텍스트를 지정한 경우는 자동으로 `CERT_REQUIRED` + `check_hostname=True`가 되어 안전하므로 매칭되지 않습니다.
 - 테스트 코드(`pytest` 픽스처 등)에서 자가 서명 서버 검증을 끄는 경우는 *테스트 파일 한정*으로 무시 주석을 사용하세요. 같은 모듈에서 운영 코드와 섞이면 룰이 정상 동작합니다.
-- `urllib3.disable_warnings()`은 단독 호출만으로 매칭됩니다 — 경고를 숨기는 것 자체가 보통 `verify=False` 사용과 함께 가기 때문에 의도적으로 포함했습니다.
+- `urllib3.disable_warnings()` 단독 호출은 매칭하지 않습니다(2026-10-13 변경). 경고 억제는 검증 해제가 아니며, 실측에서 검증을 실제로 끄는 줄은 같은 프로젝트의 `verify=False`·`CERT_NONE` 패턴이 이미 잡고 있었습니다. 억제 호출만으로 '인증서 검증 해제'를 차단 등급으로 올리면 9건 중 5건이 오탐이 됐습니다.
