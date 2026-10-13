@@ -115,6 +115,9 @@ _NUMERIC_MEMBER_RE = re.compile(
     r"^(?!.*\.\s*(?:user|login|member|account|email|mail)_id$)"       # 사용자 문자열일 수 있는 _id 는 제외
     r"[\w$]+(?:\s*\.\s*[\w$]+)*\s*\.\s*(?:id|[a-z]+_id|size(?:_bytes)?|bytes|count|cnt|len|length|idx|index|num|total|qty"
     r"|quantity|amount|seq|year|month|day|page|limit|offset|rank|width|height|ts|timestamp"
+    # 서버가 매기는 날짜·시각·프로세스 번호: `s.ended_at`·`row.reg_date`·`job.createdAt`·`d.pid`
+    # (실측 2026-10-13 safe_check: XSS '확인됨' 차단 19건 중 7건이 이 값만 넣는 자리였다)
+    r"|pid|ppid|port|date|time|datetime|[a-z]+_(?:at|date|time|dt|ts)|[a-z]+(?:At|Date|Time|Dt)"
     # camelCase 도 같은 뜻이다: `item.pageNumber`·`row.rowCount` (실측 2026-10-13 약관검색기)
     r"|[a-z]+(?:Number|Num|No|Count|Cnt|Index|Idx|Size|Length|Len|Total|Qty|Seq|Width|Height))$",
 )
@@ -162,16 +165,19 @@ _RETURN_RE = re.compile(r"^\s*return\s+(.*)$")
 # 컬렉션 순회에서 요소 변수는 컬렉션의 출처를 물려받는다: rows.map(r => …) · for (const m of MEMBERS)
 # 첫 그룹은 멤버 사슬의 **뿌리**다(`data.files.map(f => …)` → data). 바로 앞 이름(files)만
 # 잡으면 fetch 응답 변수의 출처가 순회 변수로 이어지지 않는다(적대적 검증 2026-09-18).
+# ES5 `rows.map(function(f, i){ … })` 도 같다 — 예전 정규식은 매개변수 자리에서 단어 `function`
+# 을 잡아 `f` 가 출처를 못 물려받았다(실측 2026-10-13 safe_check app.js: 추적 불가 23건, 한 줄
+# `forEach(function(f){ h+=… })` 누적은 발견 자체가 사라짐).
 _CALLBACK_BIND_RE = re.compile(
     r"(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]*\])*?"
-    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)"
+    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?(?:function\b\s*[\w$]*\s*)?\(?\s*([A-Za-z_$][\w$]*)"
     r"(?:\s*,\s*([A-Za-z_$][\w$]*))?",      # 두 번째 매개변수 = 인덱스(숫자) — 실측 `${i}` 가 출처 미상으로 남았다
 )
 # `(data.items || []).map((item) => …)` · `(rows ?? []).forEach(r => …)` — 빈 배열 폴백으로 감싼
 # 컬렉션. 위 규칙은 괄호 앞의 이름을 못 잡아 요소가 출처를 물려받지 못했다(실측 2026-10-13).
 _CALLBACK_BIND_PAREN_RE = re.compile(
     r"\(\s*([A-Za-z_$][\w$]*)(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]*\])*\s*(?:\|\||\?\?)\s*\[\s*\]\s*\)"
-    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)"
+    r"\s*\.\s*(?:map|forEach|flatMap|filter|some|every|find|reduce)\s*\(\s*(?:async\s*)?(?:function\b\s*[\w$]*\s*)?\(?\s*([A-Za-z_$][\w$]*)"
     r"(?:\s*,\s*([A-Za-z_$][\w$]*))?",
 )
 _FOR_OF_RE = re.compile(r"\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+([A-Za-z_$][\w$]*)")
@@ -756,6 +762,22 @@ class _Classifier:
             if index and index != "_":
                 self._record(index, self.cur, "=", CONST, False, declared=True)
 
+    def _bind_callback_params(self, recv: str, cb_params: list[str]) -> None:
+        """콜백 첫 매개변수 = 컬렉션 요소(컬렉션의 출처를 물려받음), 둘째 = 인덱스(숫자)."""
+        if not cb_params:
+            return
+        root = re.match(r"^\(?\s*([A-Za-z_$][\w$]*)", recv.strip())
+        st = self._lookup(root.group(1)) if root else None
+        if st is not None:
+            self._record(cb_params[0], self.cur, "=", st[0], st[1], declared=True)
+        elif root and _TAINTED_NAME_RE.search(root.group(1)):
+            self._record(cb_params[0], self.cur, "=", TAINTED, False, declared=True)
+        else:
+            self._record(cb_params[0], self.cur, "=", UNKNOWN, False, declared=True)
+        for extra in cb_params[1:2]:
+            if extra and extra != "_":
+                self._record(extra, self.cur, "=", CONST, False, declared=True)
+
     # ── 식 분류 ───────────────────────────────────────────────────────────
     def classify_expr(self, expr: str, depth: int = 0, params: set[str] | None = None) -> SinkVerdict:
         expr = expr.strip().rstrip(";").strip()
@@ -797,6 +819,20 @@ class _Classifier:
                 body = self.classify_expr(mm.group("body"), depth + 1, params)
                 if body.state == SANITIZED:
                     return SinkVerdict(SANITIZED, f"map(…) 본문 — {body.reason}")
+        # `rows.map(function(f, i){ … return X; }).join('')` · `rows.map(f => { … return X })` ·
+        # `rows.map(f => X)` — HTML 이 되는 것은 콜백이 **돌려주는 값**이지 바깥 배열이 아니다.
+        # 실측(2026-10-13 safe_check app.js:1574): 모든 값이 esc() 를 거친 ES5 콜백이 배열 변수의
+        # 출처만으로 '확인된 XSS' 차단이 됐다. 템플릿 본문은 아래 기존 경로가 맡는다.
+        cb = _map_callback_parts(expr)
+        if cb is not None and "`" not in expr:
+            recv, cb_params, returns = cb
+            self._bind_callback_params(recv, cb_params)
+            if not returns:
+                return SinkVerdict(UNKNOWN, "map 콜백의 반환값을 찾지 못함")
+            verdict = self._merge([self.classify_expr(r, depth + 1, params) for r in returns])
+            if verdict.state in (SANITIZED, CONST):
+                verdict.reason = f"map 콜백 반환값 — {verdict.reason}"
+            return verdict
         # 호출로 전체를 감쌈
         wrapper, inner = _strip_call_wrapper(expr)
         if wrapper:
@@ -1001,7 +1037,11 @@ class _Classifier:
                 # 한 줄 안의 나머지 문장들(`const load = () => { html = …; }`) — 같은 줄 안에서만 본다.
                 # 줄 머리 할당의 RHS 안쪽(화살표 함수 본문)에 든 할당도 여기서 잡힌다.
                 if line.count("`") % 2 == 0:
-                    for stmt in _split_statements(line)[1:]:
+                    # 괄호 안 콜백 본문(`rows.forEach(function(f){ h+=…; })`)의 문장도 모은다 —
+                    # 문장 분리기는 괄호 안을 보지 않아, 한 줄 누적이 통째로 빠져 sink 의 `h` 가
+                    # 빈 문자열 상수로 남고 **발견 자체가 지워졌다**(실측 2026-10-13 safe_check).
+                    inline_stmts = [st for body in _inline_callback_bodies(line) for st in _split_statements(body)]
+                    for stmt in _split_statements(line)[1:] + inline_stmts:
                         a2 = _ASSIGN_RE.match(stmt)
                         if not a2:
                             continue
@@ -1034,6 +1074,138 @@ class _Classifier:
                 verdicts[i + 1] = v
             i += consumed
         return verdicts
+
+
+_MAP_HEAD_RE = re.compile(r"\.\s*(?:map|flatMap)\s*\(")
+_FUNC_CB_RE = re.compile(r"^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(([^()]*)\)\s*\{")
+_ARROW_CB_RE = re.compile(r"^\s*(?:async\s+)?(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>\s*")
+_JOIN_TAIL_RE = re.compile(r"^\s*(?:\.\s*join\s*\([^()]*\))?\s*$")
+
+
+def _matching_close(text: str, open_idx: int, open_ch: str = "(", close_ch: str = ")") -> int:
+    """text[open_idx] 의 짝 괄호 위치(문자열·템플릿 건너뜀). 못 찾으면 -1."""
+    depth = 0
+    in_str: str | None = None
+    i = open_idx
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        elif ch in ("'", '"'):
+            in_str = ch
+        elif ch == "`":
+            j = _find_backtick_end(text, i + 1)
+            if j == -1:
+                return -1
+            i = j
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _top_level_returns(body: str) -> list[str]:
+    """블록 본문에서 콜백 자신의 `return X` 식들(중첩 함수 안의 return 은 제외)."""
+    out: list[str] = []
+    for m in re.finditer(r"\breturn\b", body):
+        before = body[:m.start()]
+        # 중첩 함수 본문 안이면 건너뛴다 — 앞쪽에서 열린 중괄호 수로 대략 판정
+        if _paren_balance(before.replace("{", "(").replace("}", ")")) != 0:
+            continue
+        rest = body[m.end():]
+        end = len(rest)
+        depth = 0
+        in_str: str | None = None
+        i = 0
+        while i < len(rest):
+            ch = rest[i]
+            if in_str:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == in_str:
+                    in_str = None
+            elif ch in ("'", '"'):
+                in_str = ch
+            elif ch == "`":
+                j = _find_backtick_end(rest, i + 1)
+                if j == -1:
+                    break
+                i = j
+            elif ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    end = i
+                    break
+                depth -= 1
+            elif ch == ";" and depth == 0:
+                end = i
+                break
+            i += 1
+        expr = rest[:end].strip()
+        if expr:
+            out.append(expr)
+    return out
+
+
+_INLINE_CB_OPEN_RE = re.compile(r"(?:\bfunction\b\s*[\w$]*\s*\([^()]*\)|=>)\s*\{")
+
+
+def _inline_callback_bodies(line: str) -> list[str]:
+    """한 줄 안의 콜백 본문(`function(…){ … }`·`=> { … }`) — 괄호 **안**에 있는 것만."""
+    out: list[str] = []
+    for m in _INLINE_CB_OPEN_RE.finditer(line):
+        if _paren_balance(line[:m.start()]) <= 0:
+            continue                      # 줄 머리 문장의 본문 — 기존 분리기가 본다
+        brace = m.end() - 1
+        end = _matching_close(line, brace, "{", "}")
+        if end != -1:
+            out.append(line[brace + 1:end])
+    return out
+
+
+def _map_callback_parts(expr: str) -> tuple[str, list[str], list[str]] | None:
+    """``recv.map(<콜백>)(.join(…))?`` → (수신자, 콜백 매개변수, 반환식들). 모양이 아니면 None."""
+    m = _MAP_HEAD_RE.search(expr)
+    if not m:
+        return None
+    open_idx = m.end() - 1
+    close_idx = _matching_close(expr, open_idx)
+    if close_idx == -1 or not _JOIN_TAIL_RE.match(expr[close_idx + 1:]):
+        return None
+    recv = expr[:m.start()]
+    if _paren_balance(recv) != 0:
+        return None
+    cb = expr[open_idx + 1:close_idx]
+    fm = _FUNC_CB_RE.match(cb)
+    if fm:
+        params = [x.strip().split("=")[0].strip() for x in fm.group(1).split(",") if x.strip()]
+        brace = fm.end() - 1
+        bend = _matching_close(cb, brace, "{", "}")
+        if bend == -1:
+            return None
+        return recv, params, _top_level_returns(cb[brace + 1:bend])
+    am = _ARROW_CB_RE.match(cb)
+    if am:
+        raw = am.group(1) if am.group(1) is not None else am.group(2)
+        params = [x.strip().split("=")[0].strip() for x in raw.split(",") if x.strip()]
+        body = cb[am.end():].strip()
+        if body.startswith("{"):
+            bend = _matching_close(body, 0, "{", "}")
+            if bend == -1:
+                return None
+            return recv, params, _top_level_returns(body[1:bend])
+        return recv, params, [body] if body else []
+    return None
 
 
 def _split_args(inner: str) -> list[str]:

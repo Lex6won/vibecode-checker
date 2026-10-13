@@ -669,10 +669,60 @@ def _reaches_source(node: ast.AST, sourced: set[str]) -> bool:
     return _expr_mentions_source(node) or bool(_load_names(node) & sourced)
 
 
+_TOOL_DECORATOR_RE = re.compile(r"(?:^|\.)(?:tool|function_tool|call_tool|register_tool|mcp_tool|ai_function|kernel_function)$")
+_TOOL_REGISTRY_NAME_RE = re.compile(r"(?i)^_?(?:tools?|tool_?(?:list|map|registry|specs?|defs?|schemas?)|functions|function_?(?:list|map|specs?|schemas?)|available_?tools)$")
+_TOOL_FUNCS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar("gvskb_tool_funcs", default=frozenset())
+_NON_DATA_PARAMS = frozenset({"self", "cls", "con", "conn", "connection", "cur", "cursor", "db", "session", "engine", "ctx", "context"})
+
+
+def _tool_functions(tree: ast.AST) -> frozenset[str]:
+    """LLM·MCP 도구로 노출된 함수 이름 — 그 매개변수는 **모델이 정한 값**이다.
+
+    실측(2026-10-13 safe_check `analyzer/rep20/v4_tools.py`): `TOOLS = [{"name": "run_sql", …}]`
+    로 에이전트에 노출된 `run_sql(con, sql)` 이 받은 SQL 을 정규식 검사만 하고 실행했다.
+    근거 정책 뒤로 이 진짜 위험이 '유력·검토'로 내려갔다 — 매개변수를 출처로 몰랐기 때문이다.
+    두 가지를 인정한다: 도구 데코레이터(`@tool`·`@mcp.tool()`·`@function_tool` …)와,
+    모듈 수준 도구 목록(`TOOLS`·`tool_map`·`FUNCTIONS` …)에 이름(`"name": "fn"`)이나 함수 자체로 실린 것.
+    """
+    names: set[str] = set()
+    defs: set[str] = set()
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs.add(node.name)
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                if _TOOL_DECORATOR_RE.search(_dotted(target) or ""):
+                    names.add(node.name)
+    for node in getattr(tree, "body", []):
+        targets: list[ast.AST] = []
+        value = None
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        if value is None or not any(isinstance(t, ast.Name) and _TOOL_REGISTRY_NAME_RE.match(t.id) for t in targets):
+            continue
+        for n in ast.walk(value):
+            if isinstance(n, ast.Dict):
+                for k, v in zip(n.keys, n.values):
+                    if isinstance(k, ast.Constant) and k.value in ("name", "function") \
+                            and isinstance(v, ast.Constant) and isinstance(v.value, str) and v.value in defs:
+                        names.add(v.value)
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str) and k.value in defs \
+                            and isinstance(v, ast.Name) and v.id == k.value:
+                        names.add(k.value)
+            if isinstance(n, ast.Name) and n.id in defs:
+                names.add(n.id)
+    return frozenset(names)
+
+
 def _route_params(fn: ast.AST) -> set[str]:
     """`@app.route("/u/<name>")`·`@router.get(...)` 핸들러의 매개변수는 요청에서 온다."""
     if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return set()
+    if fn.name in _TOOL_FUNCS.get():
+        a = fn.args
+        return {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)} - _NON_DATA_PARAMS
     for dec in fn.decorator_list:
         target = dec.func if isinstance(dec, ast.Call) else dec
         d = _dotted(target) or ""
@@ -716,7 +766,8 @@ def _process_scope(
         for call in _sink_calls(stmt):
             arg0 = call.args[0]
             reaches = (isinstance(arg0, ast.Name) and arg0.id in tainted) or \
-                _expr_builds_dynamic_sql(arg0, tainted, env)
+                _expr_builds_dynamic_sql(arg0, tainted, env) or \
+                (isinstance(arg0, ast.Name) and arg0.id in sourced)   # 쿼리 전체가 외부 입력(LLM 도구 인자 등)
             if not reaches:
                 continue
             rule_id = _sql_rule_for(arg0)
@@ -789,12 +840,14 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
     # 모듈 전체를 먼저 훑어 '호출부가 전부 리터럴인 매개변수'를 증명해 둔다 —
     # 스코프 안만 보는 상수 판정으로는 매개변수의 출처를 알 수 없다.
     token = _PLACEHOLDER_FUNCS.set(_placeholder_functions(tree))
+    tool_token = _TOOL_FUNCS.set(_tool_functions(tree))
     try:
         _process_scope(
             getattr(tree, "body", []), set(), hits, source_lines,
             literal_params=literal_only_parameters(tree),
         )
     finally:
+        _TOOL_FUNCS.reset(tool_token)
         _PLACEHOLDER_FUNCS.reset(token)
     return hits
 
