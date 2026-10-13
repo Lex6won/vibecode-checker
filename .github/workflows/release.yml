@@ -1,0 +1,80 @@
+name: release
+
+# `v*` 태그를 올리면 그 커밋으로 **신원이 박힌 wheel**(build_info.json: 커밋·버전·sha256)을 만들어
+# GitHub 릴리스에 붙인다. 기관 PC 는 pip 로 이 wheel 주소 하나만 받으면 되고, `gvskb status` 로
+# 어느 커밋인지 확인할 수 있다. 왜 필요한가(2026-10-13): 다른 기관 PC 가 `git+https://…`(main) 로
+# 설치한 뒤 수정본이 나와도 같은 버전 번호(0.4.0)라 pip 가 갱신하지 않았고, 서버와 다른 판정을 냈다.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (dev)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]"
+      - name: Lint · rules · tests
+        run: |
+          ruff check src tests
+          gvskb validate-rules --fail-on error
+          pytest -q
+      - name: Build wheel pinned to this commit
+        run: |
+          python scripts/build_wheel.py --out dist --commit "$GITHUB_SHA"
+          ls -l dist
+      - name: Fresh-venv install smoke (설치본이 자기 커밋을 말하는가)
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/python -m pip install --quiet dist/*.whl
+          cd /tmp
+          /tmp/smoke/bin/gvskb status --json | python -c "
+          import json,sys,os
+          d=json.load(sys.stdin); c=d['install_identity']['commit_id']
+          assert c==os.environ['GITHUB_SHA'], (c, os.environ['GITHUB_SHA'])
+          print('commit ok', c[:7], 'ruleset', d['ruleset']['version'])"
+      - name: Release notes
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          ver=$(python -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('src/gvskb/__init__.py',encoding='utf-8').read()).group(1))")
+          whl=$(ls dist/*.whl | head -1); base=$(basename "$whl")
+          sha=$(cut -d' ' -f1 "$whl.sha256")
+          {
+            echo "## vibecode-checker $ver ($tag)"
+            echo
+            echo "커밋 \`$GITHUB_SHA\` 에서 만든 설치 파일입니다. 설치본은 \`gvskb status\` 로 이 커밋을 말합니다."
+            echo
+            echo '```bash'
+            echo "# 새로 설치 또는 갱신 (버전 번호가 같아도 교체됩니다)"
+            echo "pip install --force-reinstall https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag/$base"
+            echo "gvskb status   # commit_id 가 ${GITHUB_SHA:0:12} 로 시작해야 합니다"
+            echo '```'
+            echo
+            echo "- sha256: \`$sha\`"
+            echo "- 룰셋: $(python -c "import json;print(json.load(open('dist/$base.build.json'))['package_version'])") / $(grep -m1 -E '^version:' rules/RULESET.lock | awk '{print $2}')"
+            echo "- 변경 내역: CHANGELOG.md"
+          } > notes.md
+          cat notes.md
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "vibecode-checker $tag" --notes-file notes.md --latest
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber dist/*.whl dist/*.whl.sha256 dist/*.whl.build.json

@@ -169,16 +169,25 @@ https://github.com/user-attachments/assets/f2a817ae-0a8d-440f-a832-b78bcdd05540
 > **PyPI에는 배포하지 않습니다**(공공기관·망분리 환경의 공급망 보안 고려). GitHub 소스에서 설치합니다.
 
 ```bash
-# 한 줄 설치 (git 이 설치된 PC)
-pip install git+https://github.com/Lex6won/vibecode-checker.git
+# 권장 — 릴리스 wheel (git 불필요, 커밋 신원이 박혀 있어 `gvskb status` 로 대조 가능)
+#   최신 릴리스: https://github.com/Lex6won/vibecode-checker/releases/latest
+#   아래 주소의 v0.4.1 을 최신 태그로 바꾸세요. --force-reinstall 은 버전 번호가 같아도 교체합니다.
+pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.4.1/vibecode_checker-0.4.1-py3-none-any.whl
 
-# git 이 없는 PC — zip 주소를 그대로 넣으면 됩니다 (기관 표준 PC에 git 이 없는 경우)
-pip install https://github.com/Lex6won/vibecode-checker/archive/refs/heads/main.zip
+# 대안 — 소스에서 한 줄 설치 (git 이 설치된 PC). main 의 최신 커밋이 설치됩니다.
+pip install --force-reinstall git+https://github.com/Lex6won/vibecode-checker.git
+
+# git 이 없는 PC — zip 주소를 그대로 넣으면 됩니다
+pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/archive/refs/heads/main.zip
 
 # 소스를 받아 설치 (수정·기여하려면 -e 권장)
 git clone https://github.com/Lex6won/vibecode-checker.git
 cd vibecode-checker && pip install -e .
 ```
+
+> **이미 설치돼 있다면 꼭 `--force-reinstall` 을 붙이세요.** 수정본이 나와도 버전 번호가 같으면 pip 가
+> "이미 설치됨"으로 넘어가 옛 판정 기준이 그대로 남습니다(2026-10-13 실측: 기관 PC 의 0.4.0 이
+> 서버와 다른 결과를 냈습니다). 설치 뒤 `gvskb status` 의 `commit_id` 가 릴리스 페이지의 커밋과 같은지 보세요.
 
 > 망분리(인터넷 없는) PC라면, 외부망에서 위 소스를 받아(또는 `pip download`로 의존성까지) 옮긴 뒤 오프라인 설치하세요.
 
