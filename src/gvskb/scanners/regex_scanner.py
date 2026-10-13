@@ -894,6 +894,51 @@ def build_finding(rule: dict, *, filename: str, line_no: int, evidence: str,
     )
 
 
+# ── 파일 단위 선별 ─────────────────────────────────────────────────────────
+# 줄마다 룰 103개 × 패턴 404개를 대던 것을, 파일 전체에 한 번 대 봐서 **어디에서도 맞을 수 없는**
+# 룰은 줄 순회에서 뺀다(실측 2026-10-13: 파일당 평균 남는 룰 0.4개). 결과가 달라지면 안 되므로
+# 판정이 줄 경계에 기대는 패턴은 선별하지 않고 항상 줄 단위로 본다:
+#   · 부정 전방/후방 탐색 `(?!` `(?<!` — 여러 줄 본문에서는 다음 줄 글자가 끼어들어 결과가 뒤집힌다
+# `^`·`$` 는 MULTILINE 으로 줄 단위와 같게 만들고, 그 밖의 차이(`\s*` 가 줄바꿈을 넘는 것 등)는
+# 파일 전체에서 **더 많이** 맞는 쪽이라 선별이 너그러워질 뿐 놓치지 않는다.
+_PREFILTER_CACHE: dict[int, tuple] = {}
+
+
+def _prefilter_patterns(rule: dict) -> tuple | None:
+    """룰의 파일 단위 선별 패턴. 선별하면 안 되는 룰이면 None(항상 줄 단위)."""
+    key = id(rule)
+    hit = _PREFILTER_CACHE.get(key)
+    if hit is not None and hit[0] is rule:
+        return hit[1]
+    pats: tuple | None = []
+    for pat in rule["patterns"]:
+        if "(?!" in pat.pattern or "(?<!" in pat.pattern:
+            pats = None
+            break
+        try:
+            pats.append(re.compile(pat.pattern, pat.flags | re.MULTILINE))
+        except re.error:
+            pats = None
+            break
+    result = tuple(pats) if pats is not None else None
+    _PREFILTER_CACHE[key] = (rule, result)
+    return result
+
+
+def _rules_that_can_match(code: str, eff_lang: str | None, categories: set[str] | None) -> list[dict]:
+    active: list[dict] = []
+    for rule in RULES:
+        if categories and rule["category"] not in categories:
+            continue
+        rule_langs = rule.get("languages") or set()
+        if rule_langs and eff_lang and eff_lang not in rule_langs:
+            continue
+        pats = _prefilter_patterns(rule)
+        if pats is None or any(p.search(code) for p in pats):
+            active.append(rule)
+    return active
+
+
 class RegexScanner(ScannerAdapter):
     """Single-line regex matcher driven by MD ``detection.patterns``."""
 
@@ -915,9 +960,10 @@ class RegexScanner(ScannerAdapter):
         docstring_lines = _python_docstring_lines(code) if is_python else set()
         comment_lines = _comment_lines(code, eff_lang, filename) if not is_python else set()
         ignores = InlineIgnores(code, eff_lang)
+        active = _rules_that_can_match(code, eff_lang, categories)
         for line_no, line in enumerate(code.splitlines(), start=1):
             is_comment = line_no in comment_lines
-            for rule in RULES:
+            for rule in active:
                 if categories and rule["category"] not in categories:
                     continue
                 # JS/TS/HTML comment-only line: skip every rule except the
