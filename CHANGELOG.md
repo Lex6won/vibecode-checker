@@ -5,6 +5,27 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-13
+
+### 27차 — "구판 체커로 만든 보고서가 스스로 말한다": 릴리스 대조 · `gvskb upgrade` · 태그=버전 강제
+
+0.4.1 의 릴리스 채널은 "새 wheel 을 받을 수 있다"까지였다. 그러나 기관 PC 가 **언제 받아야 하는지**
+알 길이 없었고, 구판으로 만든 보고서는 그 사실을 말하지 않았다(STARS 사고의 두 번째 절반). 이번 판은
+도구 자신이 최신 릴리스와 자기를 대조한다.
+
+- **`release_check`** — GitHub 릴리스 목록에서 정식 버전 태그(`vX.Y.Z`, 초안·시험판·`intel-latest`
+  제외) 중 최고 버전을 고른다. 하루 1회 캐시(실패도 기억 — 망이 막힌 PC 가 검사마다 3초씩 기다리지
+  않게), 비차단, `GVSKB_UPDATE_CHECK=off`·`GVSKB_MODE=offline` 이면 무동작.
+- **보고서 각인** — `ScanReport.checker_update`(JSON) + 머리표 '판정 기준' 칸에 "⚠ 구판 체커(0.4.0)로
+  생성 — 최신 0.4.2(v0.4.2)로 갱신 후 재점검 권장: pip install --force-reinstall …". CLI `scan` 과
+  MCP `scan_path`·`scan_code` 모두. stderr 에도 한 줄.
+- **`gvskb upgrade`** — 최신 확인 후 갱신 명령 출력(기본). `--run` 은 `sys.executable -m pip` 로 교체
+  설치하고 새 프로세스로 `status` 를 찍는다. `python -m gvskb` 진입점 추가(Windows 에서 `gvskb.exe`
+  잠김 회피). `doctor` 에 `Checker release` 항목.
+- **릴리스 워크플로** — 태그가 `v{__version__}` 와 다르면 실패. 같은 번호의 릴리스가 둘이면 pip·
+  `upgrade`·보고서 판단이 모두 틀어지므로 버전 번호를 올리지 않은 태그를 막는다.
+- 테스트: `tests/test_release_check.py`(13) + `tests/conftest.py`(테스트 전체에서 릴리스 조회 기본 off).
+
 ## [0.4.1] - 2026-10-13
 
 0.2.1 이후 첫 **태그 릴리스**. 아래 1~26차가 전부 여기 들어간다. 이 버전부터 `v*` 태그를

@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from .gate import attach_gate, gate_status
+
 from .loader import load_all_rules
 from .report import render_html as render_html_impl
 from .report import render_markdown as render_markdown_impl
@@ -26,6 +27,17 @@ from .schema import ScanReport
 from .audit import record_package_check, record_scan, safe_caller
 from .search import simple_search
 from .tools.check_package import audit_manifest, check_package_impl
+
+
+def _stamp_checker_update(report) -> None:
+    """결과에 '이 체커가 최신인가'를 새긴다 — AI 코딩 도구로 점검하는 PC 도 CLI 와 같은
+    장치를 받는다(2026-10-13: 구판 체커의 보고서가 서버와 다른 판정을 냈는데 보고서는
+    그 사실을 말하지 않았다). 비차단·하루 캐시·망분리/옵트아웃 시 무동작."""
+    try:
+        from .release_check import stamp_report
+        stamp_report(report)
+    except Exception:  # noqa: BLE001 — 릴리스 확인 실패가 도구 응답을 막으면 안 된다
+        pass
 
 PKG_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PKG_ROOT.parent.parent
@@ -217,6 +229,7 @@ def scan_code(
         profile=profile,
     )
     record_scan(report, "scan_code", caller=caller or "")  # 감사로그(옵트인) — scan_path는 스캐너가 직접 기록
+    _stamp_checker_update(report)
     return attach_gate(report).model_dump(mode="json")
 
 
@@ -491,6 +504,7 @@ def scan_path(
         max_file_bytes=max_file_bytes,
         caller=caller or "",
     )
+    _stamp_checker_update(report)
     return attach_gate(report).model_dump(mode="json")
 
 

@@ -26,6 +26,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install ".[dev]"
+      - name: Tag must equal package version (v{__version__})
+        # 버전 번호가 안 오른 태그를 막는다 — 같은 번호의 릴리스가 둘이면 `gvskb upgrade`·
+        # 보고서의 "구판" 판단과 pip 의 갱신 판단이 모두 틀어진다(2026-10-13 의 0.4.0 사고).
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ver=$(python -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('src/gvskb/__init__.py',encoding='utf-8').read()).group(1))")
+          if [ "${GITHUB_REF_NAME}" != "v${ver}" ]; then
+            echo "::error::태그 ${GITHUB_REF_NAME} 가 src/gvskb/__init__.py 의 버전 v${ver} 와 다릅니다. 버전을 올리고 다시 태그하세요."
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} == v${ver}"
       - name: Lint · rules · tests
         run: |
           ruff check src tests
