@@ -1216,6 +1216,15 @@ def _criteria_cell(report: ScanReport) -> str:
         cell += f" ⚠ {report.ruleset_drift}"
     if report.ruleset_note:
         cell += f" ⚠ {report.ruleset_note}"
+    # 구판 체커로 만든 보고서는 **스스로 그 사실을 말한다** — 읽는 사람이 "최신 기준의
+    # 판정"으로 오해하지 않게. 검토자가 지적을 오탐으로 돌리기 전에 먼저 볼 줄이다.
+    upd = getattr(report, "checker_update", None) or {}
+    if upd.get("update_available"):
+        how = upd.get("install_command") or upd.get("page_url") or ""
+        cell += (
+            f" ⚠ 구판 체커({upd.get('installed')})로 생성 — 최신 {upd.get('latest')}"
+            f"({upd.get('tag')})로 갱신 후 재점검 권장: {how}"
+        )
     return cell
 
 

@@ -959,6 +959,25 @@ def check_osv(timeout: float = 3.0) -> list[CheckResult]:
         )]
 
 
+def check_release_freshness() -> list[CheckResult]:
+    """설치본이 최신 GitHub 릴리스인가. 구판이면 WARN + 갱신 명령. 모르면 OK(망분리 정상)."""
+    try:
+        from .release_check import check_for_update
+        info = check_for_update()
+    except Exception as exc:  # noqa: BLE001 — 진단이 실패를 던지면 안 된다
+        return [_check("Checker release", _OK, "확인 불가", note=str(exc))]
+    if info is None:
+        return [_check("Checker release", _OK, "확인 안 함",
+                       note="망분리·GVSKB_UPDATE_CHECK=off·네트워크 실패 — 릴리스 페이지에서 직접 확인")]
+    if info.get("update_available"):
+        return [_check(
+            "Checker release", _WARN,
+            f"구판 {info.get('installed')} (최신 {info.get('latest')})",
+            note=f"갱신: {info.get('install_command') or info.get('page_url')}  (또는 `gvskb upgrade`)",
+        )]
+    return [_check("Checker release", _OK, f"최신 {info.get('installed')} ({info.get('tag')})")]
+
+
 # ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
@@ -981,6 +1000,7 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     offline_env = os.environ.get("GVSKB_MODE", "").lower() == "offline"
     if network and not offline_env:
         checks.extend(check_osv())
+        checks.extend(check_release_freshness())
     else:
         reason = "GVSKB_MODE=offline" if offline_env else "--offline"
         checks.append(_check("OSV.dev reachability", _OK, f"skipped ({reason})"))

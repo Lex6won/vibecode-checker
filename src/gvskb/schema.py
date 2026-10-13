@@ -601,6 +601,17 @@ class ScanReport(BaseModel):
         default=None,
         description="의존성·인텔 캐시 기준일(예: {'advisory_db': '2026-06-01'}). None이면 미표시.",
     )
+    #: 이 결과를 만든 체커가 최신 릴리스였는가 — ``release_check.check_for_update()`` 스냅샷.
+    #: 구판 체커로 만든 보고서가 스스로 그 사실을 말하게 한다(실측 2026-10-13: 다른 PC 의
+    #: 0.4.0 이 갱신되지 않은 채 서버와 다른 판정을 냈고, 보고서만으로는 알 수 없었다).
+    #: None = 확인 안 함(망분리·옵트아웃·네트워크 실패·구버전 JSON).
+    checker_update: dict | None = Field(
+        default=None,
+        description=(
+            "체커 최신 릴리스 대조 — {'installed','latest','tag','update_available',"
+            "'wheel_url','install_command','checked_at','source'}. None=확인 안 함."
+        ),
+    )
     dependency_audit: dict | None = Field(
         default=None,
         description=(

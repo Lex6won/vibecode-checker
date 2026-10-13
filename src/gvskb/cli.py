@@ -429,6 +429,13 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     attach_gate(report)
     # 재현 명령도 결과 안에 새긴다 — `gvskb report` 로 다시 렌더해도 잃지 않게.
     report.reproduce_command = _scan_reproduce_command(args)
+    # 이 체커가 구판이면 **보고서가 스스로 말하게** 한다(머리표 '판정 기준' 칸 + stderr).
+    # 비차단·하루 캐시·망분리/옵트아웃 시 무동작 — release_check 참조.
+    try:
+        from .release_check import stamp_report
+        stamp_report(report)
+    except Exception:  # noqa: BLE001 — 릴리스 확인 실패가 검사를 막으면 안 된다
+        pass
 
     if args.format in ("json", "sarif"):
         if args.format == "sarif":
@@ -694,6 +701,58 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"vibecode-checker {payload['version']}")
         print(f"commit: {identity.get('short_commit') or '확인 불가'}")
         print(f"source: {identity.get('commit_source') or '확인 불가'}")
+    return EXIT_OK
+
+
+def _cmd_upgrade(args: argparse.Namespace) -> int:
+    """최신 릴리스 대조 → 갱신 명령 출력(기본) 또는 실행(``--run``).
+
+    왜 "출력"이 기본인가: 기관 PC 는 pip 실행 권한·프록시·가상환경이 제각각이라 도구가
+    몰래 설치를 바꾸면 안 된다. 명령을 보여 주고 사람이 실행하는 것이 감사 가능한 경로다.
+    ``--run`` 은 **이 파이썬**(`sys.executable`)의 pip 로 설치한다 — 다른 가상환경에
+    설치돼 "갱신했는데 그대로"가 되는 사고를 막는다.
+    """
+    import subprocess
+
+    from . import __version__
+    from .release_check import RELEASES_PAGE, check_for_update
+
+    info = check_for_update(force=True, timeout=10.0)
+    if args.json:
+        sys.stdout.write(json.dumps(info, ensure_ascii=False, indent=2) + "\n")
+    if info is None:
+        print(
+            f"[gvskb] 최신 릴리스를 확인할 수 없습니다(망분리·옵트아웃·네트워크). "
+            f"설치본 {__version__}. 릴리스 페이지: {RELEASES_PAGE}",
+            file=sys.stderr,
+        )
+        return EXIT_FINDINGS_WARN
+    if not info["update_available"]:
+        if not args.json:
+            print(f"vibecode-checker {info['installed']} — 최신입니다 (릴리스 {info['tag']}).")
+        return EXIT_OK
+
+    cmd = info.get("install_command")
+    if not args.json:
+        print(f"vibecode-checker {info['installed']} → 최신 {info['latest']} ({info['tag']}) 있음.")
+        print(f"갱신 명령: {cmd or info.get('page_url')}")
+    if not args.run or not cmd:
+        return EXIT_FINDINGS_WARN
+
+    if sys.platform.startswith("win") and Path(sys.argv[0]).suffix.lower() == ".exe":
+        print(
+            "[gvskb] ⚠ Windows 에서 `gvskb.exe` 로 실행 중이라 실행 파일이 잠겨 설치가 실패할 수 있습니다. "
+            "실패하면 `python -m gvskb upgrade --run` 또는 위 갱신 명령을 새 터미널에서 실행하세요.",
+            file=sys.stderr,
+        )
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", str(info["wheel_url"])]
+    print(f"[gvskb] 실행: {' '.join(pip_cmd)}", file=sys.stderr)
+    rc = subprocess.call(pip_cmd)
+    if rc != 0:
+        print(f"[gvskb] pip 종료 코드 {rc} — 위 갱신 명령을 직접 실행하세요.", file=sys.stderr)
+        return EXIT_FINDINGS_BLOCK
+    # 설치본이 바뀌었는지 **새 프로세스**로 확인한다(이 프로세스는 옛 코드를 들고 있다).
+    subprocess.call([sys.executable, "-m", "gvskb", "status"])
     return EXIT_OK
 
 
@@ -1208,6 +1267,16 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="설치 신원·커밋 상태 (자동화용)")
     status.add_argument("--json", action="store_true", help="안정된 JSON 계약으로 출력")
     status.set_defaults(func=_cmd_status)
+
+    upg = sub.add_parser(
+        "upgrade",
+        help="최신 릴리스 확인 — 갱신 명령을 출력(--run 이면 pip 로 바로 교체 설치)",
+    )
+    upg.add_argument("--run", action="store_true",
+                     help="최신 wheel 을 이 파이썬에 --force-reinstall 로 설치 "
+                          "(Windows 는 `python -m gvskb upgrade --run` 권장)")
+    upg.add_argument("--json", action="store_true", help="JSON 출력")
+    upg.set_defaults(func=_cmd_upgrade)
 
     eva = sub.add_parser(
         "evaluate",
