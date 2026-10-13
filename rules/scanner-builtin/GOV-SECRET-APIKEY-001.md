@@ -60,7 +60,14 @@ detection:
     # `(\*\*)?` 로 열고 `(?(1)\*\*)` 로 **짝이 맞을 때만** 닫는다. 그냥
     # `\*{0,2}` 로 열어 두면 파이썬 거듭제곱 대입 연산자 `password **= …` 가
     # 걸린다 — 짝을 강제하면 그 자리는 애초에 후보가 되지 않는다.
-    - '(?i)(\*\*)?(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?(?(1)\*\*)\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
+    - '(?i)(\*\*)?(api[_-]?key|secret|password|passwd|token)(?:[_-](?:key|token|secret|password|passwd|pwd|pass))?(?(1)\*\*)["'']?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
+    # 한정어가 앞에 붙은 키 이름 — `AWS_SECRET_ACCESS_KEY`·`PRIVATE_KEY`·`ENCRYPTION_KEY`·
+    # `signingKey`·`MASTER_KEY`·`SESSION_SECRET`. 첫 패턴은 키워드 **바로 뒤**에 `[:=]` 를
+    # 요구해 이 모양이 전부 미탐이었다(전면 점검 2026-10-13 §3-4: 전부 0건). 한정어 목록을
+    # 닫아 두는 이유: `*_key` 전부를 받으면 `cache_key`·`sort_key`·`primary_key` 가 걸린다.
+    # 플레이스홀더·픽스처 가드는 첫 패턴과 같다. 키 이름 뒤의 `"'` 는 JSON(`"password": "…"`) —
+    # 따옴표 때문에 `[:=]` 가 바로 못 와 JSON 설정 파일의 비밀값이 전부 미탐이었다(31차 실측).
+    - '(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:private|signing|sign|encryption|encrypt|secret[_-]?access|access|session|master|client|service|app|auth|api|aws|azure|gcp|jwt|hmac|webhook|bot|oauth)[_-]?(?:key|secret|token|password|passwd)(?:[_-]?(?:id|secret|key|token))?["'']?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
     # 따옴표 **없는** 설정 파일 대입 — `.env`·`.properties`·`.ini`·YAML.
     #
     # 실측(2026-08-08): 위 패턴을 포함해 비밀번호 룰 전부가 값에 따옴표를
@@ -154,6 +161,10 @@ detection:
 examples:
   language: python
   positive:
+    - '{"password": "gg2026SecureP@ss"}'
+    - 'AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzQ9kL2pQ"'
+    - 'ENCRYPTION_KEY = "9f8e7d6c5b4a39281706f5e4d3c2b1a0"'
+    - 'const signingKey = "H3xK9mQ2pR7sT1uV5wY8zB4nC6";'
     - 'OPENAI_API_KEY = "sk-proj-aaabbbcccdddeeefffggghhhiiijjj"'
     - 'password = "supersecretvalue123"'
     - 'token = "AKIAABCDEFGHIJKLMNOP"'
@@ -173,6 +184,9 @@ examples:
     - 'password = "pa%ss%word12"'
     - 'password = "P4ss$WORD123x"'
   negative:
+    - 'api_key_header = "X-Upstream-Api-Key"'
+    - 'ENCRYPTION_KEY = os.environ["ENCRYPTION_KEY"]'
+    - 'PRIVATE_KEY = "${PRIVATE_KEY}"'
     - "pi = 3.14"
     - 'greeting = "hello world"'
     - "api_key = 'YOUR_KEY_HERE'"

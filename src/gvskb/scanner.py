@@ -1197,6 +1197,8 @@ def scan_file(path: str | Path, *, language: str | None = None, scenario: str | 
 
 DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".py", ".pyw",
+    # 서버 템플릿·노트북 — 실행 코드와 비밀값이 실린다(전면 점검 2026-10-13 §3-1 미검사 목록).
+    ".jsp", ".ejs", ".hbs", ".ipynb",
     # .mts/.cts 는 TypeScript 의 ESM/CJS 명시 확장자다. 실측(lexdiff)에서 이 두
     # 확장자가 목록에 없어 2,271줄과 외부 연결 11건(국외 5건 포함)이 '검사조차
     # 되지 않았다' — 발견 0이 안전으로 읽히는 가장 위험한 종류의 미탐이었다.
@@ -1230,6 +1232,21 @@ _SECRET_FILENAME_RE = re.compile(
     r"(?:[._-]|$)",
     re.IGNORECASE,
 )
+
+
+# 확장자가 없거나 엉뚱한데 **이름만으로 반드시 검사해야 하는** 파일.
+# `.env`·`.env.local`·`.env.production` 은 `Path.suffix` 가 ''·'.local' 이라 확장자 목록을
+# 비껴가 **한 번도 검사되지 않았다**(전면 점검 2026-10-13 §3-1) — 비밀값이 가장 흔히 있는 자리다.
+_NAME_INCLUDE_RE = re.compile(
+    r"^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|_netrc|\.htpasswd|\.git-credentials|web\.config"
+    r"|\.pgpass|\.my\.cnf|\.boto|\.s3cfg)$",
+    re.IGNORECASE,
+)
+
+
+def _is_name_included(name: str) -> bool:
+    """확장자와 무관하게 이름으로 검사 대상인가(.env*, .npmrc, .pypirc, web.config …)."""
+    return bool(_NAME_INCLUDE_RE.match(name))
 
 
 def _is_secret_filename(name: str) -> bool:
@@ -1308,6 +1325,11 @@ def _looks_like_secret_material(text: str) -> tuple[bool, int, str]:
 _DEP_MANIFEST_NAMES: frozenset[str] = frozenset({
     "requirements.txt", "poetry.lock", "pipfile.lock", "uv.lock",
     "yarn.lock", "package-lock.json", "pnpm-lock.yaml",
+})
+
+#: 제외하되 **보고서에 한 줄 남기는** 디렉터리 이름 — 캐시·VCS·node_modules 는 남기지 않는다(노이즈).
+_RECORDED_EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({
+    "vendor", "third_party", "thirdparty", "env", "coverage", "htmlcov",
 })
 
 DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset({
@@ -1505,8 +1527,10 @@ _REPORT_TITLE_MARKER = "코드 보안 검사 결과"
 
 # 콘텐츠 해시가 박힌 빌드 파일명: app-3f9a2c1b.js, chunk.4F2A.css, main.min.js 등.
 # Vite/webpack/rollup/esbuild 의 캐시버스팅 산출물을 파일명만으로 거른다.
+# 숫자만 8자 이상(`migration_20240101.js`·`backup-20251013.ts`)은 날짜 스탬프이지 해시가
+# 아니다 — 전면 점검(§3-1)에서 이 규칙에 걸려 조용히 제외됐다. 16진수 글자가 섞여야 해시다.
 _HASHED_ASSET_RE = re.compile(
-    r"[.\-_][0-9a-f]{8,}\.(?:js|mjs|cjs|jsx|ts|tsx|css|map)$",
+    r"[.\-_](?![0-9]{8,}\.)[0-9a-f]{8,}\.(?:js|mjs|cjs|jsx|ts|tsx|css|map)$",
     re.IGNORECASE,
 )
 
@@ -1627,10 +1651,33 @@ def _identify_vendor_bundle_file(
 _DATA_URI_RE = re.compile(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
 
 
+#: 이 길이를 넘는 **한 줄**은 데이터(JSON 리터럴·인라인 자산)로 보고 가린다 — 파일은 검사한다.
+_GIANT_LINE_CHARS = 20_000
+_GIANT_LINE_MARK = "/* gvskb: 긴 줄 {n:,}자 — 데이터로 보고 소스 룰 검사에서 생략(비밀값 검사는 수행) */"
+#: 미니파이드로 판정된 파일에서 **비밀값 룰만** 돌릴 때의 크기 상한.
+_SECRET_ONLY_MAX_BYTES = 2_000_000
+#: 파일 하나에서 비밀값 룰로 따로 보는 거대 줄의 수 — 데이터 파일이 수백 줄짜리 거대 줄로 돼 있을 때 상한.
+_GIANT_LINES_PER_FILE = 40
+#: 검사 한 번에 비밀값 룰로 훑는 미니파이드 산출물의 수 상한(경로 순, 결정적). 실측 2026-10-14
+#: 약관검색기: 한 줄짜리 데이터 JSON 536개 × 14ms = 7초. 이름이 비밀을 뜻하는 파일은 상한과 무관하게 본다.
+_SECRET_SWEEP_MAX_FILES = 150
+_SECRET_ONLY_CATEGORIES = frozenset({"secret-scanning"})
+#: 비밀값 룰을 돌리기 전의 값싼 선별 — 이 낱말·접두어가 하나도 없는 번들은 볼 필요가 없다
+#: (실측 2026-10-14 약관검색기: 미니파이드 조각 536개 × 룰 패턴 96개 = 6.7초).
+_SECRET_HINT_RE = re.compile(
+    r"(?i)secret|passw|pwd|api[_-]?key|token|private[_-]?key|credential|BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE"
+    r"|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20}|sk_(?:live|test)_|gh[pousr]_|github_pat_|glpat-|xox[baprs]-|npm_[A-Za-z0-9]{36}"
+    r"|://[^/\s:]+:[^@\s]+@"
+)
+
+
 def _looks_minified(text: str) -> bool:
-    """내용 기반 미니파이드 판정: single-line 초장문 또는 평균 줄 과대.
+    """내용 기반 미니파이드 판정: 줄 몇 개짜리 초장문 또는 **중앙값** 줄 과대.
 
     `data:` URI 의 base64 본문은 길이에서 뺀다 — 자산이 길다고 코드가 압축된 것은 아니다.
+    평균이 아니라 중앙값을 쓴다: 평범한 300줄 페이지에 1MB JSON 리터럴 한 줄이 박히면 평균은
+    치솟지만 파일은 소스다(전면 점검 §3-1, 파노라마뷰 DEMO 페이지가 통째로 빠졌다). 그 한 줄은
+    `_mask_giant_lines` 가 따로 가린다.
     """
     if len(text) < _MINIFIED_MIN_BYTES:
         return False
@@ -1639,11 +1686,50 @@ def _looks_minified(text: str) -> bool:
         if len(text) < _MINIFIED_MIN_BYTES:
             return False
     lines = text.splitlines() or [text]
-    longest = max(len(ln) for ln in lines)
-    if longest >= _MINIFIED_MAX_LINE:
+    lengths = sorted(len(ln) for ln in lines)
+    longest = lengths[-1]
+    if len(lines) <= 5 and longest >= _MINIFIED_MAX_LINE:
         return True
-    avg = len(text) / max(len(lines), 1)
-    return avg >= _MINIFIED_AVG_LINE
+    median = lengths[len(lengths) // 2]
+    return median >= _MINIFIED_AVG_LINE
+
+
+def _mask_giant_lines(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """(가린 본문, [(줄 번호, 원래 줄)]) — 줄 번호는 유지된다."""
+    if len(text) <= _GIANT_LINE_CHARS:
+        return text, []
+    out: list[str] = []
+    giants: list[tuple[int, str]] = []
+    for no, ln in enumerate(text.splitlines(), start=1):
+        if len(ln) > _GIANT_LINE_CHARS:
+            giants.append((no, ln))
+            out.append(_GIANT_LINE_MARK.format(n=len(ln)))
+        else:
+            out.append(ln)
+    if not giants:
+        return text, []
+    return "\n".join(out) + ("\n" if text.endswith("\n") else ""), giants
+
+
+def _secret_only_findings(text: str, rel: str, *, line_offset_map: dict[int, int] | None = None,
+                          scenario: str | None = None, profile: str = "public-default-strict") -> list[Finding]:
+    """비밀값 룰만으로 검사한다 — 미니파이드·거대 데이터 줄에도 키는 박힌다(credentials.json 한 줄)."""
+    if len(text) > _SECRET_ONLY_MAX_BYTES or not _SECRET_HINT_RE.search(text):
+        return []
+    # 정규식 엔진만 돌린다 — 비밀값 룰은 전부 정규식이고, JS 오염 추적·외부 연결 추출을 1MB 데이터
+    # 줄에 돌리면 파일당 수십 초가 든다(실측 2026-10-14 파노라마뷰: 0.2초 → 38초).
+    try:
+        from .scanners.regex_scanner import RegexScanner
+        found = RegexScanner().scan(text, filename=rel, scenario=scenario, profile=profile,
+                                    categories=set(_SECRET_ONLY_CATEGORIES))
+    except Exception:  # noqa: BLE001 — 보조 검사가 본 검사를 막으면 안 된다
+        return []
+    out: list[Finding] = []
+    for f in found:
+        if line_offset_map is not None and f.location.line in line_offset_map:
+            f.location.line = line_offset_map[f.location.line]
+        out.append(f)
+    return out
 
 
 def _path_is_excluded_suffix(rel_dir: str) -> bool:
@@ -1705,6 +1791,7 @@ def scan_path(
     # 제외 디렉터리에서 건져 올린 비밀 자재(개인키·키스토어 등). 제외 폴더 안에
     # 있다는 이유로 버리면, 이 변경이 고치려는 사각지대가 그대로 되살아난다.
     pending_secret_files: list[Path] = []
+    secret_sweeps_done = 0
     over_limit_count = 0        # 상한 초과로 검사되지 않은 '검사 대상' 파일 수
     oversized_source: list[str] = []   # 크기 상한을 넘은 **실행 소스** 경로
     oversized_data = 0                 # 크기 상한을 넘은 데이터·설정·마크업 파일 수
@@ -1728,6 +1815,14 @@ def scan_path(
                 # 폴더를 **검사하겠다는 뜻**이므로 가로채지 않는다.
                 is_staging = d in _DATA_STAGING_DIR_NAMES and d in exc
                 is_build = d in _BUILD_OUTPUT_DIR_NAMES or _path_is_excluded_suffix(rel_dir)
+                if d in exc and d in _RECORDED_EXCLUDED_DIR_NAMES:
+                    # 자체 코드가 들어 있을 법한 이름(vendor·env·coverage…)은 **기록하고** 뺀다 —
+                    # 전면 점검(§3-1): 제외 기록 없이 사라져 "조용히 버리지 않는다"는 약속과 어긋났다.
+                    skipped.append(SkippedFile(
+                        path=rel_dir.replace("\\", "/") + "/",
+                        reason=f"제외 디렉터리({d}) — 이름 규칙으로 검사하지 않음. 자체 코드가 들어 있다면 폴더 이름을 바꾸세요",
+                    ))
+                    continue
                 if is_staging or is_build:
                     # 버리되 **규모와 위험 자재는 남긴다**. 디렉터리를 1건으로
                     # 세면 그 뒤의 수천 건이 보고서에서 사라진다.
@@ -1778,6 +1873,7 @@ def scan_path(
                     p.suffix.lower() not in inc
                     and name.lower() not in {"dockerfile", "makefile"}
                     and not _is_secret_filename(name)
+                    and not _is_name_included(name)
                 ):
                     # **조용히 버리지 않는다** — 검사 대상이 아닌 파일도 기록해야
                     # "검사했는데 깨끗함"과 "아예 안 봤음"이 구분된다. 실측에서
@@ -1908,6 +2004,7 @@ def scan_path(
             # 그대로 받아 둔 경우가 흔하다(`vendor/lib.js`). 이름 규칙으로만 걸면 그쪽이
             # 통째로 사각지대로 남으므로, 내용으로 판정된 것도 컴포넌트 식별을 시도한다.
             if _looks_minified(text):
+                secret_sweep = True   # 식별된 벤더 라이브러리가 아니면 비밀값 룰만이라도 돌린다
                 if f.suffix.lower() in {".js", ".mjs", ".cjs"}:
                     vb = _identify_vendor_bundle_file(f, rel, detected_by="content", text=text)
                     # 버전까지 읽힌 것만 벤더 번들이다. 이름도 평범하고 버전도 없으면
@@ -1915,17 +2012,29 @@ def scan_path(
                     if vb is not None and vb.get("version"):
                         vendor_bundles.append(vb)
                         skipped.append(SkippedFile(path=rel, reason=VENDOR_BUNDLE_SKIP_REASON))
+                        secret_sweep = False
                     else:
                         skipped.append(SkippedFile(path=rel, reason=GENERATED_BUNDLE_SKIP_REASON))
                 else:
                     skipped.append(SkippedFile(path=rel, reason=BUILD_ARTIFACT_SKIP_REASON))
+                # 빌드 산출물·생성 데이터라도 **비밀값은 박힌다** — `credentials.json` 한 줄 2,040자가
+                # "빌드 산출물"로 빠지며 비밀 룰까지 꺼졌다(전면 점검 §3-1). 비밀값 룰만 돌린다.
+                if secret_sweep and (secret_sweeps_done < _SECRET_SWEEP_MAX_FILES or _is_secret_filename(f.name)):
+                    secret_sweeps_done += 1
+                    all_findings.extend(_secret_only_findings(text, rel, scenario=scenario, profile=profile))
                 continue
             # 내용 해시 — 같은 파일이 여러 경로에 복사돼 발견이 배수로 보이는 상황을
             # 리포트가 "동일 파일 N곳"으로 설명할 수 있게 한다(예: ssl/ 폴더 복제).
             digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
             content_hashes.setdefault(digest, []).append(rel)
             file_hashes[rel.replace("\\", "/")] = digest
-            report = scan_code(text, filename=rel, scenario=scenario, profile=profile)
+            # 거대한 데이터 줄(JSON 리터럴 1MB 등)은 가리고 검사한다 — 줄 하나 때문에 파일을
+            # 버리지 않는다. 가린 줄은 비밀값 룰로만 따로 본다.
+            masked, giants = _mask_giant_lines(text)
+            report = scan_code(masked, filename=rel, scenario=scenario, profile=profile)
+            for giant_no, giant_line in giants[:_GIANT_LINES_PER_FILE]:
+                all_findings.extend(_secret_only_findings(
+                    giant_line, rel, line_offset_map={1: giant_no}, scenario=scenario, profile=profile))
             # 엔진 실패·미가용은 파일마다 같지만, 실패는 파일별로 다를 수 있으므로 누적한다.
             for item in report.engines.failed:
                 engine_failures.setdefault(item.name, item.reason)
