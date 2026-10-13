@@ -864,6 +864,61 @@ def _attenuate_xss_by_taint(
     return attenuate_by_taint_verdict(findings, verdicts)
 
 
+# ── 근거 수준 × 판정 ─────────────────────────────────────────────────────────
+# 발견마다 근거 수준(confirmed · likely · pattern-only)을 적으면서도 **판정은 룰의
+# 기본값(block)을 그대로 썼다.** 실측(2026-10-13, safe_check 비교): 차단 71건 중
+# 정규식 한 줄로만 잡힌 15건(경로 조작 `tag=month.replace(…)`, XPath 의 서버 XML id,
+# 함수명에 `Llm` 이 든 줄의 innerHTML, `disable_warnings`)이 전부 오탐이었고, 매개변수만
+# 동적인 '유력' SQL 3건도 오탐이었다. 입력의 출처를 확인하지 못한 발견은 "확인 필요"로
+# 남기되 배포를 막지 않는다 — 보고서에는 그대로 실리므로 재현율은 잃지 않는다.
+#
+# 예외: **구문 자체가 약점**인 룰. 값이 어디서 왔는지와 무관하게 그 코드 모양이 곧
+# 위험이다(비밀값·개인정보 노출, 인증서 검증 해제, eval/exec, 디버그 모드, XXE 설정,
+# 자동 이스케이프 해제, 한 줄에 출처(location)와 sink 가 함께 있는 DOM XSS).
+_CONSTRUCT_EVIDENCE_RULE_IDS: frozenset[str] = frozenset({
+    "GOV-FLASK-DEBUG-001", "KISA-PY-ENCAP-02",
+    "KISA-PY-SEC-11", "KISA-JS-SEC-11",
+    "KISA-PY-INPUT-02", "KISA-JS-INPUT-02", "KISA-JS-API-02", "GOV-CODE-EXEC-001",
+    "KISA-PY-INPUT-04", "KISA-PY-INPUT-08", "KISA-JS-INPUT-08",
+    "GOV-INTERNAL-NET-001", "GOV-HTML-DOM-XSS-001",
+    # 개인정보 **값**(주민번호 모양 등)이 프롬프트에 박힌 것 — 값 기반이다.
+    "GOV-LLM-PII-PROMPT-001",
+})
+_EVIDENCE_LABEL = {"likely": "유력(구조 추정)", "pattern-only": "패턴 일치만"}
+
+
+def apply_evidence_policy(findings: list[Finding]) -> list[Finding]:
+    """차단은 **입력의 출처를 실제로 추적한 발견(confirmed)** 에만 남긴다.
+
+    유력·패턴 일치만인 차단은 경고(검토)로 내린다. 값 기반 룰(비밀·개인정보)과
+    구문 자체가 약점인 룰은 예외다. 심각도는 바꾸지 않는다 — 위험 유형의 등급은
+    그대로이고, 바뀌는 것은 '지금 막는가'뿐이다.
+    """
+    out: list[Finding] = []
+    for f in findings:
+        if (
+            f.decision != Decision.block
+            or f.confidence == "confirmed"
+            or f.category in _VALUE_BASED_CATEGORIES
+            or f.rule_id in _CONSTRUCT_EVIDENCE_RULE_IDS
+        ):
+            out.append(f)
+            continue
+        label = _EVIDENCE_LABEL.get(f.confidence, f.confidence)
+        note = (
+            f"{f.severity.value} → {f.severity.value} (차단→검토) · 근거가 '{label}' — 입력의 출처를 "
+            "확인하지 못한 발견은 차단하지 않습니다. 외부 입력·서버 응답이 이 자리에 닿는지 "
+            "확인하고, 닿으면 조치하고 닿지 않으면 수용 예외로 기록하세요"
+        )
+        prior = f.severity_adjusted
+        out.append(f.model_copy(update={
+            "decision": Decision.warn,
+            "requires_approval_to_bypass": False,
+            "severity_adjusted": f"{prior} | {note}" if prior else note,
+        }))
+    return out
+
+
 def _posture_notes(posture, skipped) -> list[dict]:
     """검사되지 않은 매니페스트(requirements.txt 등)의 위치도 프로젝트 루트 판정에 쓴다."""
     try:
@@ -1102,6 +1157,8 @@ def _scan_code_impl(
     # 자원을 만들어 **호출자에게 넘기는** 함수에는 with 를 요구할 수 없다.
     from .scanners.resource_owner import attenuate_returned_resource_findings
     findings = attenuate_returned_resource_findings(findings, code, filename)
+    # 마지막에 적용한다 — 엔진이 올린 근거 수준(confirmed)을 모두 반영한 뒤의 판정이어야 한다.
+    findings = apply_evidence_policy(findings)
     if collapse_duplicates:
         findings = dedupe_by_group(findings)
     effective_profile, profile_fallback = _profile_resolution(profile, profile_spec)

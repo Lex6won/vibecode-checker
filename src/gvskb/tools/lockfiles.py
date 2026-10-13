@@ -163,6 +163,15 @@ def _parse_toml_packages(text: str) -> tuple[list[dict], list[Edge]]:
         if not isinstance(p, dict) or not p.get("name"):
             continue
         name = str(p["name"])
+        source = p.get("source")
+        if isinstance(source, dict) and (source.get("virtual") or source.get("editable")):
+            # uv.lock 은 프로젝트 자신도 [[package]] 로 적는다(`source = { virtual = "." }`).
+            # 레지스트리에 없는 게 당연한 이름이라 조회하면 "가짜 이름 의심"이 된다
+            # (실측 2026-10-13: 루트 `wtms-reverse` 가 차단 사유로 올라감). 컴포넌트는
+            # 아니지만 **직접 의존성 관계**는 여기 있다.
+            for dep in _dep_names(p.get("dependencies")):
+                edges.add((None, dep))
+            continue
         out.append({"name": name, "version": p.get("version")})
         for dep in _dep_names(p.get("dependencies")):
             edges.add((name, dep))

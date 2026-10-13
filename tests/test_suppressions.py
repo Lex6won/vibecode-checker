@@ -7,7 +7,9 @@ from pathlib import Path
 from gvskb.report import render_html, render_markdown, render_sarif
 from gvskb.scanner import scan_path
 
-_VULN = 'import os\nos.system("cp /data/" + fname)\n'
+# 근거 정책(2026-10-13): 차단은 외부 출처가 닿은 발견에만 남는다 — 게이트(blocked)를
+# 시험하려면 명령 인자에 출처(argv)가 직접 있는 형태를 쓴다.
+_VULN = 'import os, sys\nos.system("cp /data/" + sys.argv[1])\n'
 
 
 def _write_project(tmp_path: Path, exceptions_yaml: str | None) -> Path:

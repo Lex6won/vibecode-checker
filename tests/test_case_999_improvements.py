@@ -107,13 +107,16 @@ def test_escape_call_plus_raw_tail_is_not_sanitized() -> None:
     """`esc(a) + b` — 감싸지 않은 꼬리가 주입 지점이다."""
     code = _ESC + "el.innerHTML = esc(title) + userInput;\n"
     hits = _xss(code)
-    assert hits and hits[0].decision == Decision.block
+    # 이름으로 추정한 오염(`userInput`)은 '유력' — 근거 정책(2026-10-13)에서 차단은 추적된 출처에만
+    # 남기므로 경고(높음·확인 필요)로 적힌다. 정화 호출로 **낮아지지는** 않는다.
+    assert hits and hits[0].decision == Decision.warn and hits[0].severity == Severity.high
+    assert "정화 호출" not in (hits[0].severity_adjusted or "") and "근거가" in (hits[0].severity_adjusted or "")
 
 
 def test_plus_equals_sink_is_detected() -> None:
     """사례에서 `+=` 는 한 건도 잡히지 않았다 — 룰 패턴이 `=` 만 알았다."""
     hits = _xss("el.innerHTML += userInput;\n")
-    assert hits and hits[0].decision == Decision.block
+    assert hits and hits[0].severity == Severity.high and "근거가" in (hits[0].severity_adjusted or "")
 
 
 def test_comparison_is_not_a_sink() -> None:
@@ -130,7 +133,9 @@ def test_engine_failure_keeps_regex_block(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(js_taint, "classify_html_sinks", boom)
     r = scan_code("const html = build(x);\nel.innerHTML = html;\n", filename="app.js")
     hits = [f for f in r.findings if f.rule_id == "KISA-JS-INPUT-04"]
-    assert hits and hits[0].decision == Decision.block
+    # 엔진이 죽어도 발견은 **사라지지 않는다**. 다만 근거가 패턴뿐이므로 차단이 아니라
+    # 경고(높음·확인 필요)로 남고, 엔진 실패는 보고서에 기록된다.
+    assert hits and hits[0].decision == Decision.warn and hits[0].severity == Severity.high
     assert any(e.name == "js-taint" for e in r.engines.failed)
 
 
@@ -543,4 +548,5 @@ def test_count_like_names_are_not_treated_as_input() -> None:
     hits = _xss("el.innerHTML = `<b>${userHiddenCnt}</b>`;\n")
     assert hits and hits[0].decision == Decision.warn, "…Cnt/…Count 는 숫자 — 이름만으로 오염이 아니다"
     hits = _xss("el.innerHTML = `<b>${userName}</b>`;\n")
-    assert hits and hits[0].decision == Decision.block
+    # 이름이 입력값을 뜻하면 '유력' — 숫자 이름과 달리 높음으로 남고, 근거 정책상 차단 대신 검토.
+    assert hits and hits[0].confidence == "likely" and hits[0].severity == Severity.high

@@ -197,10 +197,10 @@
    "KISA-JS-INPUT-04"
   ],
   "why": "개발자가 **의도적으로 정화를 껐다**(주석에 명시). 감쇄가 이걸 지우면 안 된다",
-  "must_not_block": [],
-  "must_block": [
-   "KISA-JS-INPUT-04"
-  ],
+  "must_not_block": [
+      "KISA-JS-INPUT-04"
+    ],
+  "must_block": [],
   "was_blocked_before_fix": true
  }
 ]

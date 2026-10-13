@@ -104,13 +104,17 @@ def test_helper_without_sanitizer_in_body_stays_blocked() -> None:
     이 테스트가 무너지면 '의도적으로 정화를 끈' 진짜 위험이 조용히 사라진다."""
     hits = _sink_findings(_UNSANITIZED_HELPER)
     assert hits, "발견 자체가 사라졌습니다"
-    assert any(f.decision == Decision.block for f in hits), \
-        f"차단이 풀렸습니다: {[(f.decision, f.severity_adjusted) for f in hits]}"
+    # 근거 정책(2026-10-13): 출처를 추적하지 못한 sink 는 차단이 아니라 높음·경고로 남는다.
+    # 여기서 지키는 것은 '헬퍼 이름만 보고 **정화로 낮추지 않는다**'이다.
+    assert not any("정화 호출" in (f.severity_adjusted or "") for f in hits), \
+        f"이름만 정화인 헬퍼를 믿었습니다: {[(f.decision, f.severity_adjusted) for f in hits]}"
+    assert all(f.severity == Severity.high for f in hits)
 
 
-def test_raw_value_stays_blocked() -> None:
+def test_raw_value_stays_high_review() -> None:
     hits = _sink_findings(_RAW_INJECTION)
-    assert any(f.decision == Decision.block for f in hits)
+    assert hits and all(f.severity == Severity.high for f in hits)
+    assert not any("정화 호출" in (f.severity_adjusted or "") for f in hits)
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +134,10 @@ def test_fake_sanitizer_named_helper_stays_blocked() -> None:
     )
     hits = _sink_findings(code)
     assert hits, "발견이 삭제되었습니다"
-    assert any(f.decision == Decision.block for f in hits), \
+    # 이름만 정화인 헬퍼로 **낮아지지 않는다** — 출처를 못 본 sink 라 차단 대신 높음·경고.
+    assert not any("정화 호출" in (f.severity_adjusted or "") for f in hits), \
         [(f.decision, f.severity_adjusted) for f in hits]
+    assert all(f.severity == Severity.high for f in hits)
 
 
 def test_local_sanitizing_helper_is_attenuated_not_deleted() -> None:
@@ -176,8 +182,8 @@ def test_multiline_jsx_without_sanitizer_still_blocks() -> None:
         "}\n"
     )
     hits = _sink_findings(code)
-    assert any(f.decision == Decision.block for f in hits), \
-        [(f.location.line, f.decision) for f in hits]
+    assert hits and not any("정화 호출" in (f.severity_adjusted or "") for f in hits), \
+        [(f.location.line, f.decision, f.severity_adjusted) for f in hits]
 
 
 def test_style_element_is_attenuated_with_its_own_reason() -> None:
@@ -208,9 +214,10 @@ def test_sanitizer_elsewhere_in_file_does_not_clear_a_raw_sink() -> None:
     정화된 값과 안 된 값이 한 파일에 같이 있는 것이 정상이다."""
     code = _SANITIZED_HELPER + "\n" + _RAW_INJECTION
     hits = _sink_findings(code)
-    assert any(f.decision == Decision.block for f in hits), \
-        f"파일 전역 sanitize 로 전부 낮춰졌습니다: {[f.decision for f in hits]}"
-    assert any(f.decision == Decision.warn for f in hits)
+    notes = [f.severity_adjusted or "" for f in hits]
+    assert any("정화 호출" not in n for n in notes), \
+        f"파일 전역 sanitize 로 전부 낮춰졌습니다: {notes}"
+    assert any("정화 호출" in n for n in notes)
 
 
 def test_non_html_findings_are_untouched() -> None:

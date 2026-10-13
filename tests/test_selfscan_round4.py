@@ -47,7 +47,11 @@ def test_code_shape_inside_string_literal_is_attenuated_not_deleted(code, rule):
 ])
 def test_real_code_outside_string_stays_blocked(code, rule):
     f = _one(code, rule)
-    assert f.decision.value == "block", f
+    # 근거 정책(2026-10-13): 정규식만의 발견(명령 삽입 모양)은 차단 대신 높음·경고로 남는다.
+    # 여기서 지키는 것은 '문자열 리터럴 감쇄가 실행 코드에 붙지 않는다'이다.
+    assert f.decision.value == "block" or (
+        f.decision.value == "warn" and "근거가" in (f.severity_adjusted or "")
+    ), f
     assert not (f.severity_adjusted and "문자열 리터럴" in f.severity_adjusted)
 
 

@@ -12,6 +12,7 @@ looked up from ``regex_scanner.RULES`` to avoid duplicating policy.
 from __future__ import annotations
 
 import ast
+import contextvars
 import re
 from typing import Iterable
 
@@ -158,13 +159,16 @@ class _Visitor(ast.NodeVisitor):
             return redact_evidence(self.source_lines[line_no - 1])
         return ""
 
-    def _record(self, rule_id: str, lineno: int) -> None:
+    def _record(self, rule_id: str, lineno: int, confidence: str | None = None) -> None:
         # 같은 줄 형태와 **바로 윗줄 단독 주석** 형태를 모두 본다. 두 번째 형태는
         # 룰 카드가 안내하는 사용법이면서(주석을 위에 다는 습관) 판정이 모호하지
         # 않아, 다른 언어에서도 같은 규칙을 쓴다.
         if self._ignores.suppresses(lineno, rule_id):
             return
-        self.hits.append((rule_id, lineno, self._evidence(lineno)))
+        if confidence:
+            self.hits.append((rule_id, lineno, self._evidence(lineno), confidence))
+        else:
+            self.hits.append((rule_id, lineno, self._evidence(lineno)))
 
     # ------------------------------------------------------------------
     # Call site inspection
@@ -189,14 +193,16 @@ class _Visitor(ast.NodeVisitor):
             if parts:
                 parts[0] = self.aliases.get(parts[0], parts[0])
 
+            # 명령 인자에 외부 출처(요청·argv·stdin)가 직접 들어 있으면 '확인됨'.
+            cmd_conf = "confirmed" if _expr_mentions_source(node) else None
             # 3a) os.system / os.popen / commands.getoutput
             if len(parts) >= 2 and (parts[0], parts[1]) in _OS_COMMAND_SINKS:
-                self._record("KISA-PY-INPUT-05", node.lineno)
+                self._record("KISA-PY-INPUT-05", node.lineno, cmd_conf)
 
             # 3b) subprocess.<run|call|check_call|check_output|Popen>(shell=True)
             if len(parts) >= 2 and parts[0] == "subprocess" and parts[1] in _SUBPROCESS_FUNCS:
                 if _kw_is_true(node, "shell"):
-                    self._record("KISA-PY-INPUT-05", node.lineno)
+                    self._record("KISA-PY-INPUT-05", node.lineno, cmd_conf)
                 # 3b') shell=True 없이 `["sh", "-c", cmd]` — 셸을 직접 띄우는 것과
                 # 같다(미탐, eval_corpus s04_privesc.py). 리스트 안에 sh/bash 와 -c 가
                 # 있고 그 뒤 원소가 상수가 아니면 잡는다.
@@ -267,6 +273,53 @@ _LLM_SINK_RE = re.compile(
 )
 
 
+# SQL 자리표시자 리터럴: `?` · `%s` · `%(name)s` · `:name` · `$1` · `@p`
+_PLACEHOLDER_LITERAL_RE = re.compile(r"^\s*(?:\?|%s|%\(\w+\)s|:\w+|\$\d+|@\w+)\s*$")
+
+
+def _is_placeholder_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str) \
+        and bool(_PLACEHOLDER_LITERAL_RE.match(node.value))
+
+
+_PLACEHOLDER_FUNCS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "gvskb_placeholder_funcs", default=frozenset(),
+)
+
+
+def _is_placeholder_expr(node: ast.AST, env: ConstEnv | None = None) -> bool:
+    """**자리표시자 목록을 늘려 넣는 식** — 값은 바인딩으로 가므로 동적 SQL 이 아니다.
+
+    실측(2026-10-13 safe_check): `','.join('?' * len(xs))` · `", ".join("?" for _ in rows)` 를
+    f-string 에 넣고 값은 params 로 넘기는 안전한 코드 36곳 중 대부분이 "확인된 SQL 삽입"
+    으로 차단됐다. 인정하는 모양만 좁게 둔다 — 구분자 리터럴 `.join(` 의 인자가
+    자리표시자 리터럴의 반복·내포·리스트일 때, 그리고 그런 식과 상수만 보간한 f-string.
+    """
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join" \
+            and isinstance(node.func.value, ast.Constant) and isinstance(node.func.value.value, str) \
+            and len(node.args) == 1 and not node.keywords:
+        arg = node.args[0]
+        if isinstance(arg, (ast.GeneratorExp, ast.ListComp)):
+            return _is_placeholder_literal(arg.elt)
+        if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mult):
+            return _is_placeholder_literal(arg.left) or _is_placeholder_literal(arg.right) \
+                or (isinstance(arg.left, ast.List) and all(_is_placeholder_literal(e) for e in arg.left.elts))
+        if isinstance(arg, (ast.List, ast.Tuple)):
+            return bool(arg.elts) and all(_is_placeholder_literal(e) for e in arg.elts)
+        return False
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _PLACEHOLDER_FUNCS.get():
+        return True
+    if isinstance(node, ast.JoinedStr):
+        return all(
+            not isinstance(v, ast.FormattedValue)
+            or isinstance(v.value, ast.Constant)
+            or (env is not None and expr_is_constant(v.value, env))
+            or _is_placeholder_expr(v.value, env)
+            for v in node.values
+        )
+    return False
+
+
 def _fstring_is_dynamic(node: ast.JoinedStr, env: ConstEnv | None = None) -> bool:
     """An f-string whose interpolated field is not itself a constant.
 
@@ -279,6 +332,8 @@ def _fstring_is_dynamic(node: ast.JoinedStr, env: ConstEnv | None = None) -> boo
         if isinstance(v.value, ast.Constant):
             continue
         if env is not None and expr_is_constant(v.value, env):
+            continue
+        if _is_placeholder_expr(v.value, env):
             continue
         return True
     return False
@@ -301,8 +356,8 @@ def _add_mixes_literal_and_dynamic(node: ast.AST, env: ConstEnv | None = None) -
             if _fstring_is_dynamic(n, env):
                 has_dyn = True
         elif isinstance(n, (ast.Name, ast.Call, ast.Attribute, ast.Subscript, ast.Await)):
-            # 상수로 증명된 이름·리터럴 컨테이너 join 은 동적 입력이 아니다.
-            if env is not None and expr_is_constant(n, env):
+            # 상수로 증명된 이름·리터럴 컨테이너 join·자리표시자 확장은 동적 입력이 아니다.
+            if (env is not None and expr_is_constant(n, env)) or _is_placeholder_expr(n, env):
                 has_str = True
             else:
                 has_dyn = True
@@ -499,6 +554,31 @@ def _scope_env(
     return env
 
 
+def _inherit_outer_constants(inner: ConstEnv, outer: ConstEnv, node: ast.AST) -> None:
+    """바깥 범위(모듈)에서 상수로 증명된 이름을 함수 안에서도 상수로 본다.
+
+    함수 범위 환경은 함수 본문만 보고 만들어져 `COLS = [...]`·`VIEW = "v"` 같은 모듈
+    상수가 함수 안에서는 동적으로 취급됐다(실측 2026-10-13 safe_check `etl/read_facilities.py`
+    `f"SELECT {', '.join(COLS)} FROM {VIEW}"` 가 "확인된 SQL 삽입"). 함수 안에서 다시
+    대입·순회·삭제하거나 매개변수·global 로 가리는 이름은 물려받지 않는다.
+    """
+    shadow: set[str] = set()
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        a = node.args
+        shadow |= {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)}
+        if a.vararg:
+            shadow.add(a.vararg.arg)
+        if a.kwarg:
+            shadow.add(a.kwarg.arg)
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            shadow.add(n.id)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            shadow |= set(n.names)
+    inner.names |= outer.names - shadow
+    inner.containers |= outer.containers - shadow
+
+
 def _dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: ConstEnv) -> bool:
     """동적으로 판정된 부분이 **이 함수의 매개변수**뿐인가.
 
@@ -541,6 +621,67 @@ def _prompt_dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: Co
     return found_param
 
 
+# ── 외부 출처 ────────────────────────────────────────────────────────────────
+# "동적으로 조립됐다"와 "외부 입력이 닿았다"는 다르다. 실측(2026-10-13 safe_check):
+# 자리표시자·모듈 상수·DB 메타데이터로 조립한 SQL 36건이 전부 '확인됨(데이터 흐름 추적)'
+# 으로 차단됐지만 외부 입력이 닿은 곳은 없었다. 여기서 말하는 출처는 공격자가 값을 정할
+# 수 있는 자리뿐이다 — 요청(Flask/Django/FastAPI), 명령행 인자, 표준입력, 라우트 매개변수.
+# 환경변수·설정 파일은 운영자 통제라 넣지 않는다.
+_SOURCE_PY_RE = re.compile(
+    r"^(?:request\.(?:args|form|json|values|data|files|headers|cookies|get_json|get_data|GET|POST|body|query_params|path_params)"
+    r"|req\.(?:args|form|json|body|query|params|headers|cookies)"
+    r"|sys\.argv|sys\.stdin|input|raw_input|flask\.request|self\.request\.(?:args|form|json|data|GET|POST))$",
+)
+_ROUTE_DECORATOR_RE = re.compile(r"(?:^|\.)(?:route|get|post|put|patch|delete|api_route|websocket)$")
+
+
+def _dotted(node: ast.AST) -> str | None:
+    parts: list[str] = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _expr_mentions_source(node: ast.AST) -> bool:
+    """식 안에 외부 출처(요청·argv·stdin)가 **직접** 있는가."""
+    for n in ast.walk(node):
+        if isinstance(n, (ast.Attribute, ast.Name)):
+            d = _dotted(n)
+            if d and _SOURCE_PY_RE.match(d):
+                return True
+        if isinstance(n, ast.Call):
+            d = _dotted(n.func)
+            if d and _SOURCE_PY_RE.match(d):
+                return True
+    return False
+
+
+def _load_names(node: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Store)}
+
+
+def _reaches_source(node: ast.AST, sourced: set[str]) -> bool:
+    return _expr_mentions_source(node) or bool(_load_names(node) & sourced)
+
+
+def _route_params(fn: ast.AST) -> set[str]:
+    """`@app.route("/u/<name>")`·`@router.get(...)` 핸들러의 매개변수는 요청에서 온다."""
+    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+    for dec in fn.decorator_list:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        d = _dotted(target) or ""
+        if _ROUTE_DECORATOR_RE.search(d):
+            a = fn.args
+            return {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)} - {"self", "cls"}
+    return set()
+
+
 def _process_scope(
     stmts: list[ast.stmt],
     tainted: set[str],
@@ -549,9 +690,11 @@ def _process_scope(
     env: ConstEnv | None = None,
     literal_params: dict[str, set[str]] | None = None,
     scope_params: set[str] | None = None,
+    sourced: set[str] | None = None,
 ) -> None:
     literal_params = literal_params or {}
     scope_params = scope_params or set()
+    sourced = set() if sourced is None else sourced
     if env is None:
         env = collect_constants(stmts)
     for stmt in stmts:
@@ -559,6 +702,7 @@ def _process_scope(
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             proven = literal_params.get(getattr(stmt, "name", ""), set())
             inner = _scope_env(stmt.body, proven)
+            _inherit_outer_constants(inner, env, stmt)
             inner_params: set[str] = set()
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 a = stmt.args
@@ -566,7 +710,7 @@ def _process_scope(
                     p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)
                 } - proven
             _process_scope(stmt.body, set(), hits, source_lines, inner,
-                           literal_params, inner_params)
+                           literal_params, inner_params, sourced=_route_params(stmt))
             continue
         # 1) sinks read the taint state established by earlier statements.
         for call in _sink_calls(stmt):
@@ -580,9 +724,11 @@ def _process_scope(
             src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
             if _is_ignored(src, rule_id):
                 continue
-            # 값의 출처를 실제로 추적했는지에 따라 근거 강도를 나눈다.
-            conf = ("likely" if _dynamic_part_is_a_parameter(arg0, scope_params, env)
-                    else _CONFIDENCE_BY_RULE.get(rule_id, "likely"))
+            # 근거 강도: 외부 출처(요청·argv·stdin·라우트 매개변수)가 이 식에 닿았으면
+            # '확인됨', 동적으로 조립됐을 뿐 출처를 못 봤으면 '유력'. 매개변수만 동적인 것도 유력.
+            # 룰이 상한을 두면(DDL 은 조립 사실만 확인 — likely) 그 위로 올리지 않는다.
+            cap = _CONFIDENCE_BY_RULE.get(rule_id, "confirmed")
+            conf = "confirmed" if cap == "confirmed" and _reaches_source(arg0, sourced) else "likely"
             hits.append((rule_id, line_no, redact_evidence(src), conf))
         # 1b) LLM prompt-injection sinks: a dynamically-built prompt string
         #     reaching an LLM SDK call (OWASP LLM01).
@@ -595,18 +741,34 @@ def _process_scope(
                 continue
             # SQL 과 같은 규약: 동적 부분이 매개변수뿐이면 출처를 추적한 적이 없다.
             args_root = ast.Tuple(elts=list(call.args) + [kw.value for kw in call.keywords])
-            conf = ("likely" if _prompt_dynamic_part_is_a_parameter(args_root, scope_params, env)
-                    else _CONFIDENCE_BY_RULE.get("GOV-LLM-PROMPT-INJECTION-001", "likely"))
+            conf = "confirmed" if _reaches_source(args_root, sourced) else "likely"
             hits.append(("GOV-LLM-PROMPT-INJECTION-001", line_no, redact_evidence(src), conf))
         # 2) recurse into compound bodies with the same (flow-insensitive) taint.
+        if isinstance(stmt, (ast.For, ast.AsyncFor)) and _reaches_source(stmt.iter, sourced):
+            sourced |= _load_names(stmt.target) | {n.id for n in ast.walk(stmt.target) if isinstance(n, ast.Name)}
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                if item.optional_vars is not None and _reaches_source(item.context_expr, sourced):
+                    sourced |= {n.id for n in ast.walk(item.optional_vars) if isinstance(n, ast.Name)}
         for body in _sub_statement_bodies(stmt):
-            _process_scope(body, tainted, hits, source_lines, env, literal_params, scope_params)
+            _process_scope(body, tainted, hits, source_lines, env, literal_params, scope_params, sourced)
         # 3) update taint from this statement's assignment (post-use).
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and stmt.value is not None:
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+            if _reaches_source(stmt.value, sourced) or (isinstance(stmt, ast.AugAssign) and names & sourced):
+                sourced |= names
+            elif not isinstance(stmt, ast.AugAssign):
+                sourced -= names          # 다른 값으로 덮어쓰면 출처가 끊긴다
         if isinstance(stmt, ast.Assign):
             is_dyn = _expr_builds_dynamic_sql(stmt.value, tainted, env)
+            # `ph = ",".join("?" * n)` · `clause = f"AND x IN ({ph})"` — 이 이름은 뒤에서 상수처럼 쓰인다.
+            is_ph = _is_placeholder_expr(stmt.value, env)
             for target in stmt.targets:
                 if isinstance(target, ast.Name):
                     (tainted.add if is_dyn else tainted.discard)(target.id)
+                    if is_ph:
+                        env.names.add(target.id)
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
             (tainted.add if _expr_builds_dynamic_sql(stmt.value, tainted, env) else tainted.discard)(stmt.target.id)
         elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
@@ -626,11 +788,31 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
     hits: list[tuple[str, int, str]] = []
     # 모듈 전체를 먼저 훑어 '호출부가 전부 리터럴인 매개변수'를 증명해 둔다 —
     # 스코프 안만 보는 상수 판정으로는 매개변수의 출처를 알 수 없다.
-    _process_scope(
-        getattr(tree, "body", []), set(), hits, source_lines,
-        literal_params=literal_only_parameters(tree),
-    )
+    token = _PLACEHOLDER_FUNCS.set(_placeholder_functions(tree))
+    try:
+        _process_scope(
+            getattr(tree, "body", []), set(), hits, source_lines,
+            literal_params=literal_only_parameters(tree),
+        )
+    finally:
+        _PLACEHOLDER_FUNCS.reset(token)
     return hits
+
+
+def _placeholder_functions(tree: ast.AST) -> frozenset[str]:
+    """모든 ``return`` 이 자리표시자 확장인 모듈 함수 이름 — `_ph(codes)` 호출도 자리표시자다.
+
+    실측(2026-10-13 safe_check `soosiro_mcp_server.py`): `def _fact_placeholders(xs): return
+    ",".join("?" * len(xs))` 를 9곳의 f-string 이 썼고 전부 "확인된 SQL 삽입"이 됐다.
+    """
+    out: set[str] = set()
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        returns = [n for n in ast.walk(node) if isinstance(n, ast.Return)]
+        if returns and all(r.value is not None and _is_placeholder_expr(r.value) for r in returns):
+            out.add(node.name)
+    return frozenset(out)
 
 
 def _looks_like_python(filename: str, language: str | None) -> bool:

@@ -192,5 +192,7 @@ def test_numeric_looking_names_are_not_unknown_but_input_names_still_are() -> No
     # 숫자만 들어간 템플릿은 HTML 이 될 수 없다 — 발견이 없거나, 있어도 출처 미상은 아니다.
     hits = _xss("el.innerHTML = `<b>${rowCount}</b> / ${item.pageNumber} / ${total_count}`;\n")
     assert not hits or (hits[0].decision == Decision.warn and "찾지 못함" not in (hits[0].severity_adjusted or ""))
-    # `userNumber` 는 이름이 입력값을 뜻한다 — 숫자 이름 규칙보다 먼저 잡힌다.
-    assert _is_blocked(_xss("el.innerHTML = `<b>${userNumber}</b>`;\n"))
+    # `userNumber` 는 이름이 입력값을 뜻한다 — 숫자 이름 규칙보다 먼저 잡혀 '유력'(높음·확인 필요)으로 남는다.
+    hits = _xss("el.innerHTML = `<b>${userNumber}</b>`;\n")
+    assert hits and hits[0].decision == Decision.warn and hits[0].confidence == "likely"
+    assert "유력" in (hits[0].severity_adjusted or "")

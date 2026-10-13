@@ -816,8 +816,13 @@ class _Classifier:
             if base in self.func_returns and depth < 4:      # 배열 → 함수 → 객체 → 헬퍼 호출까지(실측 _rtReadSingleRow)
                 returns, fparams = self.func_returns[base]
                 args = _split_args(inner)
-                if any(self.classify_expr(a, depth + 1, params).state == TAINTED for a in args):
-                    return SinkVerdict(TAINTED, f"{base}() 인자에 외부 출처가 있음")
+                arg_verdicts = [self.classify_expr(a, depth + 1, params) for a in args]
+                tainted_args = [v for v in arg_verdicts if v.state == TAINTED]
+                if tainted_args:
+                    # 인자가 출처 그 자체(`esc(req.body.x)`)면 '확인됨'이다 — 가짜 정화 함수를
+                    # 거쳤다고 근거가 약해지지 않는다(실측 2026-10-13: likely 로 적혀 정책에서 경고로 내려감).
+                    return SinkVerdict(TAINTED, f"{base}() 인자에 외부 출처가 있음",
+                                       any(v.direct_source for v in tainted_args))
                 # 반환식은 **그 함수의 줄**에서 분류한다 — 함수 지역 변수가 그 범위에서 풀린다.
                 caller_line = self.cur
                 verdicts = []
