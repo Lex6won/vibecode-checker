@@ -564,8 +564,7 @@ def _cat_ko(cat: str) -> str:
 _LIMIT_HEAD = "본 도구는 정적 분석 기반의 1차 보안 린터입니다."
 _LIMIT_ZERO = "발견 0건이 '안전'을 보장하지 않습니다."
 _LIMIT_BODY = (
-    "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입(str.format 키워드 인자·SQLAlchemy text() 로 "
-    "조립한 SQL 은 현재 판에서 놓칠 수 있음 — Python SQL 삽입 0건이 곧 안전은 아님), 설계·인가·업무로직상 취약점, "
+    "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입, 설계·인가·업무로직상 취약점, "
     "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 의존성(패키지) 취약점은 "
     "scan_dependencies(또는 gvskb check-package)로 별도 점검하세요."
 )

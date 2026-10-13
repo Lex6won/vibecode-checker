@@ -186,6 +186,9 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                 disqualified.add(n)
                 assignments.pop(n, None)      # 재평가 대상에서 완전히 제외
                 assignments[n] = [s.value, ast.Name(id="__aug__", ctx=ast.Load())]
+                # `conds += [dyn]` — 컨테이너에 동적 원소가 들어간다(리터럴 원소뿐이면 유지).
+                if not _literal_iterable_elements_are_literal(s.value):
+                    container_disqualified.add(n)
         # 3) for 루프 변수 — 리터럴 이터러블 순회면 상수
         elif isinstance(s, (ast.For, ast.AsyncFor)):
             names = _iter_names(s.target)
@@ -202,6 +205,15 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                     for n in _iter_names(item.optional_vars):
                         disqualified.add(n)
                         assignments[n] = [ast.Name(id="__with__", ctx=ast.Load())]
+
+    # 4b) `COLS[0] = request.args[...]` — 첨자 저장도 컨테이너 변형이다.
+    for s in flat:
+        if isinstance(s, (ast.Assign, ast.AnnAssign)):
+            targets = s.targets if isinstance(s, ast.Assign) else [s.target]
+            for t in targets:
+                if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) \
+                        and t.value.id in container_candidates and not _is_literal(s.value):
+                    container_disqualified.add(t.value.id)
 
     # 5) 컨테이너에 동적 값이 들어가면 실격 — 스코프 전체에서 append/extend 확인
     for s in flat:
@@ -319,9 +331,11 @@ def expr_is_constant(node: ast.AST, env: ConstEnv) -> bool:
             )
             return base_ok and arg_ok and bool(node.args)
         if isinstance(func, ast.Attribute) and func.attr == "format":
+            # 키워드 인자도 본다 — `'…{name}'.format(name=request.args['n'])` 가 상수로
+            # 판정돼 **완전 미탐**이었다(전면 점검 2026-10-13 §3-2, 치명).
             return expr_is_constant(func.value, env) and all(
                 expr_is_constant(a, env) for a in node.args
-            )
+            ) and all(expr_is_constant(k.value, env) for k in node.keywords)
     return False
 
 
