@@ -100,7 +100,7 @@ def _walk_scope(stmts: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
-def collect_constants(stmts: list[ast.stmt]) -> ConstEnv:
+def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> ConstEnv:
     """스코프 전체를 훑어 상수로 증명되는 이름·컨테이너를 반환한다.
 
     2단계로 판정한다:
@@ -216,6 +216,13 @@ def collect_constants(stmts: list[ast.stmt]) -> ConstEnv:
         names=(const_candidates | safe_mutables) - disqualified,
         containers=container_candidates - container_disqualified,
     )
+    # 바깥 범위(모듈)에서 증명된 상수. 고정점 **전에** 넣어야 `cols = ", ".join(ALL_COLUMNS)`
+    # 처럼 모듈 상수에서 파생한 지역 이름이 승격된다 — 실측(2026-10-13 STARS stars_db.py):
+    # 끝난 뒤에 얹으니 `cols` 가 동적으로 남아 바인딩만 쓰는 SQL 2건이 '유력'으로 올라갔다.
+    # 호출자가 이 범위에서 다시 대입·매개변수로 가린 이름은 빼고 준다.
+    if seed is not None:
+        env.names |= seed.names - disqualified
+        env.containers |= seed.containers - container_disqualified
 
     # 7) 고정점 반복 — 확정된 상수·컨테이너에 기대어 상수임이 드러나는 이름을
     #    승격한다(예: where = "WHERE " + " AND ".join(conds)).
@@ -253,6 +260,17 @@ def expr_is_constant(node: ast.AST, env: ConstEnv) -> bool:
         return expr_is_constant(node.left, env) and expr_is_constant(node.right, env)
     if isinstance(node, ast.IfExp):
         return expr_is_constant(node.body, env) and expr_is_constant(node.orelse, env)
+    # 리터럴만 담긴 컨테이너에서 **무엇을** 꺼내든 리터럴이다 — `ORDER[key]`·`FILTERS.get(k, "id")`.
+    # 화이트리스트 조회는 SQL 식별자를 안전하게 고르는 정석인데 동적으로 취급됐다(STARS 실측).
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in env.containers:
+        return True
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in env.containers
+            and len(node.args) in (1, 2) and (len(node.args) == 1 or expr_is_constant(node.args[1], env))):
+        return True
+    # 원소식이 상수인 내포식은 상수 컨테이너다 — `[FILTERS[k] for k in chosen if k in FILTERS]`.
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        return expr_is_constant(node.elt, env)
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join":

@@ -24,10 +24,9 @@ detection:
   patterns:
     # 1) np.power / np.multiply / np.add 가 고정 비트 dtype(int8/16/32/64, uint8/16/32/64) 으로 호출 — 범위 검사 신호 없음
     - "np\\.(?:power|multiply|add|subtract|sum|prod)\\s*\\([^)]*dtype\\s*=\\s*np\\.(?:int|uint)(?:8|16|32|64)"
-    # 2) numpy 배열 산술 캐스팅 astype(np.int8/16/32/64) — 큰 값 잘림 위험
-    - "\\.astype\\s*\\(\\s*np\\.(?:int|uint)(?:8|16|32|64)\\s*\\)"
-    # 3) struct.pack/unpack 의 고정폭 포맷('b','h','i','l','B','H','I','L','q','Q') — 범위 미검사
-    - "struct\\.(?:pack|unpack)\\s*\\(\\s*['\"][<>!=@]?[bhilqBHILQ]+['\"]"
+    # 2)·3) `astype(np.intN)`·`struct.pack` 단독 패턴은 뺐다(2026-10-13). 이미지 처리 코드는
+    #    줄마다 `astype(np.uint8)` 를 쓰고(bool 마스크·clip 뒤 변환) 그것은 오버플로가 아니다 —
+    #    실측(STARS) 13건 전부 오탐. 외부 입력이 닿는 변환은 AST 엔진이 출처를 추적해 올린다.
     # 4) request 입력을 int() 로 받아 numpy 고정 비트 연산에 같은 라인에서 사용
     - "np\\.(?:int|uint)(?:8|16|32|64)\\s*\\(\\s*int\\s*\\(\\s*request\\."
   category: kisa-secure-coding
@@ -68,13 +67,15 @@ examples:
   language: python
   positive:
     - "res = np.power(number, pow, dtype=np.int64)"
-    - "arr2 = arr.astype(np.int32)"
-    - "buf = struct.pack('<i', user_input)"
     - "value = np.int32(int(request.GET['n']))"
+    - "n = int(request.args['n'])\narr2 = (arr * n).astype(np.int32)"
+    - "count = int(sys.argv[1])\nbuf = struct.pack('<i', count)"
   negative:
     - "calculated = number ** pow\nif calculated > MAX_NUMBER or calculated < MIN_NUMBER:\n    return -1"
     - "total = sum(values)  # 파이썬 기본 int, 임의 정밀도"
     - "arr2 = arr.astype(float)  # 부동소수점 — 정수 오버플로우 무관"
+    - "mask = (img > 0).astype(np.uint8) * 255  # bool → 0/1, 외부 입력 없음"
+    - "out = np.clip(img * 1.2, 0, 255).astype(np.uint8)  # 범위를 먼저 잘랐다"
 ---
 
 ## 무엇이 위험한가

@@ -452,6 +452,42 @@ def _sub_statement_bodies(stmt: ast.stmt) -> list[list[ast.stmt]]:
     return bodies
 
 
+_FIXED_INT_DTYPE_RE = re.compile(r"^(?:np|numpy)\.u?int(?:8|16|32|64)$")
+_NP_FIXED_OPS = {"power", "multiply", "add", "subtract", "sum", "prod"}
+
+
+def _fixed_width_int_calls(stmt: ast.stmt) -> list[ast.Call]:
+    """고정 비트 정수로 바꾸는 호출 — `x.astype(np.int32)`·`np.int32(x)`·`np.power(…, dtype=np.int64)`·`struct.pack`.
+
+    정규식 룰(KISA-PY-INPUT-14)은 `astype(np.uint8)` 만 보고도 울려 이미지 처리 코드에서 줄마다
+    오탐이 났다(실측 2026-10-13 STARS: 13건 전부 bool 마스크·clip 뒤 변환). 정수 오버플로는
+    **외부 입력이 범위 검사 없이** 고정 폭으로 들어갈 때의 약점이므로, 출처가 닿은 호출만 올린다.
+    """
+    roots: list[ast.AST] = []
+    if isinstance(stmt, ast.Expr):
+        roots.append(stmt.value)
+    elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return)):
+        if getattr(stmt, "value", None) is not None:
+            roots.append(stmt.value)
+    out: list[ast.Call] = []
+    for root in roots:
+        for n in ast.walk(root):
+            if not isinstance(n, ast.Call):
+                continue
+            d = _dotted(n.func) or ""
+            if isinstance(n.func, ast.Attribute) and n.func.attr == "astype" and n.args \
+                    and _FIXED_INT_DTYPE_RE.match(_dotted(n.args[0]) or ""):
+                out.append(n)
+            elif _FIXED_INT_DTYPE_RE.match(d):
+                out.append(n)
+            elif d.split(".")[0] in ("np", "numpy") and d.split(".")[-1] in _NP_FIXED_OPS and any(
+                    kw.arg == "dtype" and _FIXED_INT_DTYPE_RE.match(_dotted(kw.value) or "") for kw in n.keywords):
+                out.append(n)
+            elif d in ("struct.pack", "struct.unpack"):
+                out.append(n)
+    return out
+
+
 def _sink_calls(stmt: ast.stmt) -> list[ast.Call]:
     """execute()-family calls in this statement's own expression (Expr / Assign
     RHS / Return), excluding calls inside nested statement bodies."""
@@ -541,6 +577,7 @@ def _adds_instruction_constant(node: ast.BinOp) -> bool:
 def _scope_env(
     stmts: list[ast.stmt],
     const_params: set[str],
+    seed: ConstEnv | None = None,
 ) -> ConstEnv:
     """스코프 상수 환경에 **호출부에서 증명된 매개변수**를 얹는다.
 
@@ -548,10 +585,28 @@ def _scope_env(
     모듈 안 모든 호출부가 리터럴을 넘긴다는 것이 증명된 이름만 상수로 올린다
     (증명 조건은 ``literal_only_parameters`` 참조).
     """
-    env = collect_constants(stmts)
+    env = collect_constants(stmts, seed=seed)
     if const_params:
         env.names |= const_params
     return env
+
+
+def _outer_constants_seed(outer: ConstEnv, node: ast.AST) -> ConstEnv:
+    """바깥 상수 중 이 함수가 가리지 않는 것 — `collect_constants` 의 seed 로 넘긴다."""
+    shadow: set[str] = set()
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        a = node.args
+        shadow |= {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)}
+        if a.vararg:
+            shadow.add(a.vararg.arg)
+        if a.kwarg:
+            shadow.add(a.kwarg.arg)
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            shadow.add(n.id)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            shadow |= set(n.names)
+    return ConstEnv(names=outer.names - shadow, containers=outer.containers - shadow)
 
 
 def _inherit_outer_constants(inner: ConstEnv, outer: ConstEnv, node: ast.AST) -> None:
@@ -751,8 +806,7 @@ def _process_scope(
         # Nested def/class opens a new scope; its parameters start untainted.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             proven = literal_params.get(getattr(stmt, "name", ""), set())
-            inner = _scope_env(stmt.body, proven)
-            _inherit_outer_constants(inner, env, stmt)
+            inner = _scope_env(stmt.body, proven, seed=_outer_constants_seed(env, stmt))
             inner_params: set[str] = set()
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 a = stmt.args
@@ -781,6 +835,15 @@ def _process_scope(
             cap = _CONFIDENCE_BY_RULE.get(rule_id, "confirmed")
             conf = "confirmed" if cap == "confirmed" and _reaches_source(arg0, sourced) else "likely"
             hits.append((rule_id, line_no, redact_evidence(src), conf))
+        # 1a') 고정 비트 정수 변환에 외부 출처가 닿는다 — 범위 검사 없는 정수 오버플로(KISA-PY-INPUT-14).
+        for call in _fixed_width_int_calls(stmt):
+            if not _reaches_source(call, sourced):
+                continue
+            line_no = call.lineno
+            src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
+            if _is_ignored(src, "KISA-PY-INPUT-14"):
+                continue
+            hits.append(("KISA-PY-INPUT-14", line_no, redact_evidence(src), "confirmed"))
         # 1b) LLM prompt-injection sinks: a dynamically-built prompt string
         #     reaching an LLM SDK call (OWASP LLM01).
         for call in _llm_sink_calls(stmt):
