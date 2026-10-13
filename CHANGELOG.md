@@ -5,6 +5,33 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-14
+
+### 30차 — JS/TS 오염 추적: 평가 순서 · 범위 · 정화 헬퍼 회귀 · TS 표기 (전면 점검 §3-3)
+
+- **`req.query.id`·`req.params.id`·`req.body.date` 가 발견에서 지워졌다** — 숫자 멤버 규칙(`.id`·`.date`)
+  이 출처 검사보다 먼저 평가됐다. 식에 외부 출처가 직접 있으면 멤버 이름이 숫자처럼 보여도 오염
+  (`.length`·`Number()` 만 예외).
+- **`.length` 꼬리가 식 전체를 상수로** — `'<p>' + req.body.note + '</p> 총 ' + items.length` 가 삭제됐다.
+  길이·숫자 서식 판정은 결합을 가른 뒤 피연산자 하나에만.
+- **템플릿 밖 피연산자가 버려짐** — `data.html || \`<p>없음</p>\``·`ok ? \`<b>x</b>\` : data.note` 가 "보간 없는
+  템플릿"으로 상수가 됐다. 최상위 삼항·논리식을 템플릿보다 먼저 갈라 피연산자마다 분류(`_split_top_level`).
+- **범위** — 같은 줄에서 연 `{`(객체 리터럴·블록 화살표) 안으로 선언이 들어가 뒤 줄에서 못 찾던 것
+  (`const cfg = { title: location.hash }`): 줄 머리 선언은 줄 시작 범위에. `if/for/while/switch/try` 는
+  함수가 아니라 블록(같은 함수 안 순서 규칙 복원). 여러 줄 템플릿 닫는 줄의 `}` 유실로 이후 함수가 전부
+  중첩되던 것. `letter = location.hash` 의 이름이 `ter` 로 잡히던 키워드 경계.
+- **2026-10-13 회귀 되돌림** — 인자가 출처면 정화 헬퍼까지 오염으로 봐 `rowHtml(data.row)`(본문 `esc`)
+  가 차단됐다. 매개변수를 인자 상태로 묶고 반환식을 분류한다: 정화 헬퍼는 검토, 그대로 돌려주는
+  헬퍼는 확인됨. `rows.map(rowHtml)`·`rows.map(r => rowHtml(r))` 도 같은 답. `rows.map(r => rawHtml(r))`
+  의 요소는 컬렉션 출처를 물려받아(예전엔 무조건 미상) 저장형 XSS 가 차단된다.
+- **TypeScript** — 타입 주석 `let html: string = …`, `res?.data?.note`, `data!.note`, 구조분해
+  `const { note } = req.body`, `export const`.
+- **입력값 이름 경계** — `tbody`(body)·`draw`(raw)·`freq`(req)·`jQuery`(query) 가 부분 문자열로 '유력'
+  이 되던 것. 키워드는 이름의 시작이나 `_`·camelCase 경계 뒤에서만.
+- 숫자 서식 `x.toLocaleString()`·산술식 `total - linked` 는 HTML 이 될 수 없는 값.
+- 실측 safe_check `app.js`: 확인된 XSS 차단 5건이 전부 정화·숫자 값이었다 → 검토(2건 정화 인정) /
+  해소(2건 상수). 새 차단 0. 테스트: `tests/test_round25_js_fn_batch.py`(31).
+
 ## [0.4.5] - 2026-10-14
 
 ### 31차 — 비밀값·`.env`·여러 줄 패턴·인텔: 파일 선정과 정규식 엔진의 구멍 (룰셋 2026.10.14a)
