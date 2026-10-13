@@ -389,6 +389,8 @@ def _expr_builds_dynamic_sql(node: ast.AST, tainted: set[str], env: ConstEnv | N
                 (isinstance(base, ast.Constant) and isinstance(base.value, str))
                 or isinstance(base, ast.JoinedStr)
                 or (isinstance(base, ast.Name) and base.id in tainted)
+                # 상수 템플릿 `TMPL.format(name=request…)` — base 가 거부돼 미탐이었다(§3-2).
+                or (isinstance(base, ast.Name) and env is not None and base.id in env.names)
             )
             if not (base_is_str and (node.args or node.keywords)):
                 return False
@@ -397,7 +399,18 @@ def _expr_builds_dynamic_sql(node: ast.AST, tainted: set[str], env: ConstEnv | N
                     and all(expr_is_constant(k.value, env) for k in node.keywords):
                 return False
             return True
+        # `" ".join(parts)` — parts 가 동적 조각을 담은 목록이면 조립이다.
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "join" \
+                and isinstance(node.func.value, ast.Constant) and len(node.args) == 1:
+            arg = node.args[0]
+            if isinstance(arg, ast.Name):
+                return arg.id in tainted
+            if isinstance(arg, (ast.List, ast.Tuple)):
+                return any(_expr_builds_dynamic_sql(e, tainted, env) for e in arg.elts)
+            return False
         return False
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return any(_expr_builds_dynamic_sql(e, tainted, env) for e in node.elts)
     if isinstance(node, ast.Name):
         return node.id in tainted
     return False
@@ -463,14 +476,8 @@ def _fixed_width_int_calls(stmt: ast.stmt) -> list[ast.Call]:
     오탐이 났다(실측 2026-10-13 STARS: 13건 전부 bool 마스크·clip 뒤 변환). 정수 오버플로는
     **외부 입력이 범위 검사 없이** 고정 폭으로 들어갈 때의 약점이므로, 출처가 닿은 호출만 올린다.
     """
-    roots: list[ast.AST] = []
-    if isinstance(stmt, ast.Expr):
-        roots.append(stmt.value)
-    elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return)):
-        if getattr(stmt, "value", None) is not None:
-            roots.append(stmt.value)
     out: list[ast.Call] = []
-    for root in roots:
+    for root in _stmt_roots(stmt):
         for n in ast.walk(root):
             if not isinstance(n, ast.Call):
                 continue
@@ -488,24 +495,106 @@ def _fixed_width_int_calls(stmt: ast.stmt) -> list[ast.Call]:
     return out
 
 
-def _sink_calls(stmt: ast.stmt) -> list[ast.Call]:
-    """execute()-family calls in this statement's own expression (Expr / Assign
-    RHS / Return), excluding calls inside nested statement bodies."""
+def _stmt_roots(stmt: ast.stmt) -> list[ast.AST]:
+    """문장 **자신의** 식(중첩 본문 제외) — Expr·대입·return 뿐 아니라 `for … in <식>`·
+    `if <식>`·`while <식>`·`with <식> as …`·`assert`·`raise` 까지. 전면 점검(§3-2):
+    `for row in cur.execute(q)`·`if cur.execute(q).fetchone()`·`with conn.execute(q) as r` 가
+    전부 발견 0건이었다 — sink 가 루트 식에만 있다고 가정했기 때문이다.
+    """
     roots: list[ast.AST] = []
     if isinstance(stmt, ast.Expr):
         roots.append(stmt.value)
     elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return)):
         if getattr(stmt, "value", None) is not None:
             roots.append(stmt.value)
+    elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+        roots.append(stmt.iter)
+    elif isinstance(stmt, (ast.If, ast.While)):
+        roots.append(stmt.test)
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+        roots.extend(item.context_expr for item in stmt.items)
+    elif isinstance(stmt, ast.Assert):
+        roots.append(stmt.test)
+        if stmt.msg is not None:
+            roots.append(stmt.msg)
+    elif isinstance(stmt, ast.Raise) and stmt.exc is not None:
+        roots.append(stmt.exc)
+    return roots
+
+
+#: SQL 문자열을 받는 호출 — DB-API `execute*` 외에 SQLAlchemy `exec_driver_sql`,
+#: pandas `read_sql*`, Django `objects.raw` (실측 미탐, 전면 점검 §3-2).
+_SQL_SINK_METHODS = _SQL_EXEC_METHODS | {"exec_driver_sql", "read_sql", "read_sql_query"}
+_SQL_ARG_KEYWORDS = ("sql", "statement", "query", "sql_query")
+
+
+def _is_sql_sink_call(n: ast.AST) -> bool:
+    if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+        return False
+    attr = n.func.attr
+    if attr in _SQL_SINK_METHODS:
+        return bool(n.args or any(k.arg in _SQL_ARG_KEYWORDS for k in n.keywords))
+    if attr == "raw":        # Django: `Model.objects.raw(sql)` 만 — `response.raw` 등은 아님
+        chain = _attr_chain(n.func) or ""
+        return ".objects." in f".{chain}." and bool(n.args)
+    return False
+
+
+def _sql_arg(call: ast.Call) -> ast.AST | None:
+    """SQL 문자열 인자 — 첫 위치 인자 또는 `sql=`/`statement=`/`query=` 키워드."""
+    if call.args:
+        return call.args[0]
+    for k in call.keywords:
+        if k.arg in _SQL_ARG_KEYWORDS:
+            return k.value
+    return None
+
+
+_SQL_WRAPPERS = {"text", "sqlalchemy.text", "sa.text", "str", "dedent", "textwrap.dedent", "sql.SQL"}
+
+
+def _unwrap_sql(expr: ast.AST) -> ast.AST:
+    """`text(x)`·`dedent(x)`·`x.strip()` 한 겹을 벗긴다 — SQLAlchemy `conn.execute(text(f"…"))`
+    가 공공 FastAPI 코드의 표준 모양인데 발견 0건이었다(전면 점검 §3-2)."""
+    for _ in range(4):
+        if isinstance(expr, ast.Call) and len(expr.args) == 1 and not expr.keywords \
+                and (_dotted(expr.func) or "") in _SQL_WRAPPERS:
+            expr = expr.args[0]
+            continue
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+                and expr.func.attr in {"strip", "lstrip", "rstrip", "upper", "lower"} and not expr.args:
+            expr = expr.func.value
+            continue
+        break
+    return expr
+
+
+def _sink_calls(stmt: ast.stmt) -> list[ast.Call]:
+    """SQL sink calls in this statement's own expressions (see ``_stmt_roots``)."""
     calls: list[ast.Call] = []
-    for root in roots:
+    for root in _stmt_roots(stmt):
         for n in ast.walk(root):
-            if (
-                isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute)
-                and n.func.attr in _SQL_EXEC_METHODS
-                and n.args
-            ):
+            if _is_sql_sink_call(n):
+                calls.append(n)
+    return calls
+
+
+_OS_COMMAND_DOTTED = {"os.system", "os.popen", "commands.getoutput", "commands.getstatusoutput"}
+
+
+def _command_sink_calls(stmt: ast.stmt) -> list[ast.Call]:
+    """셸 명령 sink — `os.system/popen`, `subprocess.*(shell=True)` (별칭 없는 정식 이름만;
+    별칭 호출은 `_Visitor` 가 '유력'으로 잡는다)."""
+    calls: list[ast.Call] = []
+    for root in _stmt_roots(stmt):
+        for n in ast.walk(root):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                continue
+            d = _dotted(n.func) or ""
+            if d in _OS_COMMAND_DOTTED:
+                calls.append(n)
+            elif d.startswith("subprocess.") and d.split(".")[-1] in _SUBPROCESS_FUNCS \
+                    and (_kw_is_true(n, "shell") or _argv_spawns_shell_with_dynamic_command(n)):
                 calls.append(n)
     return calls
 
@@ -513,14 +602,8 @@ def _sink_calls(stmt: ast.stmt) -> list[ast.Call]:
 def _llm_sink_calls(stmt: ast.stmt) -> list[ast.Call]:
     """LLM SDK calls (``…chat.completions.create``, ``…messages.create``,
     ``…generate_content`` …) in this statement's own expression."""
-    roots: list[ast.AST] = []
-    if isinstance(stmt, ast.Expr):
-        roots.append(stmt.value)
-    elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return)):
-        if getattr(stmt, "value", None) is not None:
-            roots.append(stmt.value)
     calls: list[ast.Call] = []
-    for root in roots:
+    for root in _stmt_roots(stmt):
         for n in ast.walk(root):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
                 chain = _attr_chain(n.func)
@@ -683,10 +766,13 @@ def _prompt_dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: Co
 # 수 있는 자리뿐이다 — 요청(Flask/Django/FastAPI), 명령행 인자, 표준입력, 라우트 매개변수.
 # 환경변수·설정 파일은 운영자 통제라 넣지 않는다.
 _SOURCE_PY_RE = re.compile(
-    r"^(?:request\.(?:args|form|json|values|data|files|headers|cookies|get_json|get_data|GET|POST|body|query_params|path_params)"
-    r"|req\.(?:args|form|json|body|query|params|headers|cookies)"
-    r"|sys\.argv|sys\.stdin|input|raw_input|flask\.request|self\.request\.(?:args|form|json|data|GET|POST))$",
+    r"^(?:request\.(?:args|form|json|values|data|files|headers|cookies|get_json|get_data|GET|POST|body|query_params|path_params|params)"
+    r"|req\.(?:args|form|json|body|query|params|headers|cookies|GET|POST|data|query_params)"
+    r"|sys\.argv|sys\.stdin|flask\.request"
+    r"|self\.request\.(?:args|form|json|data|GET|POST|query_params|params|body|files|headers|cookies))$",
 )
+#: 호출일 때만 출처인 이름 — 변수 `input = fh.read()` 는 출처가 아니다(오탐, 전면 점검 §3-2).
+_SOURCE_CALL_RE = re.compile(r"^(?:input|raw_input|sys\.stdin\.(?:read|readline|readlines))$")
 _ROUTE_DECORATOR_RE = re.compile(r"(?:^|\.)(?:route|get|post|put|patch|delete|api_route|websocket)$")
 
 
@@ -711,9 +797,24 @@ def _expr_mentions_source(node: ast.AST) -> bool:
                 return True
         if isinstance(n, ast.Call):
             d = _dotted(n.func)
-            if d and _SOURCE_PY_RE.match(d):
+            if d and (_SOURCE_PY_RE.match(d) or _SOURCE_CALL_RE.match(d)):
                 return True
     return False
+
+
+def _store_names(target: ast.AST) -> set[str]:
+    """대입 대상에서 **값이 바뀌는 이름**만 — `seen[key] = True` 의 `key` 는 읽기라 제외.
+
+    예전에는 대상 아래의 모든 Name 을 모아 `key` 의 출처까지 지웠다(미탐, 전면 점검 §3-2).
+    """
+    return {n.id for n in ast.walk(target) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+
+
+def _container_base(target: ast.AST) -> str | None:
+    """`d["k"] = …`·`obj.attr = …` 의 바탕 이름 — 출처 값이 들어가면 그 컨테이너도 출처다."""
+    if isinstance(target, (ast.Subscript, ast.Attribute)) and isinstance(target.value, ast.Name):
+        return target.value.id
+    return None
 
 
 def _load_names(node: ast.AST) -> set[str]:
@@ -818,11 +919,22 @@ def _process_scope(
             continue
         # 1) sinks read the taint state established by earlier statements.
         for call in _sink_calls(stmt):
-            arg0 = call.args[0]
+            raw_arg = _sql_arg(call)
+            if raw_arg is None:
+                continue
+            arg0 = _unwrap_sql(raw_arg)
+            if env is not None and expr_is_constant(arg0, env):
+                continue
+            direct_source = isinstance(arg0, (ast.Name, ast.Subscript, ast.Attribute, ast.Call)) \
+                and not isinstance(arg0, ast.Call) and _reaches_source(arg0, sourced)
             reaches = (isinstance(arg0, ast.Name) and arg0.id in tainted) or \
                 _expr_builds_dynamic_sql(arg0, tainted, env) or \
-                (isinstance(arg0, ast.Name) and arg0.id in sourced)   # 쿼리 전체가 외부 입력(LLM 도구 인자 등)
-            if not reaches:
+                (isinstance(arg0, ast.Name) and arg0.id in sourced) or \
+                direct_source                                  # `cur.execute(request.form['q'])`
+            # `cur.execute(build(request.args['x']))` — 출처가 함수 안으로 들어간다. 조립을 본 것은
+            # 아니므로 '유력'(검토) 까지만.
+            via_call = not reaches and isinstance(arg0, ast.Call) and _reaches_source(arg0, sourced)
+            if not (reaches or via_call):
                 continue
             rule_id = _sql_rule_for(arg0)
             line_no = call.lineno
@@ -833,8 +945,18 @@ def _process_scope(
             # '확인됨', 동적으로 조립됐을 뿐 출처를 못 봤으면 '유력'. 매개변수만 동적인 것도 유력.
             # 룰이 상한을 두면(DDL 은 조립 사실만 확인 — likely) 그 위로 올리지 않는다.
             cap = _CONFIDENCE_BY_RULE.get(rule_id, "confirmed")
-            conf = "confirmed" if cap == "confirmed" and _reaches_source(arg0, sourced) else "likely"
+            conf = "confirmed" if cap == "confirmed" and reaches and _reaches_source(arg0, sourced) else "likely"
             hits.append((rule_id, line_no, redact_evidence(src), conf))
+        # 1a) 셸 명령에 외부 출처가 닿는다 — 여러 줄(`name = request…; os.system("ping " + name)`)
+        #     도 '확인됨'. `_Visitor` 는 같은 줄만 보고 '유력'으로 적으므로 scan() 이 높은 쪽을 남긴다.
+        for call in _command_sink_calls(stmt):
+            if not _reaches_source(call, sourced):
+                continue
+            line_no = call.lineno
+            src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
+            if _is_ignored(src, "KISA-PY-INPUT-05"):
+                continue
+            hits.append(("KISA-PY-INPUT-05", line_no, redact_evidence(src), "confirmed"))
         # 1a') 고정 비트 정수 변환에 외부 출처가 닿는다 — 범위 검사 없는 정수 오버플로(KISA-PY-INPUT-14).
         for call in _fixed_width_int_calls(stmt):
             if not _reaches_source(call, sourced):
@@ -864,16 +986,39 @@ def _process_scope(
             for item in stmt.items:
                 if item.optional_vars is not None and _reaches_source(item.context_expr, sourced):
                     sourced |= {n.id for n in ast.walk(item.optional_vars) if isinstance(n, ast.Name)}
-        for body in _sub_statement_bodies(stmt):
-            _process_scope(body, tainted, hits, source_lines, env, literal_params, scope_params, sourced)
+        # 분기 합집합 — 각 본문을 **사본**으로 돌리고 결과를 합친다. 같은 집합을 공유하면
+        # `if c: n = request.args['n'] else: n = 'd'` 에서 마지막 대입이 이겨 출처가 지워졌다
+        # (전면 점검 §3-2). 어느 경로로든 외부 값일 수 있으면 외부 값이다.
+        bodies = _sub_statement_bodies(stmt)
+        if bodies:
+            merged_t, merged_s = set(tainted), set(sourced)
+            for body in bodies:
+                t2, s2 = set(tainted), set(sourced)
+                _process_scope(body, t2, hits, source_lines, env, literal_params, scope_params, s2)
+                merged_t |= t2
+                merged_s |= s2
+            tainted |= merged_t
+            sourced |= merged_s
         # 3) update taint from this statement's assignment (post-use).
         if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and stmt.value is not None:
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
-            names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+            names = {n for t in targets for n in _store_names(t)}
+            bases = {b for t in targets if (b := _container_base(t))}
             if _reaches_source(stmt.value, sourced) or (isinstance(stmt, ast.AugAssign) and names & sourced):
-                sourced |= names
+                sourced |= names | bases
             elif not isinstance(stmt, ast.AugAssign):
                 sourced -= names          # 다른 값으로 덮어쓰면 출처가 끊긴다
+        # `parts.append("WHERE x = " + n)` — 목록에 동적 조각·출처 값이 들어가면 그 목록도 오염.
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) \
+                and isinstance(stmt.value.func, ast.Attribute) \
+                and stmt.value.func.attr in {"append", "extend", "insert"} \
+                and isinstance(stmt.value.func.value, ast.Name):
+            holder = stmt.value.func.value.id
+            args = stmt.value.args
+            if any(_expr_builds_dynamic_sql(a, tainted, env) for a in args):
+                tainted.add(holder)
+            if any(_reaches_source(a, sourced) for a in args):
+                sourced.add(holder)
         if isinstance(stmt, ast.Assign):
             is_dyn = _expr_builds_dynamic_sql(stmt.value, tainted, env)
             # `ph = ",".join("?" * n)` · `clause = f"AND x IN ({ph})"` — 이 이름은 뒤에서 상수처럼 쓰인다.
@@ -940,6 +1085,8 @@ def _looks_like_python(filename: str, language: str | None) -> bool:
 # 판정 근거 강도 — AST 엔진이 발행하는 룰별 기본값.
 # confirmed: 값의 흐름(테인트)이나 문장 구조를 실제로 확인한 것.
 # likely   : 구조 분석 기반이지만 문맥(의도)까지는 단정하지 못하는 것.
+_CONF_RANK = {"pattern-only": 0, "likely": 1, "confirmed": 2}
+
 _CONFIDENCE_BY_RULE: dict[str, str] = {
     # 같은 스코프 안에서 대입을 따라가 조립을 확인한 동적 SQL.
     # **주의**: 동적 부분이 함수 매개변수뿐이면 출처가 스코프 밖이라 추적한 적이
@@ -988,8 +1135,22 @@ class PythonAstScanner(ScannerAdapter):
             + _scan_infinite_loops(tree, visitor.source_lines)
         )
 
-        findings: list[Finding] = []
+        # 같은 (룰, 줄) 을 두 경로가 적으면(호출 방문자 '유력' + 출처 추적 '확인됨') 높은 쪽만 남긴다.
+        best: dict[tuple[str, int], tuple] = {}
+        order: list[tuple[str, int]] = []
         for hit in all_hits:
+            key = (hit[0], hit[1])
+            conf = hit[3] if len(hit) > 3 else _CONFIDENCE_BY_RULE.get(hit[0], "likely")
+            if key not in best:
+                best[key] = hit
+                order.append(key)
+            elif _CONF_RANK.get(conf, 0) > _CONF_RANK.get(
+                    best[key][3] if len(best[key]) > 3 else _CONFIDENCE_BY_RULE.get(hit[0], "likely"), 0):
+                best[key] = hit
+
+        findings: list[Finding] = []
+        for key in order:
+            hit = best[key]
             # 3-튜플(룰별 기본 근거) 과 4-튜플(현장에서 판정한 근거)을 함께 받는다.
             rule_id, line_no, evidence = hit[0], hit[1], hit[2]
             confidence = hit[3] if len(hit) > 3 else _CONFIDENCE_BY_RULE.get(rule_id, "likely")

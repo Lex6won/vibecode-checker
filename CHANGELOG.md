@@ -5,6 +5,35 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-14
+
+### 29차 — Python 미탐 묶음: `.format` 키워드 · sink 한 겹·루트 식 밖 · 분기 합집합 · 명령 삽입 출처 · 목록 조립
+
+전면 점검(docs/40 §3-2)에서 "발견 0건"으로 재현된 미탐을 메웠다. 전부 파서 없이, AST 엔진 안에서.
+
+- **`'…{name}'.format(name=request.args['n'])`** — 상수 판정이 키워드 인자를 안 봐 완전 미탐이었다
+  (치명). 상수 템플릿 `TMPL.format(…)` 도 base 가 거부돼 없었다 → 둘 다 '확인됨'.
+- **sink 인자 한 겹** — SQLAlchemy `conn.execute(text(f"…"))`(공공 FastAPI 표준 모양)·`dedent()`·
+  `.strip()`·키워드 `execute(sql=…)`·출처 그대로 `cur.execute(request.form['q'])`. 출처가 함수 호출
+  안으로 들어가는 `cur.execute(build(request.args['x']))` 는 조립을 본 것이 아니므로 '유력'까지만.
+- **루트 식 밖 sink** — `for row in cur.execute(…)`·`if cur.execute(…).fetchone()`·
+  `with conn.execute(…) as r`·`assert`·`raise` 의 식도 본다(`_stmt_roots`).
+- **sink 추가** — pandas `read_sql`/`read_sql_query`, SQLAlchemy `exec_driver_sql`, Django
+  `Model.objects.raw`. 실측 safe_check 에서 `pd.read_sql` 로 매개변수를 보간하던 7곳이 '유력'으로
+  새로 잡혔다(차단 아님).
+- **분기 합집합** — `if c: n = request… else: n = 'd'`·`try/except` 기본값에서 마지막 대입이 이겨
+  출처가 지워졌다. 본문을 사본으로 돌려 합친다. `seen[key] = True` 가 `key` 의 출처를 지우던 것도
+  (저장 이름만 보도록) 고침. `d["k"] = request…` 는 `d` 를 출처로.
+- **명령 삽입 여러 줄** — `host = request.args['h']; os.system("ping " + host)` 가 '유력'이었다.
+  출처 추적 경로에서 `os.system/popen`·`subprocess.*(shell=True)` 를 보고 '확인됨'. 같은 (룰, 줄)을
+  두 경로가 적으면 높은 근거만 남긴다.
+- **목록 조립** — `parts.append("WHERE n = '" + n + "'")` → `" ".join(parts)`, 리스트 리터럴 안의 동적
+  조각. 상수 환경: `conds += [dyn]`·`COLS[0] = request…` 가 컨테이너를 실격시키지 않던 구멍.
+- 출처 이름: 변수 `input = fh.read()` 는 출처가 아니다(호출 `input()` 만). `req.GET/POST`·
+  `self.request.query_params` 등 Django/DRF 모양 추가.
+- 28차의 임시 한계 고지("format 키워드·text() 조립은 놓칠 수 있음") 제거.
+- 테스트: `tests/test_round23_python_fn_batch.py`(23).
+
 ## [0.4.3] - 2026-10-14
 
 ### 28차 — 안전한 SQL 오탐(읽기 전용 내장 함수) · 라이선스 검토를 게이트에 · 권고 버전 문구 · SPDX 복합식
