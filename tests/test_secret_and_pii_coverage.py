@@ -15,7 +15,7 @@ import pytest
 from gvskb.scanner import scan_code
 
 _SECRET_RULES = {"GOV-SECRET-APIKEY-001", "KISA-PY-SEC-06", "KISA-JS-SEC-06",
-                 "KISA-PY-SEC-13", "KISA-JS-SEC-13"}
+                 "KISA-PY-SEC-13", "KISA-JS-SEC-13", "GOV-SECRET-CONFIG-001"}
 
 
 def _hits(code: str, filename: str) -> set[str]:

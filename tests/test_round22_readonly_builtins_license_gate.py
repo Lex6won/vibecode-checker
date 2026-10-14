@@ -206,8 +206,9 @@ def test_spdx_and_is_order_independent_and_strict() -> None:
 def test_spdx_or_takes_most_permissive() -> None:
     assert license_verdict("GPL-2.0-only OR MIT") == "allowed"
     assert license_verdict("(GPL-2.0-only OR GPL-3.0-only)") == "review_required"
-    # LGPL 은 목록에 없어 모름 — GPL 과의 선택식은 모름(검토 강제도, 허용도 아님)
-    assert license_verdict("LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only") == "unknown"
+    # LGPL 도 검토 목록(34차) — GPL 과의 선택식은 가장 관대한 LGPL 로 판정해도 검토다
+    assert license_verdict("LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only") == "review_required"
+    assert license_verdict("MIT OR LGPL-3.0-only") == "allowed"
 
 
 def test_spdx_with_exception_uses_base_license() -> None:

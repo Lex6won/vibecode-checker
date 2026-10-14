@@ -34,6 +34,9 @@ _DEFAULTS: dict = {
     ],
     "license_review_required": [
         "GPL-2.0", "GPL-3.0", "AGPL-3.0", "BSL-1.1", "SSPL-1.0",
+        # LGPL — 동적 링크면 대개 허용되지만 배포 형태·수정 여부를 사람이 봐야 한다. 목록에 없어 `unknown` 으로
+        # 남고 게이트에 안 보였다(실측 2026-10-15 챗봇: LGPL 14건이 checked_clean).
+        "LGPL-2.1", "LGPL-3.0",
     ],
 }
 

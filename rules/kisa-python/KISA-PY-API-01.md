@@ -22,7 +22,8 @@ verified_at: 2026-06-03
 review_due: 2026-12-03
 detection:
   patterns:
-    - "socket\\.gethostbyname\\s*\\("
+    # `gethostbyname(gethostname())` 은 자기 주소 안내 출력이지 신뢰 판단이 아니다(실측 2026-10-15).
+    - "socket\\.gethostbyname\\s*\\((?!\\s*(?:socket\\.gethostname\\s*\\(|(?:host_?name|local_?host\\w*|my_?host\\w*)\\s*\\)))"
     - "socket\\.gethostbyaddr\\s*\\("
     - "socket\\.getfqdn\\s*\\("
     - "(?i)request\\.(?:META\\[['\"]REMOTE_HOST['\"]\\]|host_name|remote_host)"

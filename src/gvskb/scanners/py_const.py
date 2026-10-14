@@ -63,6 +63,31 @@ def _is_literal(node: ast.AST | None) -> bool:
     return False
 
 
+_NUMERIC_CAST_FUNCS = frozenset({"int", "float", "bool", "len", "round", "abs"})
+_NUMERIC_TYPE_NAMES = frozenset({"int", "float", "bool"})
+
+
+def is_numeric_cast(node: ast.AST) -> bool:
+    """값이 숫자로 **변환된** 식인가 — `int(x)`·`float(x)`·`request.args.get('d', 1, type=int)`.
+
+    SQL 문법을 깨뜨릴 수 없는 값이라 조립에서 상수와 같다. 실측(2026-10-15 챗봇 admin_api.py:866):
+    `days = request.args.get('days', 1, type=int)` 를 f-string 에 넣은 WHERE 절이 '확인된 SQL 삽입'으로 차단됐다.
+    정수 오버플로(KISA-PY-INPUT-14) 쪽은 그대로 출처로 본다 — 변환된 큰 정수가 바로 그 위험이다.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name) and node.func.id in _NUMERIC_CAST_FUNCS and node.args:
+        return True
+    if isinstance(node.func, ast.Attribute):
+        if node.func.attr in {"get_int", "getint", "getfloat"}:
+            return True
+        if node.func.attr == "get":
+            for kw in node.keywords:
+                if kw.arg == "type" and isinstance(kw.value, ast.Name) and kw.value.id in _NUMERIC_TYPE_NAMES:
+                    return True
+    return False
+
+
 def _iter_names(target: ast.AST) -> list[str]:
     """대입 대상에서 이름들을 뽑는다(튜플 언패킹 포함)."""
     out: list[str] = []
@@ -171,10 +196,15 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                     if not _is_literal(value):
                         container_disqualified.add(n)
                         disqualified.add(n)
+                        # 원소가 상수 **이름**으로 증명될 수 있는 목록(`[f"… {days} …"]`)은 고정점에서 다시 본다.
+                        if single_target and isinstance(value, ast.List):
+                            assignments.setdefault(n, []).append(value)
                 elif _is_literal(value):
                     const_candidates.add(n)
                     if isinstance(value, ast.Tuple):   # 불변 — 변형될 일이 없다
                         container_candidates.add(n)
+                elif is_numeric_cast(value):
+                    const_candidates.add(n)             # 숫자 — SQL 문법을 바꿀 수 없다
                 else:
                     disqualified.add(n)
                     container_disqualified.add(n)   # 동적 값 재대입 — 컨테이너 자격도 상실
@@ -215,6 +245,7 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                         and t.value.id in container_candidates and not _is_literal(s.value):
                     container_disqualified.add(t.value.id)
 
+    _mutated_names: set[str] = set()
     # 5) 컨테이너에 동적 값이 들어가면 실격 — 스코프 전체에서 append/extend 확인
     for s in flat:
         for node in ast.walk(s):
@@ -228,12 +259,15 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                 args = node.args[1:] if attr == "insert" else node.args
                 if not all(_is_literal(a) for a in args):
                     container_disqualified.add(base.id)
+                    _mutated_names.add(base.id)
             elif attr == "extend":
                 if not all(_literal_iterable_elements_are_literal(a) or _is_literal(a)
                            for a in node.args):
                     container_disqualified.add(base.id)
+                    _mutated_names.add(base.id)
             elif attr in {"__setitem__", "update"}:
                 container_disqualified.add(base.id)
+                _mutated_names.add(base.id)
 
     # 6) 함수 인자로 넘겨 변형될 수 있는 컨테이너도 보수적으로 실격
     #    — 단, **가려지지 않은 읽기 전용 내장 함수**는 예외다. 실측(2026-10-13 STARS
@@ -259,8 +293,12 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
             for a in node.args:
                 if isinstance(a, ast.Name) and a.id in container_candidates:
                     container_disqualified.add(a.id)
+                    _mutated_names.add(a.id)
 
     # 가변 컨테이너는 **변형이 없을 때만** 상수로 인정한다.
+    mutation_hit = set(container_disqualified) - {
+        n for n in container_candidates if n in assignments and all(isinstance(v, ast.List) for v in assignments[n])
+    } | _mutated_names
     safe_mutables = mutable_const_candidates - container_disqualified
     env = ConstEnv(
         names=(const_candidates | safe_mutables) - disqualified,
@@ -283,6 +321,9 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                 continue
             if all(expr_is_constant(v, env) for v in values):
                 env.names.add(name)
+                # 원소가 전부 상수인 리스트는 컨테이너이기도 하다 — 변형(append 등)이 없었을 때만.
+                if all(isinstance(v, ast.List) for v in values) and name not in mutation_hit:
+                    env.containers.add(name)
                 promoted = True
         if not promoted:
             break
@@ -321,6 +362,8 @@ def expr_is_constant(node: ast.AST, env: ConstEnv) -> bool:
     # 원소식이 상수인 내포식은 상수 컨테이너다 — `[FILTERS[k] for k in chosen if k in FILTERS]`.
     if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
         return expr_is_constant(node.elt, env)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return all(expr_is_constant(e, env) for e in node.elts)
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join":

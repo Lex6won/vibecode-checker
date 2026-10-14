@@ -65,47 +65,10 @@ detection:
     # `signingKey`·`MASTER_KEY`·`SESSION_SECRET`. 첫 패턴은 키워드 **바로 뒤**에 `[:=]` 를
     # 요구해 이 모양이 전부 미탐이었다(전면 점검 2026-10-13 §3-4: 전부 0건). 한정어 목록을
     # 닫아 두는 이유: `*_key` 전부를 받으면 `cache_key`·`sort_key`·`primary_key` 가 걸린다.
-    # 플레이스홀더·픽스처 가드는 첫 패턴과 같다. 키 이름 뒤의 `"'` 는 JSON(`"password": "…"`) —
+    # 플레이스홀더·픽스처 가드는 첫 패턴과 같다. 값은 숫자·기호·대소문자 혼합 중 하나를 가져야 한다 —
+    # `SESSION_KEY = "admin_authenticated"` 처럼 소문자 낱말뿐인 값은 sessionStorage 키 **이름**이다(실측 2026-10-15). 키 이름 뒤의 `"'` 는 JSON(`"password": "…"`) —
     # 따옴표 때문에 `[:=]` 가 바로 못 와 JSON 설정 파일의 비밀값이 전부 미탐이었다(31차 실측).
-    - '(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:private|signing|sign|encryption|encrypt|secret[_-]?access|access|session|master|client|service|app|auth|api|aws|azure|gcp|jwt|hmac|webhook|bot|oauth)[_-]?(?:key|secret|token|password|passwd)(?:[_-]?(?:id|secret|key|token))?["'']?\s*[:=]\s*["''](?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
-    # 따옴표 **없는** 설정 파일 대입 — `.env`·`.properties`·`.ini`·YAML.
-    #
-    # 실측(2026-08-08): 위 패턴을 포함해 비밀번호 룰 전부가 값에 따옴표를
-    # 요구했다. 그런데 설정 파일은 **따옴표 없이 쓰는 것이 표준**이라
-    # `spring.datasource.password=gg2026Secure` 나 `DB_PASSWORD=gg2026Secure`
-    # 가 통째로 미탐이었다 — 공공 Java/Spring 프로젝트에서 비밀번호가 가장 흔히
-    # 노출되는 자리다.
-    #
-    # 산문·주석까지 먹지 않도록 **한 줄 전체 모양**을 요구한다: 줄 시작 · 값에
-    # 공백/따옴표 없음 · 줄 끝(또는 뒤따르는 `#`·`;` 주석)까지. 이 모양은 코드에서는
-    # 문법 오류라 사실상 설정 파일에서만 나온다. `password 정책은 8자 이상입니다`
-    # 같은 안내문은 값에 공백이 있어 걸리지 않는다.
-    #
-    # 값 **전체**가 변수 참조(`${VAR}`·`$VAR`·`%VAR%`·`{{ var }}`)면 제외한다 —
-    # 비밀을 코드에 두지 않았다는 증거다. 위 따옴표 패턴이 맨몸 `$VAR` 를 제외하지
-    # 않는 것과 다른데, 이유가 있다: 저쪽은 값 **안에** `$` 가 섞인 실제 비밀번호를
-    # 놓치지 않으려는 것이고, 여기서는 값이 **오직** 변수 참조뿐인 경우만 뺀다.
-    #
-    # **코드와 설정을 가르는 것이 이 패턴의 전부다.** 1차 시안은 값의 모양만 보다가
-    # `password = getpass.getpass()` 를 차단했다 — 비밀번호를 *올바르게 읽는* 코드다.
-    # 모범 사례를 막는 것은 오탐 중에서도 최악이라, 값의 '비밀스러움'을 추측하지 않고
-    # **키와 구분자의 모양**으로 가른다. 넷 중 하나여야 한다:
-    #   ⓐ `:` 구분자      — YAML/properties. 파이썬 대입문이 아니다
-    #   ⓑ 점 있는 키       — `spring.datasource.password`
-    #   ⓒ 대문자 키        — `DB_PASSWORD` (.env 관행)
-    #   ⓓ 공백 없는 `=`    — `api_key=값` (PEP8 문장은 `=` 양옆에 공백을 넣는다)
-    # 값에 괄호가 있으면(=호출) 무조건 뺀다.
-    #
-    # 남는 미탐: 소문자 키 + 공백 있는 `=` 형태의 설정(`password = 값`)은 코드와
-    # 구분되지 않아 잡지 않는다. 놓치는 쪽을 택한 이유는, 여기서 잡으려다 위의
-    # `getpass()` 같은 **정상 코드를 막으면 도구가 통째로 꺼지기** 때문이다.
-    # 실측 보정(2026-08-08): `google_api_key=GEMINI_API_KEY,` 가 걸렸다 —
-    # 파이썬 **키워드 인자**이고 값은 상수 참조다. 두 가지를 더 막는다:
-    #   · 값에 쉼표 금지 → 함수 인자는 `,` 로 끝나 줄 끝 앵커에서 탈락한다
-    #   · 값이 대문자 상수 이름 하나뿐이면 제외 → `GEMINI_API_KEY` 는 참조다
-    # 실제 비밀번호가 전부 대문자·숫자·밑줄로만 이뤄질 수 있지만, 그 미탐보다
-    # **정상 코드를 차단하는 쪽이 훨씬 비싸다**(도구를 끄게 만든다).
-    - '(?i)^[ \t]*(\*\*)?(?:(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)[ \t]*:[ \t]*|[\w\-]+(?:\.[\w\-]+)*\.(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)[ \t]*=[ \t]*|(?-i:[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN)|(?:PASSWORD|PASSWD|PWD|SECRET|API_?KEY|ACCESS_?KEY|TOKEN))(?(1)\*\*)[ \t]*=[ \t]*|(?:[\w.\-]*[._-])?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token)(?(1)\*\*)=)(?!(?:\$\{[^}]+\}|\$[A-Za-z_]\w*|%[A-Za-z_]\w*%|\{\{[^}]+\}\})[ \t]*(?:[#;].*)?$)(?![^\s#;]*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|예시|여기))(?![^\s#;]*[(),])(?!(?-i:[A-Z][A-Z0-9_]*)[ \t]*(?:[#;].*)?$)[^\s\"'',#;]{6,}[ \t]*(?:[#;].*)?$'
+    - '(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:private|signing|sign|encryption|encrypt|secret[_-]?access|access|session|master|client|service|app|auth|api|aws|azure|gcp|jwt|hmac|webhook|bot|oauth)[_-]?(?:key|secret|token|password|passwd)(?:[_-]?(?:id|secret|key|token))?["'']?\s*[:=]\s*["''](?=[^"'']*\d|[^"'']*[^\w\s"'']|(?=[^"'']*(?-i:[a-z]))[^"'']*(?-i:[A-Z]))(?![^"'']*(?:YOUR[_-]|[_-]HERE|X{6,}|CHANGE[_-]?ME|PLACEHOLDER|<[A-Za-z]|\*\*\*|\$\{|\{\{|(?-i:%[A-Z_][A-Z0-9_]*%)|예시|여기))(?!(?:[^"'']*[_\-.])?(?:test|dummy|fake|mock|sample|example|fixture|stub|foo|bar|old|new)(?:[_\-.]|["'']))[^"'']{8,}["'']'
     # ── 벤더 접두사 토큰은 전부 **좌측 경계**를 건다 ──
     # 접두사 패턴에 경계가 없으면 단어 중간에서 시작한다: `ai-risk-management-
     # framework`(NIST 공개 URL)에서 ri 뒤의 sk- 이하가 정확히 20자라
@@ -143,6 +106,10 @@ detection:
   # 값이 키 이름 그 자체면 변수 참조지 비밀값이 아니다 — TypeScript 로 룰을
   # 열자 객체 리터럴 `access_token: accessToken` 이 차단으로 올라왔다.
   # 실제 비밀값이 자기 키 이름과 같을 수는 없어 진짜를 가릴 위험이 없다.
+  exclude_patterns:
+    # 저장소·쿠키·헤더의 **키 이름** 상수 — `TOKEN_KEY = 'nyh_admin_session_v1'`·`SESSION_KEY = "admin_authenticated"`.
+    # 값이 식별자 모양(소문자·숫자·밑줄·점)이면 비밀이 아니라 이름이다(실측 2026-10-15 챗봇).
+    - '(?i)\b(?:session|token|storage|cookie|cache|local|header|query|param|field|column|redis|setting|config|state)[_-]?key\s*[:=]\s*["''][a-z][a-z0-9_.:-]*["'']'
   validators: [not_self_named_value]
   # 같은 코드를 다른 각도로 보는 룰과 한 묶음(KISA-PY-SEC-06, KISA-JS-SEC-06). 같은 줄에 함께 걸리면
   # 가장 확실한 엔진의 발견 하나만 남고 나머지는 also_matched 로 합쳐진다(개선요청 #34 C).
@@ -184,6 +151,9 @@ examples:
     - 'password = "pa%ss%word12"'
     - 'password = "P4ss$WORD123x"'
   negative:
+    - 'const SESSION_KEY = "admin_authenticated";'
+    - 'token: string;'
+    - 'g.auth_token = auth_token'
     - 'api_key_header = "X-Upstream-Api-Key"'
     - 'ENCRYPTION_KEY = os.environ["ENCRYPTION_KEY"]'
     - 'PRIVATE_KEY = "${PRIVATE_KEY}"'

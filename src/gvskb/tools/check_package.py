@@ -404,6 +404,9 @@ def _advisory_rows(vulns: list[dict], *, name: str, eco: str) -> list[dict]:
     for v in vulns:
         rows.append({
             "id": v.get("id"),
+            # CVE/GHSA 별칭 — 다른 도구(스패로우 등)와 대조할 때 ID 체계가 달라 같은 공지가 누락으로
+            # 보였다(실측 2026-10-15: 28행 불일치 중 24행이 별칭 차이).
+            "aliases": [str(a) for a in (v.get("aliases") or []) if a],
             "severity": _advisory_severity(v),
             "summary": (v.get("summary") or v.get("details") or "")[:200],
             "fixed_versions": _advisory_fixed_versions(v, name=name, eco=eco),
@@ -1702,9 +1705,17 @@ async def check_package_impl(
         ).model_dump(mode="json")
 
     # ② OSV 취약점·악성 조회 (C6) — 패키지명·버전만 전송.
+    # 버전이 없으면(미고정 `flask`) OSV 는 **역대 모든** 취약점을 돌려준다 — 그것을 "설치본이 CRITICAL
+    # 취약"으로 집계해 차단했다(실측 2026-10-15 챗봇 requirements.txt 18개 전부 미고정). 설치 시점 최신판을
+    # 기준으로 판정하고, 미고정 자체는 별도 검토 사유로 남긴다.
+    resolved_version = version
+    version_resolution = "pinned" if version else "unresolved"
+    if not version and meta.latest_version:
+        resolved_version = meta.latest_version
+        version_resolution = "latest-assumed"
     payload: dict = {"package": {"name": name, "ecosystem": eco}}
-    if version:
-        payload["version"] = version
+    if resolved_version:
+        payload["version"] = resolved_version
 
     try:
         data = await _osv_query(payload, timeout=timeout, client=client)
@@ -1749,6 +1760,11 @@ async def check_package_impl(
         )
     if meta.deprecated:
         notes.append("npm에서 deprecated 로 표시된 패키지입니다 — 유지보수 중단 신호.")
+    if version_resolution == "latest-assumed":
+        notes.append(
+            f"버전 미고정 — 최신판 {resolved_version} 을 기준으로 판정했습니다. 설치 시점에 따라 다른 버전이 "
+            "들어올 수 있으니 버전을 고정(==)하세요."
+        )
     if lic_verdict == "review_required":
         notes.append(
             f"라이선스({meta.license})는 배포·네트워크 제공·수정 여부에 따라 소스 공개 등 "
@@ -1827,6 +1843,7 @@ async def check_package_impl(
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)
+        or version_resolution == "latest-assumed"   # 미고정은 설치 시점마다 달라진다 — 사람이 봐야 한다
     )
 
     advisory_rows = _advisory_rows(vulns, name=name, eco=eco)
@@ -1852,8 +1869,10 @@ async def check_package_impl(
         kev_signals=kev_hits,
         cooldown=cooldown,
         license_verdict=lic_verdict,
+        resolved_version=resolved_version,
+        version_resolution=version_resolution,
         advisories=advisory_rows,
-        recommended_version=_recommended_version(advisory_rows, version),
+        recommended_version=_recommended_version(advisory_rows, resolved_version),
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
         # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
         # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.

@@ -5,6 +5,32 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-15
+
+### 34차 — 챗봇 스패로우 비교(2026-10-15)에서 확인된 오탐·결함 묶음 (룰셋 2026.10.15a)
+
+챗봇(손창미) 소스 93건 중 수동 검토 오탐 61건의 원인을 코드로 확인해 고쳤다. 같은 트리 재검사 93→33건,
+라벨 96건(6개 트리) 위반 0.
+
+- **비밀값 오탐 7건** — ① 따옴표 없는 설정형 패턴(`token: 값`·`x.auth_token = 값`)이 언어 제한 없이
+  TS 타입 주석 `token: string;` 과 Python 속성 대입을 잡았다 → **`GOV-SECRET-CONFIG-001`** 로 분리해
+  `.env`·properties·YAML(config·data)에서만. ② 31차의 한정어 패턴이 `SESSION_KEY = "admin_authenticated"`
+  같은 **저장소 키 이름**을 잡았다 → 값에 숫자·기호·대소문자 혼합을 요구하고, `*_KEY = '식별자'` 는 제외.
+- **SQL 확인됨 2건** — `request.args.get('days', 1, type=int)` 를 f-string 에 넣은 WHERE 절. 숫자 변환
+  (`int()`·`float()`·`type=int`)을 거친 이름은 SQL 조립에서 상수(`py_const`), 출처는 `numeric` 집합으로
+  옮겨 정수 오버플로 룰만 본다. 상수 원소 리스트(`[f"… {days} …"]`)도 컨테이너로 승격.
+- **SSE 루프 4건(31차 회귀)** — 여러 줄 패턴이 되살아나며 `const {done, value} = …` 의 `}` 를 블록 끝으로 봤다.
+  "여는 괄호 뒤 400자 안에 break/return/throw 없음"으로 교체.
+- **정적 JSX 45건** — js-taint 에 `dangerouslySetInnerHTML={{ __html: X }}` sink 추가. 간결 화살표(`=> 식`)의
+  본문을 반환식으로, `export default function`, 객체·배열 리터럴 선언(`const sampleData = {`) 이어 읽기.
+  실측 safe_check 에서도 확인된 차단 2건이 정화 인정(검토)으로 내려감.
+- Jinja `|safe` 는 `{{ }}`/`{% %}` 문맥만 · `gethostbyname(gethostname())`/`(hostname)` 제외 ·
+  주민번호·전화 룰에 `예:`·`마스킹`·`example` 줄 제외.
+- **패키지** — 버전 미고정은 **최신판 기준**으로 판정하고 "버전 미고정" 검토 사유(`version_resolution=
+  latest-assumed`, `resolved_version`); 역대 취약점을 설치 취약으로 세지 않음. advisory 에 `aliases` 보존.
+  `requirements.lock.txt`·`constraints.txt` 는 락파일(상한 500). LGPL 은 라이선스 검토 목록.
+- 테스트: `tests/test_round28_chatbot_fp_batch.py`(24).
+
 ## [0.5.1] - 2026-10-15
 
 ### 33차 — 호출자→매개변수 전파(Python): 함수 경계를 넘는 미탐

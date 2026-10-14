@@ -19,7 +19,8 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
-    - '\|\s*safe\s*(?:\}|\s)'
+    # 템플릿 식 안의 `|safe` 만 — 마크다운 표의 `| safe |` 같은 글자는 아니다(실측 2026-10-15 챗봇).
+    - '\{\{[^}]*\|\s*safe\s*(?:\}\}|\|)|\{%[^%]*\|\s*safe\b'
     - '(?:flask\.)?Markup\s*\([^)]*request\.'
     - 'autoescape\s*=\s*False'
     - '(?<![A-Za-z0-9_.])mark_safe\s*\('

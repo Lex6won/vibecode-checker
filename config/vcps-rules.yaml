@@ -30,6 +30,8 @@ license_allowlist:
   - MPL-2.0
   - PSF-2.0
 license_review_required:
+  - LGPL-2.1
+  - LGPL-3.0
   - GPL-2.0
   - GPL-3.0
   - AGPL-3.0

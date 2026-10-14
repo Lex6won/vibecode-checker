@@ -19,6 +19,7 @@ from typing import Iterable
 from ..schema import Finding
 from .base import ScannerAdapter
 from .py_const import (
+    is_numeric_cast,
     ConstEnv,
     collect_constants,
     expr_is_constant,
@@ -875,9 +876,13 @@ def _process_scope(
     env: ConstEnv | None = None,
     literal_params: dict[str, set[str]] | None = None,
     sourced: set[str] | None = None,
+    numeric: set[str] | None = None,
 ) -> None:
     literal_params = literal_params or {}
     sourced = set() if sourced is None else sourced
+    # 외부 출처에서 왔지만 **숫자로 변환된** 이름 — SQL·명령 조립에서는 출처가 아니고(문법을 못 바꾼다),
+    # 정수 오버플로(KISA-PY-INPUT-14)에서는 출처다(변환된 큰 정수가 바로 그 위험).
+    numeric = set() if numeric is None else numeric
     if env is None:
         env = collect_constants(stmts)
     for stmt in stmts:
@@ -930,7 +935,7 @@ def _process_scope(
             hits.append(("KISA-PY-INPUT-05", line_no, redact_evidence(src), "confirmed"))
         # 1a') 고정 비트 정수 변환에 외부 출처가 닿는다 — 범위 검사 없는 정수 오버플로(KISA-PY-INPUT-14).
         for call in _fixed_width_int_calls(stmt):
-            if not _reaches_source(call, sourced):
+            if not _reaches_source(call, sourced | numeric):
                 continue
             line_no = call.lineno
             src = source_lines[line_no - 1] if 1 <= line_no <= len(source_lines) else ""
@@ -964,21 +969,34 @@ def _process_scope(
         # (전면 점검 §3-2). 어느 경로로든 외부 값일 수 있으면 외부 값이다.
         bodies = _sub_statement_bodies(stmt)
         if bodies:
-            merged_t, merged_s = set(tainted), set(sourced)
+            merged_t, merged_s, merged_n = set(tainted), set(sourced), set(numeric)
             for body in bodies:
-                t2, s2 = set(tainted), set(sourced)
-                _process_scope(body, t2, hits, source_lines, env, literal_params, s2)
+                t2, s2, n2 = set(tainted), set(sourced), set(numeric)
+                _process_scope(body, t2, hits, source_lines, env, literal_params, s2, numeric=n2)
                 merged_t |= t2
                 merged_s |= s2
+                merged_n |= n2
             tainted |= merged_t
             sourced |= merged_s
+            numeric |= merged_n
         # 3) update taint from this statement's assignment (post-use).
         if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and stmt.value is not None:
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             names = {n for t in targets for n in _store_names(t)}
             bases = {b for t in targets if (b := _container_base(t))}
-            if _reaches_source(stmt.value, sourced) or (isinstance(stmt, ast.AugAssign) and names & sourced):
+            if not isinstance(stmt, ast.AugAssign) and is_numeric_cast(stmt.value):
+                # 숫자 변환 — 조립에 들어가도 SQL 문법을 바꿀 수 없으니 상수로 본다. 출처였다면
+                # `numeric` 으로 옮겨 정수 오버플로 룰만 보게 한다.
+                env.names |= names
+                sourced -= names
+                if _reaches_source(stmt.value, sourced | numeric):
+                    numeric |= names
+                else:
+                    numeric -= names
+            elif _reaches_source(stmt.value, sourced) or (isinstance(stmt, ast.AugAssign) and names & sourced):
                 sourced |= names | bases
+                numeric -= names
+                env.names -= names        # 숫자였던 이름이 다시 외부 값을 받으면 상수 자격도 잃는다
             elif not isinstance(stmt, ast.AugAssign):
                 sourced -= names          # 다른 값으로 덮어쓰면 출처가 끊긴다
         # `parts.append("WHERE x = " + n)` — 목록에 동적 조각·출처 값이 들어가면 그 목록도 오염.

@@ -78,7 +78,7 @@ _SINKS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 _HTML_RULE_ID = "KISA-JS-INPUT-04"
 # 분류기를 돌릴 가치가 있는 파일인가 — sink 토큰이 하나도 없으면 건너뛴다(성능 가드).
-_HTML_SINK_HINT_RE = re.compile(r"innerHTML|outerHTML|insertAdjacentHTML|document\s*\.\s*write|\.html\s*\(")
+_HTML_SINK_HINT_RE = re.compile(r"innerHTML|outerHTML|insertAdjacentHTML|dangerouslySetInnerHTML|document\s*\.\s*write|\.html\s*\(")
 
 # ── HTML sink 출처 분류 ──────────────────────────────────────────────────────
 CONST, SANITIZED, TAINTED, UNKNOWN = "const", "sanitized", "tainted", "unknown"
@@ -160,6 +160,7 @@ _FUNC_BODY_MAX_LINES = 200
 # 선언의 RHS 가 다음 줄로 이어지는 끝 모양과, 그것을 따라갈 상한(선언 한 개는 짧다).
 _DECL_CONTINUES = ("=>", "(", ",", "||", "&&", "+")
 _DECL_CONT_MAX_LINES = 20
+_LITERAL_CONT_MAX_LINES = 120
 
 # HTML sink 모양 — 인자 식을 뽑아 분류한다. JSX `dangerouslySetInnerHTML` 은
 # 이 범위 밖이다(그쪽은 html_sink_context 가 헬퍼 본문을 본다).
@@ -168,8 +169,12 @@ _HTML_CALL_SINK = re.compile(
     r"(?:\.insertAdjacentHTML\s*\(\s*['\"][A-Za-z]+['\"]\s*,\s*|\bdocument\s*\.\s*write(?:ln)?\s*\(\s*"
     r"|\$\([^)]*\)\s*\.\s*html\s*\(\s*)(.*)$",
 )
+# JSX sink — `dangerouslySetInnerHTML={{ __html: X }}`. 정규식 룰은 보지만 이 엔진에 sink 가 없어
+# 상수·정화 분류를 한 번도 받지 못했다(실측 2026-10-15 챗봇: 고정 sampleData 44건 + 고정 스크립트 1건).
+_JSX_HTML_SINK = re.compile(r"dangerouslySetInnerHTML\s*=\s*\{\{")
+_JSX_HTML_KEY_RE = re.compile(r"^\s*__html\s*:\s*")
 _FUNC_DEF_RE = re.compile(
-    r"^\s*(?:export\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)"
+    r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)"
     r"|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\s*\(([^)]*)\)|\(([^)]*)\)\s*=>|([A-Za-z_$][\w$]*)\s*=>))",
 )
 _RETURN_RE = re.compile(r"^\s*return\s+(.*)$")
@@ -748,8 +753,17 @@ class _Classifier:
             if same:
                 expr, _c = self._collect_expr(same.group(1).rstrip().rstrip("}").rstrip().rstrip(";"), i)
                 returns.append((expr, i))
+            concise = False
+            if not same and (m.group(5) is not None or m.group(6) is not None) and line[m.end():].strip() \
+                    and not line[m.end():].lstrip().startswith("{"):
+                # `const fmt = (t) => t.replace(…)` — 블록 없는 화살표는 본문이 곧 반환값이다.
+                expr, _c = self._collect_expr(line[m.end():].strip().rstrip(";"), i)
+                returns.append((expr, i))
+                concise = True
             j = i + 1
-            end = min(len(self.lines), i + _FUNC_BODY_MAX_LINES)
+            # 간결 화살표는 본문이 한 식뿐이다 — 뒤 줄의 `return` 은 다른 함수 것이다(실측 2026-10-15:
+            # `export default function Page()` 의 JSX return 이 `fmt` 의 반환식으로 섞여 들어갔다).
+            end = i + 1 if concise else min(len(self.lines), i + _FUNC_BODY_MAX_LINES)
             while j < end:
                 cur = self.lines[j]
                 # 같거나 바깥 들여쓰기의 다음 정의 = 본문 끝(대략적 경계)
@@ -778,12 +792,14 @@ class _Classifier:
         stripped = head.rstrip().rstrip(";").rstrip()
         # 줄 끝이 명백히 이어지는 모양일 때만 따라간다. 괄호 계산만 믿으면 정규식 리터럴
         # 속 따옴표(`/[&<>"']/g`)에 속아 멀쩡한 한 줄 선언을 "안 닫힘"으로 보고 뒤 줄을 삼킨다.
-        open_arrow = (not open_template) and stripped.endswith(_DECL_CONTINUES)
+        open_literal = (not open_template) and stripped.endswith(("{", "[")) and _paren_balance(stripped) > 0
+        open_arrow = (not open_template) and (stripped.endswith(_DECL_CONTINUES) or open_literal)
         if not open_template and not open_arrow:
             return head.rstrip(";").strip(), 1
         buf = [head]
         j = idx + 1
-        limit = _TEMPLATE_MAX_LINES if open_template else _DECL_CONT_MAX_LINES
+        # 객체·배열 리터럴(`const sampleData = {`)은 선언보다 길다 — 실측 2026-10-15 챗봇 style-preview.
+        limit = _TEMPLATE_MAX_LINES if open_template else (_LITERAL_CONT_MAX_LINES if open_literal else _DECL_CONT_MAX_LINES)
         while j < len(self.lines) and j - idx <= limit:
             buf.append(self.lines[j])
             joined = "\n".join(buf)
@@ -1069,6 +1085,9 @@ class _Classifier:
         """줄 i 가 HTML sink 면 (인자 식, 소비한 줄 수). 아니면 None."""
         line = self.lines[i]
         n = len(self.lines)
+        jsx = _JSX_HTML_SINK.search(line)
+        if jsx:
+            return self._jsx_sink_at(i, jsx.end())
         m = _HTML_ASSIGN_SINK.search(line)
         call = None if m else _HTML_CALL_SINK.search(line)
         if not (m or call):
@@ -1098,6 +1117,30 @@ class _Classifier:
         if call:
             expr = _strip_trailing_call_paren(expr)
         return _cut_at_statement_end(expr), (start - i) + used
+
+    def _jsx_sink_at(self, i: int, after: int) -> tuple[str, int] | None:
+        """`dangerouslySetInnerHTML={{ __html: X }}` 의 X 를 (여러 줄이면 이어) 돌려준다."""
+        n = len(self.lines)
+        rest = self.lines[i][after:]
+        start = i
+        if not rest.strip() and i + 1 < n:
+            start = i + 1
+            rest = self.lines[start]
+        km = _JSX_HTML_KEY_RE.match(rest)
+        if not km:
+            return None
+        buf = [rest[km.end():]]
+        j = start
+        # 닫는 `}}` 까지 — 괄호 깊이가 -1 이 되는 `}` 가 식의 끝이다(문자열·템플릿 제외).
+        while True:
+            joined = "\n".join(buf)
+            cut = _cut_at_depth(joined, -1)
+            if cut is not None:
+                return cut.strip().rstrip(","), (j - i) + 1
+            j += 1
+            if j >= n or j - start > _TEMPLATE_MAX_LINES:
+                return None
+            buf.append(self.lines[j])
 
     def _collect_states(self) -> None:
         """1차: 파일 전체의 할당·순회 바인딩으로 (범위, 이름) → 할당 이력을 모은다.
@@ -1261,6 +1304,36 @@ _MAP_HEAD_RE = re.compile(r"\.\s*(?:map|flatMap)\s*\(")
 _FUNC_CB_RE = re.compile(r"^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(([^()]*)\)\s*\{")
 _ARROW_CB_RE = re.compile(r"^\s*(?:async\s+)?(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>\s*")
 _JOIN_TAIL_RE = re.compile(r"^\s*(?:\.\s*join\s*\([^()]*\))?\s*$")
+
+
+def _cut_at_depth(text: str, target: int) -> str | None:
+    """괄호 깊이가 ``target`` 에 **처음** 도달하는 위치 앞까지의 텍스트. 못 찾으면 None."""
+    depth = 0
+    in_str: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        elif ch in ("'", '"'):
+            in_str = ch
+        elif ch == "`":
+            j = _find_backtick_end(text, i + 1)
+            if j == -1:
+                return None
+            i = j
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == target:
+                return text[:i]
+        i += 1
+    return None
 
 
 def _matching_close(text: str, open_idx: int, open_ch: str = "(", close_ch: str = ")") -> int:

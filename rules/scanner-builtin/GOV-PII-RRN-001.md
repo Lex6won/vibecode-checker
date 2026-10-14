@@ -38,6 +38,9 @@ detection:
     - '(?<![\d.])\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[1-4]\d{6}(?![\d.])'
   # 하이픈 없는 형태는 여전히 그냥 큰 수와 구분되지 않으므로 검증식까지 본다.
   # (하이픈이 있으면 검증기가 그대로 통과시킨다 — validator 주석 참고)
+  exclude_patterns:
+    # 마스킹·형식 안내의 예시 줄 — `// - 예: 880101-1******`(실측 2026-10-15 챗봇 maskPersonalData.ts)
+    - '(?i)(?:^|[^가-힣A-Za-z])(?:예|예시|예를 들어|example|sample|e\.g\.)\s*[:：)]|마스킹|masking|placeholder'
   validators: [rrn_checksum]
   category: privacy-public-sector
   why_it_matters: 고유식별정보가 코드, 로그, 프롬프트, Git 저장소에 남으면 개인정보 유출 사고로 이어질 수 있습니다.
