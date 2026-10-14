@@ -22,8 +22,10 @@ from ..schema import (
     Decision,
     Finding,
     Rule,
-    Severity,
     Status,
+)
+from ..policy import (
+    CONFIDENCE_RANK, DECISION_RANK, ENGINE_PRECISION, SEVERITY_RANK, is_value_based_rule, split_lines,
 )
 from .base import ScannerAdapter
 
@@ -258,7 +260,7 @@ def _comment_lines(code: str, eff_lang: str | None, filename: str) -> set[int]:
     lines: set[int] = set()
     in_block = False          # JS /* */ block
     in_html_comment = False   # HTML <!-- --> block
-    for line_no, raw in enumerate(code.splitlines(), start=1):
+    for line_no, raw in enumerate(split_lines(code), start=1):
         stripped = raw.strip()
         if is_html:
             if in_html_comment:
@@ -397,7 +399,7 @@ class InlineIgnores:
             # None 은 '전부 끄기'다 — 한쪽이라도 None 이면 전부 끈다.
             by_line[line_no] = None if existing is None or ids is None else existing | ids
 
-        lines = code.splitlines()
+        lines = split_lines(code)
         for line_no, line in enumerate(lines, start=1):
             match = _IGNORE_RE.search(line)
             if match is None:
@@ -412,6 +414,11 @@ class InlineIgnores:
 
     def suppresses(self, line_no: int, rule_id: str) -> bool:
         if line_no not in self._by_line:
+            return False
+        # 값 자체가 위험인 룰(비밀값·개인정보·내부망)은 인라인 주석으로 끌 수 없다 — 승인자·만료가
+        # 있는 예외 파일(.gvskb-exceptions.yaml)만 받는다. 예전엔 id 없는 `gvskb: ignore` 가 비밀 룰까지
+        # 껐다(전면 점검 §3-4).
+        if _value_based_rule(rule_id):
             return False
         ids = self._by_line[line_no]
         return ids is None or rule_id in ids
@@ -465,6 +472,12 @@ def _comment_start(line: str, eff_lang: str | None) -> int:
     return -1
 
 
+def _value_based_rule(rule_id: str) -> bool:
+    """이 룰이 값 기반(노출) 룰인가 — 인라인 무시의 대상이 아니다."""
+    rule = lookup_rule(rule_id)
+    return is_value_based_rule(rule_id, (rule or {}).get("category"))
+
+
 def _inline_ignore_match(line: str, eff_lang: str | None):
     """주석 안에 있는 `gvskb: ignore` 매치. 없으면 None."""
     match = _IGNORE_RE.search(line)
@@ -497,7 +510,7 @@ def line_ignores_rule(line: str, rule_id: str, eff_lang: str | None = None) -> b
     ``js_taint`` 와 ``ast_scanner`` 는 각자 ``_IGNORE_RE.search(line)`` 를 썼고
     주석 여부를 전혀 보지 않아, 문자열 안의 문구로도 억제됐다.
     """
-    if (eff_lang or "") not in _SAME_LINE_IGNORE_LANGS:
+    if (eff_lang or "") not in _SAME_LINE_IGNORE_LANGS or _value_based_rule(rule_id):
         return False
     ignored = _ignored_rule_ids(line, eff_lang)
     if ignored is None:
@@ -809,19 +822,16 @@ def redact_secret_material(text: str) -> str:
     return _partial(base)
 
 
-_SEVERITY_RANK = {
-    Severity.critical: 4, Severity.high: 3, Severity.medium: 2, Severity.low: 1,
-}
-_DECISION_RANK = {Decision.block: 2, Decision.warn: 1, Decision.allow: 0}
+# 순위 상수는 policy.py 한 벌을 쓴다(예전엔 여기와 scanner.py 의 엔진 순위가 서로 달랐다).
+_SEVERITY_RANK = SEVERITY_RANK
+_DECISION_RANK = DECISION_RANK
 
 
 # 엔진의 근거 강도. 예전 순위는 (심각도, 결정, rule_id) 라 동점이면 문자열 비교로
 # "KISA-" 가 "GOV-" 를 이겨 **regex KISA 가 AST-confirmed GOV 를 밀어냈다**(자기검사
 # 2026-08-29, S-8). 데이터 흐름을 본 발견이 패턴만 본 발견보다 앞서야 한다.
-_ENGINE_PRECISION = {
-    "python-ast": 3, "js-taint": 2, "semgrep": 2, "secret-file": 1, "regex": 1,
-}
-_CONFIDENCE_RANK = {"confirmed": 3, "likely": 2, "pattern-only": 1}
+_ENGINE_PRECISION = ENGINE_PRECISION
+_CONFIDENCE_RANK = CONFIDENCE_RANK
 
 
 def _dedup_rank(finding: Finding) -> tuple:
@@ -999,7 +1009,7 @@ class RegexScanner(ScannerAdapter):
             active = [r for r in RULES if r["category"] in categories]
         else:
             active = _rules_that_can_match(code, eff_lang, categories)
-        for line_no, line in enumerate(code.splitlines(), start=1):
+        for line_no, line in enumerate(split_lines(code), start=1):
             is_comment = line_no in comment_lines
             for rule in active:
                 if categories and rule["category"] not in categories:
@@ -1089,7 +1099,7 @@ class RegexScanner(ScannerAdapter):
                     if line_no in seen_lines:
                         continue
                     if lines is None:
-                        lines = code.splitlines()
+                        lines = split_lines(code)
                     line = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
                     if line_no in comment_lines and rule["category"] not in _COMMENT_SKIP_EXEMPT_CATEGORIES:
                         continue

@@ -39,6 +39,7 @@ UNKNOWN 을 차단에서 내리는 것은 **이 엔진이 실제로 그 sink 를
 from __future__ import annotations
 
 import re
+from ..policy import split_lines
 from dataclasses import dataclass
 
 from ..schema import Finding
@@ -1439,7 +1440,7 @@ def classify_html_sinks(code: str, project=None) -> dict[int, SinkVerdict]:
     cached = _memo.get(key)
     if cached is not None:
         return cached
-    lines = code.splitlines()
+    lines = split_lines(code)
     local_safe, _helpers, local_defs = local_sanitizer_index(lines, project)
     result = _Classifier(lines, project, local_defs, local_safe).run()
     _memo.clear()
@@ -1471,7 +1472,7 @@ class JsTaintScanner(ScannerAdapter):
         # 구분할 수 없어, 주석 위치 판정이 원리적으로 불안하다). 단독 주석 줄의
         # 지시만 본다 — 판정이 모호하지 않은 형태다.
         ignores = InlineIgnores(code, "javascript")
-        for line_no, line in enumerate(code.splitlines(), start=1):
+        for line_no, line in enumerate(split_lines(code), start=1):
             stripped = line.strip()
             if stripped.startswith(("//", "/*", "*")):
                 continue  # 주석 줄 — 살아있는 코드가 아니다
@@ -1512,7 +1513,7 @@ class JsTaintScanner(ScannerAdapter):
         # 3) HTML sink — 출처가 외부로 확인된 것만 이 엔진이 발행한다.
         rule = lookup_rule(_HTML_RULE_ID)
         if rule is not None and not (categories and rule["category"] not in categories):
-            lines = code.splitlines()
+            lines = split_lines(code)
             for line_no, verdict in classify_html_sinks(code).items():
                 if verdict.state != TAINTED or ignores.suppresses(line_no, _HTML_RULE_ID):
                     continue

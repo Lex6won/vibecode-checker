@@ -5,6 +5,38 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-15
+
+### 32차 — 판정 계층 단일화(B): 한 벌의 상수·예외 목록, 감쇄 이력, 금지문·인라인 무시 범위, 줄 체계, 경로 공용화
+
+전면 점검(docs/40 §4) "판정 계층이 제각각" 항목 전부. 탐지는 바꾸지 않았다(실측 5트리 발견 동일,
+라벨 17건 위반 0) — 바뀌는 것은 **같은 코드가 같은 판정을 받는가**와 **왜 그렇게 판정했는지 남는가**다.
+
+- **`policy.py` 한 벌** — `SEVERITY_RANK`(3벌→1)·`ENGINE_PRECISION`(2벌, semgrep 순서가 서로 반대였다→1)·
+  `CONFIDENCE_RANK`·`DECISION_RANK`·`CONSTRUCT_EVIDENCE_RULE_IDS`·`is_value_based()`. scanner·regex_scanner·
+  profiles·report 가 전부 여기서 가져간다.
+- **감쇄 이력 `Finding.adjustments`** — 모든 감쇄(테스트 경로·업로드·룰 문서·금지문·문자열·화면 예외·
+  카드 문맥·정화 정황·출처 미상·자원 반환·근거 정책·프로파일)가 `policy.attenuate()` 를 거쳐
+  `{step, from/to severity, from/to decision, reason}` 를 쌓는다. `severity_adjusted` 는 덮어쓰지 않고
+  ` | ` 로 잇는다(예전엔 마지막 감쇄만 남아 몇 단계를 거쳤는지 알 수 없었다). `summary.adjustments`
+  (단계별 건수)와 보고서 배너 "도구가 스스로 판정을 낮춘 발견 N건".
+- **금지문 감쇄 범위** — 출처를 추적해 **확인된** 발견(`os.system(cmd)  # avoid` 가 critical→low 였다)과
+  값 기반 발견은 내리지 않는다. 코드 파일에서는 **주석 영역**의 문구만(식별자·문자열 속 낱말은 코드),
+  데이터·설정·산문 파일은 줄 전체.
+- **인라인 무시** — 값 기반 룰(비밀값·개인정보·내부망)은 `gvskb: ignore` 로 끌 수 없다(id 유무 무관).
+  승인자·만료가 있는 `.gvskb-exceptions.yaml` 만 받는다.
+- **줄 체계** — 모든 엔진이 `\n` 으로만 줄을 센다(`split_lines`). 정규식은 `str.splitlines()` 라
+  폼피드·U+2028 도 줄로 세어 AST 와 어긋났고 같은 발견이 다른 줄로 2건이 됐다. 입력은 `scan_code`
+  진입에서 CRLF 를 한 번 정규화한다.
+- **경로 공용화** — `scan_file` 은 `scan_path` 와 같은 전처리(바이너리·미니파이드·비밀 파일 특례·거대 줄)를
+  탄다. 비밀 파일 특례(`secret-file`) 발견도 프로파일·테스트 경로·업로드·근거 정책을 탄다(예전엔 전부 미적용).
+- **프로파일 상향** — 재정의로 올린 차단은 이력(`profile`)에 남고, 근거 정책이 내릴 때 "프로파일 재정의의
+  차단도 근거가 확인될 때만 적용"을 사유에 적는다(정책 파일의 block 이 조용히 무력화되던 §4-2).
+  `dev_quick` 설명의 MOIS-49-CODE-05 오기 정정.
+- **죽은 코드 제거** — `_inherit_outer_constants`·`_dynamic_part_is_a_parameter`·
+  `_prompt_dynamic_part_is_a_parameter`·`scope_params`·`_sql_rule_for` 둘째 인자.
+- 테스트: `tests/test_round26_decision_layer.py`(14).
+
 ## [0.4.6] - 2026-10-14
 
 ### 30차 — JS/TS 오염 추적: 평가 순서 · 범위 · 정화 헬퍼 회귀 · TS 표기 (전면 점검 §3-3)

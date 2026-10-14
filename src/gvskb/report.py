@@ -16,7 +16,7 @@ from datetime import datetime
 
 from .schema import Decision, Finding, ScanReport, Severity
 
-_SEVERITY_RANK = {Severity.critical: 3, Severity.high: 2, Severity.medium: 1, Severity.low: 0}
+from .policy import SEVERITY_RANK as _SEVERITY_RANK   # 한 벌 — policy.py
 _SEVERITY_EMOJI = {
     Severity.critical: "[CRITICAL]",
     Severity.high: "[HIGH]",
@@ -1522,6 +1522,9 @@ def render_markdown(
 
     # 승인된 예외 요약 — 게이트 판정 이해에 필수라 결론 근처에 표기.
     lines.extend(_suppression_banner_md(report, suppressed))
+    if _adj := _adjustment_banner(report):
+        lines.append(f"> {_adj}")
+        lines.append("")
 
     # 의존성 결과는 아래 '의존성(패키지) 취약점 검사' 섹션 + 요약 수치로 전달한다.
     # 여기서는 --check-deps 를 안 써서 아예 검사되지 않은 경우만 경고한다.
@@ -2277,6 +2280,8 @@ def render_html(
         text = line.lstrip("> ").strip()
         if text:
             p.append(f'<div class="scanmode">{_esc(text).replace("**", "")}</div>')
+    if _adj := _adjustment_banner(report):
+        p.append(f'<div class="scanmode">{_md_inline_to_html(_adj)}</div>')
     dep_audits = _dep_audits(report)
     if dep_audits and (_reg_banner := _registry_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_reg_banner).replace("**", "")}</div>')
@@ -2812,6 +2817,29 @@ def _render_rule_group_html(group: dict) -> list[str]:
 # 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 게이트만 통과.
 # 보안팀은 "무엇이 왜 면제됐고 언제 만료되나"를 항상 볼 수 있어야 한다.
 # ---------------------------------------------------------------------------
+
+
+_ADJUST_STEP_KO = {
+    "test_path": "테스트 경로", "upload_data": "업로드 데이터", "rule_definition": "룰 문서",
+    "prohibition_prose": "금지 안내문", "string_literal": "문자열 안", "frontend_exception": "화면 예외 삼킴",
+    "card_context": "카드번호 문맥", "html_sink_context": "정화 정황", "taint_sanitized": "정화 추론",
+    "taint_unknown": "출처 미상", "returned_resource": "자원 반환", "evidence_policy": "근거 정책(차단→검토)",
+    "profile": "프로파일 재정의",
+}
+
+
+def _adjustment_banner(report: ScanReport) -> str | None:
+    """도구가 **스스로 낮춘** 발견의 집계 — 단계별 건수. 금지문·문자열 감쇄처럼 조용히 동작하던
+    단계가 숫자로 드러나야 감사가 가능하다(32차). 발견별 사유는 각 카드의 '낮춤'에 있다."""
+    counts = (report.summary.adjustments if report.summary else None) or {}
+    if not counts:
+        return None
+    parts = [f"{_ADJUST_STEP_KO.get(k, k)} {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
+    touched = sum(1 for f in report.findings if f.adjustments)
+    return (
+        f"🔽 **도구가 스스로 판정을 낮춘 발견 {touched}건** — {' · '.join(parts)}. "
+        "낮춘 사유는 각 발견의 '낮춤' 표시에 있으며, 발견 자체는 지우지 않았습니다"
+    )
 
 
 def _suppression_banner_md(report: ScanReport, suppressed: list[Finding]) -> list[str]:

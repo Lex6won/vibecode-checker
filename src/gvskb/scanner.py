@@ -21,6 +21,10 @@ import tokenize
 from pathlib import Path
 from typing import Iterable
 
+from .policy import (
+    CONSTRUCT_EVIDENCE_RULE_IDS, ENGINE_PRECISION, SEVERITY_RANK, adjustment_counts, attenuate,
+    is_value_based, normalize_newlines, split_lines,
+)
 from .profiles import apply_profile, load_profile
 from .scanners.ast_scanner import PythonAstScanner
 from .scanners.js_taint import JsTaintScanner
@@ -43,7 +47,6 @@ from .scanners.regex_scanner import (
 from .scanners.semgrep_scanner import SemgrepScanner
 from .schema import (
     EXPOSURE_CATEGORIES,
-    VALUE_BASED_RULE_IDS,
     Decision,
     EngineUnavailable,
     ExternalConnection,
@@ -63,7 +66,7 @@ from .schema import (
 _ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner()]
 
 # Engine precision ranking — higher number wins on collisions.
-_ENGINE_PRECISION = {"regex": 0, "python-ast": 1, "js-taint": 1, "semgrep": 2}
+_ENGINE_PRECISION = ENGINE_PRECISION   # 한 벌 — policy.py (예전엔 regex_scanner 와 semgrep 순서가 반대였다)
 
 #: 엔진이 없을 때 사용자에게 보일 사유. "없음"만으로는 무엇을 잃었는지 모른다.
 _ENGINE_UNAVAILABLE_REASON = {
@@ -240,12 +243,7 @@ def engine_status(
     return ScanEngines(used=used, unavailable=unavailable, failed=failed,
                        required=required_engines(languages))
 
-SEVERITY_RANK = {
-    Severity.low: 0,
-    Severity.medium: 1,
-    Severity.high: 2,
-    Severity.critical: 3,
-}
+# SEVERITY_RANK 는 policy.py 에서 가져온다(한 벌).
 
 
 # ── 테스트 코드 경로 감쇄 ──────────────────────────────────────────────────
@@ -293,19 +291,10 @@ def attenuate_test_path_findings(findings: list[Finding], filename: str) -> list
         return findings
     adjusted: list[Finding] = []
     for finding in findings:
-        if (
-            (finding.category not in _VALUE_BASED_CATEGORIES
-             and finding.rule_id not in VALUE_BASED_RULE_IDS)
-            or finding.severity == Severity.low
-        ):
+        if not is_value_based(finding) or finding.severity == Severity.low:
             adjusted.append(finding)
             continue
-        adjusted.append(finding.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{finding.severity.value} → low · {_TEST_PATH_REASON}",
-        }))
+        adjusted.append(attenuate(finding, step="test_path", reason=_TEST_PATH_REASON, severity=Severity.low))
     return adjusted
 
 
@@ -341,7 +330,7 @@ _PROHIBITION_REASON = (
 
 
 def attenuate_prohibition_prose_findings(
-    findings: list[Finding], code: str,
+    findings: list[Finding], code: str, filename: str = "",
 ) -> list[Finding]:
     """금지 문구가 같은 줄에 있는 **실행 위험** 발견을 low·warn 으로 낮춘다.
 
@@ -356,25 +345,39 @@ def attenuate_prohibition_prose_findings(
     룰 파일 8개에 같은 제외 패턴을 흩뿌리지 않고 여기 한 곳에 둔다 — 같은
     목록을 여러 곳에 적으면 언젠가 어긋난다(이 프로젝트가 세 번 겪었다).
     """
-    lines = code.splitlines()
+    from .scanners.regex_scanner import _COMMENT_MARKERS_BY_LANG, _comment_start, _infer_language
+
+    lines = split_lines(code)
+    lang = _infer_language(filename, None) if filename else None
+    # 데이터·설정 파일(YAML·JSON·.env)의 값은 글이다 — 코드 파일만 주석 영역을 요구한다.
+    is_code_file = bool(lang) and lang in _COMMENT_MARKERS_BY_LANG and lang not in {"data", "config"}
     adjusted: list[Finding] = []
     for finding in findings:
         line_no = finding.location.line
         if (
-            finding.category in EXPOSURE_CATEGORIES
+            is_value_based(finding)
+            # 출처를 **추적해 확인한** 발견은 주석 한 마디로 내리지 않는다 — `os.system(cmd)  # avoid`
+            # 가 critical → low 가 됐다(전면 점검 §3-4). 사람의 메모가 데이터 흐름을 지우지 못한다.
+            or finding.confidence == "confirmed"
             or finding.severity == Severity.low
             or not line_no
             or line_no > len(lines)
-            or not _PROHIBITION_RE.search(lines[line_no - 1])
         ):
             adjusted.append(finding)
             continue
-        adjusted.append(finding.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{finding.severity.value} → low · {_PROHIBITION_REASON}",
-        }))
+        line = lines[line_no - 1]
+        m = _PROHIBITION_RE.search(line)
+        if m is None:
+            adjusted.append(finding)
+            continue
+        # 코드 파일에서는 금지 문구가 **주석 영역**에 있을 때만 안내문이다 — 문자열·식별자 안의
+        # 낱말(`never_cache = …`)은 코드다. 산문 파일(.md·.txt·언어 미상)은 줄 전체가 글이다.
+        if is_code_file:
+            cs = _comment_start(line, lang)
+            if cs < 0 or m.start() < cs:
+                adjusted.append(finding)
+                continue
+        adjusted.append(attenuate(finding, step="prohibition_prose", reason=_PROHIBITION_REASON, severity=Severity.low))
     return adjusted
 
 
@@ -448,8 +451,7 @@ def attenuate_string_literal_findings(
     if not filename.lower().endswith((".py", ".pyw")):
         return findings
     if not any(
-        f.engine == "regex" and f.category not in EXPOSURE_CATEGORIES
-        and f.rule_id not in VALUE_BASED_RULE_IDS and f.severity != Severity.low
+        f.engine == "regex" and not is_value_based(f) and f.severity != Severity.low
         for f in findings
     ):
         return findings
@@ -461,8 +463,7 @@ def attenuate_string_literal_findings(
         line_no = finding.location.line or 0
         if (
             finding.engine != "regex"
-            or finding.category in EXPOSURE_CATEGORIES
-            or finding.rule_id in VALUE_BASED_RULE_IDS
+            or is_value_based(finding)
             or finding.severity == Severity.low
             or line_no not in blanked
         ):
@@ -473,12 +474,7 @@ def attenuate_string_literal_findings(
         if not patterns or any(p.search(blanked[line_no]) for p in patterns):
             adjusted.append(finding)      # 문자열 밖에도 매치가 있다 — 진짜 코드
             continue
-        adjusted.append(finding.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{finding.severity.value} → low · {_STRING_LITERAL_REASON}",
-        }))
+        adjusted.append(attenuate(finding, step="string_literal", reason=_STRING_LITERAL_REASON, severity=Severity.low))
     return adjusted
 
 
@@ -533,12 +529,7 @@ def attenuate_rule_definition_findings(findings: list[Finding]) -> list[Finding]
         if finding.engine == "secret-file" or finding.severity == Severity.low:
             adjusted.append(finding)
             continue
-        adjusted.append(finding.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{finding.severity.value} → low · {_RULE_DOC_REASON}",
-        }))
+        adjusted.append(attenuate(finding, step="rule_definition", reason=_RULE_DOC_REASON, severity=Severity.low))
     return adjusted
 
 
@@ -717,19 +708,10 @@ def attenuate_upload_data_findings(findings: list[Finding], filename: str) -> li
         return findings
     adjusted: list[Finding] = []
     for finding in findings:
-        if (
-            finding.category in _VALUE_BASED_CATEGORIES
-            or finding.rule_id in VALUE_BASED_RULE_IDS
-            or finding.severity == Severity.low
-        ):
+        if is_value_based(finding) or finding.severity == Severity.low:
             adjusted.append(finding)
             continue
-        adjusted.append(finding.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{finding.severity.value} → low · {_UPLOAD_DATA_REASON}",
-        }))
+        adjusted.append(attenuate(finding, step="upload_data", reason=_UPLOAD_DATA_REASON, severity=Severity.low))
     return adjusted
 
 
@@ -775,7 +757,7 @@ def attenuate_frontend_exception_findings(
         return findings
     if not is_frontend_js(code, filename):
         return findings
-    lines = code.splitlines()
+    lines = split_lines(code)
     adjusted: list[Finding] = []
     for f in findings:
         if f.rule_id not in _SWALLOWED_EXCEPTION_RULE_IDS or f.severity == Severity.low:
@@ -786,12 +768,7 @@ def attenuate_frontend_exception_findings(
         if _SENSITIVE_CTX_RE.search(window):
             adjusted.append(f)          # 민감 문맥 — 등급 유지
             continue
-        adjusted.append(f.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if f.decision == Decision.block else f.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{f.severity.value} → low · {_FRONTEND_EXC_REASON}",
-        }))
+        adjusted.append(attenuate(f, step="frontend_exception", reason=_FRONTEND_EXC_REASON, severity=Severity.low))
     return adjusted
 
 
@@ -815,7 +792,7 @@ _CARD_CTX_REASON = (
 def attenuate_card_context_findings(findings: list[Finding], code: str) -> list[Finding]:
     if not any(f.rule_id == _CARD_RULE_ID for f in findings):
         return findings
-    lines = code.splitlines()
+    lines = split_lines(code)
     adjusted: list[Finding] = []
     for f in findings:
         if f.rule_id != _CARD_RULE_ID or f.decision != Decision.block:
@@ -826,12 +803,8 @@ def attenuate_card_context_findings(findings: list[Finding], code: str) -> list[
         if _CARD_PAYMENT_CTX_RE.search(window) or not _CARD_NONPAYMENT_CTX_RE.search(window):
             adjusted.append(f)
             continue
-        adjusted.append(f.model_copy(update={
-            "severity": Severity.medium,
-            "decision": Decision.warn,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{f.severity.value} → medium · {_CARD_CTX_REASON}",
-        }))
+        adjusted.append(attenuate(f, step="card_context", reason=_CARD_CTX_REASON,
+                                  severity=Severity.medium, decision=Decision.warn))
     return adjusted
 
 
@@ -875,15 +848,7 @@ def _attenuate_xss_by_taint(
 # 예외: **구문 자체가 약점**인 룰. 값이 어디서 왔는지와 무관하게 그 코드 모양이 곧
 # 위험이다(비밀값·개인정보 노출, 인증서 검증 해제, eval/exec, 디버그 모드, XXE 설정,
 # 자동 이스케이프 해제, 한 줄에 출처(location)와 sink 가 함께 있는 DOM XSS).
-_CONSTRUCT_EVIDENCE_RULE_IDS: frozenset[str] = frozenset({
-    "GOV-FLASK-DEBUG-001", "KISA-PY-ENCAP-02",
-    "KISA-PY-SEC-11", "KISA-JS-SEC-11",
-    "KISA-PY-INPUT-02", "KISA-JS-INPUT-02", "KISA-JS-API-02", "GOV-CODE-EXEC-001",
-    "KISA-PY-INPUT-04", "KISA-PY-INPUT-08", "KISA-JS-INPUT-08",
-    "GOV-INTERNAL-NET-001", "GOV-HTML-DOM-XSS-001",
-    # 개인정보 **값**(주민번호 모양 등)이 프롬프트에 박힌 것 — 값 기반이다.
-    "GOV-LLM-PII-PROMPT-001",
-})
+_CONSTRUCT_EVIDENCE_RULE_IDS = CONSTRUCT_EVIDENCE_RULE_IDS   # 한 벌 — policy.py
 _EVIDENCE_LABEL = {"likely": "유력(구조 추정)", "pattern-only": "패턴 일치만"}
 
 
@@ -905,18 +870,24 @@ def apply_evidence_policy(findings: list[Finding]) -> list[Finding]:
             out.append(f)
             continue
         label = _EVIDENCE_LABEL.get(f.confidence, f.confidence)
-        note = (
-            f"{f.severity.value} → {f.severity.value} (차단→검토) · 근거가 '{label}' — 입력의 출처를 "
-            "확인하지 못한 발견은 차단하지 않습니다. 외부 입력·서버 응답이 이 자리에 닿는지 "
-            "확인하고, 닿으면 조치하고 닿지 않으면 수용 예외로 기록하세요"
+        reason = (
+            f"근거가 '{label}' — 입력의 출처를 확인하지 못한 발견은 차단하지 않습니다. 외부 입력·서버 "
+            "응답이 이 자리에 닿는지 확인하고, 닿으면 조치하고 닿지 않으면 수용 예외로 기록하세요"
         )
-        prior = f.severity_adjusted
-        out.append(f.model_copy(update={
-            "decision": Decision.warn,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{prior} | {note}" if prior else note,
-        }))
+        # 프로파일이 올린 차단도 같은 규칙을 받는다 — 정책 파일의 block 은 "근거가 확인되면 차단"이다.
+        if any(a.get("step") == "profile" and a.get("to_decision") == "block" for a in f.adjustments):
+            reason += " (프로파일 재정의의 차단도 근거가 확인될 때만 적용됩니다)"
+        out.append(attenuate(f, step="evidence_policy", reason=reason, decision=Decision.warn))
     return out
+
+
+def _path_level_policies(findings: list[Finding], filename: str, profile_spec) -> list[Finding]:
+    """엔진 밖에서 만든 발견(비밀 파일 특례 등)도 **같은 판정 계층**을 탄다 — 프로파일 재정의·
+    테스트 경로·업로드 데이터·근거 정책. 예전에는 프로파일·감쇄 전부 미적용이었다(§4-5)."""
+    findings = apply_profile(findings, profile_spec)
+    findings = attenuate_test_path_findings(findings, filename)
+    findings = attenuate_upload_data_findings(findings, filename)
+    return apply_evidence_policy(findings)
 
 
 def _posture_notes(posture, skipped) -> list[dict]:
@@ -961,6 +932,7 @@ def _summary(findings: list[Finding]) -> ScanSummary:
         by_path_class=by_path_class,
         by_confidence=by_confidence,
         block_by_confidence=block_by_confidence,
+        adjustments=adjustment_counts(findings),
     )
 
 
@@ -1096,6 +1068,8 @@ def _scan_code_impl(
     categories: set[str] | None,
     collapse_duplicates: bool,
 ) -> ScanReport:
+    # 모든 엔진이 **같은 본문**을 본다 — CRLF 를 먼저 정규화해 줄 번호 체계를 하나로.
+    code = normalize_newlines(code)
     raw: list[Finding] = []
     engine_failures: dict[str, str] = {}
     for adapter in _ADAPTERS:
@@ -1151,7 +1125,7 @@ def _scan_code_impl(
     findings = attenuate_card_context_findings(findings, code)
     # "이렇게 하지 마세요"라고 말하는 줄 — 보안 가이드·룰 설명·인수인계 문서가
     # 자기가 금지한 토큰을 문장 안에 담는다. 역시 삭제가 아니라 감쇄다.
-    findings = attenuate_prohibition_prose_findings(findings, code)
+    findings = attenuate_prohibition_prose_findings(findings, code, filename)
     # 문자열 리터럴 안에서만 매치된 코드 모양 — 실행 코드가 아니다. 역시 감쇄.
     findings = attenuate_string_literal_findings(findings, code, filename)
     # 자원을 만들어 **호출자에게 넘기는** 함수에는 with 를 요구할 수 없다.
@@ -1186,7 +1160,14 @@ def _scan_code_impl(
 
 
 def scan_file(path: str | Path, *, language: str | None = None, scenario: str | None = None) -> ScanReport:
+    """파일 하나 — ``scan_path`` 와 **같은 전처리**(바이너리·미니파이드·비밀 파일 특례·거대 줄)를 탄다.
+
+    예전에는 본문을 읽어 ``scan_code`` 에 바로 넘겨 경로마다 판정이 달랐다(전면 점검 §4-5).
+    언어를 강제로 지정한 호출만 옛 경로(본문 직접 검사)를 쓴다.
+    """
     p = Path(path)
+    if language is None:
+        return scan_path(p, scenario=scenario)
     # utf-8-sig — BOM 제거(그대로 두면 AST 파싱이 실패한다).
     return scan_code(p.read_text(encoding="utf-8-sig"), filename=str(p), language=language, scenario=scenario)
 
@@ -1700,7 +1681,7 @@ def _mask_giant_lines(text: str) -> tuple[str, list[tuple[int, str]]]:
         return text, []
     out: list[str] = []
     giants: list[tuple[int, str]] = []
-    for no, ln in enumerate(text.splitlines(), start=1):
+    for no, ln in enumerate(split_lines(text), start=1):
         if len(ln) > _GIANT_LINE_CHARS:
             giants.append((no, ln))
             out.append(_GIANT_LINE_MARK.format(n=len(ln)))
@@ -1987,6 +1968,7 @@ def scan_path(
             except Exception:  # noqa: BLE001 — 색인 실패가 검사를 막으면 안 된다
                 continue
 
+    profile_spec = load_profile(profile)
     with use_project(project):
         for f in files_to_scan:
             rel = _rel(f, root, is_dir)
@@ -2057,14 +2039,14 @@ def scan_path(
                 if hit:
                     keyfile_rule = lookup_rule("GOV-SECRET-KEYFILE-001")
                     if keyfile_rule is not None:
-                        all_findings.append(build_finding(
+                        all_findings.extend(_path_level_policies([build_finding(
                             keyfile_rule, filename=rel, line_no=evidence_no,
                             # 여기 증거는 **맨 자격증명 값**이다. `_redact_evidence`
                             # 는 접두사·변수명을 단서로 삼아 이 모양을 못 가린다 —
                             # 실측에서 세션 서명키가 보고서에 통째로 실렸다.
                             evidence=_redact_secret_material(evidence_line),
                             engine="secret-file",
-                        ))
+                        )], rel, profile_spec))
             scanned.append(rel)
             # 외부 연결 인벤토리: 코드의 외부 API 호출 + package.json 의 직접 의존성.
             # 업로드 데이터(사용자 제출 XML 등)의 URL 은 이 앱의 연결이 아니다 — 싣지 않는다.

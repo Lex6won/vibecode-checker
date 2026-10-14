@@ -25,6 +25,7 @@ from .py_const import (
     literal_only_parameters,
 )
 from .regex_scanner import build_finding, lookup_rule, redact_evidence
+from ..policy import split_lines
 
 
 # Names that, when called bare (e.g. ``eval(x)``), are code-injection sinks.
@@ -444,9 +445,9 @@ def _leading_sql_text(node: ast.AST) -> str:
     return ""
 
 
-def _sql_rule_for(node: ast.AST, tainted_name_src: str = "") -> str:
+def _sql_rule_for(node: ast.AST) -> str:
     """이 SQL 표현식에 맞는 룰 ID — DDL/PRAGMA 면 별도 룰."""
-    head = _leading_sql_text(node) or tainted_name_src
+    head = _leading_sql_text(node)
     if head and _DDL_PREFIX_RE.match(head):
         return "GOV-SQL-DDL-DYNAMIC-001"
     return "GOV-SQL-INJECTION-001"
@@ -692,79 +693,6 @@ def _outer_constants_seed(outer: ConstEnv, node: ast.AST) -> ConstEnv:
     return ConstEnv(names=outer.names - shadow, containers=outer.containers - shadow)
 
 
-def _inherit_outer_constants(inner: ConstEnv, outer: ConstEnv, node: ast.AST) -> None:
-    """바깥 범위(모듈)에서 상수로 증명된 이름을 함수 안에서도 상수로 본다.
-
-    함수 범위 환경은 함수 본문만 보고 만들어져 `COLS = [...]`·`VIEW = "v"` 같은 모듈
-    상수가 함수 안에서는 동적으로 취급됐다(실측 2026-10-13 safe_check `etl/read_facilities.py`
-    `f"SELECT {', '.join(COLS)} FROM {VIEW}"` 가 "확인된 SQL 삽입"). 함수 안에서 다시
-    대입·순회·삭제하거나 매개변수·global 로 가리는 이름은 물려받지 않는다.
-    """
-    shadow: set[str] = set()
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        a = node.args
-        shadow |= {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)}
-        if a.vararg:
-            shadow.add(a.vararg.arg)
-        if a.kwarg:
-            shadow.add(a.kwarg.arg)
-    for n in ast.walk(node):
-        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
-            shadow.add(n.id)
-        elif isinstance(n, (ast.Global, ast.Nonlocal)):
-            shadow |= set(n.names)
-    inner.names |= outer.names - shadow
-    inner.containers |= outer.containers - shadow
-
-
-def _dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: ConstEnv) -> bool:
-    """동적으로 판정된 부분이 **이 함수의 매개변수**뿐인가.
-
-    매개변수의 값이 어디서 오는지는 이 스코프 밖의 일이라 **추적한 적이 없다.**
-    그런데도 판정 근거를 `confirmed`(확인됨 · 데이터 흐름 추적)로 찍고 있었다 —
-    보고서를 읽는 담당자에게는 "흐름을 따라가 확인했다"로 읽힌다.
-
-    같은 스코프 안에서 조립된 문자열은 실제로 대입을 따라가 확인한 것이므로
-    `confirmed` 가 맞다. 둘을 갈라 각자에게 맞는 이름을 붙인다.
-    """
-    if not params:
-        return False
-    found_param = False
-    for n in ast.walk(node):
-        if not isinstance(n, ast.Name) or isinstance(n.ctx, ast.Store):
-            continue
-        if expr_is_constant(n, env):
-            continue
-        if n.id in params:
-            found_param = True
-        else:
-            return False   # 매개변수 아닌 동적 이름이 섞였다 → 스코프 안에서 추적된 것
-    return found_param
-
-
-def _prompt_dynamic_part_is_a_parameter(node: ast.AST, params: set[str], env: ConstEnv) -> bool:
-    """프롬프트 인자 판 — `SYSTEM_PROMPT` 같은 대문자 지시문 상수는 동적 이름으로 세지 않는다."""
-    if not params:
-        return False
-    found_param = False
-    for n in ast.walk(node):
-        if not isinstance(n, ast.Name) or isinstance(n.ctx, ast.Store):
-            continue
-        if expr_is_constant(n, env) or _INSTRUCTION_CONST_RE.match(n.id):
-            continue
-        if n.id in params:
-            found_param = True
-        else:
-            return False
-    return found_param
-
-
-# ── 외부 출처 ────────────────────────────────────────────────────────────────
-# "동적으로 조립됐다"와 "외부 입력이 닿았다"는 다르다. 실측(2026-10-13 safe_check):
-# 자리표시자·모듈 상수·DB 메타데이터로 조립한 SQL 36건이 전부 '확인됨(데이터 흐름 추적)'
-# 으로 차단됐지만 외부 입력이 닿은 곳은 없었다. 여기서 말하는 출처는 공격자가 값을 정할
-# 수 있는 자리뿐이다 — 요청(Flask/Django/FastAPI), 명령행 인자, 표준입력, 라우트 매개변수.
-# 환경변수·설정 파일은 운영자 통제라 넣지 않는다.
 _SOURCE_PY_RE = re.compile(
     r"^(?:request\.(?:args|form|json|values|data|files|headers|cookies|get_json|get_data|GET|POST|body|query_params|path_params|params)"
     r"|req\.(?:args|form|json|body|query|params|headers|cookies|GET|POST|data|query_params)"
@@ -895,11 +823,9 @@ def _process_scope(
     source_lines: list[str],
     env: ConstEnv | None = None,
     literal_params: dict[str, set[str]] | None = None,
-    scope_params: set[str] | None = None,
     sourced: set[str] | None = None,
 ) -> None:
     literal_params = literal_params or {}
-    scope_params = scope_params or set()
     sourced = set() if sourced is None else sourced
     if env is None:
         env = collect_constants(stmts)
@@ -908,14 +834,8 @@ def _process_scope(
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             proven = literal_params.get(getattr(stmt, "name", ""), set())
             inner = _scope_env(stmt.body, proven, seed=_outer_constants_seed(env, stmt))
-            inner_params: set[str] = set()
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                a = stmt.args
-                inner_params = {
-                    p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)
-                } - proven
             _process_scope(stmt.body, set(), hits, source_lines, inner,
-                           literal_params, inner_params, sourced=_route_params(stmt))
+                           literal_params, sourced=_route_params(stmt))
             continue
         # 1) sinks read the taint state established by earlier statements.
         for call in _sink_calls(stmt):
@@ -994,7 +914,7 @@ def _process_scope(
             merged_t, merged_s = set(tainted), set(sourced)
             for body in bodies:
                 t2, s2 = set(tainted), set(sourced)
-                _process_scope(body, t2, hits, source_lines, env, literal_params, scope_params, s2)
+                _process_scope(body, t2, hits, source_lines, env, literal_params, s2)
                 merged_t |= t2
                 merged_s |= s2
             tainted |= merged_t
@@ -1090,8 +1010,8 @@ _CONF_RANK = {"pattern-only": 0, "likely": 1, "confirmed": 2}
 _CONFIDENCE_BY_RULE: dict[str, str] = {
     # 같은 스코프 안에서 대입을 따라가 조립을 확인한 동적 SQL.
     # **주의**: 동적 부분이 함수 매개변수뿐이면 출처가 스코프 밖이라 추적한 적이
-    # 없다. 그런 발견은 여기 값이 아니라 `likely` 로 내려 보낸다
-    # (_dynamic_part_is_a_parameter). 예전에는 구분 없이 confirmed 를 찍어
+    # 없다. 그런 발견은 `_process_scope` 가 출처(sourced) 를 못 봤을 때 `likely` 로 내려 보낸다.
+    # 예전에는 구분 없이 confirmed 를 찍어
     # "데이터 흐름 추적"을 하지 않고도 했다고 말하고 있었다.
     "GOV-SQL-INJECTION-001": "confirmed",
     "GOV-LLM-PROMPT-INJECTION-001": "confirmed",
@@ -1125,7 +1045,7 @@ class PythonAstScanner(ScannerAdapter):
             # Malformed input or null bytes — let the regex scanner still try.
             return []
 
-        visitor = _Visitor(code.splitlines(), _collect_import_aliases(tree))
+        visitor = _Visitor(split_lines(code), _collect_import_aliases(tree))
         visitor.visit(tree)
 
         # Precise call-site hits + multi-line taint hits (SQL + LLM) share one pipeline.
