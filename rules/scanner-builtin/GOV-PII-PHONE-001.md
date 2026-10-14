@@ -41,6 +41,8 @@ detection:
     - '010[-. ]?1234[-. ]?5678'
     - '010[-. ]?0000[-. ]?0000'
     - '010[-. ]?(\d)\1{3}[-. ]?\1{4}'
+    # 마스킹·형식 안내의 예시 줄(`// 예: 010-…`, `마스킹 예`) — 값이 아니라 설명이다(실측 2026-10-15).
+    - '(?i)(?:^|[^가-힣A-Za-z])(?:예|예시|예를 들어|example|sample|e\.g\.)\s*[:：)]|마스킹|masking|placeholder'
   category: privacy-public-sector
   confidence: pattern-only
   why_it_matters: >-

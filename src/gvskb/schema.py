@@ -794,6 +794,11 @@ class PackageCheckResult(BaseModel):
             "사실로 제출하지 않는다(연동합의 §5-D)."
         ),
     )
+    #: 판정에 실제로 쓴 버전. 미고정 요청은 최신판으로 판정한다(`version_resolution="latest-assumed"`).
+    resolved_version: str | None = Field(default=None, description="OSV 대조에 쓴 버전(미고정이면 최신판)")
+    version_resolution: Literal["pinned", "latest-assumed", "unresolved"] | None = Field(
+        default=None, description="pinned=요청 버전 그대로 · latest-assumed=미고정이라 최신판 기준 · unresolved=버전을 정할 수 없음",
+    )
     ecosystem: str
     checked: bool = Field(default=False, description="취약점 검사가 실제 수행됐는가(실재확인과 별개)")
     verdict: Literal[

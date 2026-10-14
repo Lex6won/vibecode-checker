@@ -26,8 +26,11 @@ detection:
     # 자기 재귀가 아니다. 실측(2026-09-16)에서 위임 래퍼 한 줄이 재귀로 잡혔다.
     - "function\\s+([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*\\{(?:(?!\\breturn\\b[^;]*;|\\bif\\s*\\(|\\bthrow\\b|\\?\\s*[^:]+:)[\\s\\S]){0,200}?\\breturn\\b[^;{}]*(?<![.\\w$])\\1\\s*\\("
     - "const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:function\\s*\\([^)]*\\)|\\([^)]*\\)\\s*=>)\\s*\\{(?:(?!\\bif\\s*\\(|\\?\\s*[^:]+:|\\bthrow\\b)[\\s\\S]){0,200}?\\breturn\\b[^;{}]*(?<![.\\w$])\\1\\s*\\("
-    - "while\\s*\\(\\s*(?:true|1)\\s*\\)\\s*\\{(?:(?!\\bbreak\\b|\\breturn\\b|\\bthrow\\b)[\\s\\S]){0,400}\\}"
-    - "for\\s*\\(\\s*;\\s*;\\s*\\)\\s*\\{(?:(?!\\bbreak\\b|\\breturn\\b|\\bthrow\\b)[\\s\\S]){0,400}\\}"
+    # 여는 괄호 뒤 400자 안에 탈출(break/return/throw)이 없을 때만. 예전 모양("탈출 없이 닫는 `}`")은
+    # `const {done, value} = await reader.read();` 의 구조분해 `}` 를 블록 끝으로 봐 SSE 읽기 루프
+    # 4건이 오탐이었다(실측 2026-10-15 챗봇).
+    - "while\\s*\\(\\s*(?:true|1)\\s*\\)\\s*\\{(?![\\s\\S]{0,400}?\\b(?:break|return|throw)\\b)"
+    - "for\\s*\\(\\s*;\\s*;\\s*\\)\\s*\\{(?![\\s\\S]{0,400}?\\b(?:break|return|throw)\\b)"
   category: kisa-secure-coding
   why_it_matters: >-
     재귀 함수에 기본 케이스(Base Case)가 없거나 `while(true)` 루프에 종료 조건이

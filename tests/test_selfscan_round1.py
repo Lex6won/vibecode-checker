@@ -34,7 +34,7 @@ def test_language_scoped_rules_skip_data_files(code, filename, absent):
 
 @pytest.mark.parametrize("code, filename, present", [
     ('api_key: "sk-proj-Ab3xK9mQ2pR7sT1uV5wY8zC4dE6fG0hJ"', "config.yaml", "GOV-SECRET-APIKEY-001"),
-    ('DB_PASSWORD=Adm1n2026!Secure', "prod.env", "GOV-SECRET-APIKEY-001"),
+    ('DB_PASSWORD=Adm1n2026!Secure', "prod.env", "GOV-SECRET-CONFIG-001"),   # 34차: 설정형은 CONFIG-001
     ('rrn: "900101-1234567"', "seed.json", "GOV-PII-RRN-001"),
     ('  "prepare": "node -e \\"require(\'child_process\').exec(cmd)\\""', "package.json", "KISA-JS-INPUT-05"),
     ("  run: os.system(user_input)", "workflow.yml", "GOV-CMD-INJECTION-001"),

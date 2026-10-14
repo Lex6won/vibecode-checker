@@ -215,6 +215,11 @@ def _run_dependency_audit(
         low = name.lower()
         if low in _LOCK_NAMES:
             return _LOCK_NAMES[low], "lock"
+        # `requirements.lock.txt`·`requirements-lock.txt`·`constraints.txt` — 고정 전수 목록이다. 매니페스트로
+        # 보면 기본 상한 20개만 조회된다(실측 2026-10-15 챗봇: 111개 중 20개).
+        if low.startswith(("requirements", "constraints")) and low.endswith(".txt") and (
+                ".lock" in low or "-lock" in low or "_lock" in low or low.startswith("constraints")):
+            return "pypi", "lock"
         if low.startswith("requirements") and low.endswith(".txt"):
             return "pypi", "manifest"
         if low == "pyproject.toml":

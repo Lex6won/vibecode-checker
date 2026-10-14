@@ -143,7 +143,8 @@ def test_value_equal_to_its_own_key_is_not_a_secret(code: str, why: str) -> None
     ("spring.datasource.password=gg2026Secure", "점 있는 키"),
 ])
 def test_self_reference_guard_does_not_swallow_real_secrets(code: str, why: str) -> None:
-    assert "GOV-SECRET-APIKEY-001" in _ids(code, "app.yaml"), why
+    # 설정 파일의 따옴표 없는 값은 34차부터 GOV-SECRET-CONFIG-001 이 본다(같은 dedup 그룹).
+    assert {"GOV-SECRET-APIKEY-001", "GOV-SECRET-CONFIG-001"} & set(_ids(code, "app.yaml")), why
 
 
 # ---------------------------------------------------------------------------
