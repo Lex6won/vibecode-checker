@@ -563,8 +563,9 @@ def _unwrap_sql(expr: ast.AST) -> ast.AST:
             expr = expr.args[0]
             continue
         if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
-                and expr.func.attr in {"strip", "lstrip", "rstrip", "upper", "lower"} and not expr.args:
-            expr = expr.func.value
+                and expr.func.attr in {"strip", "lstrip", "rstrip", "upper", "lower"} \
+                and all(isinstance(a, ast.Constant) for a in expr.args) and not expr.keywords:
+            expr = expr.func.value      # `.rstrip(";")` 도 값을 바꾸지 않는다(33차: safe_check _db_run_sql)
             continue
         break
     return expr
@@ -800,20 +801,70 @@ def _tool_functions(tree: ast.AST) -> frozenset[str]:
     return frozenset(names)
 
 
+#: 함수 이름 → 매개변수 이름(순서). 같은 이름의 정의가 둘이면 어느 쪽이 불리는지 몰라 뺀다.
+_FUNC_SIGS: contextvars.ContextVar[dict[str, list[str]]] = contextvars.ContextVar("gvskb_func_sigs", default={})
+#: 함수 이름 → **호출자에서 외부 출처가 흘러든** 매개변수 이름. 33차(2026-10-15): 함수 간 전파.
+#: `find(cur, request.args['n'])` 를 보고 `def find(cur, name)` 의 `name` 을 출처로 안다.
+_PARAM_SOURCES: contextvars.ContextVar[dict[str, frozenset[str]]] = contextvars.ContextVar(
+    "gvskb_param_sources", default={})
+#: 이번 패스에서 관찰한 호출부의 출처 인자 — 다음 패스의 `_PARAM_SOURCES` 가 된다.
+_CALL_SOURCES: contextvars.ContextVar[dict[str, set[str]] | None] = contextvars.ContextVar(
+    "gvskb_call_sources", default=None)
+_PROPAGATION_PASSES = 3     # f → g → h 두 홉까지; 그 이상은 실무 코드에서 드물고 비용이 선형으로 는다
+
+
+def _function_signatures(tree: ast.AST) -> dict[str, list[str]]:
+    """모듈 안 함수 이름 → 매개변수 목록(위치 인자 순서 + 키워드 전용). 중복 정의는 제외."""
+    seen: dict[str, list[list[str]]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            params = [p.arg for p in (*a.posonlyargs, *a.args)] + [p.arg for p in a.kwonlyargs]
+            seen.setdefault(node.name, []).append(params)
+    return {name: sigs[0] for name, sigs in seen.items() if len(sigs) == 1}
+
+
+def _record_call_sources(stmt: ast.stmt, sourced: set[str]) -> None:
+    """이 문장의 호출 `f(a, b, k=v)` 에서 외부 출처가 닿는 인자를 `f` 의 매개변수 이름으로 적어 둔다."""
+    sink = _CALL_SOURCES.get()
+    if sink is None:
+        return
+    sigs = _FUNC_SIGS.get()
+    if not sigs:
+        return
+    for root in _stmt_roots(stmt):
+        for n in ast.walk(root):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in sigs):
+                continue
+            params = sigs[n.func.id]
+            found: set[str] = set()
+            for i, a in enumerate(n.args):
+                if isinstance(a, ast.Starred) or i >= len(params):
+                    continue
+                if _reaches_source(a, sourced):
+                    found.add(params[i])
+            for kw in n.keywords:
+                if kw.arg and kw.arg in params and _reaches_source(kw.value, sourced):
+                    found.add(kw.arg)
+            if found:
+                sink.setdefault(n.func.id, set()).update(found)
+
+
 def _route_params(fn: ast.AST) -> set[str]:
-    """`@app.route("/u/<name>")`·`@router.get(...)` 핸들러의 매개변수는 요청에서 온다."""
+    """출처로 봐야 하는 매개변수 — 라우트 핸들러·LLM 도구의 매개변수 + **호출자가 외부 값을 넘긴** 매개변수."""
     if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return set()
+    a = fn.args
+    all_params = {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)}
+    out: set[str] = set(_PARAM_SOURCES.get().get(fn.name, ())) & all_params
     if fn.name in _TOOL_FUNCS.get():
-        a = fn.args
-        return {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)} - _NON_DATA_PARAMS
+        return (out | all_params) - _NON_DATA_PARAMS
     for dec in fn.decorator_list:
         target = dec.func if isinstance(dec, ast.Call) else dec
         d = _dotted(target) or ""
         if _ROUTE_DECORATOR_RE.search(d):
-            a = fn.args
-            return {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)} - {"self", "cls"}
-    return set()
+            return (out | all_params) - {"self", "cls"}
+    return out - _NON_DATA_PARAMS
 
 
 def _process_scope(
@@ -906,6 +957,8 @@ def _process_scope(
             for item in stmt.items:
                 if item.optional_vars is not None and _reaches_source(item.context_expr, sourced):
                     sourced |= {n.id for n in ast.walk(item.optional_vars) if isinstance(n, ast.Name)}
+        # 함수 간 전파 — 이 문장의 호출 인자에 출처가 닿으면 다음 패스에서 그 매개변수를 출처로 본다.
+        _record_call_sources(stmt, sourced)
         # 분기 합집합 — 각 본문을 **사본**으로 돌리고 결과를 합친다. 같은 집합을 공유하면
         # `if c: n = request.args['n'] else: n = 'd'` 에서 마지막 대입이 이겨 출처가 지워졌다
         # (전면 점검 §3-2). 어느 경로로든 외부 값일 수 있으면 외부 값이다.
@@ -969,12 +1022,31 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
     # 스코프 안만 보는 상수 판정으로는 매개변수의 출처를 알 수 없다.
     token = _PLACEHOLDER_FUNCS.set(_placeholder_functions(tree))
     tool_token = _TOOL_FUNCS.set(_tool_functions(tree))
+    sig_token = _FUNC_SIGS.set(_function_signatures(tree))
+    literal_params = literal_only_parameters(tree)
+    body = getattr(tree, "body", [])
+    param_sources: dict[str, frozenset[str]] = {}
     try:
-        _process_scope(
-            getattr(tree, "body", []), set(), hits, source_lines,
-            literal_params=literal_only_parameters(tree),
-        )
+        # 함수 간 전파는 고정점으로 푼다: 한 패스가 "호출자가 출처를 넘긴 매개변수"를 모으고, 다음
+        # 패스가 그것을 출처로 삼아 다시 본다(f → g → h). 변화가 없으면 멈춘다(대개 1~2패스).
+        for _ in range(_PROPAGATION_PASSES):
+            collected: dict[str, set[str]] = {}
+            ps_token = _PARAM_SOURCES.set(param_sources)
+            cs_token = _CALL_SOURCES.set(collected)
+            hits = []
+            try:
+                _process_scope(body, set(), hits, source_lines, literal_params=literal_params)
+            finally:
+                _CALL_SOURCES.reset(cs_token)
+                _PARAM_SOURCES.reset(ps_token)
+            merged = {k: frozenset(v | set(param_sources.get(k, ()))) for k, v in collected.items()}
+            for k, v in param_sources.items():
+                merged.setdefault(k, v)
+            if merged == param_sources:
+                break
+            param_sources = merged
     finally:
+        _FUNC_SIGS.reset(sig_token)
         _TOOL_FUNCS.reset(tool_token)
         _PLACEHOLDER_FUNCS.reset(token)
     return hits
