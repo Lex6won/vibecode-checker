@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import ast
 
-from ..schema import Decision, Finding, Severity
+from ..schema import Finding, Severity
+from ..policy import attenuate
 
 #: 이 관용구가 적용되는 룰. 자원 생성/해제 계열만 손댄다.
 _RESOURCE_RULES = {"KISA-PY-CODE-02"}
@@ -102,10 +103,5 @@ def attenuate_returned_resource_findings(
         ):
             adjusted.append(finding)
             continue
-        adjusted.append(finding.model_copy(update={
-            "severity": Severity.low,
-            "decision": Decision.warn if finding.decision == Decision.block else finding.decision,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{finding.severity.value} → low · {_REASON}",
-        }))
+        adjusted.append(attenuate(finding, step="returned_resource", reason=_REASON, severity=Severity.low))
     return adjusted

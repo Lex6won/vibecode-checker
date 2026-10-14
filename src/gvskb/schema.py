@@ -263,8 +263,16 @@ class Finding(BaseModel):
         default=None,
         description=(
             "원래 등급에서 낮춘 사유(예: '테스트 코드 경로 — 값이 실제 자격증명이 "
-            "아닐 가능성이 높음'). 값이 있으면 리포트가 감쇄 사실을 함께 표시한다"
+            "아닐 가능성이 높음'). 값이 있으면 리포트가 감쇄 사실을 함께 표시한다. "
+            "여러 단계를 거치면 ' | ' 로 이어 붙는다(요약) — 구조화된 이력은 adjustments"
         ),
+    )
+    #: 판정 변경 **이력** — [{step, from_severity, to_severity, from_decision, to_decision, reason}].
+    #: 예전에는 severity_adjusted 문자열을 감쇄마다 덮어써 어떤 감쇄를 몇 단계 거쳤는지 추적할 수
+    #: 없었다(전면 점검 2026-10-13 §4-3, 감사 가능성 결손). 빈 목록 = 엔진이 낸 판정 그대로.
+    adjustments: list[dict] = Field(
+        default_factory=list,
+        description="판정 변경 이력(단계·전후 등급·전후 결정·사유). 비어 있으면 변경 없음",
     )
 
 
@@ -339,6 +347,9 @@ class ScanSummary(BaseModel):
     #: 그중 차단 등급만. "차단 875건" 이 "확인 1 + 패턴 후보 874" 임을 값으로 보이기 위한 것.
     by_confidence: dict[str, int] = Field(default_factory=dict)
     block_by_confidence: dict[str, int] = Field(default_factory=dict)
+    #: 단계별 감쇄 건수({"test_path": 3, "evidence_policy": 12, …}) — "도구가 스스로 낮춘 것"의 집계.
+    #: 금지문 감쇄·문자열 감쇄처럼 조용히 동작하던 단계가 보고서에 숫자로 드러난다(§4-3).
+    adjustments: dict[str, int] = Field(default_factory=dict)
     #: 경로 성격별 집계 — runtime(운영 코드) · test(테스트 경로) · sample(fixtures·examples·
     #: corpus 같은 시험·예제 경로). 값은 {"total": n, "block": n}. **판정은 바꾸지 않는다** —
     #: "차단 13건"이 "운영 0 + 시험 13"임을 읽는 사람이 바로 알게 하려는 집계다(개선요청 #34 A-3).

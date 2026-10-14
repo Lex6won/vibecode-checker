@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from ..policy import split_lines
 
 from ..schema import ExternalConnection
 
@@ -197,7 +198,7 @@ def extract_static_resources(code: str, filename: str = "<memory>") -> list[Exte
     폐쇄망 표시: 이 항목들은 인터넷 없이 **로딩 자체가 실패**하므로
     airgap_impact="breaks" 로 표시된다 — 내부 사본/사내 미러로 교체 대상.
     """
-    lines = code.splitlines()
+    lines = split_lines(code)
     agg: dict[str, dict] = {}
     for idx, line in enumerate(lines, start=1):
         if not (_RESOURCE_CTX.search(line) or _LINK_HREF_CTX.search(line)):
@@ -369,7 +370,7 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
     1) https://host 리터럴, 2) 알려진 SDK 호출(URL 없이도) 둘 다 감지한다.
     내부망 호스트는 제외하고, PII 인접 줄은 review_level=warn 으로 표시한다.
     """
-    lines = code.splitlines()
+    lines = split_lines(code)
     agg: dict[str, dict] = {}  # 호스트(파일 단위) → 병합 누적값
 
     for idx, line in enumerate(lines, start=1):

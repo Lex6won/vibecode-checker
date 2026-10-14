@@ -58,6 +58,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from ..schema import Decision, Finding, Severity
+from ..policy import attenuate, split_lines
 
 # 정화로 인정하는 호출 어휘. `sanitiz\w*` 가 sanitizeForRender·sanitizeHtml 을 덮는다.
 # 어휘 일치는 **후보**일 뿐이다 — 정의를 볼 수 있으면 본문이 결정한다(`sanitizer_name_ok`).
@@ -174,7 +175,7 @@ class ProjectSanitizers:
         # 텍스트 노드 어느 것도 없으면 본문 판정이 참이 될 수 없다.
         if not _INDEX_HINT_RE.search(code):
             return
-        lines = code.splitlines()
+        lines = split_lines(code)
         if not lines:
             return
         sanitizers, _helpers, defs = local_sanitizer_index(lines, None)
@@ -564,7 +565,7 @@ def attenuate_html_sink_findings(
     if not any(_SINK_RE.search(f.evidence or "") for f in findings):
         return findings
 
-    lines = code.splitlines()
+    lines = split_lines(code)
     if not lines:
         return findings
     sanitizers, helpers, local_defs = _local_sanitizing_helpers(lines)
@@ -601,12 +602,7 @@ def attenuate_html_sink_findings(
             continue
 
         lowered = floor if f.severity in (Severity.critical, Severity.high) else f.severity
-        adjusted.append(f.model_copy(update={
-            "severity": lowered,
-            "decision": Decision.warn,
-            "requires_approval_to_bypass": False,
-            "severity_adjusted": f"{f.severity.value} → {lowered.value} · {reason}",
-        }))
+        adjusted.append(attenuate(f, step="html_sink_context", reason=reason, severity=lowered, decision=Decision.warn))
     return adjusted
 
 
@@ -650,19 +646,12 @@ def attenuate_by_taint_verdict(findings: list[Finding], verdicts: dict) -> list[
             continue
         if v.state == SANITIZED:
             lowered = Severity.medium if f.severity in (Severity.critical, Severity.high) else f.severity
-            out.append(f.model_copy(update={
-                "severity": lowered,
-                "decision": Decision.warn,
-                "requires_approval_to_bypass": False,
-                "severity_adjusted": f"{f.severity.value} → {lowered.value} · {_TAINT_SANITIZED_REASON} ({v.reason})",
-            }))
+            out.append(attenuate(f, step="taint_sanitized", reason=f"{_TAINT_SANITIZED_REASON} ({v.reason})",
+                                 severity=lowered, decision=Decision.warn))
             continue
         if v.state == UNKNOWN:
-            out.append(f.model_copy(update={
-                "decision": Decision.warn,
-                "requires_approval_to_bypass": False,
-                "severity_adjusted": f"{f.severity.value} → {f.severity.value} (차단→검토) · {_TAINT_UNKNOWN_REASON} ({v.reason})",
-            }))
+            out.append(attenuate(f, step="taint_unknown", reason=f"{_TAINT_UNKNOWN_REASON} ({v.reason})",
+                                 decision=Decision.warn))
             continue
         out.append(f)
     return out

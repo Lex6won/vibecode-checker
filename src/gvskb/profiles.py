@@ -14,11 +14,11 @@ import yaml
 from pydantic import BaseModel, Field
 
 from .schema import Decision, Finding, Severity
+from .policy import SEVERITY_RANK as _SEVERITY_RANK, record_adjustment   # 한 벌 — policy.py
 
 # 기본 프로파일 — 정책이 비어 있어도 정상 동작.
 DEFAULT_PROFILE_ID = "public-default-strict"
 
-_SEVERITY_RANK = {Severity.low: 0, Severity.medium: 1, Severity.high: 2, Severity.critical: 3}
 
 
 class ProfileSpec(BaseModel):
@@ -125,8 +125,9 @@ def apply_profile(findings: list[Finding], profile: ProfileSpec) -> list[Finding
         if new_decision is f.decision:
             out.append(f)
         else:
-            out.append(f.model_copy(update={
-                "decision": new_decision,
-                "requires_approval_to_bypass": new_decision == Decision.block,
-            }))
+            # 이력에 남긴다 — 프로파일이 올린 차단은 근거 정책이 다시 볼 수 있어야 한다(§4-2).
+            out.append(record_adjustment(
+                f, step="profile", decision=new_decision,
+                reason=f"프로파일 '{getattr(profile, 'id', '?')}' 의 재정의({new_decision.value})",
+            ))
     return out
