@@ -155,13 +155,29 @@ def test_low_cve_with_version_is_review(monkeypatch, osv) -> None:
 
 
 def test_versionless_vulns_capped_to_review(monkeypatch, osv) -> None:
-    """버전 미지정 조회는 전체 이력 취약점 — high 차단이 아니라 검토로 캡핑."""
-    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=300))
+    """버전도 없고 최신판 정보도 없는 조회(`unresolved`)는 전체 이력 취약점 — 집계하지 않고 '판정 불가'.
+
+    예전에는 verdict=vulnerable/medium 으로 캡핑했지만 게이트는 advisory 의 CRITICAL 을 읽어 **차단**했다
+    (36차 실측). 역대 이력은 설치본의 취약점이 아니다 — 악성(MAL-)만 남기고 취약점은 세지 않는다.
+    """
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=300))   # latest_version 없음
     osv({"vulns": [{"id": "GHSA-z", "database_specific": {"severity": "CRITICAL"}}]})
     r = _run(cp.check_package_impl("requests", "pypi"))  # version=None
-    assert r["verdict"] == "vulnerable"
-    assert r["verdict_severity"] == "medium"
-    assert "버전 미지정" in (r["note"] or "")
+    assert r["version_resolution"] == "unresolved"
+    assert r["verdict"] == "unknown" and r["verdict_severity"] == "low"
+    assert r["vulnerability_count"] == 0 and r["max_cve"] in (None, "NONE")
+    assert r["requires_review"] is True
+    assert "버전 미확정" in (r["note"] or "") and "역대 이력 1건" in (r["note"] or "")
+
+
+def test_unresolved_still_reports_malicious(monkeypatch, osv) -> None:
+    """버전과 무관한 악성 패키지 판정은 버전 미확정이라도 면제하지 않는다."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=300))
+    osv({"vulns": [{"id": "MAL-2025-1", "database_specific": {"severity": "CRITICAL"}},
+                   {"id": "GHSA-old", "database_specific": {"severity": "HIGH"}}]})
+    r = _run(cp.check_package_impl("evil", "pypi"))
+    assert r["is_malicious_package"] is True and r["verdict"] == "malicious"
+    assert r["vulnerability_count"] == 1          # MAL- 만 남고 역대 이력은 빠진다
 
 
 def test_install_script_flagged_for_review(monkeypatch, osv) -> None:

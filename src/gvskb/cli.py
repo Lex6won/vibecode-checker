@@ -31,6 +31,7 @@ from .schema import ScanReport
 EXIT_OK = 0
 EXIT_FINDINGS_WARN = 1
 EXIT_FINDINGS_BLOCK = 2
+EXIT_UNDETERMINED = 3        # 판정 불가 — 검사된 것이 없거나 필수 엔진이 돌지 않았다('경고'와 구분)
 EXIT_USAGE = 64
 EXIT_NOT_FOUND = 66
 
@@ -88,8 +89,12 @@ def _scan_exit_code(report: ScanReport, fail_on: str) -> int:
 
     if not should_fail(report, fail_on):
         return EXIT_OK
-    return (EXIT_FINDINGS_BLOCK if gate_status(report)["blocked"]
-            else EXIT_FINDINGS_WARN)
+    status = gate_status(report)
+    if status["blocked"]:
+        return EXIT_FINDINGS_BLOCK
+    if status["verdict"] == "undetermined":
+        return EXIT_UNDETERMINED
+    return EXIT_FINDINGS_WARN
 
 
 def _emit_doc_report(

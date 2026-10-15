@@ -5,6 +5,36 @@
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-15
+
+### 36차 — 종료코드·MCP·패키지 미확정이 게이트 결론과 같은 말을 한다 (코덱스 독립 검증 반영)
+
+코덱스 「35차 제안 독립 검증 평가」를 v0.5.3 전체에서 재현해 맞는 지적을 받아들였다. 룰셋 변경 없음(2026.10.15a).
+실측 6개 트리 발견 동일, 라벨 96건 위반 0.
+
+- **CLI 종료코드가 보고서와 다른 말을 하던 결함(P0)** — `should_fail` 이 차단이 아니면 **소스 발견 수만** 봐서
+  취약 패키지만 있는 조건부·버전 미고정·필수 엔진 실패·검사 0개가 전부 종료코드 0 이었다(도움말은 "조건부도
+  실패"라고 약속). 이제 게이트 결론에서 번역한다: 조건부 **1** · 차단 **2** · **판정 불가 3(신설)**. `--fail-on block`
+  은 차단과 판정 불가에서 실패, `dependency` 는 의존성 차단만(검사 불완전은 통과 — 명시적 임계값 정책), `never`
+  는 그대로. **CI 영향:** 기본 `warn` 으로 소스 발견 0·취약 패키지 있음으로 통과하던 파이프라인은 이제 실패한다.
+- MCP `render_report` 가 `verdict`·`requires_action`·`complete`·`conditional_criteria`·`coverage_gap` 을 돌려준다
+  (기존 `blocked*`·`gate_reason` 유지).
+- **버전도 최신판 정보도 없는 패키지(`unresolved`, 오프라인·조회 실패·사설)** — 34차가 `latest-assumed` 만 고쳐
+  이 경로는 여전히 역대 전체 이력으로 조회돼 몇 년 전 CRITICAL 이 차단 근거가 됐다. 이제 악성(MAL-)만 남기고
+  취약점은 집계하지 않으며 verdict `unknown`·"판정 불가(버전 미확정)"·검토 사유 `unpinned`.
+- **가정 최신판이 취약한 미고정 패키지** — 차단은 유지한다(설치 시점에 그 최신판이 들어온다). 대신 근거를 적는다:
+  차단 사유 라벨 "(미고정 — 가정 최신판 X 기준)", `block_reasons[].resolved_version/version_resolution`, gate
+  `dependency_vulnerable_assumed`, 패키지 표 "⚠ 개별 취약점 N건(가정 최신판 X 기준)", 해소 방안 "안전한 버전으로
+  고정(==)".
+- `complete` 계약 방어 — `coverage.complete=false` 가 카운터 없이 적혀 있어도 결손, 필수 엔진이 used·failed·
+  unavailable 어디에도 없으면 "상태 미기록" 결손. 의미를 문서에 고정: **소스 범위 + 필수 엔진**(의존성 미조회
+  제외, 빈 폴더는 complete=true·undetermined 공존 → `verdict` 와 함께 읽는다).
+- `scripts/precision_gate.py` — 탐지 지표(`tp`·`fp` 라벨만)와 정책 지표(`block_overreach`·`block_regression`)
+  분리, 미평가 라벨 수 표시. 예전에는 fp-block(경고 허용) 발견을 FP 로 세어 위반 0건인데 정밀도 0.0 이 찍혔다.
+  `recall` 은 라벨된 회귀 사례의 보존율이다(전체 미탐률 아님).
+- README 종료 코드 표 갱신. 테스트: `tests/test_round30_exit_contract.py`(실제 프로세스 종료코드 포함),
+  `test_check_package_unified.py`·`test_precision_gate.py` 계약 갱신.
+
 ## [0.5.3] - 2026-10-15
 
 ### 35차 — 게이트 계약 보강: 미고정 패키지·필수 엔진·판정 불가 (가이드북 별도검토 반영)

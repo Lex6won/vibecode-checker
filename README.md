@@ -497,16 +497,20 @@ gvskb scan ./my-project --check-deps
 
 | 종료 코드 | 의미 |
 |---|---|
-| `0` | 통과 |
-| `1` | 경고(warn) 발견 · 판정 불가(오프라인 캐시 없음 등 — '안전' 아님) |
-| `2` | 차단(block) 발견 |
+| `0` | 통과 — 게이트 판정 **승인**(조치할 것 없음) |
+| `1` | **조건부 승인** — 사람이 할 일이 남음(소스 발견 · 취약 패키지 · 버전 미고정 · 라이선스 검토 · 검사 범위 결손) |
+| `2` | **차단** — 악성 · 기관 거부 · 미존재 · CISA KEV · CVSS CRITICAL 패키지 |
+| `3` | **판정 불가** — 검사된 파일이 없거나 필수 엔진이 돌지 않음('안전' 아님, v0.5.4) |
 | `64` | 사용법 오류(잘못된 인자) |
 | `66` | 경로를 찾을 수 없음 |
 
+종료 코드는 보고서 결론 박스·JSON `gate.verdict` 와 **같은 판정**에서 나옵니다(v0.5.4 부터 — 그 전에는 소스 발견이
+없으면 취약 패키지·미고정·검사 불완전도 0 이었습니다).
+
 ```bash
-gvskb scan ./src --fail-on dependency   # 의존성 차단만 실패 — 처음 도입할 때 권장
-gvskb scan ./src --fail-on block        # block만 실패(2), warn은 통과 — CI 게이트 권장
-gvskb scan ./src --fail-on warn         # warn 이상 실패 (기본값)
+gvskb scan ./src --fail-on dependency   # 의존성 차단만 실패(2) — 판정 불가·검사 불완전은 통과(임계값 정책)
+gvskb scan ./src --fail-on block        # 차단(2)과 판정 불가(3)만 실패, 조건부는 통과 — CI 게이트 권장
+gvskb scan ./src --fail-on warn         # 조건부(1)·차단(2)·판정 불가(3) 모두 실패 (기본값)
 gvskb scan ./src --fail-on never        # 항상 0 (보고서만 생성)
 ```
 

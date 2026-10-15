@@ -567,6 +567,12 @@ def render_report(
         "blocked_source": _gate["blocked_source"],
         "blocked_dependency": _gate["blocked_dependency"],
         "gate_reason": _gate["reason"],
+        # 36차: `blocked` 만으로는 조건부·판정 불가를 구분할 수 없다 — 게이트 결론을 그대로 넘긴다.
+        "verdict": _gate["verdict"],
+        "requires_action": _gate["requires_action"],
+        "complete": _gate["complete"],
+        "conditional_criteria": _gate["conditional_criteria"],
+        "coverage_gap": _gate["coverage_gap"],
     }
     if format in ("markdown", "both"):
         md = render_markdown_impl(parsed)
