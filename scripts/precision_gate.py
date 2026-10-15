@@ -137,6 +137,42 @@ def precision_by_rule(snapshot: dict, labels: list[dict]) -> dict[str, dict]:
     return out
 
 
+_LANG_EXT = {
+    ".py": "python",
+    ".js": "js-ts", ".jsx": "js-ts", ".mjs": "js-ts", ".cjs": "js-ts",
+    ".ts": "js-ts", ".tsx": "js-ts", ".mts": "js-ts", ".cts": "js-ts",
+}
+
+
+def _language_of(file: str) -> str:
+    """라벨의 파일 경로 → 언어 묶음(python / js-ts / other). 검토서 T1: 언어별로 따로 낸다."""
+    return _LANG_EXT.get(Path(file).suffix.lower(), "other")
+
+
+def precision_by_language(snapshot: dict, labels: list[dict]) -> dict[str, dict]:
+    """언어 묶음별 tp/fp/fn 과 정밀도·재현율 — Python 과 JS/TS 의 성적을 한 숫자로 섞지 않는다."""
+    out: dict[str, dict] = {}
+    for lab in labels:
+        tree = snapshot.get("trees", {}).get(lab["tree"])
+        if tree is None:
+            continue
+        present = any(r["file"] == lab["file"].replace("\\", "/") and r["line"] == lab["line"]
+                      and r["rule"] == lab["rule"] for r in tree["rows"])
+        slot = out.setdefault(_language_of(lab["file"]),
+                              {"labels": 0, "tp": 0, "fp_reported": 0, "fp_suppressed": 0, "fn": 0})
+        slot["labels"] += 1
+        if lab["verdict"] in ("tp", "tp-block"):
+            slot["tp" if present else "fn"] += 1
+        elif lab["verdict"] in ("fp", "fp-block"):
+            slot["fp_reported" if present else "fp_suppressed"] += 1
+    for slot in out.values():
+        denom = slot["tp"] + slot["fp_reported"]
+        slot["precision"] = round(slot["tp"] / denom, 3) if denom else None
+        denom_r = slot["tp"] + slot["fn"]
+        slot["recall"] = round(slot["tp"] / denom_r, 3) if denom_r else None
+    return out
+
+
 def _print_diff(diff: dict) -> None:
     for tree, d in diff.items():
         flag = "SAME" if not (d["added"] or d["removed"] or d["changed"]) else "DIFF"
@@ -184,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
         diff = diff_snapshots(before, after)
         if args.json:
             print(json.dumps({"diff": diff, "violations": evaluate_labels(after, labels) if labels else [],
-                              "precision": precision_by_rule(after, labels) if labels else {}},
+                              "precision": precision_by_rule(after, labels) if labels else {},
+                              "by_language": precision_by_language(after, labels) if labels else {}},
                              ensure_ascii=False, indent=1))
         else:
             _print_diff(diff)
@@ -193,7 +230,8 @@ def main(argv: list[str] | None = None) -> int:
         target = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
         if args.json:
             print(json.dumps({"violations": evaluate_labels(target, labels),
-                              "precision": precision_by_rule(target, labels)}, ensure_ascii=False, indent=1))
+                              "precision": precision_by_rule(target, labels),
+                              "by_language": precision_by_language(target, labels)}, ensure_ascii=False, indent=1))
 
     if not labels:
         return 0
@@ -202,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
         for rule, p in sorted(precision_by_rule(target, labels).items()):
             print(f"  {rule:32s} tp={p['tp']} fp_reported={p['fp_reported']} fp_suppressed={p['fp_suppressed']} "
                   f"fn={p['fn']} precision={p['precision']} recall={p['recall']}")
+        for lang, p in sorted(precision_by_language(target, labels).items()):
+            print(f"  [{lang}] labels={p['labels']} tp={p['tp']} fp_reported={p['fp_reported']} "
+                  f"fp_suppressed={p['fp_suppressed']} fn={p['fn']} precision={p['precision']} recall={p['recall']}")
         for v in violations:
             print(f"VIOLATION  {v['tree']}/{v['file']}:{v['line']} {v['rule']} [{v['verdict']}] — {v['problem']}")
         print(f"라벨 {len(labels)}건 대조 — 위반 {len(violations)}건")

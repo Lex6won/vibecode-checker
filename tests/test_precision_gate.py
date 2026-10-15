@@ -53,6 +53,24 @@ def test_labels_catch_regressions_in_both_directions() -> None:
     assert p["precision"] == 0.5 and p["recall"] == 0.5
 
 
+def test_precision_is_split_by_language() -> None:
+    """Python 과 JS/TS 성적을 한 숫자로 섞지 않는다(별도검토 T1, 35차)."""
+    pg = _load()
+    snap = _snap([_row("a.py", 1, "R1"), _row("ui/app.tsx", 3, "R2"), _row("lib/x.js", 4, "R2")])
+    labels = [
+        {"tree": "proj", "file": "a.py", "line": 1, "rule": "R1", "verdict": "tp"},
+        {"tree": "proj", "file": "a.py", "line": 2, "rule": "R1", "verdict": "tp"},          # 미탐
+        {"tree": "proj", "file": "ui/app.tsx", "line": 3, "rule": "R2", "verdict": "fp"},    # 오탐 보고됨
+        {"tree": "proj", "file": "lib\\x.js", "line": 4, "rule": "R2", "verdict": "tp"},
+        {"tree": "proj", "file": "conf.yaml", "line": 1, "rule": "R3", "verdict": "fp"},
+    ]
+    by = pg.precision_by_language(snap, labels)
+    assert by["python"]["tp"] == 1 and by["python"]["fn"] == 1 and by["python"]["recall"] == 0.5
+    assert by["js-ts"]["tp"] == 1 and by["js-ts"]["fp_reported"] == 1 and by["js-ts"]["precision"] == 0.5
+    assert by["other"]["fp_suppressed"] == 1 and by["other"]["precision"] is None
+    assert pg._language_of("Page.TSX") == "js-ts" and pg._language_of("x.mjs") == "js-ts"
+
+
 def test_cli_check_exit_code_reflects_violations(tmp_path: Path) -> None:
     pg = _load()
     snap = _snap([_row("a.py", 1, "R1", "block", "confirmed")])

@@ -19,7 +19,9 @@ from typing import Iterable
 from ..schema import Finding
 from .base import ScannerAdapter
 from .py_const import (
+    SHADOWED_BUILTINS,
     is_numeric_cast,
+    shadowed_builtins,
     ConstEnv,
     collect_constants,
     expr_is_constant,
@@ -1041,6 +1043,7 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
     token = _PLACEHOLDER_FUNCS.set(_placeholder_functions(tree))
     tool_token = _TOOL_FUNCS.set(_tool_functions(tree))
     sig_token = _FUNC_SIGS.set(_function_signatures(tree))
+    shadow_token = SHADOWED_BUILTINS.set(shadowed_builtins(tree))
     literal_params = literal_only_parameters(tree)
     body = getattr(tree, "body", [])
     param_sources: dict[str, frozenset[str]] = {}
@@ -1064,6 +1067,7 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
                 break
             param_sources = merged
     finally:
+        SHADOWED_BUILTINS.reset(shadow_token)
         _FUNC_SIGS.reset(sig_token)
         _TOOL_FUNCS.reset(tool_token)
         _PLACEHOLDER_FUNCS.reset(token)

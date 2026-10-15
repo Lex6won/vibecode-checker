@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import ast
+import contextvars
 from dataclasses import dataclass, field
 
 
@@ -67,6 +68,22 @@ _NUMERIC_CAST_FUNCS = frozenset({"int", "float", "bool", "len", "round", "abs"})
 _NUMERIC_TYPE_NAMES = frozenset({"int", "float", "bool"})
 
 
+#: 이 모듈에서 **다시 묶인** 내장 이름 — `def int(x)`·`int = …`·`from x import int`. 검토서 B02(2026-10-15)
+#: 적대 변형: `int` 를 재정의하면 `int(request.args[...])` 는 숫자가 아니다. 34차 숫자 변환 완화가 이 변형에서
+#: SQL 삽입을 놓쳤다(실측 쌍 대조). ast_scanner 가 모듈 단위로 set 하고 끝나면 reset 한다.
+SHADOWED_BUILTINS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "gvskb_py_shadowed_builtins", default=frozenset()
+)
+
+
+def shadowed_builtins(tree: ast.AST) -> frozenset[str]:
+    """모듈 전체에서 다시 묶인 이름 중 숫자 변환·읽기 전용 내장과 겹치는 것."""
+    body = getattr(tree, "body", None)
+    if not isinstance(body, list):
+        return frozenset()
+    return frozenset(_bound_names(body) & (_NUMERIC_CAST_FUNCS | _READONLY_BUILTINS))
+
+
 def is_numeric_cast(node: ast.AST) -> bool:
     """값이 숫자로 **변환된** 식인가 — `int(x)`·`float(x)`·`request.args.get('d', 1, type=int)`.
 
@@ -76,15 +93,16 @@ def is_numeric_cast(node: ast.AST) -> bool:
     """
     if not isinstance(node, ast.Call):
         return False
+    shadowed = SHADOWED_BUILTINS.get()
     if isinstance(node.func, ast.Name) and node.func.id in _NUMERIC_CAST_FUNCS and node.args:
-        return True
+        return node.func.id not in shadowed
     if isinstance(node.func, ast.Attribute):
         if node.func.attr in {"get_int", "getint", "getfloat"}:
             return True
         if node.func.attr == "get":
             for kw in node.keywords:
                 if kw.arg == "type" and isinstance(kw.value, ast.Name) and kw.value.id in _NUMERIC_TYPE_NAMES:
-                    return True
+                    return kw.value.id not in shadowed
     return False
 
 
@@ -274,7 +292,7 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
     #    stars_db.py): `dict(zip(ALL_COLUMNS, row))` 한 줄이 모듈 상수 ALL_COLUMNS 를
     #    실격시켜 바인딩만 쓰는 SQL 2건이 '치명·유력'으로 남았다. zip/len/sorted 는
     #    인자를 바꾸지 않는다. 같은 이름을 다시 정의했으면(`def zip`·`zip = …`) 예외 없음.
-    bound = _bound_names(stmts)
+    bound = _bound_names(stmts) | SHADOWED_BUILTINS.get()
     for s in flat:
         for node in ast.walk(s):
             if not isinstance(node, ast.Call):
