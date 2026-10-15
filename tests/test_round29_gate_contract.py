@@ -50,7 +50,8 @@ def test_unpinned_clean_latest_is_conditional_not_approved() -> None:
     g = gate_status(_report([_UNPINNED_CLEAN]))
     assert g["verdict"] == "conditional"
     assert g["conditional_criteria"] == ["unpinned"]
-    assert g["unpinned"] == [{"name": "flask", "resolved_version": "3.1.0"}]
+    assert g["unpinned"] == [{"name": "flask", "resolved_version": "3.1.0",
+                              "version_resolution": "latest-assumed"}]
     assert g["requires_action"] is True
     assert "버전 미고정 1종" in g["reason"] and "최신판 기준" in g["reason"]
 

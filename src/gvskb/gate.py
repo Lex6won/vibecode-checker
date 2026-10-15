@@ -64,8 +64,10 @@ CRITICAL 0건. 가장 강한 신호 셋은 한 번도 발동한 적이 없는데
   예전 `blocked` 의 "뭔가 조치가 필요하다"는 뜻을 그대로 옮겨 담는다. 판정 불가도
   참이다(35차, 2026-10-15) — "왜 아무것도 검사되지 않았나"는 사람이 봐야 할 일이고,
   이 값만 읽는 소비자가 판정 불가를 '조치 불필요'로 읽던 틈을 막는다.
-- `complete` — 검사 범위가 온전했는가(파일 수·크기 상한에 걸리지 않았고 **필수 엔진이
-  모두 돌았다**). 거짓이면 다른 사유가 있어도 그 판정은 **본 범위 안의 판정**이다.
+- `complete` — **소스 검사 범위와 필수 엔진**의 완전성(파일 수·크기 상한에 걸리지 않았고 필수
+  엔진이 모두 돌았다는 기록이 있다). 거짓이면 다른 사유가 있어도 그 판정은 **본 범위 안의 판정**이다.
+  의존성 미조회는 여기 들어가지 않는다(`dependency_unchecked`). 빈 폴더는 `complete=true` 이면서
+  `undetermined` 다 — 이 값 하나로 통과를 정하지 말고 `verdict`·`requires_action` 과 함께 읽는다.
 
 ## 이 판정은 기술 판정이다
 
@@ -153,11 +155,17 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
             hits.append("critical")
         if not hits:
             continue
+        # 36차: 미고정 패키지는 **가정한 최신판** 기준으로 판정한 것이다 — 차단은 유지하되(배포 시점에
+        # 그 최신판이 설치된다) 근거를 사유에 적는다. 그래야 담당자가 "안전한 버전으로 고정"으로 풀 수 있다.
+        assumed = check.get("version_resolution") == "latest-assumed"
+        basis = f"(미고정 — 가정 최신판 {check.get('resolved_version') or '?'} 기준)" if assumed else ""
         reasons.append({
             "package": check.get("name"),
             "version": check.get("version"),
+            "resolved_version": check.get("resolved_version"),
+            "version_resolution": check.get("version_resolution") or ("pinned" if check.get("version") else None),
             "criteria": hits,
-            "labels": [BLOCK_CRITERIA[h] for h in hits],
+            "labels": [BLOCK_CRITERIA[h] + basis for h in hits],
             "recommended_version": check.get("recommended_version"),
             "latest_version": (check.get("registry_metadata") or {}).get("latest_version"),
         })
@@ -233,10 +241,28 @@ def _unpinned_packages(report: ScanReport) -> list[dict]:
     out: list[dict] = []
     for comp in _dep_merged_components(audits):
         check = comp.get("check") or {}
-        if check.get("version_resolution") != "latest-assumed":
+        if check.get("version_resolution") not in ("latest-assumed", "unresolved"):
             continue
-        out.append({"name": check.get("name"), "resolved_version": check.get("resolved_version")})
+        out.append({
+            "name": check.get("name"),
+            "resolved_version": check.get("resolved_version"),
+            "version_resolution": check.get("version_resolution"),
+        })
     return out
+
+
+def _assumed_vulnerable_count(report: ScanReport) -> int:
+    """취약·악성으로 집계된 컴포넌트 중 **가정 최신판** 기준인 것의 수."""
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return 0
+    return sum(
+        1 for comp in _dep_merged_components(audits)
+        if (c := comp.get("check") or {}).get("version_resolution") == "latest-assumed"
+        and (c.get("is_malicious_package") or c.get("vulnerability_count"))
+    )
 
 
 def _exposure_counts(report: ScanReport) -> dict:
@@ -296,7 +322,8 @@ def gate_status(report: ScanReport) -> dict:
           "source_block_count": int,
           "dependency_vulnerable": int,
           "dependency_unchecked": int,
-          "unpinned": [ {name, resolved_version} ],   # 최신판을 가정해 조회한 미고정 패키지
+          "unpinned": [ {name, resolved_version, version_resolution} ],  # 미고정(latest-assumed·unresolved)
+          "dependency_vulnerable_assumed": int,   # 취약 집계 중 가정 최신판 기준인 수
           "reason": str,                   # 사람이 읽는 한 줄
         }
     """
@@ -384,6 +411,8 @@ def gate_status(report: ScanReport) -> dict:
         "coverage_gap": coverage_gap,
         "license_review": license_review,
         "unpinned": unpinned,
+        # 가정 최신판 기준으로 취약 판정된 미고정 컴포넌트 수 — `dependency_vulnerable` 에 포함돼 있다.
+        "dependency_vulnerable_assumed": _assumed_vulnerable_count(report),
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
                           block_count, vuln, unchecked, coverage_gap,
                           license_review=len(license_review), unpinned=len(unpinned)),
@@ -410,6 +439,10 @@ def _engine_gap(report: ScanReport) -> str:
         if name in required and name not in down:
             reason = getattr(item, "reason", None) or (item.get("reason") if isinstance(item, dict) else "") or ""
             down[name] = reason
+    # 필수인데 used·failed·unavailable 어디에도 없다 — 돌았다는 증거가 없는 것은 돌지 않은 것으로 본다(36차).
+    used = set(getattr(eng, "used", None) or [])
+    for name in sorted(required - used - set(down)):
+        down[name] = "상태 미기록"
     if not down:
         return ""
     return "필수 엔진 미가동 — " + ", ".join(
@@ -435,6 +468,9 @@ def _coverage_gap(report: ScanReport) -> str:
     engine_gap = _engine_gap(report)
     if engine_gap:
         parts.append(engine_gap)
+    # 구조화 카운터가 비어 있어도 `coverage.complete=false` 라고 적혀 있으면 믿는다 — 계약 방어(36차).
+    if not parts and cov is not None and getattr(cov, "complete", True) is False:
+        parts.append("검사 범위 불완전(사유 미기록 — coverage.complete=false)")
     return " · ".join(parts)
 
 
@@ -462,14 +498,24 @@ def _reason(
             )
         return "판정 불가 — 검사된 파일이 0개입니다. 경로·확장자를 확인하세요."
     if verdict == "blocked":
-        names = ", ".join(
-            f"{r['package']} {r['version'] or ''}".strip() for r in block_reasons[:3])
+        def _name(r: dict) -> str:
+            if r.get("version"):
+                return f"{r['package']} {r['version']}"
+            if r.get("version_resolution") == "latest-assumed":
+                return f"{r['package']}(미고정·가정 최신판 {r.get('resolved_version') or '?'})"
+            return str(r["package"])
+        names = ", ".join(_name(r) for r in block_reasons[:3])
         labels = sorted({lab for r in block_reasons for lab in r["labels"]})
         more = f" 외 {len(block_reasons) - 3}종" if len(block_reasons) > 3 else ""
         head = (
             f"배포 불가 — {' · '.join(labels)}에 해당하는 패키지가 있습니다"
             f"({names}{more}). 사유 기록으로 넘길 수 없는 등급입니다."
         )
+        if any(r.get("version_resolution") == "latest-assumed" for r in block_reasons):
+            head += (
+                " 버전이 고정되지 않은 패키지는 **설치 시점에 들어올 최신판**을 기준으로 판정했습니다 — "
+                "안전한 버전으로 고정(==)하면 해소됩니다."
+            )
         if block_count:
             head += (
                 f" **소스만 고치면 차단이 풀리지 않습니다** — 소스 {block_count}건과 "
@@ -545,25 +591,40 @@ def _reason(
 #: `--fail-on` 이 받는 값과 그 뜻. CLI 도움말·MCP 문서가 같은 표를 쓴다.
 FAIL_ON_CHOICES: dict[str, str] = {
     "never": "언제나 0 — 검사만 하고 파이프라인은 막지 않습니다",
-    "warn": "발견이 하나라도 있으면 실패 (기본) — 조건부 승인도 여기서 걸립니다",
+    "warn": (
+        "사람이 할 일이 남았으면 실패 (기본) — 조건부 승인(소스 발견·취약 패키지·버전 미고정·"
+        "라이선스 검토·검사 범위 결손)은 1, 판정 불가는 3"
+    ),
     "block": (
-        "**차단**일 때만 실패 — 악성 · 기관 거부 · 미존재 · CISA KEV · "
-        "CVSS CRITICAL. 조건부 승인은 통과합니다"
+        "**차단**일 때만 실패(2) — 악성 · 기관 거부 · 미존재 · CISA KEV · CVSS CRITICAL. "
+        "조건부 승인은 통과하지만 **판정 불가(검사가 안 됨)는 3 으로 실패**합니다"
     ),
     "dependency": (
-        "의존성 차단만 실패 — 지금은 `block` 과 같습니다(소스는 차단하지 않음). "
+        "의존성 차단만 실패(2) — 소스·판정 불가·검사 불완전은 통과합니다(임계값 정책). "
         "'소스는 보조, 의존성은 게이트' 를 그대로 옮긴 설정입니다"
     ),
 }
 
 
 def should_fail(report: ScanReport, fail_on: str) -> bool:
-    """`--fail-on` 정책에 따라 이 결과가 파이프라인을 막아야 하는가."""
+    """`--fail-on` 정책에 따라 이 결과가 파이프라인을 막아야 하는가.
+
+    **게이트 결론 한 곳에서만** 읽는다(36차, 2026-10-15). 예전에는 차단이 아니면 `소스 finding_count > 0`
+    만 봤다 — 그래서 취약 패키지만 있는 조건부, 버전 미고정, 필수 엔진 실패, 검사 0개가 전부 종료코드
+    0(통과)이었다. 보고서는 "조건부·판정 불가"라고 쓰는데 CI 는 초록불을 받던 틈이다.
+
+    - ``never``      : 언제나 통과.
+    - ``dependency`` : 의존성 차단만(임계값 정책). **검사 불완전·판정 불가는 통과시킨다** — 명시적 선택.
+    - ``block``      : 차단 **또는 판정 불가**. "차단만 막겠다"는 사용자도 검사가 안 된 결과를 통과시키려는
+                       뜻은 아니다. 판정 불가는 종료코드 3 으로 구분된다.
+    - ``warn``(기본) : 사람이 할 일이 남았으면(`requires_action`) 실패 — 조건부(취약 패키지·미고정·라이선스·
+                       범위 결손 포함)와 판정 불가 모두.
+    """
     if fail_on == "never":
         return False
     status = gate_status(report)
     if fail_on == "dependency":
         return status["blocked_dependency"]
-    if status["blocked"]:
+    if status["blocked"] or status["verdict"] == "undetermined":
         return True
-    return fail_on == "warn" and report.summary.finding_count > 0
+    return fail_on == "warn" and status["requires_action"]

@@ -1083,7 +1083,12 @@ def _remedy_lines(report: ScanReport) -> list[str]:
     out: list[str] = []
     for r in g["block_reasons"][:5]:
         pkg = f"{r['package']} {r['version'] or ''}".strip()
-        fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"))
+        if r.get("version_resolution") == "latest-assumed":
+            pkg = f"{r['package']}(미고정 — 가정 최신판 {r.get('resolved_version') or '?'})"
+            fix = ("취약점이 없는 버전을 골라 **고정(==)** 한 뒤 다시 검사하세요 — "
+                   "미고정이면 설치 시점에 최신판이 들어옵니다")
+        else:
+            fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"))
         out.append(f"`{pkg}` ({' · '.join(r['labels'])}) → {fix}")
     if len(g["block_reasons"]) > 5:
         out.append(f"외 {len(g['block_reasons']) - 5}종 — 아래 의존성 섹션 참조")
@@ -3359,7 +3364,11 @@ def _pkg_verdict_label(check: dict) -> str:
     if n:
         # 단위를 붙인다 — '취약·악성 3건'(패키지 수)과 섞여 읽히던 숫자다.
         # 실측 질문: "3건인데 26건은 뭔가, 뭐가 26건인지 알 수가 없다."
+        if check.get("version_resolution") == "latest-assumed":
+            return f"⚠ 개별 취약점 {n}건(가정 최신판 {check.get('resolved_version') or '?'} 기준)"
         return f"⚠ 개별 취약점 {n}건"
+    if check.get("verdict") == "unknown":
+        return "판정 불가(버전 미확정)"
     if check.get("verdict") == "cooldown_hold":
         return "⏸ 발행 직후 — 대기 권고"
     if check.get("verdict") == "suspicious_name":
@@ -3410,6 +3419,8 @@ def _pkg_note(check: dict) -> str:
     if check.get("version_resolution") == "latest-assumed":
         bits.append(
             f"버전 미고정 — 최신판 {check.get('resolved_version') or '?'} 기준 조회(설치본 안전 근거 아님)")
+    elif check.get("version_resolution") == "unresolved":
+        bits.append("버전 미확정 — 최신판 정보 없음, 취약점 집계 안 함(안전 아님)")
     if not check.get("checked") and check.get("note") and check.get("verdict") != "not_found":
         bits.append("검사 불가 사유 있음")
     return " · ".join(bits)

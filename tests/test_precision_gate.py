@@ -49,8 +49,20 @@ def test_labels_catch_regressions_in_both_directions() -> None:
     v = pg.evaluate_labels(snap, labels)
     assert [(x["file"], x["line"]) for x in v] == [("a.py", 1), ("a.py", 2)]
     p = pg.precision_by_rule(snap, labels)["R1"]
-    assert p["tp"] == 1 and p["fn"] == 1 and p["fp_reported"] == 1 and p["fp_suppressed"] == 1
-    assert p["precision"] == 0.5 and p["recall"] == 0.5
+    # 탐지 지표는 tp/fp 라벨만 — fp-block(경고 허용·차단 금지)은 탐지의 진위를 말하지 않으므로 FP 가 아니다.
+    assert p["tp"] == 1 and p["fn"] == 1 and p["fp_reported"] == 0 and p["fp_suppressed"] == 1
+    assert p["precision"] == 1.0 and p["recall"] == 0.5
+    # 정책 지표는 따로 — a.py:1 은 fp-block 인데 차단이다.
+    assert p["block_overreach"] == 1 and p["block_regression"] == 0
+    assert p["labels"] == 5 and p["unevaluated"] == 1       # other 트리의 라벨은 분모에서 빠진다
+
+
+def test_block_regression_is_a_policy_metric_not_a_detection_miss() -> None:
+    pg = _load()
+    snap = _snap([_row("a.py", 1, "R1", "warn", "likely")])
+    labels = [{"tree": "proj", "file": "a.py", "line": 1, "rule": "R1", "verdict": "tp-block"}]
+    p = pg.precision_by_rule(snap, labels)["R1"]
+    assert p["tp"] == 1 and p["fn"] == 0 and p["block_regression"] == 1
 
 
 def test_precision_is_split_by_language() -> None:

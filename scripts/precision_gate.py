@@ -115,26 +115,55 @@ def evaluate_labels(snapshot: dict, labels: list[dict]) -> list[dict]:
     return violations
 
 
-def precision_by_rule(snapshot: dict, labels: list[dict]) -> dict[str, dict]:
-    """룰별 (라벨된 발견 중) 정밀도 — tp / (tp + 보고된 fp)."""
+def _tally(snapshot: dict, labels: list[dict], key_of) -> dict[str, dict]:
+    """라벨을 `key_of(label)` 로 묶어 **탐지 지표와 정책 지표를 따로** 센다(36차, 2026-10-15).
+
+    - 탐지: `tp`(있어야 하고 있음) · `fn`(있어야 하는데 없음) · `fp_reported`(없어야 하는데 있음) ·
+      `fp_suppressed`(없어야 하고 없음). **`tp`·`tp-block`·`fp` 라벨만** 쓴다.
+    - 정책: `block_overreach`(fp-block 인데 차단) · `block_regression`(tp-block 인데 차단이 아니거나 없음).
+      `fp-block` 은 "경고는 남아도 된다"는 라벨이라 **탐지의 진위를 말하지 않는다** — 예전에는 이것을 FP 로
+      세어 위반 0건인데 정밀도 0.0 이 찍혔다.
+    - `unevaluated`: 이 PC 에 없는 트리의 라벨 수(분모에서 빠진다 — 빈 집계를 평가 완료로 읽지 않도록).
+    `recall` 은 라벨된 회귀 사례의 **보존율**이다. 한 번도 탐지된 적 없는 취약 사례는 라벨에 없으므로 전체
+    미탐률이 아니다.
+    """
     out: dict[str, dict] = {}
+
+    def slot_for(k: str) -> dict:
+        return out.setdefault(k, {"labels": 0, "unevaluated": 0, "tp": 0, "fn": 0, "fp_reported": 0,
+                                  "fp_suppressed": 0, "block_overreach": 0, "block_regression": 0})
+
     for lab in labels:
+        slot = slot_for(key_of(lab))
+        slot["labels"] += 1
         tree = snapshot.get("trees", {}).get(lab["tree"])
         if tree is None:
+            slot["unevaluated"] += 1
             continue
-        present = any(r["file"] == lab["file"].replace("\\", "/") and r["line"] == lab["line"]
-                      and r["rule"] == lab["rule"] for r in tree["rows"])
-        slot = out.setdefault(lab["rule"], {"tp": 0, "fp_reported": 0, "fp_suppressed": 0, "fn": 0})
-        if lab["verdict"] in ("tp", "tp-block"):
-            slot["tp" if present else "fn"] += 1
-        elif lab["verdict"] in ("fp", "fp-block"):
-            slot["fp_reported" if present else "fp_suppressed"] += 1
+        hit = next((r for r in tree["rows"]
+                    if r["file"] == lab["file"].replace("\\", "/") and r["line"] == lab["line"]
+                    and r["rule"] == lab["rule"]), None)
+        v = lab["verdict"]
+        if v in ("tp", "tp-block"):
+            slot["tp" if hit is not None else "fn"] += 1
+            if v == "tp-block" and (hit is None or hit["decision"] != "block"):
+                slot["block_regression"] += 1
+        elif v == "fp":
+            slot["fp_reported" if hit is not None else "fp_suppressed"] += 1
+        elif v == "fp-block":
+            if hit is not None and hit["decision"] == "block":
+                slot["block_overreach"] += 1
     for slot in out.values():
         denom = slot["tp"] + slot["fp_reported"]
         slot["precision"] = round(slot["tp"] / denom, 3) if denom else None
         denom_r = slot["tp"] + slot["fn"]
         slot["recall"] = round(slot["tp"] / denom_r, 3) if denom_r else None
     return out
+
+
+def precision_by_rule(snapshot: dict, labels: list[dict]) -> dict[str, dict]:
+    """룰별 탐지·정책 지표 — `_tally` 참조."""
+    return _tally(snapshot, labels, lambda lab: lab["rule"])
 
 
 _LANG_EXT = {
@@ -150,27 +179,8 @@ def _language_of(file: str) -> str:
 
 
 def precision_by_language(snapshot: dict, labels: list[dict]) -> dict[str, dict]:
-    """언어 묶음별 tp/fp/fn 과 정밀도·재현율 — Python 과 JS/TS 의 성적을 한 숫자로 섞지 않는다."""
-    out: dict[str, dict] = {}
-    for lab in labels:
-        tree = snapshot.get("trees", {}).get(lab["tree"])
-        if tree is None:
-            continue
-        present = any(r["file"] == lab["file"].replace("\\", "/") and r["line"] == lab["line"]
-                      and r["rule"] == lab["rule"] for r in tree["rows"])
-        slot = out.setdefault(_language_of(lab["file"]),
-                              {"labels": 0, "tp": 0, "fp_reported": 0, "fp_suppressed": 0, "fn": 0})
-        slot["labels"] += 1
-        if lab["verdict"] in ("tp", "tp-block"):
-            slot["tp" if present else "fn"] += 1
-        elif lab["verdict"] in ("fp", "fp-block"):
-            slot["fp_reported" if present else "fp_suppressed"] += 1
-    for slot in out.values():
-        denom = slot["tp"] + slot["fp_reported"]
-        slot["precision"] = round(slot["tp"] / denom, 3) if denom else None
-        denom_r = slot["tp"] + slot["fn"]
-        slot["recall"] = round(slot["tp"] / denom_r, 3) if denom_r else None
-    return out
+    """언어 묶음별 탐지·정책 지표 — Python 과 JS/TS 의 성적을 한 숫자로 섞지 않는다."""
+    return _tally(snapshot, labels, lambda lab: _language_of(lab["file"]))
 
 
 def _print_diff(diff: dict) -> None:
@@ -237,12 +247,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     violations = evaluate_labels(target, labels)
     if not args.json:
+        def _line(name: str, p: dict) -> str:
+            return (f"  {name:32s} tp={p['tp']} fn={p['fn']} fp_reported={p['fp_reported']} "
+                    f"fp_suppressed={p['fp_suppressed']} precision={p['precision']} recall(보존율)={p['recall']}"
+                    f" | 차단과잉={p['block_overreach']} 차단후퇴={p['block_regression']}"
+                    f" | 라벨 {p['labels']} (미평가 {p['unevaluated']})")
         for rule, p in sorted(precision_by_rule(target, labels).items()):
-            print(f"  {rule:32s} tp={p['tp']} fp_reported={p['fp_reported']} fp_suppressed={p['fp_suppressed']} "
-                  f"fn={p['fn']} precision={p['precision']} recall={p['recall']}")
+            print(_line(rule, p))
         for lang, p in sorted(precision_by_language(target, labels).items()):
-            print(f"  [{lang}] labels={p['labels']} tp={p['tp']} fp_reported={p['fp_reported']} "
-                  f"fp_suppressed={p['fp_suppressed']} fn={p['fn']} precision={p['precision']} recall={p['recall']}")
+            print(_line(f"[{lang}]", p))
         for v in violations:
             print(f"VIOLATION  {v['tree']}/{v['file']}:{v['line']} {v['rule']} [{v['verdict']}] — {v['problem']}")
         print(f"라벨 {len(labels)}건 대조 — 위반 {len(violations)}건")

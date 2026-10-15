@@ -1733,6 +1733,13 @@ async def check_package_impl(
     vulns = data.get("vulns", []) or []
     malicious_advisories = [v for v in vulns if str(v.get("id", "")).startswith("MAL-")]
     has_malicious = bool(malicious_advisories)
+    unresolved_history = 0
+    if version_resolution == "unresolved" and vulns:
+        # 버전도 없고 최신판 정보도 없다(오프라인·조회 실패·사설 패키지) — OSV 는 **역대 전체 이력**을
+        # 돌려줬다. 34차는 latest-assumed 경로만 고쳐 이 경로는 여전히 몇 년 전 CRITICAL 로 차단됐다(36차).
+        # 악성(MAL-)은 버전과 무관하니 남기고, 취약점은 집계하지 않는다 — '판정 불가'이지 '안전'이 아니다.
+        unresolved_history = len(vulns) - len(malicious_advisories)
+        vulns = list(malicious_advisories)
     max_cve = _max_cve_from_vulns(vulns)
 
     # ③ CISA KEV 교차 대조 — 실제 악용 중인 취약점이면 심각도와 무관하게 차단급.
@@ -1764,6 +1771,12 @@ async def check_package_impl(
         notes.append(
             f"버전 미고정 — 최신판 {resolved_version} 을 기준으로 판정했습니다. 설치 시점에 따라 다른 버전이 "
             "들어올 수 있으니 버전을 고정(==)하세요."
+        )
+    elif version_resolution == "unresolved":
+        notes.append(
+            "버전 미확정 — 버전이 적혀 있지 않고 최신판 정보도 얻지 못해 취약점을 판정하지 못했습니다"
+            + (f"(역대 이력 {unresolved_history}건은 집계하지 않음)" if unresolved_history else "")
+            + ". 버전을 고정(==)하고 온라인 환경에서 다시 검사하세요."
         )
     if lic_verdict == "review_required":
         notes.append(
@@ -1831,6 +1844,9 @@ async def check_package_impl(
         # 인기 패키지와 1자 차이 — 레지스트리에 **존재하더라도** 통과시키지 않는다.
         # 존재가 면죄부가 되면 스쿼터가 이름을 등록해 둔 바로 그 상황에서 뚫린다.
         verdict, severity = "suspicious_name", "high"
+    elif version_resolution == "unresolved":
+        # 버전 미확정 — 취약점을 묻지 못했으니 '이상 없음'이 아니라 '판정 불가'다(36차).
+        verdict, severity = "unknown", "low"
     else:
         verdict, severity = "checked_clean", "info"
 
@@ -1843,7 +1859,7 @@ async def check_package_impl(
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)
-        or version_resolution == "latest-assumed"   # 미고정은 설치 시점마다 달라진다 — 사람이 봐야 한다
+        or version_resolution in ("latest-assumed", "unresolved")   # 미고정·미확정은 사람이 봐야 한다
     )
 
     advisory_rows = _advisory_rows(vulns, name=name, eco=eco)
