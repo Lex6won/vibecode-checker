@@ -60,8 +60,18 @@ CRITICAL 0건. 가장 강한 신호 셋은 한 번도 발동한 적이 없는데
 
 - `verdict` — ``blocked`` | ``conditional`` | ``approved`` | ``undetermined``.
   새 소비자는 이쪽을 읽는다.
-- `requires_action` — 차단이든 조건부든 **사람이 할 일이 남았는가**.
-  예전 `blocked` 의 "뭔가 조치가 필요하다"는 뜻을 그대로 옮겨 담는다.
+- `requires_action` — 차단·조건부·**판정 불가** 모두 **사람이 할 일이 남았는가**.
+  예전 `blocked` 의 "뭔가 조치가 필요하다"는 뜻을 그대로 옮겨 담는다. 판정 불가도
+  참이다(35차, 2026-10-15) — "왜 아무것도 검사되지 않았나"는 사람이 봐야 할 일이고,
+  이 값만 읽는 소비자가 판정 불가를 '조치 불필요'로 읽던 틈을 막는다.
+- `complete` — 검사 범위가 온전했는가(파일 수·크기 상한에 걸리지 않았고 **필수 엔진이
+  모두 돌았다**). 거짓이면 다른 사유가 있어도 그 판정은 **본 범위 안의 판정**이다.
+
+## 이 판정은 기술 판정이다
+
+`approved`·`conditional` 은 **도구가 본 범위 안의 기술적 결론**이다. 기관 보안담당자의
+사용 승인·조건부 사용 결정(가이드북 6.5)은 별도 절차이며, 이 도구는 그 결정의 근거를
+제공할 뿐 발급하지 않는다. 보고서 결론 박스가 같은 문장을 싣는다.
 
 CLI 기본값 ``--fail-on warn`` 은 그대로라 CI 는 여전히 발견이 있으면 실패한다.
 느슨해지는 것은 ``--fail-on block`` 을 명시한 경우뿐이다.
@@ -88,6 +98,11 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
     "source": "소스 코드 발견",
     "license": "라이선스 검토 필요(GPL·AGPL 등 — 배포·네트워크 제공 형태에 따라 의무 발생)",
+    # 35차(2026-10-15). 34차가 미고정 패키지를 "최신판 기준"으로 조회해 역대 취약점 차단
+    # 오탐을 없앴는데, 그 자리에 **안전 오판**이 생겼다 — 최신판이 깨끗하면 게이트는 '승인',
+    # 보고서는 '이상 없음'이었다. 최신판 조회는 설치본이 안전하다는 근거가 아니다.
+    "unpinned": "버전 미고정 — 최신판 기준으로 조회했을 뿐, 설치본이 안전하다는 뜻이 아님",
+    "coverage": "검사 범위 결손 — 크기·수 상한에 걸린 실행 소스 또는 돌지 못한 필수 엔진",
 }
 
 
@@ -203,6 +218,27 @@ def _license_review_packages(report: ScanReport) -> list[dict]:
     return out
 
 
+def _unpinned_packages(report: ScanReport) -> list[dict]:
+    """버전 미고정으로 **최신판을 가정해** 조회한 컴포넌트 — [{'name','resolved_version'}].
+
+    `version_resolution == "latest-assumed"` 는 "requirements 에 버전이 없어 최신판 X 로 조회했다"는
+    뜻이다. 실측(2026-10-15 챗봇 requirements.txt 18개 전부 미고정): 최신판에 취약점이 없으면
+    게이트가 '승인'을 냈다. 설치 시점에 다른 버전이 들어올 수 있으니 사람이 봐야 한다.
+    """
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    out: list[dict] = []
+    for comp in _dep_merged_components(audits):
+        check = comp.get("check") or {}
+        if check.get("version_resolution") != "latest-assumed":
+            continue
+        out.append({"name": check.get("name"), "resolved_version": check.get("resolved_version")})
+    return out
+
+
 def _exposure_counts(report: ScanReport) -> dict:
     """조건부라도 **조용히 넘어가면 안 되는 것**을 따로 센다.
 
@@ -250,7 +286,8 @@ def gate_status(report: ScanReport) -> dict:
           "verdict": "blocked" | "conditional" | "approved" | "undetermined",
           "blocked": bool,                 # verdict == "blocked"
           "conditional": bool,             # verdict == "conditional"
-          "requires_action": bool,         # 차단이든 조건부든 할 일이 남았는가
+          "requires_action": bool,         # 차단·조건부·판정 불가 — 할 일이 남았는가
+          "complete": bool,                # 검사 범위 온전(상한 결손·필수 엔진 미가동 없음)
           "block_reasons": [ {package, version, criteria, labels, ...} ],
           "conditional_criteria": [str],   # 왜 조건부인가
           "exposure": {"secret": int, "pii": int},
@@ -259,6 +296,7 @@ def gate_status(report: ScanReport) -> dict:
           "source_block_count": int,
           "dependency_vulnerable": int,
           "dependency_unchecked": int,
+          "unpinned": [ {name, resolved_version} ],   # 최신판을 가정해 조회한 미고정 패키지
           "reason": str,                   # 사람이 읽는 한 줄
         }
     """
@@ -290,6 +328,9 @@ def gate_status(report: ScanReport) -> dict:
     license_review = _license_review_packages(report)
     if license_review:
         conditional_criteria.append("license")
+    unpinned = _unpinned_packages(report)
+    if unpinned:
+        conditional_criteria.append("unpinned")
 
     exposure = _exposure_counts(report)
     # 검사 범위 결손 — 실행 소스가 크기·수 상한에 걸려 빠졌다. 실측(2026-09-16):
@@ -325,7 +366,10 @@ def gate_status(report: ScanReport) -> dict:
         "verdict": verdict,
         "blocked": verdict == "blocked",
         "conditional": verdict == "conditional",
-        "requires_action": verdict in ("blocked", "conditional"),
+        # 판정 불가도 '할 일이 남았다' — 검사되지 않은 것은 안전한 것이 아니다(35차).
+        "requires_action": verdict in ("blocked", "conditional", "undetermined"),
+        # 검사 범위가 온전했는가 — 상한 결손도, 필수 엔진 미가동도 없었다.
+        "complete": not coverage_gap,
         "block_reasons": block_reasons,
         "conditional_criteria": conditional_criteria,
         "exposure": exposure,
@@ -339,25 +383,58 @@ def gate_status(report: ScanReport) -> dict:
         "dependency_not_found": not_found,
         "coverage_gap": coverage_gap,
         "license_review": license_review,
+        "unpinned": unpinned,
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
                           block_count, vuln, unchecked, coverage_gap,
-                          license_review=len(license_review)),
+                          license_review=len(license_review), unpinned=len(unpinned)),
     }
 
 
-def _coverage_gap(report: ScanReport) -> str:
-    """검사 범위 결손을 사람이 읽는 한 문장으로. 없으면 빈 문자열."""
-    cov = getattr(report, "coverage", None)
-    if cov is None:
+def _engine_gap(report: ScanReport) -> str:
+    """필수 엔진 중 돌지 못한 것 — "python-ast 미가동(사유)". 없으면 빈 문자열.
+
+    `ScanEngines.required` 의 주석은 "required 에 있는 엔진이 failed·unavailable 이면 소비자는
+    통과로 읽으면 안 된다"고 적었는데, 정작 이 게이트가 그 값을 읽지 않았다(실측 2026-10-15:
+    python-ast 가 중단된 Python 프로젝트가 regex 만 돌고 '승인'). 포털은 자체로 incomplete 를
+    냈지만 CLI·MCP·JSON 소비자는 승인으로 읽었다. 체커 자신의 판정이 그 규칙을 지킨다.
+    """
+    eng = getattr(report, "engines", None)
+    if eng is None:
         return ""
+    required = set(getattr(eng, "required", None) or [])
+    if not required:
+        return ""
+    down: dict[str, str] = {}
+    for item in list(getattr(eng, "failed", None) or []) + list(getattr(eng, "unavailable", None) or []):
+        name = getattr(item, "name", None) or (item.get("name") if isinstance(item, dict) else None)
+        if name in required and name not in down:
+            reason = getattr(item, "reason", None) or (item.get("reason") if isinstance(item, dict) else "") or ""
+            down[name] = reason
+    if not down:
+        return ""
+    return "필수 엔진 미가동 — " + ", ".join(
+        f"{n}({r})" if r else n for n, r in sorted(down.items())
+    )
+
+
+def _coverage_gap(report: ScanReport) -> str:
+    """검사 범위 결손을 사람이 읽는 한 문장으로. 없으면 빈 문자열.
+
+    상한 결손(파일 수·크기)과 **필수 엔진 미가동**을 함께 본다 — 둘 다 "그 범위는 판정 밖"이다.
+    """
     parts: list[str] = []
-    oversized = getattr(cov, "oversized_source_count", 0) or 0
-    if oversized:
-        names = ", ".join((getattr(cov, "oversized_source_files", None) or [])[:3])
-        more = f" 외 {oversized - 3}개" if oversized > 3 else ""
-        parts.append(f"실행 소스 {oversized}개가 크기 상한을 넘어 검사되지 않음({names}{more})")
-    if getattr(cov, "truncated", False):
-        parts.append(f"파일 수 상한으로 {cov.over_limit_count}개가 검사되지 않음")
+    cov = getattr(report, "coverage", None)
+    if cov is not None:
+        oversized = getattr(cov, "oversized_source_count", 0) or 0
+        if oversized:
+            names = ", ".join((getattr(cov, "oversized_source_files", None) or [])[:3])
+            more = f" 외 {oversized - 3}개" if oversized > 3 else ""
+            parts.append(f"실행 소스 {oversized}개가 크기 상한을 넘어 검사되지 않음({names}{more})")
+        if getattr(cov, "truncated", False):
+            parts.append(f"파일 수 상한으로 {cov.over_limit_count}개가 검사되지 않음")
+    engine_gap = _engine_gap(report)
+    if engine_gap:
+        parts.append(engine_gap)
     return " · ".join(parts)
 
 
@@ -371,12 +448,17 @@ def _reason(
     unchecked: int,
     coverage_gap: str = "",
     license_review: int = 0,
+    unpinned: int = 0,
 ) -> str:
     if verdict == "undetermined":
         if coverage_gap:
+            how = (
+                "`gvskb doctor` 로 엔진 설치·환경을 확인하고 다시 검사하세요."
+                if "필수 엔진 미가동" in coverage_gap and "상한" not in coverage_gap
+                else "파일을 나누거나 `--max-file-bytes`/`--max-files` 를 올려(엔진 문제면 `gvskb doctor`) 다시 검사하세요."
+            )
             return (
-                f"판정 불가 — {coverage_gap}. **빠진 파일이 안전하다는 뜻이 아닙니다.** "
-                "파일을 나누거나 `--max-file-bytes`/`--max-files` 를 올려 다시 검사하세요."
+                f"판정 불가 — {coverage_gap}. **검사되지 않은 범위가 안전하다는 뜻이 아닙니다.** {how}"
             )
         return "판정 불가 — 검사된 파일이 0개입니다. 경로·확장자를 확인하세요."
     if verdict == "blocked":
@@ -415,10 +497,21 @@ def _reason(
         parts.append(f"검사 범위 결손({coverage_gap})")
     if license_review:
         parts.append(f"라이선스 검토 {license_review}종")
+    if unpinned:
+        parts.append(f"버전 미고정 {unpinned}종")
     body = " · ".join(parts) or "확인할 항목"
     tail = ""
     if coverage_gap:
-        tail += " **검사되지 않은 실행 소스가 있습니다 — 그 파일은 판정 밖입니다.**"
+        tail += (
+            " **필수 엔진이 돌지 않아 실행 소스가 온전히 검사되지 않았습니다 — 그 범위는 판정 밖입니다.**"
+            if "필수 엔진 미가동" in coverage_gap and "상한" not in coverage_gap
+            else " **검사되지 않은 실행 소스가 있습니다 — 그 파일은 판정 밖입니다.**"
+        )
+    if unpinned:
+        tail += (
+            " 버전 미고정 패키지는 **최신판 기준으로 조회했을 뿐** 설치본이 안전하다는 근거가 아닙니다 — "
+            "버전을 고정(==)하고 다시 검사하세요."
+        )
     if unchecked:
         # 판정 불가를 세기만 하고 뜻을 안 적으면, 담당자는 '차단 없음'만 읽고
         # 넘어간다. **확인하지 못한 것은 안전한 것이 아니다.**

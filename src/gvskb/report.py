@@ -1003,7 +1003,8 @@ _CRITERIA_ROWS: tuple[tuple[str, str, str], ...] = (
      "악성 패키지 · 기관 레지스트리 거부 · 레지스트리에 없는 이름 · "
      "CISA KEV 등재 · CVSS CRITICAL"),
     ("warn", "조건부 승인",
-     "CVSS HIGH 이하 취약점 · 발행 직후 버전 · 판정 불가 · 소스 코드 발견 · 라이선스 검토 필요"),
+     "CVSS HIGH 이하 취약점 · 발행 직후 버전 · 판정 불가 · 소스 코드 발견 · 라이선스 검토 필요 · "
+     "버전 미고정 · 검사 범위 결손"),
     ("ok", "승인", "조치할 항목 없음"),
 )
 
@@ -1101,6 +1102,16 @@ def _remedy_lines(report: ScanReport) -> list[str]:
             out.append(
                 f"소스 높은 위험 **{g['source_block_count']}건** — 아래 '상세 검토 "
                 "결과'의 안전한 수정 방향을 적용하세요")
+        if g.get("unpinned"):
+            names = ", ".join(f"`{u['name']}`" for u in g["unpinned"][:5])
+            more = f" 외 {len(g['unpinned']) - 5}종" if len(g["unpinned"]) > 5 else ""
+            out.append(
+                f"버전 미고정 **{len(g['unpinned'])}종**({names}{more}) — 최신판 기준으로 조회했을 뿐 "
+                "설치본이 안전하다는 근거가 아닙니다. 매니페스트에 버전을 고정(`==`)하고 다시 검사하세요")
+    if not g.get("complete", True) and g.get("coverage_gap"):
+        out.append(
+            f"검사 범위 결손 — {g['coverage_gap']}. 그 범위는 판정 밖이므로 해소한 뒤 다시 검사하세요"
+            + (" (`gvskb doctor` 로 엔진 상태 확인)" if "필수 엔진" in g["coverage_gap"] else ""))
     if g["exposure"]["secret"]:
         out.append(
             f"⚠ **비밀값 노출 {g['exposure']['secret']}건** — 코드에서 지우는 것만으로 "
@@ -1135,6 +1146,14 @@ def _deploy_status(report: ScanReport) -> str:
     }[gate_status(report)["verdict"]]
 
 
+#: 결론 박스 꼬리말 — 이 판정은 도구의 기술 판정이다(35차, 가이드북 6.5 '조건부 사용'과의 혼동 방지).
+#: '조건부 승인'이라는 표시가 보안담당자의 조건부 사용 결정과 같은 말로 읽히던 틈을 막는다.
+_TECH_VERDICT_NOTE = (
+    "이 판정은 도구가 검사한 범위 안의 **기술 판정**입니다. 기관 보안담당자의 사용 승인·조건부 사용 "
+    "결정은 별도 절차이며, 이 보고서는 그 근거 자료입니다."
+)
+
+
 def _verdict_box_md(report: ScanReport) -> list[str]:
     """결론 박스(Markdown) — **판정 · 해소 방안 · 판정 기준** 세 덩어리.
 
@@ -1143,7 +1162,8 @@ def _verdict_box_md(report: ScanReport) -> list[str]:
     """
     tone = _deploy_status(report)
     deploy_text, _ = _deploy_verdict(report)
-    out = [f"> ### {_VERDICT_LABEL[tone]}", ">", f"> **배포 판정** · {deploy_text}"]
+    out = [f"> ### {_VERDICT_LABEL[tone]}", ">", f"> **배포 판정** · {deploy_text}",
+           ">", f"> _{_TECH_VERDICT_NOTE}_"]
 
     remedies = _remedy_lines(report)
     if remedies:
@@ -1163,6 +1183,7 @@ def _verdict_box_html(report: ScanReport) -> str:
         f'<div class="verdict v-{tone}">',
         f'<div class="vstatus">{_esc(_VERDICT_LABEL[tone])}</div>',
         f'<div class="vdetail">배포 판정 · {_md_inline_to_html(deploy_text)}</div>',
+        f'<div class="vnote">{_md_inline_to_html(_TECH_VERDICT_NOTE)}</div>',
     ]
     remedies = _remedy_lines(report)
     if remedies:
@@ -1205,7 +1226,27 @@ def _meta_rows(
     # 보이는 착시가 생긴다. 이 두 값이 같아야 같은 결과가 나온다.
     if report.engine_version or report.ruleset_version or report.ruleset_digest:
         rows.append(("판정 기준", _criteria_cell(report)))
+    # 검사한 소스의 신원(35차). JSON 에는 2026-09-18 부터 있었지만 사람이 읽는 보고서에는 없었다 —
+    # "이 보고서가 어떤 코드를 본 것인가"를 결재 문서가 스스로 말하지 않았다.
+    src_cell = _source_identity_cell(report)
+    if src_cell:
+        rows.append(("검사한 소스", src_cell))
     return rows
+
+
+def _source_identity_cell(report: ScanReport) -> str:
+    """커밋 · 내용 지문 · 파일 수 한 칸. 없는 값은 지어내지 않는다(폴더가 git 이 아니면 커밋 없음)."""
+    snap = getattr(report, "source_snapshot", None)
+    if snap is None:
+        return ""
+    bits: list[str] = []
+    commit = getattr(snap, "commit", None)
+    if commit:
+        bits.append(f"커밋 {str(commit)[:12]}" + (" (미커밋 변경 있음 — 커밋만으로 재현 불가)" if getattr(snap, "dirty", None) else ""))
+    tree = getattr(snap, "content_tree_hash", None)
+    if tree:
+        bits.append(f"내용 지문 {str(tree)[:12]}… ({getattr(snap, 'file_count', 0)}개 파일)")
+    return " · ".join(bits)
 
 
 def _repro_command(report: ScanReport, explicit: str | None) -> tuple[str, str]:
@@ -1965,6 +2006,7 @@ tr.w td{background:#fff7ed}
   page-break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .verdict .vstatus{font-size:22px;font-weight:800;margin-bottom:6px}
 .verdict .vdetail{font-size:14px;line-height:1.55}
+.vnote{font-size:.86em;opacity:.85;margin:.35em 0 .2em}
 /* 해소 방안 · 판정 기준 — 결론 박스 안에 함께 둔다. 판정만 주고 방법을 안 주면
    담당자는 무엇을 해야 할지 모르고, 기준을 안 주면 왜 이렇게 됐는지 모른다. */
 .verdict .vhead{font-size:12px;font-weight:700;letter-spacing:.02em;
@@ -3330,6 +3372,9 @@ def _pkg_verdict_label(check: dict) -> str:
         # checked=False 면 '승인은 받았으나 이번에 대조하지 못함' — 구분해 보여준다.
         return "✅ 기관 승인(레지스트리)" if check.get("checked") else "✅ 기관 승인 · 대조 못 함"
     if check.get("checked"):
+        if check.get("version_resolution") == "latest-assumed":
+            # 비고 칸의 '미고정'은 판정 칸이 초록이면 읽히지 않는다 — 판정 칸에 적는다(35차).
+            return "⚠ 미고정(최신판 기준 이상 없음)"
         return "이상 없음(검사 시점)"
     return "판정 불가"
 
@@ -3362,6 +3407,9 @@ def _pkg_note(check: dict) -> str:
         bits.append("설치 스크립트 있음")
     if check.get("license_verdict") == "review_required":
         bits.append(f"라이선스 검토({meta.get('license')})")
+    if check.get("version_resolution") == "latest-assumed":
+        bits.append(
+            f"버전 미고정 — 최신판 {check.get('resolved_version') or '?'} 기준 조회(설치본 안전 근거 아님)")
     if not check.get("checked") and check.get("note") and check.get("verdict") != "not_found":
         bits.append("검사 불가 사유 있음")
     return " · ".join(bits)
