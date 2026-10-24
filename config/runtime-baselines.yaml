@@ -1,0 +1,56 @@
+# 프로젝트 런타임 기준값 — gvskb 기본값 (38차, 2026-10-24).
+#
+# 검사 대상 프로젝트가 선언한 Node.js·Python·Electron·Next.js 버전을 이 표와 대조한다.
+# 체커 **자신의** 런타임 점검(diagnostics.runtime_freshness)과는 별개다.
+#
+# 원천은 각 프로젝트의 공식 릴리스 일정이다. 이 파일은 날짜가 박힌 사본이고, 날짜가 지나면
+# 판정이 느슨해진다 — 보고서는 as_of 를 함께 표시해 "언제 기준인가"를 숨기지 않는다.
+# 기관은 GVSKB_RUNTIME_BASELINES 환경변수로 자체 기준 파일을 지정할 수 있다.
+schema_version: "1.0"
+as_of: "2026-10-24"
+sources:
+  - https://nodejs.org/en/about/previous-releases
+  - https://nodejs.org/en/blog/vulnerability/october-2026-security-releases
+  - https://devguide.python.org/versions/
+  - https://www.electronjs.org/docs/latest/tutorial/electron-timelines
+  - https://github.com/vercel/next.js/security/advisories
+
+node:
+  # 메이저별 지원 종료일. 여기 없는 메이저(≤18)는 전부 EOL 로 본다.
+  eol:
+    "18": "2025-04-30"
+    "20": "2026-04-30"
+    "22": "2027-04-30"
+    "24": "2028-04-30"
+    "26": "2029-04-30"
+  # 지원 중인 라인의 최소 보안 릴리스 — 2026-10-21 보안 릴리스(Brotli 디코더 RCE 등 10 CVE) 기준.
+  min_secure:
+    "22": "22.23.4"
+    "24": "24.22.1"
+    "26": "26.12.1"
+  min_secure_reason: "2026-10-21 Node.js 보안 릴리스 — Brotli 디코더 범위 밖 쓰기(RCE 가능) 등 10개 CVE"
+
+python:
+  eol:
+    "3.8": "2024-10-07"
+    "3.9": "2025-10-31"
+    "3.10": "2026-10-31"
+    "3.11": "2027-10-31"
+    "3.12": "2028-10-31"
+    "3.13": "2029-10-31"
+    "3.14": "2030-10-31"
+  # 종료 N일 이내면 '임박'으로 경고한다(교체 계획을 세울 시간을 준다).
+  eol_soon_days: 90
+
+electron:
+  # Electron 은 최신 3개 메이저만 지원한다. 2026-10 기준 지원 라인.
+  supported_majors: [39, 40, 41]
+  note: "2026-10 보안 수정(DevTools mode 코드 실행 CVE-2026-70609 · contextBridge 격리 우회 CVE-2026-70601)은 39.8.x/40.9.x/41.2.x 이상에만 있다"
+
+next:
+  # App Router 서버 함수 DoS(CVE-2026-23869/23870)·RSC 캐시 오염(CVE-2026-44576) 수정판.
+  min_secure:
+    "15": "15.5.16"
+    "16": "16.2.5"
+  eol_below_major: 15
+  min_secure_reason: "2026-04~05 React Server Components 수정판(DoS·캐시 오염)"

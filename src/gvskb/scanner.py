@@ -2189,6 +2189,7 @@ def path_level_rule_ids() -> tuple[str, ...]:
     from .scanners.autoexec_surface import (
         RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_IDE_TASK, RULE_MCP_CONFIG, RULE_PY_STARTUP,
     )
+    from .scanners import ci_workflow, npm_surface, runtime_version
     from .scanners.hidden_text import BIDI_RULE_ID, HIDDEN_RULE_ID
 
     return (
@@ -2196,6 +2197,8 @@ def path_level_rule_ids() -> tuple[str, ...]:
         # 37차 — 자동 실행 표면(경로 순회 뒤 별도 수집기가 발행)과 숨은 문자(hidden-text 어댑터가 발행)
         RULE_IDE_TASK, RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_MCP_CONFIG, RULE_PY_STARTUP,
         HIDDEN_RULE_ID, BIDI_RULE_ID,
+        # 38차 — CI 워크플로 · npm 설치 표면 · 런타임 버전(같은 수집기가 종류별 판정기로 발행)
+        *ci_workflow.RULE_IDS, *npm_surface.RULE_IDS, *runtime_version.RULE_IDS,
     )
 
 
