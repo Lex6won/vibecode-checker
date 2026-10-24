@@ -107,7 +107,8 @@ packages:
     resolution: {integrity: sha512-y, tarball: https://registry.npmjs.org/mystery-native/-/mystery-native-1.2.3.tgz}
     requiresBuild: true
 """)
-    _w(tmp_path, ".npmrc", "ignore-scripts=false\nregistry=http://nexus.internal.go.kr/repository/npm/\n")
+    # 합성 도메인(.example) — 기관 도메인(go.kr)은 공개 저장소 위생 테스트가 막는다(test_repo_hygiene).
+    _w(tmp_path, ".npmrc", "ignore-scripts=false\nregistry=http://nexus.internal.example/repository/npm/\n")
     r = scan_path(tmp_path)
     hook = _by(r, RULE_INSTALL_HOOK)
     assert any("mystery-native" in h.evidence and "esbuild" not in h.evidence for h in hook)
