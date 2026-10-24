@@ -13,7 +13,7 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
 ![Tests](https://img.shields.io/badge/tests-2083_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-42%2F42_탐지_·_오탐_0-success.svg)
-![룰](https://img.shields.io/badge/보안_룰-탐지_103_·_참조_120-orange.svg)
+![룰](https://img.shields.io/badge/보안_룰-탐지_111_·_참조_120-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
 
 <br/>
@@ -395,7 +395,7 @@ gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳
 | **OWASP** | LLM Top 10 · Agentic Top 10 · AI Testing Guide |
 | **실시간 취약점 피드** | OSV.dev · CISA KEV · NVD · FIRST EPSS · KISA KNVD 공식 RSS(국내 보안공지, 보조 근거) |
 
-검사에 쓰이는 승인 룰은 **223개**입니다 — 탐지 룰 103개(검사에서 발견을 만드는 룰) + 참조 룰 120개(발견의 근거·출처로 인용되는 지식 룰). 그 밖에 CISA KEV에서 매일 자동 생성되는 초안 카드가 있지만 사람이 승인하기 전에는 판정에 쓰이지 않습니다. 모든 룰은 Markdown 파일로 정의되어 누구나 읽고 검토할 수 있습니다.
+검사에 쓰이는 승인 룰은 **231개**입니다 — 탐지 룰 111개(검사에서 발견을 만드는 룰) + 참조 룰 120개(발견의 근거·출처로 인용되는 지식 룰). 그 밖에 CISA KEV에서 매일 자동 생성되는 초안 카드가 있지만 사람이 승인하기 전에는 판정에 쓰이지 않습니다. 모든 룰은 Markdown 파일로 정의되어 누구나 읽고 검토할 수 있습니다.
 
 ### 위협 정보(인텔)는 매일 자동 갱신됩니다
 

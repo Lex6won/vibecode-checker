@@ -169,7 +169,7 @@ _CDN_CATALOG: tuple[tuple[str, str, str | None], ...] = (
 )
 
 # 리소스 로딩 문맥 — 단순 URL 언급(주석·문서 링크)은 잡지 않도록, 실제 로딩
-# 구문(src=/​<link href=/@import/url()/ESM import/importScripts)일 때만 매칭.
+# 구문(src=/<link href=/@import/url()/ESM import/importScripts)일 때만 매칭.
 _RESOURCE_CTX = re.compile(
     r"""(?:\bsrc\s*=\s*["']?https?://
       |@import\s+(?:url\(\s*)?["']?https?://
@@ -374,7 +374,7 @@ def extract_api_connections(code: str, filename: str = "<memory>") -> list[Exter
     agg: dict[str, dict] = {}  # 호스트(파일 단위) → 병합 누적값
 
     for idx, line in enumerate(lines, start=1):
-        # 리소스 로딩 구문(src=/​<link href=/@import/ESM import)은 extract_static_resources
+        # 리소스 로딩 구문(src=/<link href=/@import/ESM import)은 extract_static_resources
         # 가 kind="resource"로 담당한다 — 같은 호스트가 api로 중복 계상되지 않게 건너뜀.
         if _RESOURCE_CTX.search(line) or _LINK_HREF_CTX.search(line):
             continue

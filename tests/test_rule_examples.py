@@ -46,7 +46,16 @@ def _language_for(rule: Rule) -> str | None:
 
 # 파일명 + 내용을 함께 봐야 판정되는 룰 — scan_code(코드 조각)로는 재현 불가.
 # 실제 파일을 만들어 검증하는 테스트가 따로 있다(test_round2_fixes.py).
-_FILE_CONTEXT_RULE_IDS = {"GOV-SECRET-KEYFILE-001"}
+_FILE_CONTEXT_RULE_IDS = {
+    "GOV-SECRET-KEYFILE-001",
+    # 37차 — 자동 실행 표면 룰: 파일 이름·위치(.vscode/tasks.json 등)와 구조를 함께 봐야 판정된다.
+    # 실제 파일을 만들어 확인하는 테스트는 test_round37_autoexec_surface.py 에 있다.
+    "GOV-AUTOEXEC-IDE-TASK-001",
+    "GOV-AUTOEXEC-AGENT-HOOK-001",
+    "GOV-AGENT-CONFIG-PERMISSION-001",
+    "GOV-MCP-CONFIG-001",
+    "GOV-AUTOEXEC-PYTHON-STARTUP-001",
+}
 
 
 # ---------------------------------------------------------------------------

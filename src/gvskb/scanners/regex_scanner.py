@@ -412,13 +412,26 @@ class InlineIgnores:
         # 파일 끝에 붙은 지시는 가리킬 줄이 없다 — 집계에서 뺀다(없는 면제를 세지 않는다).
         self._by_line = {n: ids for n, ids in by_line.items() if n <= len(lines)}
 
-    def suppresses(self, line_no: int, rule_id: str) -> bool:
+    def suppresses(self, line_no: int, rule_id: str, confidence: str | None = None) -> bool:
         if line_no not in self._by_line:
             return False
         # 값 자체가 위험인 룰(비밀값·개인정보·내부망)은 인라인 주석으로 끌 수 없다 — 승인자·만료가
         # 있는 예외 파일(.gvskb-exceptions.yaml)만 받는다. 예전엔 id 없는 `gvskb: ignore` 가 비밀 룰까지
         # 껐다(전면 점검 §3-4).
         if _value_based_rule(rule_id):
+            return False
+        # 37차: **외부 출처가 sink 에 닿는 것을 추적으로 확인한(confirmed)** 발견도 주석으로 끌 수 없다.
+        # 그 발견은 "값의 출처를 사람이 확인해 달라"는 요청이 아니라 확인이 끝난 결과이기 때문이다.
+        # 검사 대상 코드는 대개 남이(또는 AI 가) 쓴 코드다 — 주석 한 줄이 확인된 명령 삽입을 끄면
+        # 게이트가 아니다. 유력(likely)·패턴 일치는 지금처럼 주석으로 끌 수 있다(사람 확인 요청이므로).
+        if confidence == "confirmed":
+            return False
+        ids = self._by_line[line_no]
+        return ids is None or rule_id in ids
+
+    def directive_covers(self, line_no: int, rule_id: str) -> bool:
+        """이 줄·이 룰을 가리키는 무시 지시가 **있는가**(적용 여부와 무관). 적용되지 않은 지시를 세는 데 쓴다."""
+        if line_no not in self._by_line:
             return False
         ids = self._by_line[line_no]
         return ids is None or rule_id in ids
@@ -1021,7 +1034,7 @@ class RegexScanner(ScannerAdapter):
                 # 인라인 무시는 **모든 언어**에 적용된다 — 룰 카드가 JS 사용자에게도
                 # 안내하는 장치이므로 파이썬 전용이어서는 안 된다. 다만 인정하는
                 # 형태는 언어마다 다르다(InlineIgnores 참조).
-                if ignores.suppresses(line_no, rule["rule_id"]):
+                if ignores.suppresses(line_no, rule["rule_id"], rule.get("confidence")):
                     continue
                 if is_python and _suppresses_rule(
                     line=line,
@@ -1103,7 +1116,7 @@ class RegexScanner(ScannerAdapter):
                     line = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
                     if line_no in comment_lines and rule["category"] not in _COMMENT_SKIP_EXEMPT_CATEGORIES:
                         continue
-                    if ignores.suppresses(line_no, rule["rule_id"]):
+                    if ignores.suppresses(line_no, rule["rule_id"], rule.get("confidence")):
                         continue
                     if is_python and _suppresses_rule(
                         line=line, line_no=line_no, rule=rule,

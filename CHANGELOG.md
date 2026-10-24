@@ -5,6 +5,47 @@
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-24
+
+### 37차 — 공격이 숨는 자리를 읽는다: 자동 실행 표면 · 숨은 문자 · 예외 지문 (룰셋 2026.10.24a)
+
+2026-08 npm 웜(keyv 계열)과 2026-10 PyPI(litellm 1.107.0) 사고가 쓴 자리는 이 체커가 **읽지 않던 곳**이었다 —
+`.vscode` 는 기본 제외, `.md`·`.pth` 는 확장자 목록 밖, `.claude/settings.json`·`.mcp.json` 은 일반 JSON 으로만.
+일반 스캔의 제외 규칙(오탐 억제)은 그대로 두고, 그 자리를 **이름으로 찾아 파서로만 읽는 별도 경로**를 만들었다.
+실측 5개 트리(STARS·safe_check·약관검색기·파노라마뷰·Gemini_UI_src) 발견 동일, 라벨 96건 위반 0, 벤치마크 42/42·오탐 0 유지.
+
+- **자동 실행 표면 인벤토리**(`scanners/autoexec_surface.py`, 엔진 `autoexec-surface`) — `.vscode/{tasks,settings,mcp}.json`,
+  `.claude/settings*.json`, `.mcp.json`·`.cursor/mcp.json`·`.gemini/settings.json`·`.codex/config.toml`, `CLAUDE.md`·
+  `AGENTS.md`·`.cursorrules`·copilot 지시문·`.claude/**/*.md`, `*.pth`·`sitecustomize.py`(저장소 + 가상환경 `site-packages`),
+  IDE 디렉터리 안 스크립트, 워크플로 YAML 을 제외 규칙과 무관하게 찾는다. **어떤 설정도 실행하지 않는다**(테스트가 고정).
+  해석 실패는 `skipped_files` 사유 + `autoexec_surface[].parsed=false` — 깨끗함이 아니라 미검사. 결과 JSON 에
+  `autoexec_surface` 필드 추가(역호환 — 스키마 버전 불변). 보고서에 "자동 실행 표면" 섹션(읽은 것의 목록).
+- **신규 룰 7개**(`rules/agent-supply-chain/`, 카테고리 `agent-supply-chain`·`hidden-code`):
+  `GOV-AUTOEXEC-IDE-TASK-001`(폴더 열기 자동 task — 네트워크·인터프리터·저장소 스크립트면 confirmed, `npm run watch` 류는 likely→경고),
+  `GOV-AUTOEXEC-AGENT-HOOK-001`(Claude Code 세션 훅, 실행 사슬 표시), `GOV-AGENT-CONFIG-PERMISSION-001`
+  (`bypassPermissions`·인자 없는 `Bash` 허용·`enableAllProjectMcpServers`·VS Code `chat.tools.autoApprove`/
+  `task.allowAutomaticTasks`/Workspace Trust 끄기), `GOV-MCP-CONFIG-001`(셸 래퍼 기동·autoApprove/alwaysAllow/trust·
+  평문 http 원격 = confirmed, 버전 미고정 `npx -y`/`uvx` = likely), `GOV-AUTOEXEC-PYTHON-STARTUP-001`(`.pth` import 줄·
+  `sitecustomize.py`, 허용 목록: `_virtualenv`·`distutils-precedence`·`easy-install`·`*-nspkg`·`__editable__*`),
+  `GOV-HIDDEN-UNICODE-001`·`GOV-BIDI-CONTROL-001`(아래).
+- **숨은 문자 엔진**(`scanners/hidden_text.py`, 엔진 `hidden-text`, 모든 텍스트 파일) — 제로폭·변형 선택자·태그 블록·
+  소프트 하이픈·한글 채움 문자·중간 BOM, 양방향 제어(Trojan Source). 코드포인트 단위, 파일당 룰별 1건, **증거에 문자
+  자체를 싣지 않는다**. 정상 용례(이모지 VS·키캡·ZWJ 시퀀스·깃발 태그·아랍/인도 결합자·한자 이체자 선택자)는 문맥으로
+  제외. 인라인 무시로 끌 수 없다. 보고서 분야: 주입·원격 코드 실행.
+- **예외 코드 지문**(`suppressions.py`) — `.gvskb-exceptions.yaml` 항목에 선택 필드 `fingerprint`(해당 줄 ±2줄, 줄 생략 시
+  파일 전체, 공백 정규화 sha256 앞 16자리). 있고 다르면 **무효**("코드가 바뀌어 지문 불일치"), 없으면 적용되되
+  `suppression_summary.unbound`(건수)·`unbound_detail`(현재 지문 안내)에 남고 보고서 **맨 위**에 "승인된 예외로 억제된
+  발견 N건 · 지문 없는 예외 M건"을 띄운다. 중앙(기관) 예외는 지문을 요구하지 않는다. 기존 예외 파일은 그대로 동작(유예).
+- **인라인 무시 축소** — `confidence: confirmed`(외부 출처→sink 추적 확인) 발견은 `gvskb: ignore` 로 끌 수 없다.
+  likely·pattern-only 는 종전과 같다(기존 테스트 전부 유지). 적용되지 않은 지시 수를 `suppression_summary.inline_overridden`
+  으로 세고 보고서에 고지한다. 실측 5개 트리에 인라인 무시 0건·예외 파일 0건 → 실측 영향 없음.
+- 테스트 +59(총 2477). `test_rule_examples` 의 파일 맥락 룰 목록에 신규 5개 추가(실제 파일 fixture 로 별도 검증).
+- **개밥먹기** — 새 엔진으로 이 저장소를 스캔해 `scanners/external_surface.py` 주석의 떠돌이 제로폭 문자(U+200B 2개)를
+  찾아 제거했다. 숨은 문자 fixture 는 전부 `chr()` 로 조립한다(테스트 소스 자체에 숨은 문자가 들어가지 않게).
+  실측 비교에서 키캡 정규식 `[1-9]️⃣`(FE0F 앞이 `]`) 오탐 1건을 잡아 "뒤에 U+20E3 이면 키캡" 예외를 추가했다.
+- **가리지 않은 것(다음 라운드)**: Actions 워크플로 판정(인벤토리만), npm 훅 락파일 대조, 프로젝트 런타임 버전, AI CLI 권한
+  우회 호출, 자격증명 수집+전송 결합, BLOCK 기준 신설(게이트 변경 없음 — 신규 발견은 종전처럼 소스 발견으로 `conditional`).
+
 ## [0.5.4] - 2026-10-15
 
 ### 36차 — 종료코드·MCP·패키지 미확정이 게이트 결론과 같은 말을 한다 (코덱스 독립 검증 반영)

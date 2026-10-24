@@ -647,6 +647,16 @@ class ScanReport(BaseModel):
             "각 항목: id · level · title · detail · files · safe_fix · references."
         ),
     )
+    autoexec_surface: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "자동 실행 표면 인벤토리(37차). 저장소를 열거나(.vscode/tasks.json) 에이전트 세션을 켜거나"
+            "(.claude/settings.json hooks) 파이썬을 기동하면(*.pth·sitecustomize.py) 실행되는 자리와 "
+            "에이전트 지시 파일(CLAUDE.md 등)·MCP 설정·워크플로의 목록. 일반 스캔의 제외 규칙과 무관하게 "
+            "이름으로 찾아 **파서로만** 읽는다. 각 항목: path · kind · parsed · note · finding_count. "
+            "parsed=false 는 '깨끗함'이 아니라 '해석 못 함'이다(skipped_files 에도 사유가 남는다)."
+        ),
+    )
     duplicate_files: list[dict] = Field(
         default_factory=list,
         description=(
