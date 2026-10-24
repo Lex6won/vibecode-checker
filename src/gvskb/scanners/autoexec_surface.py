@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import yaml
+
 from ..schema import Finding, SkippedFile
 from .hidden_text import scan_hidden_text
 from .regex_scanner import build_finding, lookup_rule, redact_evidence
@@ -83,6 +85,9 @@ _PTH_ALLOW_NAMES = frozenset({"_virtualenv.pth", "distutils-precedence.pth", "ea
 _PTH_ALLOW_SUFFIX = ("-nspkg.pth",)
 _PTH_ALLOW_PREFIX = ("__editable__",)
 _SURFACE_MAX_BYTES = 512_000     # 설정 파일 하나의 상한 — 이보다 크면 해석하지 않고 미검사로 기록
+_LOCKFILE_MAX_BYTES = 25_000_000  # 락파일 상한(38차) — package-lock.json 은 수 MB 가 정상이다
+_RUNTIME_PIN_NAMES = frozenset({".nvmrc", ".node-version", ".python-version", ".tool-versions", "runtime.txt", "pyproject.toml"})
+_NPM_LOCK_NAMES = frozenset({"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock"})
 _JSONC_LINE_COMMENT = re.compile(r"//[^\n]*")
 _JSONC_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _JSONC_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
@@ -171,16 +176,16 @@ def _rel(p: Path, root: Path) -> str:
         return str(p).replace("\\", "/")
 
 
-def _read(p: Path) -> tuple[str | None, str]:
+def _read(p: Path, limit: int = _SURFACE_MAX_BYTES) -> tuple[str | None, str]:
     """(본문, 실패 사유). 실패는 **사유를 남긴다** — 실측(2026-10-24, 이 PC)에서 보안 소프트웨어가
     알려진 악성 지표 문구가 든 파일의 읽기를 EINVAL 로 막았다. 그 파일은 '깨끗함'이 아니라 '읽지 못함'이고,
-    심사자는 왜 못 읽었는지(크기·권한·차단)를 알아야 한다."""
+    심사자는 왜 못 읽었는지(크기·권한·차단)를 알아야 한다. ``limit`` 은 종류별 상한(락파일은 수 MB 가 정상)."""
     try:
         size = p.stat().st_size
     except OSError as exc:
         return None, f"stat 실패(errno {exc.errno})"
-    if size > _SURFACE_MAX_BYTES:
-        return None, f"크기 상한 초과({size:,} > {_SURFACE_MAX_BYTES:,} bytes)"
+    if size > limit:
+        return None, f"크기 상한 초과({size:,} > {limit:,} bytes)"
     try:
         return p.read_text(encoding="utf-8", errors="replace"), ""
     except OSError as exc:
@@ -466,6 +471,15 @@ def _classify_path(rel: str, name: str) -> str | None:
         return "python-startup"
     if ".github" in parts and "workflows" in parts and low.endswith((".yml", ".yaml")):
         return "workflow"
+    # 38차 — npm 설치 표면 · 런타임 버전 핀
+    if low == "package.json":
+        return "npm-manifest"
+    if low in _NPM_LOCK_NAMES:
+        return "npm-lock"
+    if low == ".npmrc":
+        return "npmrc"
+    if low in _RUNTIME_PIN_NAMES or low == "dockerfile" or low.startswith("dockerfile.") or low.endswith(".dockerfile"):
+        return "runtime-pin"
     return None
 
 
@@ -521,7 +535,7 @@ def collect_autoexec_surface(
         if kind is None:
             continue
         entry = SurfaceEntry(path=rel, kind=kind)
-        text, why = _read(p)
+        text, why = _read(p, _LOCKFILE_MAX_BYTES if kind == "npm-lock" else _SURFACE_MAX_BYTES)
         if text is None:
             entry.parsed = False
             entry.note = why
@@ -545,8 +559,41 @@ def collect_autoexec_surface(
                 findings += _judge_sitecustomize(text, rel)
             elif kind == "ide-script" and scan_code is not None and rel not in seen:
                 findings += scan_code(text, rel)
-            # agent-instructions · workflow: 인벤토리 + 숨은 문자만(37차 범위)
-            if kind != "ide-script" and rel not in seen:   # ide-script 는 scan_code 의 hidden-text 엔진이 봤다
+            # 38차 — 워크플로 판정 · npm 설치 표면 · 런타임 버전
+            elif kind == "workflow":
+                from . import ci_workflow, runtime_version
+                wf = yaml.safe_load(text)
+                findings += ci_workflow.judge_workflow(wf, text, rel)
+                findings += runtime_version.judge_pins(runtime_version.pins_from_workflow(text), rel)
+            elif kind == "npm-manifest":
+                from . import npm_surface, runtime_version
+                pj = npm_surface.load_json_lenient(text)
+                findings += npm_surface.judge_package_json(pj, text, rel)
+                findings += runtime_version.judge_pins(runtime_version.pins_from_package_json(pj), rel)
+            elif kind == "npm-lock":
+                from . import npm_surface
+                low = p.name.lower()
+                if low in ("package-lock.json", "npm-shrinkwrap.json"):
+                    findings += npm_surface.judge_package_lock(npm_surface.load_json_lenient(text), text, rel)
+                elif low == "pnpm-lock.yaml":
+                    findings += npm_surface.judge_pnpm_lock(yaml.safe_load(text), text, rel)
+                else:
+                    findings += npm_surface.judge_yarn_lock(text, rel)
+            elif kind == "npmrc":
+                from . import npm_surface
+                findings += npm_surface.judge_npmrc(text, rel)
+            elif kind == "runtime-pin":
+                from . import runtime_version
+                low = p.name.lower()
+                if low.startswith("dockerfile") or low.endswith(".dockerfile"):
+                    pins = runtime_version.pins_from_dockerfile(text)
+                elif low == "pyproject.toml":
+                    pins = runtime_version.pins_from_pyproject(text)
+                else:
+                    pins = runtime_version.pins_from_version_file(p.name, text)
+                findings += runtime_version.judge_pins(pins, rel)
+            # agent-instructions 등: 인벤토리 + 숨은 문자. 락파일은 생성물이라 숨은 문자 검사를 하지 않는다(수 MB).
+            if kind not in ("ide-script", "npm-lock") and rel not in seen:   # ide-script 는 scan_code 의 hidden-text 엔진이 봤다
                 findings += scan_hidden_text(text, filename=rel)
         except Exception as exc:  # noqa: BLE001 — 설정 파일 하나의 오류가 검사를 멈추면 안 된다
             entry.parsed = False

@@ -43,6 +43,17 @@ _ENGINE_ONLY_RULE_IDS = {
     # 37차 — hidden-text 엔진(코드포인트 단위)
     "GOV-HIDDEN-UNICODE-001",
     "GOV-BIDI-CONTROL-001",
+    # 38차 — ci-workflow · npm-surface · runtime-version 판정기(구조 해석)
+    "GOV-CI-PWN-REQUEST-001",
+    "GOV-CI-SECRETS-DUMP-001",
+    "GOV-CI-SCRIPT-INJECTION-001",
+    "GOV-CI-REMOTE-EXEC-001",
+    "GOV-CI-UNPINNED-ACTION-001",
+    "GOV-CI-PERMISSIONS-001",
+    "GOV-NPM-INSTALL-HOOK-001",
+    "GOV-NPM-LOCK-SOURCE-001",
+    "GOV-RUNTIME-EOL-001",
+    "GOV-RUNTIME-OUTDATED-001",
 }
 
 

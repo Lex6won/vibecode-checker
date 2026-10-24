@@ -290,9 +290,9 @@ def test_report_shows_autoexec_inventory_section(tmp_path: Path) -> None:
     _worm_shaped_repo(tmp_path)
     r = scan_path(tmp_path)
     md = render_markdown(r)
-    assert "자동 실행 표면" in md and ".vscode/tasks.json" in md
+    assert "자동 실행·공급망 표면" in md and ".vscode/tasks.json" in md
     html = render_html(r)
-    assert "자동 실행 표면" in html and ".claude/settings.json" in html
+    assert "자동 실행·공급망 표면" in html and ".claude/settings.json" in html
 
 
 def test_single_file_scan_has_no_surface(tmp_path: Path) -> None:

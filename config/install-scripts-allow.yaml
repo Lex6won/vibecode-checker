@@ -1,0 +1,83 @@
+# npm 설치 훅(preinstall·install·postinstall·prepare) 허용 목록 — gvskb 기본값 (38차, 2026-10-24).
+#
+# 설치 훅은 2025-08 ~ 2026-08 npm 웜(Nx·Shai-Hulud·Mastra)이 쓴 실행 시점이다. 그러나 네이티브
+# 바이너리를 받는 정상 패키지(sharp·esbuild)와 개발 도구(husky·prisma)도 훅을 쓴다. 훅 **존재**만으로
+# 악성 판정하지 않는다 — 여기 없는 패키지만 "검토" 신호로 올린다. 기관은 GVSKB_INSTALL_SCRIPTS_ALLOW 로
+# 자체 목록을 지정한다(전담팀이 포털에서 관리하는 승인 목록을 내려받아 두는 자리).
+#
+# 이 목록은 "안전하다"가 아니라 "훅이 있는 것이 알려진 설계다"라는 뜻이다. 버전 고정·레지스트리 검사는 따로 한다.
+schema_version: "1.0"
+as_of: "2026-10-24"
+
+# 락파일 `hasInstallScript`(npm) · `requiresBuild`(pnpm) 가 있어도 올리지 않는 패키지 이름.
+# 스코프 전체는 `@scope/*` 로 쓴다.
+packages:
+  # 네이티브 바이너리 다운로드·빌드
+  - sharp
+  - esbuild
+  - fsevents
+  - "@swc/core"
+  - "@parcel/watcher"
+  - unrs-resolver
+  - better-sqlite3
+  - sqlite3
+  - bcrypt
+  - node-sass
+  - sass-embedded
+  - canvas
+  - bufferutil
+  - utf-8-validate
+  - cpu-features
+  - ssh2
+  - lightningcss
+  - "@tailwindcss/oxide"
+  - "@rollup/rollup-*"
+  - "@next/swc-*"
+  - "@biomejs/biome"
+  - "@sentry/cli"
+  - turbo
+  - workerd
+  - "@cloudflare/workerd-*"
+  - protobufjs
+  - core-js
+  - core-js-pure
+  # 브라우저·런타임 다운로드
+  - puppeteer
+  - playwright
+  - playwright-core
+  - cypress
+  - electron
+  - "@electron/*"
+  # 개발 도구
+  - husky
+  - prisma
+  - "@prisma/engines"
+  - "@prisma/client"
+  - nx
+  - "@nx/*"
+  - msw
+  - patch-package
+
+# 프로젝트 **자신**의 package.json scripts 훅에서 허용하는 명령 어휘(첫 토큰 또는 포함 어휘).
+project_script_commands:
+  - husky
+  - patch-package
+  - node-gyp
+  - prisma
+  - electron-builder
+  - electron-rebuild
+  - tsc
+  - ngcc
+  - "playwright install"
+  - "puppeteer browsers"
+  - opencollective
+  - "npm run build"
+  - "pnpm run build"
+  - "yarn build"
+  - "npm run compile"
+
+# 허용 레지스트리 호스트 — 락파일 `resolved` 가 이 밖의 호스트면 검토 신호.
+registry_hosts:
+  - registry.npmjs.org
+  - registry.yarnpkg.com
+  - registry.npmmirror.com

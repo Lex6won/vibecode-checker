@@ -5,6 +5,37 @@
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-24
+
+### 38차 — CI 워크플로 · npm 설치 표면 · 프로젝트 런타임 버전 (룰셋 2026.10.24b)
+
+37차 수집기(자동 실행 표면)에 종류별 판정기 3개를 붙였다. 전부 **파서로만** 읽는다. 기준값은 날짜 박힌 설정 파일로 분리했다.
+
+- **ci-workflow**(`scanners/ci_workflow.py`) — `.github/workflows/*.yml` 구조 판정. 룰 6개(`rules/supply-chain/`):
+  `GOV-CI-PWN-REQUEST-001`(pull_request_target/workflow_run + PR 코드 체크아웃 + 이후 실행 = confirmed · 캐시 사용 표시 ·
+  체크아웃만이면 likely), `GOV-CI-SECRETS-DUMP-001`(`toJSON(secrets)`), `GOV-CI-SCRIPT-INJECTION-001`(run 에 PR 제목·본문·
+  브랜치·커밋 메시지·코멘트 직접 삽입 = confirmed · workflow_dispatch 자유 문자열 입력 = likely, choice/boolean 은 제외),
+  `GOV-CI-REMOTE-EXEC-001`(`curl|sh`·`iwr|iex`), `GOV-CI-UNPINNED-ACTION-001`(서드파티 액션 태그·브랜치 참조 = 경고,
+  `actions/*`·`github/*` 제외), `GOV-CI-PERMISSIONS-001`(write-all · 권한 트리거의 쓰기 권한/미지정 · self-hosted + 외부 PR).
+  YAML 의 `on:` 이 불리언 True 키로 읽히는 함정을 처리.
+- **npm-surface**(`scanners/npm_surface.py`) — 프로젝트 자신의 `package.json` 설치 훅(네트워크·인터프리터·디코딩 = confirmed,
+  허용 어휘 밖 = likely), `package-lock`/`npm-shrinkwrap` `hasInstallScript` · `pnpm-lock` `requiresBuild` 패키지(허용 목록 밖만,
+  락파일당 1건), `resolved` 비승인 호스트·git/URL 출처·integrity 결손, package.json git/URL 의존성, `.npmrc`
+  `ignore-scripts=false`·비승인/평문 레지스트리. 룰 `GOV-NPM-INSTALL-HOOK-001`·`GOV-NPM-LOCK-SOURCE-001`.
+  허용 목록 `config/install-scripts-allow.yaml`(`GVSKB_INSTALL_SCRIPTS_ALLOW` 로 교체 — 전담팀 승인 목록 자리). 락파일은
+  25MB 까지 읽고 숨은 문자 검사는 하지 않는다.
+- **runtime-version**(`scanners/runtime_version.py`) — `Dockerfile* FROM node:/python:` · `.nvmrc` · `.node-version` ·
+  `.python-version` · `.tool-versions` · `runtime.txt` · `engines.node` · `requires-python` · 워크플로 `node-version`/
+  `python-version` · package.json `electron`/`next`. 기준 `config/runtime-baselines.yaml`(as_of 2026-10-24: Node 20 EOL
+  2026-04-30 · 최소 보안 릴리스 22.23.4/24.22.1/26.12.1 · Python 3.10 EOL 2026-10-31 임박 · Electron 지원 39~41 ·
+  Next 15.5.16/16.2.5; `GVSKB_RUNTIME_BASELINES` 로 교체). 범위 표기는 하한, `lts/*`·`latest` 는 판정하지 않음.
+  룰 `GOV-RUNTIME-EOL-001`·`GOV-RUNTIME-OUTDATED-001`(둘 다 likely → 경고). 증거에 기준 날짜를 함께 적는다.
+- 수집기 종류 추가: `workflow`(판정) · `npm-manifest` · `npm-lock` · `npmrc` · `runtime-pin`. 보고서 섹션 이름을
+  "자동 실행·공급망 표면"으로. 분류기: `supply-chain` → 보안 설정 오류 분야.
+- 개밥먹기: 이 저장소 워크플로 4개·배포 예시 템플릿 경고 0(choice 입력 예외는 여기서 나왔다). 실측 5트리: 챗봇 UI 에
+  **새 발견 2건**(진짜) — `Dockerfile.frontend` node:20(EOL) · `next 16.0.10`(< 16.2.5). 나머지 트리 동일.
+- 승인 주체·승인 목록 관리는 체커 밖(향후 전담팀·포털). 게이트 변경 없음 — 신규 발견은 소스 발견으로 `conditional`.
+
 ## [0.5.5] - 2026-10-24
 
 ### 37차 — 공격이 숨는 자리를 읽는다: 자동 실행 표면 · 숨은 문자 · 예외 지문 (룰셋 2026.10.24a)

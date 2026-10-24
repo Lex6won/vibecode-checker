@@ -934,6 +934,9 @@ def _security_domain(f: Finding) -> tuple[int, str]:
     if cat in ("llm-appsec", "agent-safety", "agent-supply-chain") or "LLM" in rid or "AGENT" in rid \
             or "AUTOEXEC" in rid or "MCP" in rid:
         return _DOMAIN_AI
+    # 38차 — CI 워크플로·npm 설치 표면·런타임 버전은 공급망 분야(보안 설정 오류에 묶는다 — 새 분야를 만들면 9개 표가 깨진다).
+    if cat == "supply-chain" or rid.startswith(("GOV-CI-", "GOV-NPM-", "GOV-RUNTIME-")):
+        return _DOMAIN_MISCONFIG
     if any(k in rid for k in ("CODE", "ERR", "TIME", "ENCAP")):
         return _DOMAIN_QUALITY
     return _DOMAIN_OTHER
@@ -3786,7 +3789,11 @@ _AUTOEXEC_KIND_KO = {
     "ide-script": "IDE·에이전트 디렉터리 안 스크립트",
     "python-pth": "파이썬 .pth(기동 시 실행 가능)",
     "python-startup": "파이썬 sitecustomize/usercustomize",
-    "workflow": "CI 워크플로(인벤토리만)",
+    "workflow": "CI 워크플로(GitHub Actions)",
+    "npm-manifest": "npm 매니페스트(package.json — 설치 훅·의존성 출처·런타임 핀)",
+    "npm-lock": "npm 락파일(설치 훅 패키지·출처·무결성)",
+    "npmrc": ".npmrc(레지스트리·설치 스크립트 설정)",
+    "runtime-pin": "런타임 버전 핀(Dockerfile·.nvmrc·pyproject 등)",
 }
 
 
@@ -3795,10 +3802,10 @@ def _render_autoexec_md(report: ScanReport) -> list[str]:
     entries = getattr(report, "autoexec_surface", None) or []
     if not entries:
         return []
-    out = ["## 자동 실행 표면 (IDE·에이전트·파이썬 기동 설정)", "",
-           "> 저장소를 **열거나**, AI 에이전트 세션을 **켜거나**, 파이썬을 **기동하면** 실행되는 자리입니다. "
-           "일반 검사의 제외 규칙과 무관하게 이름으로 찾아 파서로만 읽었습니다(실행하지 않음). "
-           "발견은 위 목록에 포함돼 있고, 여기는 **무엇을 읽었는지**의 목록입니다. '해석 못 함'은 깨끗함이 아닙니다.", ""]
+    out = ["## 자동 실행·공급망 표면 (IDE·에이전트·CI·npm·런타임 설정)", "",
+           "> 저장소를 **열거나**, AI 에이전트 세션을 **켜거나**, 파이썬을 **기동하거나**, 패키지를 **설치하거나**, "
+           "CI 가 PR 을 **받으면** 실행되는 자리입니다. 일반 검사의 제외 규칙과 무관하게 이름으로 찾아 파서로만 읽었습니다"
+           "(실행하지 않음). 발견은 위 목록에 포함돼 있고, 여기는 **무엇을 읽었는지**의 목록입니다. '해석 못 함'은 깨끗함이 아닙니다.", ""]
     out.append("| 파일 | 종류 | 해석 | 발견 |")
     out.append("|---|---|---|---|")
     for e in entries:
@@ -3814,7 +3821,7 @@ def _render_autoexec_html(report: ScanReport) -> list[str]:
     if not entries:
         return []
     with_findings = sum(1 for e in entries if e.get("finding_count"))
-    p = ['<details class="sec"><summary>자동 실행 표면 (IDE·에이전트·파이썬 기동 설정) '
+    p = ['<details class="sec"><summary>자동 실행·공급망 표면 (IDE·에이전트·CI·npm·런타임 설정) '
          f'<span class="cnt">{len(entries)}</span>'
          + (f' <span class="tag">발견 있는 파일 {with_findings}</span>' if with_findings else "") + "</summary>",
          '<p class="muted">저장소를 열거나 에이전트 세션을 켜거나 파이썬을 기동하면 실행되는 자리입니다. '
