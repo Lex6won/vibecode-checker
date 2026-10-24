@@ -65,8 +65,10 @@ from .schema import (
 # self-disables when the binary or rules dir is missing, so safe to include.
 # HiddenTextScanner(37차)는 언어 무관 코드포인트 검사 — 다른 엔진과 겹치는 룰이 없어 순서가 무관하다.
 from .scanners.hidden_text import HiddenTextScanner  # noqa: E402 — 위 import 블록과 같은 묶음
+from .scanners.agent_surface import AgentSurfaceScanner  # noqa: E402 — 39차: 실행 소스의 에이전트·공급망 행위
 
-_ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner(), HiddenTextScanner()]
+_ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner(),
+             HiddenTextScanner(), AgentSurfaceScanner()]
 
 # Engine precision ranking — higher number wins on collisions.
 _ENGINE_PRECISION = ENGINE_PRECISION   # 한 벌 — policy.py (예전엔 regex_scanner 와 semgrep 순서가 반대였다)
@@ -2189,7 +2191,7 @@ def path_level_rule_ids() -> tuple[str, ...]:
     from .scanners.autoexec_surface import (
         RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_IDE_TASK, RULE_MCP_CONFIG, RULE_PY_STARTUP,
     )
-    from .scanners import ci_workflow, npm_surface, runtime_version
+    from .scanners import agent_surface, ci_workflow, npm_surface, runtime_version
     from .scanners.hidden_text import BIDI_RULE_ID, HIDDEN_RULE_ID
 
     return (
@@ -2197,8 +2199,12 @@ def path_level_rule_ids() -> tuple[str, ...]:
         # 37차 — 자동 실행 표면(경로 순회 뒤 별도 수집기가 발행)과 숨은 문자(hidden-text 어댑터가 발행)
         RULE_IDE_TASK, RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_MCP_CONFIG, RULE_PY_STARTUP,
         HIDDEN_RULE_ID, BIDI_RULE_ID,
+        # 39차 — 지시 파일+권한 결합(autoexec-surface 수집기가 후처리로 발행)
+        "GOV-AGENT-INSTRUCTION-ABUSE-001",
         # 38차 — CI 워크플로 · npm 설치 표면 · 런타임 버전(같은 수집기가 종류별 판정기로 발행)
         *ci_workflow.RULE_IDS, *npm_surface.RULE_IDS, *runtime_version.RULE_IDS,
+        # 39차 — 에이전트·공급망 행위(agent-surface 어댑터가 발행: AI CLI 오용·수집+전송·C2)
+        *agent_surface.RULE_IDS,
     )
 
 

@@ -54,6 +54,11 @@ _ENGINE_ONLY_RULE_IDS = {
     "GOV-NPM-LOCK-SOURCE-001",
     "GOV-RUNTIME-EOL-001",
     "GOV-RUNTIME-OUTDATED-001",
+    # 39차 — agent-surface 어댑터(실행 소스 행위 결합 판정)
+    "GOV-AGENT-CLI-ABUSE-001",
+    "GOV-AGENT-CRED-EXFIL-001",
+    "GOV-AGENT-C2-CHANNEL-001",
+    "GOV-AGENT-INSTRUCTION-ABUSE-001",   # autoexec-surface 수집기가 결합 판정으로 발행
 }
 
 

@@ -5,6 +5,34 @@
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-25
+
+### 39차 — 실행 소스의 에이전트·공급망 "행위" 판정 (룰셋 2026.10.25a)
+
+37·38차가 설정·매니페스트를 구조로 읽었다면(값이 곧 판정), 39차는 실행 소스가 **무엇을 하는가**를 본다.
+핵심 원칙은 **결합** — 하나로는 올리지 않고 둘 이상이 함께일 때만 차단으로 올린다(오탐 억제). regex·토큰 기반
+(언어 무관, 망분리 PC 에 파서 반입 없음)이라 값의 출처를 변수까지 추적하지는 않는다 — 그 정밀화(JS 파일 간
+흐름)는 "C 결정(tree-sitter)" 과제다. 지금은 같은 파일 안의 결합으로 판정하고 결합이 약하면 경고로 둔다.
+
+- **agent-surface 엔진**(`scanners/agent_surface.py`, `_ADAPTERS` 등록, 실행 소스 전용) — 룰 3개:
+  - `GOV-AGENT-CLI-ABUSE-001`: 코드가 로컬 AI 코딩 CLI(claude·gemini·codex 등)를 **확인 생략 옵션**으로 실행
+    (confirmed/block) · 비대화식만(likely/warn) · 백그라운드·출력 은폐면 확신도↑. 탐지 신호 표는
+    `config/ai-cli-flags.yaml`(CLI 이름·비대화식·확인생략·백그라운드 토큰; `GVSKB_AI_CLI_FLAGS` 로 교체).
+  - `GOV-AGENT-CRED-EXFIL-001`: 자격증명 자리 **3종 이상 수집 + 외부 전송**이 같은 파일에(likely) · 포장/위장
+    결합 시 confirmed · 수집만 4종↑은 pattern-only(백업 도구 정상 용례) · 전송만은 올리지 않음. 증거에 분류명·개수만.
+  - `GOV-AGENT-C2-CHANNEL-001`: dead-drop(공개 텍스트 호스트→실행, confirmed) · 메신저 webhook(+전송 likely) ·
+    DNS 응답→명령(likely) · 맥락 밖 블록체인 RPC(pattern-only, 용도 확인). 설정 JSON 을 받아 쓰는 정상 용례는 제외.
+- **autoexec-surface 확장** — `GOV-AGENT-INSTRUCTION-ABUSE-001`: 지시 파일(CLAUDE.md·AGENTS.md·.cursorrules 등)의
+  위험 지시(지시 무효화·권한 우회·보안 해제·비밀값 열람·외부 전송) + 같은 저장소의 권한 우회 설정(또는 지시가
+  숨은 문자로 은폐)이 결합할 때 차단. 지시만이면 경고. **부정 맥락**(보안 가이드가 "따르지 말라"고 인용·`예시`·
+  `for example`)은 제외 — 이 체커 자신의 rules/*.md 가 음성 예다. 2026-08 웜의 모양(지시+권한)을 겨냥.
+- 게이트 변경 없음 — 신규 발견은 소스 발견으로 `conditional`. 승인 주체·승인 목록 관리는 체커 밖(포털·전담팀).
+- 룰 4개 추가(`rules/agent-supply-chain/`). 검증: 실측 5트리 발견 **동일**(새 오탐 0) · 라벨 96건 위반 0 ·
+  벤치마크 recall 42/42·FP 0. 작업 중 잡은 함정: 부정 맥락 가드의 `example` 단독이 합성 도메인(`x.example`)을
+  오인 → `for example`·`예시` 로 좁힘. 개밥먹기 메모: `gvskb scan .` 은 이 엔진의 **탐지기 소스**
+  (`agent_surface.py` — CLI 이름·자격증명 경로·C2 패턴을 상수로 담음)와 테스트 fixture 를 자기 참조로 잡는다.
+  모든 패턴 스캐너의 성질이며(37차 hidden-text 와 동일), 어느 게이트도 체커 src 를 검사 대상으로 스캔하지 않는다.
+
 ## [0.5.6] - 2026-10-24
 
 ### 38차 — CI 워크플로 · npm 설치 표면 · 프로젝트 런타임 버전 (룰셋 2026.10.24b)

@@ -44,7 +44,23 @@ RULE_AGENT_HOOK = "GOV-AUTOEXEC-AGENT-HOOK-001"
 RULE_AGENT_PERMISSION = "GOV-AGENT-CONFIG-PERMISSION-001"
 RULE_MCP_CONFIG = "GOV-MCP-CONFIG-001"
 RULE_PY_STARTUP = "GOV-AUTOEXEC-PYTHON-STARTUP-001"
+RULE_INSTRUCTION_ABUSE = "GOV-AGENT-INSTRUCTION-ABUSE-001"   # 39차 — 지시 파일 위험 지시 + 권한 결합
 ENGINE = "autoexec-surface"
+
+# 39차 — 에이전트 지시 파일(CLAUDE.md 등)의 위험 지시 신호. 문구 하나로 올리지 않는다: 권한 신호와
+# 결합할 때만 차단이고, 그마저도 부정 맥락(가이드가 "따르지 말라"고 인용)이면 뺀다.
+_DIRECTIVE_SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)ignore\s+(?:all\s+)?previous|무시하(?:고|라|세요)|이전\s*지시|disregard\s+(?:all|the)"), "지시 무효화"),
+    (re.compile(r"(?i)--dangerously-skip-permissions|--yolo|bypass\s*permissions|권한\s*(?:확인\s*)?(?:생략|우회)|skip\s+(?:the\s+)?(?:security|permission)"), "권한 우회"),
+    (re.compile(r"(?i)--no-verify|보안\s*(?:검사|게이트)\s*(?:끄|제거|해제|우회|건너)|disable\s+(?:the\s+)?(?:security|guard|check)"), "보안 검사 해제"),
+    (re.compile(r"(?i)~/\.ssh|~/\.aws|\.env\b|credentials?\b|비밀\s*(?:번호|키)|자격\s*증명|secret\s*key|read\s+(?:the\s+)?token"), "비밀값 열람"),
+    (re.compile(r"(?i)curl\s+-d|webhook|api\.telegram\.org|discord(?:app)?\.com/api/webhooks|외부\s*(?:로\s*)?전송|exfiltrat|send\s+(?:it\s+)?to\s+https?://"), "외부 전송"),
+)
+# 부정 맥락 — 같은 줄·바로 윗줄에 있으면 "지시"가 아니라 "인용·경고"다(이 체커의 rules/*.md 가 그렇다).
+_DIRECTIVE_NEGATION = re.compile(
+    r"(?i)하지\s*(?:말|마)|말\s*(?:것|아야|세요|라)|금지|금(?:칙|함)|안\s*(?:됩니다|된다|돼)|따르지|do\s+not|don'?t|never|must\s+not"
+    r"|for\s+example|e\.g\.|such\s+as|예시|예:|위험|취약|탐지|차단|방지|주의|경고|이런\s*지시",   # 'example' 단독은 뺀다 — 합성 도메인(x.example)을 오인
+)
 
 # 인프라·캐시 디렉터리 — 여기는 어떤 경우에도 들어가지 않는다(수천 파일, 자체 코드 없음).
 # `.vscode`·`.claude`·`.cursor`·`.github` 는 **의도적으로 없다** — 이 모듈이 보려는 자리다.
@@ -437,6 +453,23 @@ def _judge_sitecustomize(text: str, rel: str) -> list[Finding]:
     return [f] if f else []
 
 
+def _detect_instruction_directives(text: str) -> list[tuple[str, int]]:
+    """에이전트 지시 파일의 위험 지시 신호 — (분류, 줄번호). 부정 맥락(인용·경고)은 뺀다."""
+    out: list[tuple[str, int]] = []
+    lines = text.splitlines()
+    for pat, label in _DIRECTIVE_SIGNALS:
+        for m in pat.finditer(text):
+            ln = text.count("\n", 0, m.start()) + 1
+            ctx = lines[ln - 1] if 1 <= ln <= len(lines) else ""
+            if ln >= 2:
+                ctx += "\n" + lines[ln - 2]
+            if _DIRECTIVE_NEGATION.search(ctx):
+                continue
+            out.append((label, ln))
+            break   # 분류당 첫 건만
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 수집
 # ---------------------------------------------------------------------------
@@ -527,6 +560,8 @@ def collect_autoexec_surface(
     if not root.is_dir():
         return res
     seen = {s.replace("\\", "/") for s in (already_scanned or ())}
+    instruction_dirs: list[tuple[str, str, int]] = []   # 39차 — (파일, 신호 분류 결합, 첫 줄)
+    files_with_hidden: set[str] = set()
     for p in _iter_surface_files(root):
         if p.is_symlink():
             continue
@@ -592,9 +627,18 @@ def collect_autoexec_surface(
                 else:
                     pins = runtime_version.pins_from_version_file(p.name, text)
                 findings += runtime_version.judge_pins(pins, rel)
+            # 39차 — 지시 파일의 위험 지시 신호를 모은다(권한 신호와 결합은 루프 뒤 후처리에서).
+            if kind == "agent-instructions":
+                dirs = _detect_instruction_directives(text)
+                if dirs:
+                    labels = sorted({lab for lab, _ in dirs})
+                    instruction_dirs.append((rel, " · ".join(labels), min(ln for _, ln in dirs)))
             # agent-instructions 등: 인벤토리 + 숨은 문자. 락파일은 생성물이라 숨은 문자 검사를 하지 않는다(수 MB).
             if kind not in ("ide-script", "npm-lock") and rel not in seen:   # ide-script 는 scan_code 의 hidden-text 엔진이 봤다
-                findings += scan_hidden_text(text, filename=rel)
+                hid = scan_hidden_text(text, filename=rel)
+                if hid:
+                    files_with_hidden.add(rel)
+                findings += hid
         except Exception as exc:  # noqa: BLE001 — 설정 파일 하나의 오류가 검사를 멈추면 안 된다
             entry.parsed = False
             entry.note = f"해석 실패: {type(exc).__name__}"
@@ -609,4 +653,20 @@ def collect_autoexec_surface(
         if rel not in seen:
             res.scanned.append(rel)
         res.entries.append(entry)
+
+    # 39차 ④ — 지시 파일의 위험 지시 + 권한 신호 결합. 지시만 있으면 경고, 권한 끄기/훅이 같은 저장소에
+    # 있거나 지시가 숨은 문자로 가려져 있으면 차단. 이것이 2026-08 웜의 모양이다(CLAUDE.md 지시 + settings 권한).
+    if instruction_dirs:
+        perm_signal = any(f.rule_id in (RULE_AGENT_PERMISSION, RULE_AGENT_HOOK) for f in res.findings)
+        for rel, labels, line in instruction_dirs:
+            hidden_here = rel in files_with_hidden
+            if perm_signal or hidden_here:
+                conf = "confirmed" if hidden_here else "likely"
+                extra = " + 숨은 문자로 은폐" if hidden_here else " + 같은 저장소에 권한 우회 설정"
+            else:
+                conf, extra = "pattern-only", " (권한 신호와 결합 안 됨 — 문구만으로는 검토)"
+            f = _emit(RULE_INSTRUCTION_ABUSE, rel=rel, line=line,
+                      evidence=f"에이전트 지시 파일의 위험 지시({labels}){extra}", confidence=conf)
+            if f:
+                res.findings.extend(policy([f], rel))
     return res
