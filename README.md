@@ -172,7 +172,7 @@ https://github.com/user-attachments/assets/f2a817ae-0a8d-440f-a832-b78bcdd05540
 # 권장 — 릴리스 wheel (git 불필요, 커밋 신원이 박혀 있어 `gvskb status` 로 대조 가능)
 #   최신 릴리스 페이지: https://github.com/Lex6won/vibecode-checker/releases/latest
 #   페이지의 Assets 에서 .whl 주소를 복사해 넣으세요. 릴리스 노트에 그 판의 설치 명령이 그대로 적혀 있습니다.
-pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.4/vibecode_checker-0.5.4-py3-none-any.whl
+pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.6/vibecode_checker-0.5.6-py3-none-any.whl
 
 # 대안 — 소스에서 한 줄 설치 (git 이 설치된 PC). main 의 최신 커밋이 설치됩니다.
 pip install --force-reinstall git+https://github.com/Lex6won/vibecode-checker.git
