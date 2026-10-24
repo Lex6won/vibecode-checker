@@ -66,6 +66,11 @@ _FILE_CONTEXT_RULE_IDS = {
     "GOV-NPM-LOCK-SOURCE-001",
     "GOV-RUNTIME-EOL-001",
     "GOV-RUNTIME-OUTDATED-001",
+    # 39차 — agent-surface(결합 신호 판정, scan_code 조각으로 재현). 테스트: test_round39_*.py
+    "GOV-AGENT-CLI-ABUSE-001",
+    "GOV-AGENT-CRED-EXFIL-001",
+    "GOV-AGENT-C2-CHANNEL-001",
+    "GOV-AGENT-INSTRUCTION-ABUSE-001",   # 파일 맥락(지시 파일) + 결합 — 실제 파일 fixture 로 검증
 }
 
 
