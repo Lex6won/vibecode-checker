@@ -34,6 +34,15 @@ def test_reference_seed_rules_present(rules):
 _ENGINE_ONLY_RULE_IDS = {
     "GOV-SQL-DDL-DYNAMIC-001",   # python-ast 가 DDL 접두사를 확인한 뒤 발행
     "GOV-SECRET-KEYFILE-001",    # scan_path 가 파일명 + 내용을 함께 보고 발행
+    # 37차 — autoexec-surface 엔진(파일 이름·위치 + 구조 해석)
+    "GOV-AUTOEXEC-IDE-TASK-001",
+    "GOV-AUTOEXEC-AGENT-HOOK-001",
+    "GOV-AGENT-CONFIG-PERMISSION-001",
+    "GOV-MCP-CONFIG-001",
+    "GOV-AUTOEXEC-PYTHON-STARTUP-001",
+    # 37차 — hidden-text 엔진(코드포인트 단위)
+    "GOV-HIDDEN-UNICODE-001",
+    "GOV-BIDI-CONTROL-001",
 }
 
 

@@ -1588,7 +1588,9 @@ class JsTaintScanner(ScannerAdapter):
         if rule is not None and not (categories and rule["category"] not in categories):
             lines = split_lines(code)
             for line_no, verdict in classify_html_sinks(code).items():
-                if verdict.state != TAINTED or ignores.suppresses(line_no, _HTML_RULE_ID):
+                if verdict.state != TAINTED or ignores.suppresses(
+                    line_no, _HTML_RULE_ID, "confirmed" if verdict.direct_source else "likely",
+                ):
                     continue
                 f = build_finding(
                     rule, filename=filename, line_no=line_no,

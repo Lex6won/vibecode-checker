@@ -167,7 +167,7 @@ class _Visitor(ast.NodeVisitor):
         # 같은 줄 형태와 **바로 윗줄 단독 주석** 형태를 모두 본다. 두 번째 형태는
         # 룰 카드가 안내하는 사용법이면서(주석을 위에 다는 습관) 판정이 모호하지
         # 않아, 다른 언어에서도 같은 규칙을 쓴다.
-        if self._ignores.suppresses(lineno, rule_id):
+        if self._ignores.suppresses(lineno, rule_id, confidence):
             return
         if confidence:
             self.hits.append((rule_id, lineno, self._evidence(lineno), confidence))

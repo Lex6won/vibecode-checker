@@ -63,7 +63,10 @@ from .schema import (
 # Adapter run order. Earlier adapters establish baseline findings; later
 # adapters (more precise) can supersede them via dedup_findings. SemgrepScanner
 # self-disables when the binary or rules dir is missing, so safe to include.
-_ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner()]
+# HiddenTextScanner(37차)는 언어 무관 코드포인트 검사 — 다른 엔진과 겹치는 룰이 없어 순서가 무관하다.
+from .scanners.hidden_text import HiddenTextScanner  # noqa: E402 — 위 import 블록과 같은 묶음
+
+_ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner(), HiddenTextScanner()]
 
 # Engine precision ranking — higher number wins on collisions.
 _ENGINE_PRECISION = ENGINE_PRECISION   # 한 벌 — policy.py (예전엔 regex_scanner 와 semgrep 순서가 반대였다)
@@ -1750,6 +1753,7 @@ def scan_path(
     engine_failures: dict[str, str] = {}             # 엔진 이름 → 실패 사유(파일 전체 누적)
     languages_seen: set[str] = set()                 # 검사한 파일의 언어 집합 → engines.required
     inline_ignored = 0                               # `gvskb: ignore` 주석이 붙은 줄 수
+    inline_overridden = 0                            # 그 주석이 confirmed 발견에는 적용되지 않은 건수(37차)
     vendor_bundles: list[dict] = []                  # 벤더 번들 식별 결과(SCA 대상)
     external: list[ExternalConnection] = []          # 외부 연결 인벤토리 누적
     manifest_files: list[tuple[Path, str]] = []      # (경로, ecosystem) — 플러그인 목록용
@@ -2023,10 +2027,18 @@ def scan_path(
             languages_seen.update(_scanned_languages(rel, None))
             # 인라인 무시 주석이 붙은 줄 수 — 승인자·사유 없이 검사를 끄는 경로이므로
             # 숨기지 않고 센다(보고서·포털 심사 화면이 이 값을 표시한다).
-            from .scanners.regex_scanner import count_inline_ignores
+            from .scanners.regex_scanner import InlineIgnores, count_inline_ignores
             inline_ignored += count_inline_ignores(text, _language_of(rel))
             posture.observe(rel, text, runtime=path_class(rel) == "runtime")
             file_findings = report.findings
+            # 37차: 확인된(confirmed) 발견은 인라인 주석으로 꺼지지 않는다 — 지시가 있었지만
+            # 적용되지 않은 건수를 따로 센다(심사자가 "누가 끄려 했나"를 볼 수 있어야 한다).
+            if file_findings:
+                _ig = InlineIgnores(text, _language_of(rel))
+                inline_overridden += sum(
+                    1 for ff in file_findings
+                    if ff.confidence == "confirmed" and _ig.directive_covers(ff.location.line, ff.rule_id)
+                )
             # 룰 정의 문서·벤치마크 매니페스트는 탐지 예시를 담고 있다 — 제외가 아니라
             # 감쇄(비밀 자재 검사 결과는 그대로).
             if _looks_like_rule_definition(text, f.suffix.lower()):
@@ -2067,13 +2079,35 @@ def scan_path(
             inventory_packages(parse_manifest_packages(mtext, eco), _rel(mpath, root, is_dir))
         )
 
+    # 자동 실행 표면(37차) — `.vscode`·`.claude`·`.mcp.json`·`CLAUDE.md`·`*.pth` 처럼 일반 스캔이
+    # 제외하거나 읽지 않는 자리를 **제외 규칙과 무관하게** 이름으로 찾아 파서로만 읽는다.
+    # 2026-08 npm 웜·2026-10 PyPI 사고가 숨은 자리다. 어떤 설정도 실행하지 않는다.
+    autoexec_entries: list[dict] = []
+    if is_dir:
+        from .scanners.autoexec_surface import collect_autoexec_surface
+        try:
+            surface = collect_autoexec_surface(
+                root,
+                policy=lambda fs, rel_path: _path_level_policies(fs, rel_path, profile_spec),
+                scan_code=lambda text, rel_path: scan_code(
+                    text, filename=rel_path, scenario=scenario, profile=profile).findings,
+                already_scanned={s.replace("\\", "/") for s in scanned},
+            )
+        except Exception as exc:  # noqa: BLE001 — 표면 검사 실패는 엔진 실패로 남기고 검사는 계속한다
+            engine_failures.setdefault("autoexec-surface", f"{type(exc).__name__}: {exc}")
+        else:
+            all_findings.extend(surface.findings)
+            skipped.extend(surface.skipped)
+            scanned.extend(surface.scanned)
+            autoexec_entries = [e.as_dict() for e in surface.entries]
+
     # 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 표시만 하며,
     # 요약(건수·차단)과 exit code 는 비억제 발견 기준으로 계산한다.
     from .suppressions import apply_suppressions, load_exceptions
-    sup = apply_suppressions(all_findings, load_exceptions(root))
+    sup = apply_suppressions(all_findings, load_exceptions(root), root=root if is_dir else root.parent)
     active = [f for f in all_findings if not f.suppressed]
     suppression_summary = None
-    if sup.applied or sup.expired or sup.invalid or inline_ignored:
+    if sup.applied or sup.expired or sup.invalid or inline_ignored or inline_overridden:
         suppression_summary = {
             "applied": sup.applied,
             "expired": sup.expired,
@@ -2082,6 +2116,11 @@ def scan_path(
             # 승인된 예외와 같은 칸에 넣지 않고 따로 센다 — 심사자가 둘을
             # 구분해서 봐야 한다.
             "inline_ignored": inline_ignored,
+            # 37차 — 지시는 있었지만 confirmed 발견이라 적용되지 않은 건수.
+            "inline_overridden": inline_overridden,
+            # 37차 — 코드 지문(fingerprint) 없이 적용된 예외 수. 코드가 바뀌어도 계속 억제되는 예외다.
+            "unbound": len(sup.unbound),
+            "unbound_detail": sup.unbound[:20],
         }
 
     _eff_profile, _profile_fallback = _profile_resolution(profile, load_profile(profile))
@@ -2118,6 +2157,7 @@ def scan_path(
         suppression_summary=suppression_summary,
         vendor_bundles=vendor_bundles,
         posture_notes=_posture_notes(posture, skipped),
+        autoexec_surface=autoexec_entries,
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}
@@ -2146,7 +2186,17 @@ def path_level_rule_ids() -> tuple[str, ...]:
     어댑터(regex/AST)가 아니라 경로 순회 단계에서 판정하므로 여기에 선언한다.
     선언이 없으면 patterns 도 없고 발행 주체도 없는 '침묵하는 룰'이 된다.
     """
-    return ("GOV-SECRET-KEYFILE-001",)
+    from .scanners.autoexec_surface import (
+        RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_IDE_TASK, RULE_MCP_CONFIG, RULE_PY_STARTUP,
+    )
+    from .scanners.hidden_text import BIDI_RULE_ID, HIDDEN_RULE_ID
+
+    return (
+        "GOV-SECRET-KEYFILE-001",
+        # 37차 — 자동 실행 표면(경로 순회 뒤 별도 수집기가 발행)과 숨은 문자(hidden-text 어댑터가 발행)
+        RULE_IDE_TASK, RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_MCP_CONFIG, RULE_PY_STARTUP,
+        HIDDEN_RULE_ID, BIDI_RULE_ID,
+    )
 
 
 def _looks_like_pyproject(text: str) -> bool:

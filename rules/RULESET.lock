@@ -2,6 +2,6 @@
 # 룰을 고치면 지문이 바뀝니다. 그때 `gvskb ruleset --bump <버전>` 으로
 # 이 파일을 갱신하세요. CI 가 지문 불일치를 ERROR 로 막습니다.
 # 문구(safe_fix·설명)만 고친 경우에는 지문이 움직이지 않습니다.
-version: 2026.10.15a
-digest: eadbd0c6341a27ff4d93b6c7cebc0941
-rule_count: 338
+version: 2026.10.24a
+digest: 06fbd1763301e357fbfa4a82efc19603
+rule_count: 345

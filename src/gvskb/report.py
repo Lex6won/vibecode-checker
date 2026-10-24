@@ -927,7 +927,12 @@ def _security_domain(f: Finding) -> tuple[int, str]:
     if cat == "misconfig" or any(k in rid for k in (
             "FLASK", "DEBUG", "SEC-03", "SEC-12", "ENCAP-02")):
         return _DOMAIN_MISCONFIG
-    if cat in ("llm-appsec", "agent-safety") or "LLM" in rid or "AGENT" in rid:
+    # 37차 — 숨은 문자(보이지 않는 유니코드·양방향 제어)는 코드 주입의 운반체다.
+    if cat == "hidden-code" or "HIDDEN" in rid or "BIDI" in rid:
+        return _DOMAIN_INJECTION
+    # 37차 — 자동 실행 표면(IDE·에이전트 설정·MCP·파이썬 기동)은 AI·자동화 위험으로 묶는다.
+    if cat in ("llm-appsec", "agent-safety", "agent-supply-chain") or "LLM" in rid or "AGENT" in rid \
+            or "AUTOEXEC" in rid or "MCP" in rid:
         return _DOMAIN_AI
     if any(k in rid for k in ("CODE", "ERR", "TIME", "ENCAP")):
         return _DOMAIN_QUALITY
@@ -1722,6 +1727,9 @@ def render_markdown(
     # --- ⑨-2 보안 자세 관찰(정보) — 부재형 항목, 판정과 무관 ------------------
     lines.extend(_render_posture_md(report))
 
+    # --- ⑨-3 자동 실행 표면 인벤토리(37차) — 읽은 것의 목록, 발견은 위에 ------
+    lines.extend(_render_autoexec_md(report))
+
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
     lines.extend(_render_dependency_audit_md(report))
 
@@ -2488,6 +2496,9 @@ def render_html(
     # === 보안 자세 관찰(정보) — 부재형 항목, 판정과 무관 =================
     p.extend(_render_posture_html(report))
 
+    # === 자동 실행 표면 인벤토리(37차) ====================================
+    p.extend(_render_autoexec_html(report))
+
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     dep_prompt = _dep_fix_prompt_text(report)
     if report.findings or dep_prompt:
@@ -2898,6 +2909,31 @@ def _suppression_banner_md(report: ScanReport, suppressed: list[Finding]) -> lis
         out.append(
             f"> ⚠️ **만료된 예외** — `{e.get('rule_id', '?')}` ({e.get('file', '?')}) 의 예외가 "
             f"{e.get('expires', '?')} 에 만료돼 **다시 차단 대상**입니다. 재승인하거나 수정하세요."
+        )
+        out.append("")
+    # 37차 — 예외는 게이트 통과권이다. 적용된 예외가 있으면 보고서 **맨 위**에서 말한다(아래 접힌 표만으로는
+    # 심사자가 지나친다). 지문 없는 예외는 코드가 바뀌어도 계속 적용되므로 따로 센다.
+    applied = int(ss.get("applied") or 0)
+    unbound = int(ss.get("unbound") or 0)
+    if applied:
+        tail = (f" 그중 **코드 지문(fingerprint) 없는 예외 {unbound}건** — 코드가 바뀌어도 계속 억제됩니다. "
+                "`.gvskb-exceptions.yaml` 항목에 `fingerprint:` 를 추가하세요(보고서 하단 '승인된 예외 내역'의 현재 지문 참고)."
+                if unbound else "")
+        out.append(
+            f"> 🔏 **승인된 예외로 억제된 발견 {applied}건** — 발견이 사라진 것이 아닙니다. "
+            f"승인 기록(승인자·사유·만료)을 확인하세요.{tail}"
+        )
+        out.append("")
+    for msg in (ss.get("invalid") or []):
+        if "지문 불일치" in str(msg):
+            out.append(f"> ⚠️ **예외 무효(코드 변경)** — {msg}")
+            out.append("")
+    overridden = int(ss.get("inline_overridden") or 0)
+    if overridden:
+        out.append(
+            f"> 🚫 인라인 무시 주석 **{overridden}건**이 확인된(confirmed) 발견에는 적용되지 않았습니다 — "
+            "외부 입력이 실행 지점에 닿는 것이 추적으로 확인된 발견은 주석으로 끌 수 없습니다. "
+            "수용하려면 승인자·만료일이 있는 `.gvskb-exceptions.yaml` 로 기록하세요."
         )
         out.append("")
     return out
@@ -3739,6 +3775,58 @@ def _render_posture_md(report: ScanReport) -> list[str]:
             out.append("- 참고: " + " · ".join(n["references"]))
         out.append("")
     return out
+
+
+_AUTOEXEC_KIND_KO = {
+    "vscode-tasks": "VS Code task(폴더 열기 자동 실행 가능)",
+    "vscode-settings": "VS Code 작업영역 설정",
+    "claude-settings": "Claude Code 저장소 설정(훅·권한)",
+    "mcp-config": "MCP 서버 설정",
+    "agent-instructions": "에이전트 지시 파일",
+    "ide-script": "IDE·에이전트 디렉터리 안 스크립트",
+    "python-pth": "파이썬 .pth(기동 시 실행 가능)",
+    "python-startup": "파이썬 sitecustomize/usercustomize",
+    "workflow": "CI 워크플로(인벤토리만)",
+}
+
+
+def _render_autoexec_md(report: ScanReport) -> list[str]:
+    """자동 실행 표면 인벤토리(37차). 발견 0건이어도 **무엇을 읽었는지** 보인다 — 읽은 것과 안 읽은 것이 구분돼야 한다."""
+    entries = getattr(report, "autoexec_surface", None) or []
+    if not entries:
+        return []
+    out = ["## 자동 실행 표면 (IDE·에이전트·파이썬 기동 설정)", "",
+           "> 저장소를 **열거나**, AI 에이전트 세션을 **켜거나**, 파이썬을 **기동하면** 실행되는 자리입니다. "
+           "일반 검사의 제외 규칙과 무관하게 이름으로 찾아 파서로만 읽었습니다(실행하지 않음). "
+           "발견은 위 목록에 포함돼 있고, 여기는 **무엇을 읽었는지**의 목록입니다. '해석 못 함'은 깨끗함이 아닙니다.", ""]
+    out.append("| 파일 | 종류 | 해석 | 발견 |")
+    out.append("|---|---|---|---|")
+    for e in entries:
+        kind = _AUTOEXEC_KIND_KO.get(e.get("kind", ""), e.get("kind", ""))
+        parsed = "✅" if e.get("parsed", True) else f"❌ {e.get('note', '')}"
+        out.append(f"| `{e.get('path', '')}` | {kind} | {parsed} | {e.get('finding_count', 0)}건 |")
+    out.append("")
+    return out
+
+
+def _render_autoexec_html(report: ScanReport) -> list[str]:
+    entries = getattr(report, "autoexec_surface", None) or []
+    if not entries:
+        return []
+    with_findings = sum(1 for e in entries if e.get("finding_count"))
+    p = ['<details class="sec"><summary>자동 실행 표면 (IDE·에이전트·파이썬 기동 설정) '
+         f'<span class="cnt">{len(entries)}</span>'
+         + (f' <span class="tag">발견 있는 파일 {with_findings}</span>' if with_findings else "") + "</summary>",
+         '<p class="muted">저장소를 열거나 에이전트 세션을 켜거나 파이썬을 기동하면 실행되는 자리입니다. '
+         '제외 규칙과 무관하게 이름으로 찾아 파서로만 읽었습니다(실행하지 않음). 해석 못 함은 깨끗함이 아닙니다.</p>',
+         "<table><tr><th>파일</th><th>종류</th><th>해석</th><th>발견</th></tr>"]
+    for e in entries:
+        kind = _AUTOEXEC_KIND_KO.get(e.get("kind", ""), e.get("kind", ""))
+        parsed = "✅" if e.get("parsed", True) else f"❌ {_esc(e.get('note', ''))}"
+        p.append(f"<tr><td><code>{_esc(e.get('path', ''))}</code></td><td>{_esc(kind)}</td>"
+                 f"<td>{parsed}</td><td>{e.get('finding_count', 0)}건</td></tr>")
+    p.append("</table></details>")
+    return p
 
 
 def _render_posture_html(report: ScanReport) -> list[str]:

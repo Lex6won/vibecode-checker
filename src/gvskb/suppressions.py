@@ -47,6 +47,14 @@ EXCEPTIONS_DIR_ENV = "GVSKB_EXCEPTIONS_DIR"
 
 _REQUIRED_FIELDS = ("rule_id", "file", "reason", "approved_by", "expires")
 
+# 37차 — 코드 지문. 예외는 지금까지 `rule_id` + 파일 경로(+줄)로만 맞췄다. 그러면 파일 내용이
+# 통째로 바뀌어도, 줄 번호를 생략하면 그 파일의 그 룰 발견 **전부**가 만료일까지 억제된다.
+# 검사 대상 저장소 안에 있는 파일이므로 작성자(또는 에이전트)가 취약 코드와 예외 한 줄을 같이
+# 쓸 수 있다. 지문은 "승인한 그 코드"에 예외를 묶는다 — 코드가 바뀌면 예외는 자동 무효가 된다.
+# 지문 = 해당 줄 ±2줄(줄 지정이 없으면 파일 전체)을 공백 정규화한 sha256 앞 16자리.
+FINGERPRINT_FIELD = "fingerprint"
+FINGERPRINT_CONTEXT = 2
+
 
 @dataclass
 class SuppressionResult:
@@ -55,6 +63,24 @@ class SuppressionResult:
     applied: int = 0
     expired: list[dict] = field(default_factory=list)   # 만료돼 무효화된 예외
     invalid: list[str] = field(default_factory=list)    # 필수 필드 누락 등 사유
+    unbound: list[str] = field(default_factory=list)    # 지문 없이 적용된 예외(코드가 바뀌어도 계속 억제됨)
+
+
+def compute_fingerprint(root: Path, file: str, line: int | None) -> str | None:
+    """예외가 묶이는 코드의 지문. 파일을 읽지 못하면 None(지문 검증을 건너뛰고 그 사실을 남긴다)."""
+    try:
+        text = (Path(root) / str(file)).read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    lines = text.splitlines()
+    if line is not None and line >= 1:
+        lo, hi = max(0, line - 1 - FINGERPRINT_CONTEXT), min(len(lines), line + FINGERPRINT_CONTEXT)
+        chunk = lines[lo:hi]
+    else:
+        chunk = lines
+    normalized = "\n".join(" ".join(ln.split()) for ln in chunk if ln.strip())
+    import hashlib
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def _norm(path: str) -> str:
@@ -119,8 +145,15 @@ def apply_suppressions(
     exceptions: list[dict],
     *,
     today: date | None = None,
+    root: Path | None = None,
 ) -> SuppressionResult:
-    """유효한 예외에 매칭되는 발견을 suppressed 로 표시한다(제거하지 않음)."""
+    """유효한 예외에 매칭되는 발견을 suppressed 로 표시한다(제거하지 않음).
+
+    ``root`` 가 있으면 코드 지문을 검증한다: 예외에 ``fingerprint`` 가 있고 현재 코드와 다르면
+    **무효**(코드가 바뀌었다 — 승인은 예전 코드에 한 것이다), 없으면 적용은 하되 ``unbound`` 에
+    기록해 보고서가 "지문 없는 예외 N건"을 띄운다. 중앙(기관) 예외는 지문을 요구하지 않는다 —
+    기관이 룰·파일 단위로 내리는 판정이고, 그 채널은 서명·해시로 따로 보호한다(모듈 머리 참조).
+    """
     result = SuppressionResult()
     if not exceptions:
         return result
@@ -141,6 +174,30 @@ def apply_suppressions(
         if expires < today:
             result.expired.append(e)  # 만료 — 억제하지 않고 리포트에 경고
             continue
+        if root is not None and e.get("_origin", "project") == "project":
+            line_raw = e.get("line")
+            try:
+                line_no = int(line_raw) if line_raw is not None else None
+            except (TypeError, ValueError):
+                line_no = None
+            actual = compute_fingerprint(root, str(e["file"]), line_no)
+            declared = str(e.get(FINGERPRINT_FIELD) or "").strip().lower()
+            where = f"{e['file']}:{line_raw}" if line_raw is not None else str(e["file"])
+            if declared:
+                if actual is None:
+                    result.invalid.append(f"{e['rule_id']} {where}: 지문 검증 불가(파일을 읽지 못함) — 무효")
+                    continue
+                if declared != actual:
+                    result.invalid.append(
+                        f"{e['rule_id']} {where}: 코드가 바뀌어 지문 불일치 — 무효 "
+                        f"(승인 당시 {declared} · 현재 {actual}). 바뀐 코드를 다시 검토해 재승인하세요"
+                    )
+                    continue
+            else:
+                hint = f" 현재 지문: {actual}" if actual else ""
+                result.unbound.append(
+                    f"{e['rule_id']} {where}: fingerprint 없음 — 코드가 바뀌어도 계속 억제됩니다.{hint}"
+                )
         valid.append({**e, "_expires": expires})
 
     for f in findings:
