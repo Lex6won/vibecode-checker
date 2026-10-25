@@ -922,6 +922,9 @@ def _security_domain(f: Finding) -> tuple[int, str]:
             "XSS", "HTML", "INPUT-04", "INPUT-03", "INPUT-07",
             "INPUT-11", "INPUT-12", "INPUT-13")):
         return _DOMAIN_WEB
+    # 42차 — 인가 자세(관리자 경로 보호 근거 부재·클라이언트 전용 관문)는 웹 취약점(접근 통제)으로 묶는다.
+    if cat == "access-control" or "AUTHZ" in rid:
+        return _DOMAIN_WEB
     if any(k in rid for k in (
             "SEC-04", "SEC-05", "SEC-07", "SEC-10", "SEC-11", "SEC-14", "SEC-15",
             "TLS", "CERT", "CRYPTO")):
@@ -3813,6 +3816,8 @@ _AUTOEXEC_KIND_KO = {
     "chrome-dnr-rules": "브라우저 확장 요청 규칙(declarativeNetRequest)",
     "chrome-ext-src": "브라우저 확장 소스",
     "mcp-server-src": "MCP 서버 소스",
+    "authz-route": "관리자·민감 경로 라우트(인가 자세)",
+    "client-gate": "클라이언트 전용 관문·공개 번들 비밀",
 }
 
 

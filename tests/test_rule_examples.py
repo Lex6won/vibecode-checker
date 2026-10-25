@@ -80,6 +80,9 @@ _FILE_CONTEXT_RULE_IDS = {
     "GOV-CHROME-EXT-HEADER-STRIP-001",
     "GOV-CHROME-EXT-MESSAGE-001",
     "GOV-MCP-SERVER-001",
+    # 42차 — authz-posture 수집기(관리자 경로 보호 근거 부재 · 클라이언트 관문; 프로젝트 맥락). 테스트: test_round42_authz_posture.py
+    "GOV-AUTHZ-ADMIN-POSTURE-001",
+    "GOV-AUTHZ-CLIENT-GATE-001",
 }
 
 

@@ -2113,6 +2113,16 @@ def scan_path(
             all_findings.extend(eco.findings)
             skipped.extend(eco.skipped)
             autoexec_entries.extend(e.as_dict() for e in eco.entries)
+        # 42차 — 인가 자세(P0-03): 관리자 경로의 서버측 보호 근거 부재 · 공개 번들 비밀/클라이언트 전용 관문.
+        from .scanners.authz_posture import collect_authz_posture
+        try:
+            authz = collect_authz_posture(
+                root, policy=lambda fs, rel_path: _path_level_policies(fs, rel_path, profile_spec))
+        except Exception as exc:  # noqa: BLE001
+            engine_failures.setdefault("authz-posture", f"{type(exc).__name__}: {exc}")
+        else:
+            all_findings.extend(authz.findings)
+            autoexec_entries.extend(e.as_dict() for e in authz.entries)
 
     # 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 표시만 하며,
     # 요약(건수·차단)과 exit code 는 비억제 발견 기준으로 계산한다.
@@ -2202,7 +2212,7 @@ def path_level_rule_ids() -> tuple[str, ...]:
     from .scanners.autoexec_surface import (
         RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_IDE_TASK, RULE_MCP_CONFIG, RULE_PY_STARTUP,
     )
-    from .scanners import agent_surface, ci_workflow, ecosystem_surface, npm_surface, runtime_version
+    from .scanners import agent_surface, authz_posture, ci_workflow, ecosystem_surface, npm_surface, runtime_version
     from .scanners.hidden_text import BIDI_RULE_ID, HIDDEN_RULE_ID
 
     return (
@@ -2218,6 +2228,8 @@ def path_level_rule_ids() -> tuple[str, ...]:
         *agent_surface.RULE_IDS,
         # 40차 — 생태계별 설정·구조(ecosystem-surface 수집기: Electron·VS Code·Chrome 확장·MCP 서버)
         *ecosystem_surface.RULE_IDS,
+        # 42차 — 인가 자세(authz-posture 수집기: 관리자 경로 보호 근거 부재 · 공개 번들 비밀/클라이언트 관문)
+        *authz_posture.RULE_IDS,
     )
 
 
