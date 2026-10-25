@@ -1,0 +1,35 @@
+# 46차 TS 말뭉치 — 타입스크립트 코드에 대한 탐지·오탐 채점표 (합성, 페이로드 없음, .example 도메인)
+#
+# 홀드아웃(j_agentic_2026)과 같은 드라이버(scripts/run_holdout.py --corpus k_ts_2026)로 채점한다.
+# 매칭: 같은 루트 + 같은 파일 + rule_id + |줄 차이| <= 2, 확신도는 min_confidence 이상.
+# requires_engine: 그 엔진(선택 설치 ts-structure)이 없으면 '엔진 없음'으로 따로 세고 미탐으로 치지 않는다.
+# kind: known_gap = 지금은 못 잡는다고 확인된 항목. 잡히기 시작하면 드라이버가 알린다(정답표 갱신 신호).
+
+cases:
+  - {id: K-01, root: t01_sql_ts, file: src/routes.ts, line: 7, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "문자열 결합 SQL"}
+  - {id: K-02, root: t01_sql_ts, file: src/routes.ts, line: 13, rule: KISA-JS-INPUT-01, min_confidence: likely, note: "윗줄 템플릿 조립 → db.query(q as string) — TS 캐스트 너머 taint"}
+  - {id: K-03, root: t02_eval_variants, file: src/exec.ts, line: 2, rule: KISA-JS-INPUT-02, min_confidence: pattern-only, note: "eval 직접"}
+  - {id: K-04, root: t02_eval_variants, file: src/exec.ts, line: 6, rule: KISA-JS-INPUT-02, min_confidence: pattern-only, note: "new Function"}
+  - {id: K-05, root: t02_eval_variants, file: src/exec.ts, line: 10, rule: KISA-JS-INPUT-02, min_confidence: likely, requires_engine: ts-structure, note: "window[\"ev\"+\"al\"]"}
+  - {id: K-06, root: t02_eval_variants, file: src/exec.ts, line: 15, rule: KISA-JS-INPUT-02, min_confidence: likely, requires_engine: ts-structure, note: "const f = eval; f(x)"}
+  - {id: K-07, root: t02_eval_variants, file: src/exec.ts, line: 19, rule: KISA-JS-INPUT-02, min_confidence: likely, requires_engine: ts-structure, note: "(eval as any)(x)"}
+  - {id: K-08, root: t03_cmd_ts, file: app/api/tools/route.ts, line: 6, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "exec(`… ${cmd!}`) 템플릿 보간"}
+  - {id: K-09, root: t04_xss_ts, file: src/server.ts, line: 5, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "res.send 템플릿 반사"}
+  - {id: K-10, root: t04_xss_ts, file: src/Card.tsx, line: 6, rule: KISA-JS-INPUT-04, min_confidence: confirmed, note: "URL 값 → dangerouslySetInnerHTML"}
+  - {id: K-11, root: t05_secrets_ts, file: src/config.ts, line: 1, rule: GOV-SECRET-APIKEY-001, min_confidence: pattern-only}
+  - {id: K-12, root: t05_secrets_ts, file: src/config.ts, line: 2, rule: KISA-JS-SEC-06, min_confidence: pattern-only}
+  - {id: K-13, root: t05_secrets_ts, file: app/admin/layout.tsx, line: 2, rule: GOV-AUTHZ-CLIENT-GATE-001, min_confidence: likely, note: "NEXT_PUBLIC_ PIN"}
+  - {id: K-14, root: t06_cross_file, file: src/run.ts, line: 6, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "다른 파일 함수가 돌려준 입력 — 패턴으로만 잡힘"}
+  - {id: K-15, root: t06_cross_file, file: src/run.ts, line: 6, rule: KISA-JS-INPUT-05, min_confidence: likely, kind: known_gap, note: "파일 간 흐름 — 출처 확인(likely 이상)은 현재 한계"}
+  - {id: K-16, root: t07_generic_ts, file: src/runner.ts, line: 2, rule: KISA-JS-INPUT-02, min_confidence: pattern-only, note: "제네릭 안 eval"}
+  - {id: K-17, root: t07_generic_ts, file: src/runner.ts, line: 5, rule: KISA-JS-INPUT-02, min_confidence: likely, requires_engine: ts-structure, note: "(eval as (s)=>unknown)(x)"}
+  - {id: K-18, root: t08_admin_route_ts, file: src/admin.ts, line: 3, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, note: "관리자 DELETE 무보호(TS)"}
+
+negative_roots:
+  - n01_clean_express_ts
+  - n02_clean_next
+  - n03_types_only
+  - n04_safe_eval_name
+  - n05_admin_guarded_ts
+  - n06_react_safe
+negative_rule_prefixes: [KISA-JS-, GOV-HTML-, GOV-SECRET-, GOV-AUTHZ-, GOV-AGENT-, GOV-HIDDEN-, GOV-BIDI-]

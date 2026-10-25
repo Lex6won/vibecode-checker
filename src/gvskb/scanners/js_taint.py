@@ -1521,6 +1521,23 @@ def classify_html_sinks(code: str, project=None) -> dict[int, SinkVerdict]:
     return result
 
 
+#: TS 캐스트 `expr as T` (`as unknown as T` 포함) — 식 뒤에서만, 타입 이름은 한 토큰(제네릭·배열·유니온 허용).
+_TS_AS_CAST = re.compile(r"(?<=[\w)\]'\"`])\s+as\s+(?:unknown\s+as\s+)?(?:[A-Za-z_$][\w$.]*(?:<[^<>]*>)?(?:\[\])*(?:\s*[|&]\s*[A-Za-z_$][\w$.]*)*|\([^()]*\)\s*=>\s*[\w$.]+)")
+#: TS non-null `x!` — 식별자·닫는 괄호 뒤, 피연산자 앞이 아닌 자리에서만(`!==`·`!x` 는 그대로).
+_TS_BANG = re.compile(r"(?<=[\w)\]])!(?=\s*[.,;)\]}`]|\s*$)")
+
+
+def _strip_ts_syntax(code: str) -> str:
+    out: list[str] = []
+    for line in code.split("\n"):
+        s = line.lstrip()
+        if s.startswith(("import ", "export {", "export type", "export interface", "type ", "interface ")):
+            out.append(line)        # import { a as b } 같은 이름 바꾸기는 캐스트가 아니다
+            continue
+        out.append(_TS_BANG.sub("", _TS_AS_CAST.sub("", line)))
+    return "\n".join(out)
+
+
 class JsTaintScanner(ScannerAdapter):
     """라인 기반 JS/TS 변수 taint — 다줄 SQL·eval·innerHTML 결합 탐지."""
 
@@ -1538,6 +1555,10 @@ class JsTaintScanner(ScannerAdapter):
     ) -> list[Finding]:
         if not _is_js(filename, language):
             return []
+        # 46차 — TS 문법(`x as string` · `x!`)은 값의 흐름을 바꾸지 않는다. 줄 기반 taint 가 토큰을 놓치지 않도록
+        # 검사용 사본에서만 벗긴다(줄 번호·길이 체계 보존, 보고 근거는 원문 줄).
+        if filename.lower().endswith((".ts", ".tsx", ".mts", ".cts")):
+            code = _strip_ts_syntax(code)
 
         findings: list[Finding] = []
         tainted: set[str] = set()
