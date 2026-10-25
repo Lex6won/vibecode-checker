@@ -136,10 +136,14 @@ def analyze(code: str, *, filename: str, languages: dict) -> list[tuple[int, str
         if fn is None:
             continue
         line = n.start_point[0] + 1
+        raw_fn = n.child_by_field_name("function") if n.type == "call_expression" else n.child_by_field_name("constructor")
         if _is_global_exec_lookup(fn, src):
             out.append((line, "전역 객체에서 계산된 이름으로 꺼낸 eval/Function 호출(구조 해석)", "likely"))
         elif fn.type == "identifier" and _text(fn, src) in aliases:
             out.append((line, f"`{_text(fn, src)}` 는 eval/Function 의 별칭 — 이름을 바꿔 가린 코드 실행(구조 해석)", "likely"))
+        elif fn.type == "identifier" and _text(fn, src) in _EXEC_NAMES and raw_fn is not None and raw_fn.type != "identifier":
+            # `(eval as any)(x)` · `(eval)(x)` — 캐스트·괄호로 감싸 줄 기반 패턴을 피한 직접 호출
+            out.append((line, "캐스트·괄호로 감싼 eval/Function 직접 호출(구조 해석)", "likely"))
     return out
 
 

@@ -1,0 +1,12 @@
+{
+  "name": "ts-corpus",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "express": "^5.0.0",
+    "pg": "^8.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

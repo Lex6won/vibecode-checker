@@ -41,6 +41,8 @@ detection:
     # 위 패턴이 처리, execFile은 shell 미경유라 제외).
     - '(?<![.\w])exec\s*\(\s*["`][^"`]*["`]\s*\+'
     - '(?<![.\w])exec\s*\([^)]*req\.(?:query|params|body)'
+    # 46차 — bare exec( `… ${변수}` ) 템플릿 보간(TS 말뭉치 k_ts_2026 t03 에서 미탐 확인).
+    - '(?<![.\w])exec(?:Sync)?\s*\(\s*`[^`]*\$\{'
   category: kisa-secure-coding
   why_it_matters: >-
     Node.js의 child_process.exec와 execSync는 *셸을 통과해 명령을 실행*하므로
@@ -66,6 +68,7 @@ examples:
   positive:
     - "child_process.exec(\"convert \" + req.query.name);"
     - "child_process.spawnSync(cmd, args, { shell: true });"
+    - "exec(`convert ${req.body.cmd}`, () => {});"
   negative:
     - "const out = spawnSync(\"git\", [\"status\", \"--porcelain\"]);"
     - "execFile(\"/usr/bin/convert\", [inputPath, outputPath], cb);"
