@@ -39,6 +39,9 @@ dependencies = [
 # 상한을 둔다 — 린터·테스트 러너의 기본 동작 변경이 CI 를 깨뜨린 실측 사례가 있다
 # (ruff 0.16 의 기본 규칙 확대). 상향은 의도적 결정으로만 한다.
 dev = ["pytest>=9.0.3,<10", "ruff>=0.5.0,<1"]
+# 45차(C 결정 B) — JS/TS 구조 해석 엔진. 바이너리 wheel 이라 **선택 설치**다: `pip install vibecode-checker[ts]`.
+# 없으면 ts-structure 어댑터가 스스로 꺼지고 판정은 현행과 같다(보고서에 미가동 배너만).
+ts = ["tree-sitter>=0.23,<1", "tree-sitter-javascript>=0.23,<1", "tree-sitter-typescript>=0.23,<1"]
 
 [project.scripts]
 gvskb-server = "gvskb.server:main"

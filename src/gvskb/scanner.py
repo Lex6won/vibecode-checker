@@ -67,8 +67,10 @@ from .schema import (
 from .scanners.hidden_text import HiddenTextScanner  # noqa: E402 — 위 import 블록과 같은 묶음
 from .scanners.agent_surface import AgentSurfaceScanner  # noqa: E402 — 39차: 실행 소스의 에이전트·공급망 행위
 
+from .scanners.ts_structure import TsStructureScanner  # noqa: E402 — 45차: 선택 설치 JS/TS 구조 해석(C 결정 B)
+
 _ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner(),
-             HiddenTextScanner(), AgentSurfaceScanner()]
+             HiddenTextScanner(), AgentSurfaceScanner(), TsStructureScanner()]
 
 # Engine precision ranking — higher number wins on collisions.
 _ENGINE_PRECISION = ENGINE_PRECISION   # 한 벌 — policy.py (예전엔 regex_scanner 와 semgrep 순서가 반대였다)
@@ -78,6 +80,11 @@ _ENGINE_UNAVAILABLE_REASON = {
     "semgrep": (
         "semgrep 실행 파일 또는 룰이 없습니다 — JS/TS AST 정밀 분석이 수행되지 "
         "않았습니다(네이티브 Windows 미지원). regex·taint 검사는 수행됐습니다."
+    ),
+    # 45차(C 결정 B) — 선택 설치 엔진. 없어도 판정은 현행과 같다.
+    "ts-structure": (
+        "JS/TS 구조 해석 엔진(tree-sitter)이 설치되지 않았습니다 — `pip install vibecode-checker[ts]` 로 선택 설치. "
+        "없어도 regex·taint 검사는 그대로 수행됐고 판정 기준은 같습니다(글자를 쪼개 가린 eval 등 일부만 놓칠 수 있음)."
     ),
 }
 

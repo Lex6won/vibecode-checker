@@ -1739,6 +1739,8 @@ def render_markdown(
     # --- ⑨-3 자동 실행 표면 인벤토리(37차) — 읽은 것의 목록, 발견은 위에 ------
     lines.extend(_render_autoexec_md(report))
     # --- ⑨-4 행정안전부 49개 항목 결과표(43차) ------------------------------
+    # --- ⑨-5 검사 엔진 가동 현황(45차) ----------------------------------------
+    lines.extend(_render_engines_md(report))
     lines.extend(_render_mois_md(report))
 
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
@@ -2511,6 +2513,7 @@ def render_html(
     p.extend(_render_autoexec_html(report))
 
     # === 행정안전부 49개 항목 결과표(43차) ================================
+    p.extend(_render_engines_html(report))
     p.extend(_render_mois_html(report))
 
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
@@ -4172,5 +4175,36 @@ def _render_mois_html(report: ScanReport) -> list[str]:
             p.append(f"<tr><td>{_esc(o['label'])}</td><td>{o['findings']}({o['block']})</td>"
                      f"<td>{', '.join(f'<code>{_esc(x)}</code>' for x in o['rules'][:5])}</td></tr>")
         p.append("</table>")
+    p.append("</details>")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# 45차 — 검사 엔진 가동 현황(미가동 선택 엔진은 사유와 함께). JSON `engines` 를 사람이 읽는 두 줄.
+# ---------------------------------------------------------------------------
+
+def _render_engines_md(report: ScanReport) -> list[str]:
+    eng = getattr(report, "engines", None)
+    if eng is None:
+        return []
+    out = ["## 검사 엔진", "", f"- 가동: {' · '.join(eng.used) or '—'}"]
+    for e in list(eng.unavailable) + list(eng.failed):
+        tag = "**필수 미가동**" if e.name in (eng.required or []) else "미가동(선택)"
+        out.append(f"- {tag} `{e.name}` — {e.reason}")
+    out.append("")
+    return out
+
+
+def _render_engines_html(report: ScanReport) -> list[str]:
+    eng = getattr(report, "engines", None)
+    if eng is None:
+        return []
+    p = ['<details class="sec"><summary>검사 엔진 '
+         f'<span class="cnt">{len(eng.used)}</span>' + (f' <span class="tag">미가동 {len(eng.unavailable) + len(eng.failed)}</span>'
+                                                       if (eng.unavailable or eng.failed) else "") + "</summary>",
+         f"<p>가동: {_esc(' · '.join(eng.used) or '—')}</p>"]
+    for e in list(eng.unavailable) + list(eng.failed):
+        tag = "필수 미가동" if e.name in (eng.required or []) else "미가동(선택)"
+        p.append(f"<p><b>{_esc(tag)}</b> <code>{_esc(e.name)}</code> — {_esc(e.reason.replace('`', ''))}</p>")
     p.append("</details>")
     return p
