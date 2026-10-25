@@ -849,6 +849,18 @@ def check_mcp_import() -> list[CheckResult]:
         return [_check("MCP server import", _ERROR, "failed", note=str(exc))]
 
 
+def check_ts_structure() -> list[CheckResult]:
+    """45차(C 결정 B) — 선택 설치 JS/TS 구조 해석 엔진. 없으면 WARN(판정은 현행과 같다)."""
+    try:
+        from .scanners.ts_structure import TsStructureScanner
+    except Exception as exc:  # noqa: BLE001
+        return [_check("ts-structure adapter", _WARN, "import failed", note=str(exc))]
+    if TsStructureScanner().is_available():
+        return [_check("ts-structure adapter", _OK, "tree-sitter javascript/typescript")]
+    return [_check("ts-structure adapter", _WARN, "disabled",
+                   note="tree-sitter 미설치 — `pip install vibecode-checker[ts]` 로 선택 설치. 없어도 판정 기준은 같습니다.")]
+
+
 def check_semgrep() -> list[CheckResult]:
     """Detect optional Semgrep adapter availability — WARN, never ERROR.
 
@@ -994,6 +1006,7 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     checks.extend(check_rules(expected_minimum=expected_minimum))
     checks.extend(check_mcp_import())
     checks.extend(check_semgrep())
+    checks.extend(check_ts_structure())
     checks.extend(check_intel_cache())
     checks.extend(check_report_dir())
     # GVSKB_MODE=offline implies no network checks regardless of --offline flag

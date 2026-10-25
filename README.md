@@ -180,6 +180,10 @@ pip install --force-reinstall git+https://github.com/Lex6won/vibecode-checker.gi
 # git 이 없는 PC — zip 주소를 그대로 넣으면 됩니다
 pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/archive/refs/heads/main.zip
 
+# 선택 — JS/TS 구조 해석 엔진(tree-sitter, 바이너리 wheel). 없어도 판정 기준은 같고 보고서에 "미가동" 배너만 남습니다.
+#   글자를 쪼개 가린 eval(`window["ev"+"al"]`) 같은 일부 변형을 더 잡습니다. 망분리 PC 는 wheelhouse 반입 뒤 설치.
+pip install "vibecode-checker[ts] @ https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.14/vibecode_checker-0.5.14-py3-none-any.whl"
+
 # 소스를 받아 설치 (수정·기여하려면 -e 권장)
 git clone https://github.com/Lex6won/vibecode-checker.git
 cd vibecode-checker && pip install -e .
