@@ -96,7 +96,56 @@ def _collect_import_aliases(tree: ast.AST) -> dict[str, str]:
             for alias in node.names:
                 top = alias.name.split(".")[0]
                 aliases[alias.asname or top] = top
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            # 44차 — `from os import system as run_cmd` 는 값이 점 있는 이름(`os.system`)이 된다.
+            # 호출부 `run_cmd(...)` 를 정식 이름으로 되돌려 sink 표와 맞춘다(경계 프로브 H-01).
+            for alias in node.names:
+                if alias.name != "*":
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
     return aliases
+
+
+def _folded_str(node: ast.AST) -> str | None:
+    """문자열 상수 또는 문자열 상수끼리의 `+` 결합을 접은 값. 그 밖은 None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded_str(node.left), _folded_str(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _is_builtin_exec_lookup(node: ast.AST) -> bool:
+    """`getattr(builtins, "ev"+"al")` 처럼 내장 모듈에서 eval/exec 를 꺼내는 식인가(경계 프로브 H-03)."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr"):
+        return False
+    if len(node.args) < 2 or not isinstance(node.args[0], ast.Name) or node.args[0].id not in {"builtins", "__builtins__"}:
+        return False
+    return _folded_str(node.args[1]) in _BUILTIN_CODE_EXEC
+
+
+def _collect_exec_aliases(tree: ast.AST) -> set[str]:
+    """`f = eval` · `g = getattr(builtins, "ev"+"al")` · `from builtins import eval as e` 로 묶인 이름(경계 프로브 H-02·H-03).
+
+    `eval`/`exec` 가 모듈에서 다시 묶였으면(`eval = safe_eval`) 별칭도 안전한 함수일 수 있으므로 모으지 않는다.
+    """
+    from .py_const import _bound_names
+
+    body = getattr(tree, "body", None)
+    if isinstance(body, list) and (_bound_names(body) & _BUILTIN_CODE_EXEC):
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            value = node.value
+            if (isinstance(value, ast.Name) and value.id in _BUILTIN_CODE_EXEC) or _is_builtin_exec_lookup(value):
+                names.add(node.targets[0].id)
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name in _BUILTIN_CODE_EXEC:
+                    names.add(alias.asname or alias.name)
+    return names
 
 
 def _argv_spawns_shell_with_dynamic_command(call: ast.Call) -> bool:
@@ -156,6 +205,7 @@ class _Visitor(ast.NodeVisitor):
         self.source_lines = source_lines
         self._ignores = InlineIgnores("\n".join(source_lines), "python")
         self.aliases = aliases or {}
+        self.exec_aliases: set[str] = set()
         self.hits: list[tuple[str, int, str]] = []
 
     def _evidence(self, line_no: int) -> str:
@@ -181,6 +231,9 @@ class _Visitor(ast.NodeVisitor):
         # 1) Bare eval / exec — code injection
         if isinstance(node.func, ast.Name) and node.func.id in _BUILTIN_CODE_EXEC:
             self._record("KISA-PY-INPUT-02", node.lineno)
+        # 1') 44차 — 별칭(`f = eval; f(x)`)·내장 모듈 조회(`getattr(builtins, "ev"+"al")(x)`)로 가린 호출
+        elif (isinstance(node.func, ast.Name) and node.func.id in self.exec_aliases) or _is_builtin_exec_lookup(node.func):
+            self._record("KISA-PY-INPUT-02", node.lineno)
 
         # 2) compile(code, file, 'exec'|'eval'|'single')
         if isinstance(node.func, ast.Name) and node.func.id == "compile":
@@ -190,12 +243,16 @@ class _Visitor(ast.NodeVisitor):
 
         # 3) Attribute calls — OS command, subprocess shell=True, weak hash, deserialization
         chain = _attr_chain(node.func) if isinstance(node.func, ast.Attribute) else None
-        if chain:
-            parts = chain.split(".")
+        parts: list[str] | None = chain.split(".") if chain else None
+        if parts:
             # Resolve module alias on the first token (pd → pandas, np → numpy),
             # so aliased sink calls match the canonical (module, attr) sets.
-            if parts:
-                parts[0] = self.aliases.get(parts[0], parts[0])
+            # 44차 — from-import 별칭은 점 있는 이름(`os.system`)으로 펼친다.
+            parts[0:1] = self.aliases.get(parts[0], parts[0]).split(".")
+        elif isinstance(node.func, ast.Name) and "." in self.aliases.get(node.func.id, ""):
+            # `from os import system as run_cmd` 뒤 `run_cmd(...)` — 정식 이름으로 되돌려 같은 표로 본다(H-01).
+            parts = self.aliases[node.func.id].split(".")
+        if parts:
 
             # 명령 인자에 외부 출처(요청·argv·stdin)가 직접 들어 있으면 '확인됨'.
             cmd_conf = "confirmed" if _expr_mentions_source(node) else None
@@ -1140,6 +1197,7 @@ class PythonAstScanner(ScannerAdapter):
             return []
 
         visitor = _Visitor(split_lines(code), _collect_import_aliases(tree))
+        visitor.exec_aliases = _collect_exec_aliases(tree)
         visitor.visit(tree)
 
         # Precise call-site hits + multi-line taint hits (SQL + LLM) share one pipeline.
