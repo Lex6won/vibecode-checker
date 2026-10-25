@@ -38,6 +38,10 @@ jobs:
         run: gvskb validate-rules --fail-on error
       - name: Test
         run: pytest -q
+      # 41차 — 홀드아웃 말뭉치(2026 공급망·에이전트 사고 구조, 룰 개발에 쓰지 않은 검증용).
+      # 미탐·오탐이 하나라도 생기면 실패한다. 기존 벤치마크(run_benchmark.py)와 별도 표.
+      - name: Holdout corpus (j_agentic_2026)
+        run: GVSKB_MODE=offline PYTHONPATH=src python scripts/run_holdout.py
 
   # ── 패키징 스모크 테스트 ─────────────────────────────────────────────
   # 실측 사고: 먼저 설치된 구버전이 site-packages 에 **물리 디렉터리**로 남아

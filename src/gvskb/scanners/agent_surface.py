@@ -313,8 +313,24 @@ class _Ctx:
     has_blockchain_dep: bool = field(default=False)
 
 
+#: 정규식·패턴 **정의** 줄. 보안 도구(이 체커 자신 포함)의 소스는 수집 경로·전송 함수 이름을 패턴
+#: 원문으로 나열하므로 "수집 + 전송"이 한 파일에 전부 들어 있다(41차 자기 검사에서 확인). 패턴 정의
+#: 줄은 실행이 아니다 — 실제 호출 줄은 그대로 남으므로 공격 코드의 탐지는 줄지 않는다.
+_PATTERN_DEF_LINE = re.compile(
+    r"re\.compile\(|new\s+RegExp\(|\bRegExp\(|\br['\"].*(?:\\[bsdw.]|\(\?:|\[\^)",
+)
+
+
+def _mask_pattern_definition_lines(code: str) -> str:
+    """패턴 정의 줄을 빈 줄로 바꾼다(줄 번호 보존). 해당 줄이 없으면 원문을 그대로 돌려준다."""
+    if not _PATTERN_DEF_LINE.search(code):
+        return code
+    return "\n".join("" if _PATTERN_DEF_LINE.search(ln) else ln for ln in code.split("\n"))
+
+
 def scan_agent_surface(code: str, *, filename: str = "<memory>") -> list[Finding]:
     out: list[Finding] = []
+    code = _mask_pattern_definition_lines(code)
     out += judge_ai_cli_invocation(code, filename)
     out += judge_credential_exfil(code, filename)
     out += judge_c2_channel(code, filename)

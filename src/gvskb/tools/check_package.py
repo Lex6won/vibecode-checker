@@ -22,6 +22,7 @@ from ..intel.cache import IntelCache
 from ..schema import CooldownCheck, PackageCheckResult, PackageRegistryMetadata
 from ..vcps import cooldown_days_for, env_grade_supported, license_verdict, normalize_env_grade
 from .package_metadata import fetch_registry_metadata
+from .trust_signals import ai_lure_signal, summarize as summarize_trust
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 ECOSYSTEM_MAP = {
@@ -1671,6 +1672,10 @@ async def check_package_impl(
     # ① 실재 확인 + 메타데이터(발행일·라이선스·설치스크립트) — VCPS C4/C1/C2/LIC.
     meta = await fetch_registry_metadata(name, ecosystem, version=version, timeout=timeout)
     heuristics = _basic_heuristics(name, ecosystem)
+    # 41차 — 신생 + AI 어휘 이름(메타데이터 하나로 판단, 추가 조회 없음).
+    lure = ai_lure_signal(name, meta.package_age_days) if meta.exists else None
+    if lure:
+        meta.trust_signals.append(lure)
 
     base = dict(
         name=name,
@@ -1767,6 +1772,11 @@ async def check_package_impl(
         )
     if meta.deprecated:
         notes.append("npm에서 deprecated 로 표시된 패키지입니다 — 유지보수 중단 신호.")
+    if meta.trust_signals:
+        notes.append(
+            f"신뢰 신호: {summarize_trust(meta.trust_signals)} — 변경 내역·관리자를 사람이 확인하세요(VCPS T1)."
+            + (" 출처 증명(provenance)이 있지만 **증명은 안전 근거가 아닙니다**." if meta.provenance else "")
+        )
     if version_resolution == "latest-assumed":
         notes.append(
             f"버전 미고정 — 최신판 {resolved_version} 을 기준으로 판정했습니다. 설치 시점에 따라 다른 버전이 "
@@ -1859,6 +1869,7 @@ async def check_package_impl(
         or meta.install_scripts == "present"
         or lic_verdict == "review_required"
         or bool(meta.deprecated)
+        or bool(meta.trust_signals)       # 41차 — 이전 판과 달라진 점은 사람이 봐야 한다
         or version_resolution in ("latest-assumed", "unresolved")   # 미고정·미확정은 사람이 봐야 한다
     )
 

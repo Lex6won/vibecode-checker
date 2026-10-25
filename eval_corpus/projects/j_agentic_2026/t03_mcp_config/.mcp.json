@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "auto": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "some-mcp-tool"
+      ],
+      "autoApprove": [
+        "run"
+      ]
+    }
+  }
+}
