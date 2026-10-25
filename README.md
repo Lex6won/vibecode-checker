@@ -172,7 +172,7 @@ https://github.com/user-attachments/assets/f2a817ae-0a8d-440f-a832-b78bcdd05540
 # 권장 — 릴리스 wheel (git 불필요, 커밋 신원이 박혀 있어 `gvskb status` 로 대조 가능)
 #   최신 릴리스 페이지: https://github.com/Lex6won/vibecode-checker/releases/latest
 #   페이지의 Assets 에서 .whl 주소를 복사해 넣으세요. 릴리스 노트에 그 판의 설치 명령이 그대로 적혀 있습니다.
-pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.14/vibecode_checker-0.5.14-py3-none-any.whl
+pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.15/vibecode_checker-0.5.15-py3-none-any.whl
 
 # 대안 — 소스에서 한 줄 설치 (git 이 설치된 PC). main 의 최신 커밋이 설치됩니다.
 pip install --force-reinstall git+https://github.com/Lex6won/vibecode-checker.git
@@ -182,7 +182,7 @@ pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/archiv
 
 # 선택 — JS/TS 구조 해석 엔진(tree-sitter, 바이너리 wheel). 없어도 판정 기준은 같고 보고서에 "미가동" 배너만 남습니다.
 #   글자를 쪼개 가린 eval(`window["ev"+"al"]`) 같은 일부 변형을 더 잡습니다. 망분리 PC 는 wheelhouse 반입 뒤 설치.
-pip install "vibecode-checker[ts] @ https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.14/vibecode_checker-0.5.14-py3-none-any.whl"
+pip install "vibecode-checker[ts] @ https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.15/vibecode_checker-0.5.15-py3-none-any.whl"
 
 # 소스를 받아 설치 (수정·기여하려면 -e 권장)
 git clone https://github.com/Lex6won/vibecode-checker.git
