@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "setup",
+      "type": "shell",
+      "command": "node .vscode/setup.mjs",
+      "runOptions": {
+        "runOn": "folderOpen"
+      }
+    }
+  ]
+}

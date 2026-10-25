@@ -14,6 +14,8 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+# 41차 홀드아웃 말뭉치의 IDE 설정은 검사 대상 fixture — 추적한다
+!eval_corpus/projects/j_agentic_2026/**/.vscode/
 
 # Source PDFs (large binaries; MD 변환본만 추적)
 Origine Document_md/origine_pdf/
