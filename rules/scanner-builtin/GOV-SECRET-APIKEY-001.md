@@ -10,6 +10,7 @@ sources:
   - publisher: OWASP
     document: ASVS 5.0
     item: V6 Authentication and Session Management
+cwe: [CWE-798]
 severity: critical
 decision_default: block
 domains: [secret-scanning]

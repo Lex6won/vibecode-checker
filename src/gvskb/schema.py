@@ -224,6 +224,8 @@ class Finding(BaseModel):
     public_sector_impact: list[str] = Field(default_factory=list)
     safe_fix: str | None = None
     references: list[str] = Field(default_factory=list)
+    # 43차(C-19) — 룰의 CWE 를 발견에 싣는다. MOIS 항목별 결과표·SARIF 분류의 원천.
+    cwe: list[str] = Field(default_factory=list, description="룰 frontmatter 의 CWE 목록(예: CWE-89)")
     can_auto_fix: bool = False
     requires_approval_to_bypass: bool = False
     confidence: Literal["confirmed", "likely", "pattern-only"] = Field(

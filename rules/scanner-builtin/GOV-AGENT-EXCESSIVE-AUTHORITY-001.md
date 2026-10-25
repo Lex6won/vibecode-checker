@@ -10,6 +10,7 @@ sources:
     version: "2026"
   - publisher: CISA
     document: Secure by Design
+cwe: [CWE-862, CWE-250]
 severity: critical
 decision_default: block
 domains: [agent-safety]

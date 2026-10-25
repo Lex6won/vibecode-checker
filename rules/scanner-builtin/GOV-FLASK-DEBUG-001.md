@@ -10,6 +10,7 @@ sources:
     item: A05 Security Misconfiguration
   - publisher: Flask
     document: Flask Security Considerations
+cwe: [CWE-489]
 severity: high
 decision_default: block
 domains: [web-appsec]

@@ -11,6 +11,7 @@ sources:
   - publisher: 행정안전부
     document: 소프트웨어 개발보안 가이드
     item: SW-04
+cwe: [CWE-79]
 severity: high
 decision_default: warn
 domains: [web-appsec]

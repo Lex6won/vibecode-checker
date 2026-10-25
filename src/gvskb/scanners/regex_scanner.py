@@ -650,6 +650,9 @@ def _compile_rule(rule: Rule) -> dict | None:
         "fix": detection.safe_fix,
         "refs": detection.references,
         "auto": detection.can_auto_fix,
+        # 43차 — 발견에 CWE 를 싣고(Finding.cwe), MOIS 결과표가 룰↔항목을 잇는 데 쓴다.
+        "cwe": list(rule.cwe),
+        "baseline": list(rule.related_baseline),
     }
 
 
@@ -943,6 +946,7 @@ def build_finding(rule: dict, *, filename: str, line_no: int, evidence: str,
         public_sector_impact=rule["impact"],
         safe_fix=rule.get("fix"),
         references=rule["refs"],
+        cwe=list(rule.get("cwe") or []),
         can_auto_fix=bool(rule.get("auto", False)),
         requires_approval_to_bypass=rule["decision"] == Decision.block,
         confidence=confidence,

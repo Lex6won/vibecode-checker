@@ -10,6 +10,7 @@ sources:
   - publisher: 한국인터넷진흥원
     document: JavaScript 시큐어코딩 가이드(2023년 개정본)
     item: 제2절 6. 중요정보 하드코드
+cwe: [CWE-798]
 severity: critical
 decision_default: block
 domains: [secret-management]
