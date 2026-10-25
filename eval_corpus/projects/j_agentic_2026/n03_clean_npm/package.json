@@ -1,0 +1,11 @@
+{
+  "name": "clean-npm",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "husky",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "husky": "^9.0.0"
+  }
+}

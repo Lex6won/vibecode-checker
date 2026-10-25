@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import httpx
 
 from ..schema import PackageRegistryMetadata
+from .trust_signals import npm_trust_signals, pypi_trust_signals
 
 PYPI_JSON_URL = "https://pypi.org/pypi/{name}/json"
 NPM_REGISTRY_URL = "https://registry.npmjs.org/{name}"
@@ -168,7 +169,9 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
     if not repo:
         repo = (info.get("home_page") or "").strip() or None
 
+    trust = _safe_trust(pypi_trust_signals, data, matched)
     return PackageRegistryMetadata(
+        **trust,
         exists=True,
         latest_version=latest,
         queried_version=queried,
@@ -184,6 +187,19 @@ def _parse_pypi(data: dict, version: str | None) -> PackageRegistryMetadata:
         source="pypi.org JSON API",
         fetched_at=_now_iso(),
     )
+
+
+def _safe_trust(fn, data: dict, queried: str | None) -> dict:
+    """신뢰 신호 계산 실패가 실재·발행일·라이선스까지 떨어뜨리면 안 된다 — 빈 값으로 흡수."""
+    try:
+        out = fn(data, queried)
+        return {
+            "previous_version": out.get("previous_version"),
+            "provenance": out.get("provenance"),
+            "trust_signals": list(out.get("signals") or []),
+        }
+    except Exception:  # noqa: BLE001
+        return {"previous_version": None, "provenance": None, "trust_signals": []}
 
 
 def _npm_person(v: object) -> str | None:
@@ -250,7 +266,9 @@ def _parse_npm(data: dict, version: str | None) -> PackageRegistryMetadata:
     if not repo:
         repo = (ver_doc.get("homepage") or data.get("homepage") or "").strip() or None
 
+    trust = _safe_trust(npm_trust_signals, data, queried)
     return PackageRegistryMetadata(
+        **trust,
         exists=True,
         latest_version=latest,
         queried_version=queried,

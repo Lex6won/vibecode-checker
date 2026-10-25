@@ -104,6 +104,9 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     # 오탐을 없앴는데, 그 자리에 **안전 오판**이 생겼다 — 최신판이 깨끗하면 게이트는 '승인',
     # 보고서는 '이상 없음'이었다. 최신판 조회는 설치본이 안전하다는 근거가 아니다.
     "unpinned": "버전 미고정 — 최신판 기준으로 조회했을 뿐, 설치본이 안전하다는 뜻이 아님",
+    # 41차. 이전 판과 비교해 관리자·크기·의존성·설치 스크립트·저장소가 달라졌거나 신생 AI 어휘 이름.
+    # 출처 증명(provenance)이 있어도 이 사유는 지워지지 않는다 — 증명은 안전 근거가 아니다.
+    "trust": "패키지 신뢰 신호 — 이전 판과 달라진 점이 있어 변경 내역을 사람이 확인해야 함",
     "coverage": "검사 범위 결손 — 크기·수 상한에 걸린 실행 소스 또는 돌지 못한 필수 엔진",
 }
 
@@ -170,6 +173,24 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
             "latest_version": (check.get("registry_metadata") or {}).get("latest_version"),
         })
     return reasons
+
+
+def _trust_signal_packages(report: ScanReport) -> list[dict]:
+    """41차 — 신뢰 신호가 붙은 패키지 ``[{name, version, signals:[key]}]``. 조건부 사유 ``trust`` 의 근거."""
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    out: list[dict] = []
+    for comp in _dep_merged_components(audits):
+        check = comp.get("check") or {}
+        signals = (check.get("registry_metadata") or {}).get("trust_signals") or []
+        keys = [str(s.get("key")) for s in signals if isinstance(s, dict) and s.get("key")]
+        if keys:
+            out.append({"name": check.get("name"), "version": check.get("version"), "signals": keys,
+                        "provenance": (check.get("registry_metadata") or {}).get("provenance")})
+    return out
 
 
 def _has_dep_verdict(report: ScanReport, verdict: str) -> bool:
@@ -358,6 +379,9 @@ def gate_status(report: ScanReport) -> dict:
     unpinned = _unpinned_packages(report)
     if unpinned:
         conditional_criteria.append("unpinned")
+    trust_signals = _trust_signal_packages(report)
+    if trust_signals:
+        conditional_criteria.append("trust")
 
     exposure = _exposure_counts(report)
     # 검사 범위 결손 — 실행 소스가 크기·수 상한에 걸려 빠졌다. 실측(2026-09-16):
@@ -411,11 +435,14 @@ def gate_status(report: ScanReport) -> dict:
         "coverage_gap": coverage_gap,
         "license_review": license_review,
         "unpinned": unpinned,
+        # 41차 — 신뢰 신호가 붙은 패키지(조건부 사유 `trust` 의 근거). 포털은 키를 모르면 표시만 한다.
+        "trust_signals": trust_signals,
         # 가정 최신판 기준으로 취약 판정된 미고정 컴포넌트 수 — `dependency_vulnerable` 에 포함돼 있다.
         "dependency_vulnerable_assumed": _assumed_vulnerable_count(report),
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
                           block_count, vuln, unchecked, coverage_gap,
-                          license_review=len(license_review), unpinned=len(unpinned)),
+                          license_review=len(license_review), unpinned=len(unpinned),
+                          trust=len(trust_signals)),
     }
 
 
@@ -485,6 +512,7 @@ def _reason(
     coverage_gap: str = "",
     license_review: int = 0,
     unpinned: int = 0,
+    trust: int = 0,
 ) -> str:
     if verdict == "undetermined":
         if coverage_gap:
@@ -545,6 +573,8 @@ def _reason(
         parts.append(f"라이선스 검토 {license_review}종")
     if unpinned:
         parts.append(f"버전 미고정 {unpinned}종")
+    if trust:
+        parts.append(f"패키지 신뢰 신호 {trust}종")
     body = " · ".join(parts) or "확인할 항목"
     tail = ""
     if coverage_gap:

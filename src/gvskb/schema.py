@@ -759,6 +759,16 @@ class PackageRegistryMetadata(BaseModel):
     )
     install_script_names: list[str] = Field(default_factory=list)
     deprecated: bool | None = Field(default=None, description="npm deprecated 표시 여부")
+    # 41차 — 이전 판과의 비교로 얻는 신뢰 신호. 모두 조건부(차단 아님).
+    previous_version: str | None = Field(default=None, description="비교 기준이 된 바로 아래 정식 버전")
+    provenance: bool | None = Field(
+        default=None,
+        description="출처 증명(attestation) 유무. **안전 근거가 아니다** — 신호가 있으면 그대로 적는다",
+    )
+    trust_signals: list[dict] = Field(
+        default_factory=list,
+        description="[{key, label, severity, detail}] — tools/trust_signals.TRUST_SIGNAL_LABELS 의 키",
+    )
     source: str = Field(default="", description="메타데이터 출처(예: 'pypi.org JSON API')")
     fetched_at: str | None = Field(default=None, description="조회 시각(UTC ISO)")
     error: str | None = None

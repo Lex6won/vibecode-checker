@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "ext",
+  "version": "1.0",
+  "action": {},
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "permissions": [
+    "cookies",
+    "scripting",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "bg.js"
+  }
+}

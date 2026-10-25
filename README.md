@@ -507,6 +507,18 @@ gvskb scan ./my-project --check-deps
 종료 코드는 보고서 결론 박스·JSON `gate.verdict` 와 **같은 판정**에서 나옵니다(v0.5.4 부터 — 그 전에는 소스 발견이
 없으면 취약 패키지·미고정·검사 불완전도 0 이었습니다).
 
+**표기 차이는 설계입니다** — 같은 결과를 세 곳이 다른 말로 적습니다. 버그가 아닙니다.
+
+| 체커 | 하네스(개발 PC) | 포털 |
+|---|---|---|
+| 종료 1 · `conditional` | `checker_status: blocked`(0 이 아니면 전부), `final_verdict: review_required` | `needs_review` |
+| 종료 2 · `blocked` | `checker_status: blocked` | `blocked` |
+| 종료 3 · `undetermined` | `checker_status: undetermined` | `incomplete` |
+| 종료 0 · `approved` | `checker_status: review_required`(하네스는 승인하지 않음) | `allow` |
+
+하네스는 "막혔다/안 막혔다"만 구분하고 승인은 절대 하지 않으며, 포털은 사람이 볼 네 단계로 옮겨 적습니다.
+"개발 PC 에서는 막혔는데 포털에서는 검토"는 이 표 그대로입니다.
+
 ```bash
 gvskb scan ./src --fail-on dependency   # 의존성 차단만 실패(2) — 판정 불가·검사 불완전은 통과(임계값 정책)
 gvskb scan ./src --fail-on block        # 차단(2)과 판정 불가(3)만 실패, 조건부는 통과 — CI 게이트 권장

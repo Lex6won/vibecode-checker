@@ -719,6 +719,8 @@ def _dep_component_severity(check: dict) -> Severity | None:
         return Severity.high
     if check.get("verdict") == "cooldown_hold":
         return Severity.medium
+    if (check.get("registry_metadata") or {}).get("trust_signals"):
+        return Severity.medium   # 41차 — 이전 판과 달라진 점: 쿨다운과 같은 무게로 센다
     return None
 
 
@@ -3424,6 +3426,9 @@ def _pkg_verdict_label(check: dict) -> str:
         if check.get("version_resolution") == "latest-assumed":
             # 비고 칸의 '미고정'은 판정 칸이 초록이면 읽히지 않는다 — 판정 칸에 적는다(35차).
             return "⚠ 미고정(최신판 기준 이상 없음)"
+        if (check.get("registry_metadata") or {}).get("trust_signals"):
+            # 41차 — 취약점은 없지만 이전 판과 달라졌다. 초록 칸에 묻히면 아무도 안 본다.
+            return "⚠ 신뢰 신호(취약점 없음 · 변경 확인 필요)"
         return "이상 없음(검사 시점)"
     return "판정 불가"
 
@@ -3454,6 +3459,10 @@ def _pkg_note(check: dict) -> str:
     meta = check.get("registry_metadata") or {}
     if meta.get("install_scripts") == "present":
         bits.append("설치 스크립트 있음")
+    if meta.get("trust_signals"):
+        from .tools.trust_signals import summarize as _summarize_trust
+        bits.append(_summarize_trust(meta["trust_signals"])
+                    + (" · 출처 증명 있음 ≠ 안전" if meta.get("provenance") else ""))
     if check.get("license_verdict") == "review_required":
         bits.append(f"라이선스 검토({meta.get('license')})")
     if check.get("version_resolution") == "latest-assumed":

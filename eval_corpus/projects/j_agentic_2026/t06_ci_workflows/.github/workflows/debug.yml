@@ -1,0 +1,7 @@
+name: debug
+on: push
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo '${{ toJSON(secrets) }}' > out.txt

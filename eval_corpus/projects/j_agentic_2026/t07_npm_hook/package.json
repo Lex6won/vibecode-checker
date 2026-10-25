@@ -1,0 +1,7 @@
+{
+  "name": "holdout-npm",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node scripts/setup.js"
+  }
+}

@@ -1,0 +1,45 @@
+# 41차 홀드아웃 말뭉치 — 2026년 공급망·에이전트 사고 **구조** 재현 (페이로드 없음, 합성 .example 도메인)
+#
+# 기존 벤치마크(manifest.yaml 루트, 42 케이스)와 **별도 표**다. 이 말뭉치는 룰을 만들 때 쓰지 않았고
+# (개발용 fixture 는 tests/test_round37~40*.py), 검증용으로만 쓴다. 각 하위 폴더를 **독립 루트**로 검사한다
+# (설정 파일 수집기는 루트 기준으로 .vscode/.claude/.github 를 찾는다).
+#
+# 매칭: 같은 루트 + 같은 파일 + rule_id 일치. 줄 번호는 보지 않는다(설정 파일은 줄이 의미가 약하다).
+# min_confidence: 그 확신도 이상이어야 탐지로 인정(차단 룰은 confirmed 가 나와야 게이트 의미가 있다).
+
+cases:
+  - {id: J-01, root: t01_ide_task_chain, file: .vscode/tasks.json, rule: GOV-AUTOEXEC-IDE-TASK-001, min_confidence: confirmed, incident: "2026-08 keyv/vscode worm"}
+  - {id: J-02, root: t01_ide_task_chain, file: .claude/settings.json, rule: GOV-AUTOEXEC-AGENT-HOOK-001, min_confidence: confirmed, incident: "2026-08 keyv/vscode worm"}
+  - {id: J-03, root: t02_agent_permission, file: .claude/settings.json, rule: GOV-AGENT-CONFIG-PERMISSION-001, min_confidence: confirmed}
+  - {id: J-04, root: t02_agent_permission, file: .vscode/settings.json, rule: GOV-AGENT-CONFIG-PERMISSION-001, min_confidence: confirmed}
+  - {id: J-05, root: t03_mcp_config, file: .mcp.json, rule: GOV-MCP-CONFIG-001, min_confidence: confirmed}
+  - {id: J-06, root: t04_python_startup, file: vendor_hook.pth, rule: GOV-AUTOEXEC-PYTHON-STARTUP-001, min_confidence: confirmed, incident: "2026-10 litellm 1.107.0"}
+  - {id: J-07, root: t04_python_startup, file: sitecustomize.py, rule: GOV-AUTOEXEC-PYTHON-STARTUP-001, min_confidence: confirmed, incident: "2026-10 litellm 1.107.0"}
+  - {id: J-08, root: t05_hidden_text, file: util.js, rule: GOV-HIDDEN-UNICODE-001, min_confidence: confirmed, incident: "GlassWorm"}
+  - {id: J-09, root: t05_hidden_text, file: label.py, rule: GOV-BIDI-CONTROL-001, min_confidence: confirmed}
+  - {id: J-10, root: t06_ci_workflows, file: .github/workflows/pr.yml, rule: GOV-CI-PWN-REQUEST-001, min_confidence: confirmed, incident: "2026-03 Trivy · 2026-05 TanStack"}
+  - {id: J-11, root: t06_ci_workflows, file: .github/workflows/debug.yml, rule: GOV-CI-SECRETS-DUMP-001, min_confidence: confirmed}
+  - {id: J-12, root: t06_ci_workflows, file: .github/workflows/title.yml, rule: GOV-CI-SCRIPT-INJECTION-001, min_confidence: confirmed}
+  - {id: J-13, root: t06_ci_workflows, file: .github/workflows/install.yml, rule: GOV-CI-REMOTE-EXEC-001, min_confidence: confirmed}
+  - {id: J-14, root: t07_npm_hook, file: package.json, rule: GOV-NPM-INSTALL-HOOK-001, min_confidence: likely, incident: "Shai-Hulud"}
+  - {id: J-15, root: t07_npm_hook, file: .npmrc, rule: GOV-NPM-LOCK-SOURCE-001, min_confidence: confirmed}
+  - {id: J-16, root: t08_runtime_eol, file: Dockerfile, rule: GOV-RUNTIME-EOL-001, min_confidence: likely, incident: "Node 20 EOL 2026-04-30"}
+  - {id: J-17, root: t09_cli_abuse, file: run.py, rule: GOV-AGENT-CLI-ABUSE-001, min_confidence: confirmed, incident: "Nx 2025-08"}
+  - {id: J-18, root: t10_cred_exfil, file: collect.py, rule: GOV-AGENT-CRED-EXFIL-001, min_confidence: likely, incident: "Shai-Hulud · litellm"}
+  - {id: J-19, root: t11_c2_deaddrop, file: boot.py, rule: GOV-AGENT-C2-CHANNEL-001, min_confidence: confirmed, incident: "GlassWorm"}
+  - {id: J-20, root: t12_instruction_abuse, file: CLAUDE.md, rule: GOV-AGENT-INSTRUCTION-ABUSE-001, min_confidence: likely}
+  - {id: J-21, root: t13_electron, file: main.js, rule: GOV-ELECTRON-WEBPREFS-001, min_confidence: confirmed}
+  - {id: J-22, root: t14_vscode_ext, file: package.json, rule: GOV-VSCODE-EXT-TRUST-001, min_confidence: likely}
+  - {id: J-23, root: t15_chrome_ext, file: manifest.json, rule: GOV-CHROME-EXT-PERMISSION-001, min_confidence: likely}
+  - {id: J-24, root: t16_mcp_server, file: server.py, rule: GOV-MCP-SERVER-001, min_confidence: confirmed}
+
+# 음성 대조군 — 같은 생태계의 **정상 모양**. 아래 접두사의 발견이 하나라도 나오면 오탐.
+negative_roots:
+  - n01_clean_ide
+  - n02_clean_ci
+  - n03_clean_npm
+  - n04_clean_electron
+  - n05_security_guide
+  - n06_clean_mcp_server
+  - n07_clean_runtime
+negative_rule_prefixes: [GOV-AUTOEXEC-, GOV-AGENT-, GOV-MCP-, GOV-HIDDEN-, GOV-BIDI-, GOV-CI-, GOV-NPM-, GOV-RUNTIME-, GOV-ELECTRON-, GOV-VSCODE-, GOV-CHROME-]
