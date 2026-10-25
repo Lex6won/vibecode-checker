@@ -50,11 +50,11 @@ ENGINE = "autoexec-surface"
 # 39차 — 에이전트 지시 파일(CLAUDE.md 등)의 위험 지시 신호. 문구 하나로 올리지 않는다: 권한 신호와
 # 결합할 때만 차단이고, 그마저도 부정 맥락(가이드가 "따르지 말라"고 인용)이면 뺀다.
 _DIRECTIVE_SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)ignore\s+(?:all\s+)?previous|무시하(?:고|라|세요)|이전\s*지시|disregard\s+(?:all|the)"), "지시 무효화"),
+    (re.compile(r"(?i)ignore\s+(?:all\s+)?previous|이전\s*지시|disregard\s+(?:all|the)"), "지시 무효화"),
     (re.compile(r"(?i)--dangerously-skip-permissions|--yolo|bypass\s*permissions|권한\s*(?:확인\s*)?(?:생략|우회)|skip\s+(?:the\s+)?(?:security|permission)"), "권한 우회"),
     (re.compile(r"(?i)--no-verify|보안\s*(?:검사|게이트)\s*(?:끄|제거|해제|우회|건너)|disable\s+(?:the\s+)?(?:security|guard|check)"), "보안 검사 해제"),
-    (re.compile(r"(?i)~/\.ssh|~/\.aws|\.env\b|credentials?\b|비밀\s*(?:번호|키)|자격\s*증명|secret\s*key|read\s+(?:the\s+)?token"), "비밀값 열람"),
-    (re.compile(r"(?i)curl\s+-d|webhook|api\.telegram\.org|discord(?:app)?\.com/api/webhooks|외부\s*(?:로\s*)?전송|exfiltrat|send\s+(?:it\s+)?to\s+https?://"), "외부 전송"),
+    (re.compile(r"(?i)~/\.ssh|~/\.aws|비밀\s*(?:번호|키)|자격\s*증명|secret\s*key|read\s+(?:the\s+)?token"), "비밀값 열람"),
+    (re.compile(r"(?i)curl\s+-d|api\.telegram\.org|discord(?:app)?\.com/api/webhooks|외부\s*(?:로\s*)?전송|exfiltrat|send\s+(?:it\s+)?to\s+https?://"), "외부 전송"),
 )
 # 부정 맥락 — 같은 줄·바로 윗줄에 있으면 "지시"가 아니라 "인용·경고"다(이 체커의 rules/*.md 가 그렇다).
 _DIRECTIVE_NEGATION = re.compile(
@@ -660,6 +660,8 @@ def collect_autoexec_surface(
         perm_signal = any(f.rule_id in (RULE_AGENT_PERMISSION, RULE_AGENT_HOOK) for f in res.findings)
         for rel, labels, line in instruction_dirs:
             hidden_here = rel in files_with_hidden
+            if not perm_signal and not hidden_here and "·" not in labels:
+                continue   # 분류 1종 + 결합 없음 — 평범한 지시 파일 오탐(검증 2026-10-25)
             if perm_signal or hidden_here:
                 conf = "confirmed" if hidden_here else "likely"
                 extra = " + 숨은 문자로 은폐" if hidden_here else " + 같은 저장소에 권한 우회 설정"

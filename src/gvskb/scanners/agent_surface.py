@@ -84,9 +84,9 @@ def _load_flags() -> dict:
 
 # 프로세스를 띄우는 자리 — 이 근처에서 CLI 이름이 나오면 "코드가 CLI 를 부른다".
 _SPAWN_RE = re.compile(
-    r"\b(?:child_process|execa|exec|execSync|execFile(?:Sync)?|spawn(?:Sync)?|fork)\b"
+    r"\b(?:child_process|execa|execSync|execFile(?:Sync)?|spawn(?:Sync)?|fork)\b"
     r"|\bsubprocess\s*\.\s*(?:run|call|Popen|check_output|check_call)\b"
-    r"|\bos\s*\.\s*(?:system|popen)\b|\bsh\s*\(|\$\(|`"
+    r"|\bos\s*\.\s*(?:system|popen)\b|(?<![\w.])exec\s*\("
     r"|\bStart-Process\b|\bInvoke-Expression\b",
     re.IGNORECASE,
 )
@@ -109,7 +109,7 @@ def _tok_in(hay: str, tokens: list[str]) -> list[str]:
 def _cli_name_hit(window: str, names: list[str]) -> str | None:
     for n in names:
         # CLI 이름이 문자열·인자 토큰으로 등장(따옴표·공백·슬래시 경계).
-        if re.search(r"""(?<![\w.-])""" + re.escape(n) + r"""(?:\.exe|\.cmd)?(?![\w.-])""", window, re.IGNORECASE):
+        if re.search(r"""(?<=[\'"])""" + re.escape(n) + r"""(?:\.exe|\.cmd)?(?![\w.-])""", window, re.IGNORECASE):
             return n
     return None
 
@@ -161,21 +161,20 @@ def judge_ai_cli_invocation(code: str, rel: str) -> list[Finding]:
 
 # 수집 신호 — "이런 자리를 읽는다". 분류명만 증거에 남긴다(경로·값은 싣지 않음).
 _COLLECT: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\.ssh[/\\]|id_rsa|id_ed25519|id_ecdsa|known_hosts|authorized_keys"), "ssh-key"),
-    (re.compile(r"\.aws[/\\]credentials|AWS_SECRET_ACCESS_KEY|\baws_secret"), "aws-cred"),
-    (re.compile(r"\.config[/\\]gcloud|application_default_credentials|GOOGLE_APPLICATION_CREDENTIALS"), "gcp-cred"),
-    (re.compile(r"\.azure[/\\]|AZURE_CLIENT_SECRET"), "azure-cred"),
-    (re.compile(r"\.kube[/\\]config|KUBECONFIG"), "kube-config"),
+    (re.compile(r"\.ssh[/\\]id_|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b"), "ssh-key"),
+    (re.compile(r"\.aws[/\\]credentials"), "aws-cred"),
+    (re.compile(r"\.config[/\\]gcloud|application_default_credentials\.json"), "gcp-cred"),
+    (re.compile(r"\.azure[/\\](?:accessTokens|msal_token_cache)"), "azure-cred"),
+    (re.compile(r"\.kube[/\\]config"), "kube-config"),
     (re.compile(r"\.docker[/\\]config\.json"), "docker-cred"),
-    (re.compile(r"\.npmrc|_authToken|\.pypirc|\.netrc\b|\.git-credentials|\.gitconfig"), "pkg-token"),
-    (re.compile(r"\.config[/\\]gh[/\\]|GH_TOKEN|GITHUB_TOKEN|gh\s+auth\s+token"), "gh-token"),
+    (re.compile(r"expanduser\([^)]*\.npmrc|[~$][/\\]\.npmrc|\.pypirc|\.netrc\b|\.git-credentials"), "pkg-token"),
+    (re.compile(r"\.config[/\\]gh[/\\]hosts|gh\s+auth\s+token"), "gh-token"),
     (re.compile(r"\.claude(?:\.json|[/\\])|\.codex[/\\]|\.cursor[/\\]|\.gemini[/\\]|\.continue[/\\]|\.aider"), "ai-tool-cred"),
     (re.compile(r"Login\s*Data|\bCookies\b.*(?:sqlite|SELECT)|moz_cookies|places\.sqlite|Local\s+State"), "browser-store"),
     (re.compile(r"/proc/\d+/environ|/proc/self/environ"), "proc-environ"),
     (re.compile(r"169\.254\.169\.254|metadata\.google\.internal|metadata\.azure\.com"), "cloud-metadata"),
-    (re.compile(r"os\.environ\b(?!\s*\.\s*get)|dict\s*\(\s*os\.environ|process\.env\s*(?:\)|,|\}|\bJSON\.stringify\s*\(\s*process\.env)"), "env-dump"),
-    (re.compile(r"Keychain|login\.keychain|secretstorage|SecretService|libsecret|wallet\.dat|keystore"), "keystore"),
-    (re.compile(r"\.env(?:\.local|\.production)?\b"), "dotenv"),
+    (re.compile(r"dict\s*\(\s*os\.environ|os\.environ\s*\.\s*(?:copy|items)\s*\(|JSON\.stringify\s*\(\s*process\.env|\{\s*\.\.\.process\.env|Object\.(?:entries|keys)\s*\(\s*process\.env"), "env-dump"),
+    (re.compile(r"login\.keychain|secretstorage|SecretService|libsecret|wallet\.dat"), "keystore"),
 )
 # 전송 신호 — "밖으로 보낸다". 이것만으로는 거의 모든 앱이 걸리므로 수집과 결합할 때만 의미.
 _TRANSMIT = re.compile(
@@ -244,7 +243,7 @@ _DEADDROP_HOST = re.compile(
 )
 _EXEC_SINK = re.compile(
     r"\beval\s*\(|\bexec\s*\(|new\s+Function\s*\(|\bFunction\s*\(|child_process|subprocess|os\.system"
-    r"|\bexecSync\b|\bspawn\b|vm\.runInContext|compile\s*\(",
+    r"|\bexecSync\b|\bspawn\b|vm\.runInContext",
     re.IGNORECASE,
 )
 # webhook — 하드코딩된 수신 URL. 전송(②)과 결합하면 유출 경로.
@@ -270,6 +269,13 @@ def _line_of(code: str, m: re.Match) -> int:
     return code.count("\n", 0, m.start()) + 1
 
 
+def _window(code: str, pos: int, before: int = 3, after: int = 6) -> str:
+    """pos 가 있는 줄의 앞 before·뒤 after 줄 — '받아서 바로 실행'은 같은 문장이나 바로 근처에 있다."""
+    lines = code.splitlines()
+    ln = code.count("\n", 0, pos)
+    return "\n".join(lines[max(0, ln - before): ln + after + 1])
+
+
 def judge_c2_channel(code: str, rel: str) -> list[Finding]:
     out: list[Finding] = []
     rule = lookup_rule(RULE_C2_CHANNEL)
@@ -281,7 +287,7 @@ def judge_c2_channel(code: str, rel: str) -> list[Finding]:
                                  engine=ENGINE, confidence=conf))
 
     dd = _DEADDROP_HOST.search(code)
-    if dd and _EXEC_SINK.search(code):
+    if dd and _EXEC_SINK.search(_window(code, dd.start())):
         emit(_line_of(code, dd), f"공개 텍스트 호스트({dd.group(0)[:40]})에서 받아 실행(dead-drop) — 코드를 받아 돌리는 경로", "confirmed")
     wh = _WEBHOOK.search(code)
     if wh:
