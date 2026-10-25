@@ -71,6 +71,15 @@ _FILE_CONTEXT_RULE_IDS = {
     "GOV-AGENT-CRED-EXFIL-001",
     "GOV-AGENT-C2-CHANNEL-001",
     "GOV-AGENT-INSTRUCTION-ABUSE-001",   # 파일 맥락(지시 파일) + 결합 — 실제 파일 fixture 로 검증
+    # 40차 — 생태계 의존성이 있어야 켜지는 수집기 룰(프로젝트 맥락). 테스트: test_round40_ecosystem.py
+    "GOV-ELECTRON-WEBPREFS-001",
+    "GOV-ELECTRON-IPC-BRIDGE-001",
+    "GOV-ELECTRON-HARDENING-001",
+    "GOV-VSCODE-EXT-TRUST-001",
+    "GOV-CHROME-EXT-PERMISSION-001",
+    "GOV-CHROME-EXT-HEADER-STRIP-001",
+    "GOV-CHROME-EXT-MESSAGE-001",
+    "GOV-MCP-SERVER-001",
 }
 
 
