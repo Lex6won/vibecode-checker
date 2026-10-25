@@ -935,7 +935,8 @@ def _security_domain(f: Finding) -> tuple[int, str]:
             or "AUTOEXEC" in rid or "MCP" in rid:
         return _DOMAIN_AI
     # 38차 — CI 워크플로·npm 설치 표면·런타임 버전은 공급망 분야(보안 설정 오류에 묶는다 — 새 분야를 만들면 9개 표가 깨진다).
-    if cat == "supply-chain" or rid.startswith(("GOV-CI-", "GOV-NPM-", "GOV-RUNTIME-")):
+    # 40차 — Electron·VS Code·Chrome 확장 설정도 보안 설정 오류(MCP 서버는 위에서 AI·자동화로 갔다).
+    if cat in ("supply-chain", "platform-security") or rid.startswith(("GOV-CI-", "GOV-NPM-", "GOV-RUNTIME-", "GOV-ELECTRON-", "GOV-VSCODE-", "GOV-CHROME-")):
         return _DOMAIN_MISCONFIG
     if any(k in rid for k in ("CODE", "ERR", "TIME", "ENCAP")):
         return _DOMAIN_QUALITY
@@ -3794,6 +3795,15 @@ _AUTOEXEC_KIND_KO = {
     "npm-lock": "npm 락파일(설치 훅 패키지·출처·무결성)",
     "npmrc": ".npmrc(레지스트리·설치 스크립트 설정)",
     "runtime-pin": "런타임 버전 핀(Dockerfile·.nvmrc·pyproject 등)",
+    "electron-manifest": "Electron 앱 매니페스트",
+    "electron-builder": "Electron 빌드 설정(fuses·ASAR)",
+    "electron-src": "Electron 메인/프리로드 소스",
+    "vscode-manifest": "VS Code 확장 매니페스트",
+    "vscode-ext-src": "VS Code 확장 소스",
+    "chrome-manifest": "브라우저 확장 매니페스트",
+    "chrome-dnr-rules": "브라우저 확장 요청 규칙(declarativeNetRequest)",
+    "chrome-ext-src": "브라우저 확장 소스",
+    "mcp-server-src": "MCP 서버 소스",
 }
 
 

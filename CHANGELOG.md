@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-10-25
+
+### 40차 — 생태계별 보안 설정 판정: Electron · VS Code 확장 · 브라우저 확장 · MCP 서버 (룰셋 2026.10.25b)
+
+해당 의존성이 **있을 때만** 켜지는 수집기(`scanners/ecosystem_surface.py`, 엔진 ecosystem-surface). 평범한 Python/JS
+업무 앱에는 매니페스트 판독 외 비용 없음. 설정·구조 해석 중심(37·38차 방식), 공식 체크리스트(Electron Security ·
+VS Code Workspace Trust/Webview · Chrome 권한/메시지/MV3 · MCP Security Best Practices)에서 벗어난 자리를 표시한다.
+
+- 룰 8개 `rules/platform-security/`(카테고리 platform-security): `GOV-ELECTRON-WEBPREFS-001`(렌더러 Node 권한 webPreferences —
+  원격 로드면 확정), `GOV-ELECTRON-IPC-BRIDGE-001`(범용 contextBridge·발신자 미검증 ipcMain·미검증 openExternal·openDevTools mode),
+  `GOV-ELECTRON-HARDENING-001`(fuses·네비게이션/권한 핸들러 — 경고), `GOV-VSCODE-EXT-TRUST-001`(Workspace Trust·설정값→실행·webview
+  CSP·메시지 경계), `GOV-CHROME-EXT-PERMISSION-001`(MV2·광역 호스트+민감 권한·externally_connectable·update_url), `GOV-CHROME-EXT-HEADER-STRIP-001`
+  (응답 보안 헤더 제거·원격 코드 로드 — 확정), `GOV-CHROME-EXT-MESSAGE-001`(발신자 미검증 메시지 핸들러), `GOV-MCP-SERVER-001`
+  (도구 인자→실행/파일·HTTP 전송 Origin·토큰 전달·메타데이터 조회·readOnlyHint 불일치).
+- 활성 판정: package.json 의존성(electron · @modelcontextprotocol/sdk · fastmcp)·engines.vscode, manifest.json(manifest_version),
+  Python 의존성(fastmcp/mcp). MCP 소스 판정은 SDK 를 실제로 import 하는 파일만(개밥먹기에서 토큰만으로 켜지던 조건을 좁힘).
+- 보고서: 수집기 종류 추가(electron-*, vscode-*, chrome-*, mcp-server-src). 분류기: platform-security → 보안 설정 오류(MCP 는 AI·자동화).
+- 검증: 40차 테스트 20개 · 실측 5트리 동일(라벨 96건 위반 0) · 벤치마크 42/42·FP 0 · 위생 통과. 게이트 변경 없음.
+
 ## [0.5.8] - 2026-10-25
 
 ### 39차 검증 보완 — 결합 신호 범위 축소로 정밀도 향상 (엔진만, 룰셋 변경 없음)

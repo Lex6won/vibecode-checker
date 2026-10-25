@@ -2102,6 +2102,17 @@ def scan_path(
             skipped.extend(surface.skipped)
             scanned.extend(surface.scanned)
             autoexec_entries = [e.as_dict() for e in surface.entries]
+        # 40차 — 생태계별(Electron·VS Code 확장·Chrome 확장·MCP 서버) 설정·구조 판정. 의존성이 있을 때만 켜진다.
+        from .scanners.ecosystem_surface import collect_ecosystem_surface
+        try:
+            eco = collect_ecosystem_surface(
+                root, policy=lambda fs, rel_path: _path_level_policies(fs, rel_path, profile_spec))
+        except Exception as exc:  # noqa: BLE001 — 생태계 판정 실패도 엔진 실패로 남기고 검사는 계속한다
+            engine_failures.setdefault("ecosystem-surface", f"{type(exc).__name__}: {exc}")
+        else:
+            all_findings.extend(eco.findings)
+            skipped.extend(eco.skipped)
+            autoexec_entries.extend(e.as_dict() for e in eco.entries)
 
     # 승인된 예외(.gvskb-exceptions.yaml) — 발견을 숨기지 않고 표시만 하며,
     # 요약(건수·차단)과 exit code 는 비억제 발견 기준으로 계산한다.
@@ -2191,7 +2202,7 @@ def path_level_rule_ids() -> tuple[str, ...]:
     from .scanners.autoexec_surface import (
         RULE_AGENT_HOOK, RULE_AGENT_PERMISSION, RULE_IDE_TASK, RULE_MCP_CONFIG, RULE_PY_STARTUP,
     )
-    from .scanners import agent_surface, ci_workflow, npm_surface, runtime_version
+    from .scanners import agent_surface, ci_workflow, ecosystem_surface, npm_surface, runtime_version
     from .scanners.hidden_text import BIDI_RULE_ID, HIDDEN_RULE_ID
 
     return (
@@ -2205,6 +2216,8 @@ def path_level_rule_ids() -> tuple[str, ...]:
         *ci_workflow.RULE_IDS, *npm_surface.RULE_IDS, *runtime_version.RULE_IDS,
         # 39차 — 에이전트·공급망 행위(agent-surface 어댑터가 발행: AI CLI 오용·수집+전송·C2)
         *agent_surface.RULE_IDS,
+        # 40차 — 생태계별 설정·구조(ecosystem-surface 수집기: Electron·VS Code·Chrome 확장·MCP 서버)
+        *ecosystem_surface.RULE_IDS,
     )
 
 
