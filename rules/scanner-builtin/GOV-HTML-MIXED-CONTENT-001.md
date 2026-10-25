@@ -9,6 +9,7 @@ sources:
     document: Transport Layer Security Cheat Sheet
   - publisher: 행정안전부
     document: 전자정부 웹사이트 구축·운영 가이드
+cwe: [CWE-319]
 severity: medium
 decision_default: warn
 domains: [web-appsec]

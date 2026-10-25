@@ -9,6 +9,7 @@ sources:
     document: Secure by Design
   - publisher: 행정안전부
     document: 전자정부 보안 운영 관행
+cwe: [CWE-200]
 severity: high
 decision_default: block
 domains: [public-sector-internal]

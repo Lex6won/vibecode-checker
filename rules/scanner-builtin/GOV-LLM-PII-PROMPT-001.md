@@ -13,6 +13,7 @@ sources:
   - publisher: 개인정보보호위원회
     document: 생성형 AI 개발·활용을 위한 개인정보 처리 안내서
     version: "2025.8"
+cwe: [CWE-359, CWE-200]
 severity: critical
 decision_default: block
 domains: [llm-appsec]

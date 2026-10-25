@@ -10,6 +10,7 @@ sources:
   - publisher: 행정안전부
     document: 소프트웨어 개발보안 가이드
     item: 별표3 보안약점
+cwe: [CWE-359]
 severity: critical
 decision_default: block
 domains: [privacy-public-sector]

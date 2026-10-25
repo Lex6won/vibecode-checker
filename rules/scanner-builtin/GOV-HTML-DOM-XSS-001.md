@@ -10,6 +10,7 @@ sources:
     item: 제1절 4. 크로스사이트 스크립트
   - publisher: OWASP
     document: DOM based XSS Prevention Cheat Sheet
+cwe: [CWE-79]
 severity: high
 decision_default: block
 domains: [web-appsec]

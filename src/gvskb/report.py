@@ -1738,6 +1738,8 @@ def render_markdown(
 
     # --- ⑨-3 자동 실행 표면 인벤토리(37차) — 읽은 것의 목록, 발견은 위에 ------
     lines.extend(_render_autoexec_md(report))
+    # --- ⑨-4 행정안전부 49개 항목 결과표(43차) ------------------------------
+    lines.extend(_render_mois_md(report))
 
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
     lines.extend(_render_dependency_audit_md(report))
@@ -2507,6 +2509,9 @@ def render_html(
 
     # === 자동 실행 표면 인벤토리(37차) ====================================
     p.extend(_render_autoexec_html(report))
+
+    # === 행정안전부 49개 항목 결과표(43차) ================================
+    p.extend(_render_mois_html(report))
 
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
     dep_prompt = _dep_fix_prompt_text(report)
@@ -4106,3 +4111,66 @@ def render_sarif(report: ScanReport) -> dict:
             },
         }],
     }
+
+
+# ---------------------------------------------------------------------------
+# 43차(C-19) — 행정안전부 SW 개발보안 49개 항목 결과표
+# ---------------------------------------------------------------------------
+
+_MOIS_INTRO = (
+    "이 표는 **이 체커가 탐지한 발견을 항목별로 센 것**입니다. '해당 발견 없음'은 그 항목이 안전하다는 뜻이 아니며, "
+    "'자동 탐지 없음'인 항목은 사람이 점검해야 합니다. 설계·인가·업무 로직 결함은 정적 분석 범위 밖입니다."
+)
+
+
+def _mois_status_md(row: dict) -> str:
+    if row["findings"]:
+        return f"**발견** {row['findings']}건(차단 {row['block']} · 경고 {row['warn']}) · 파일 {row['files']}"
+    return row["status"]
+
+
+def _render_mois_md(report: ScanReport) -> list[str]:
+    from .mois_table import mois_result_table
+
+    table = mois_result_table(report)
+    s = table["summary"]
+    out = ["## 행정안전부 SW 개발보안 49개 항목 결과표", "", f"> {_MOIS_INTRO}", "",
+           f"항목 {s['items']} · 발견 있는 항목 {s['with_findings']} · 자동 탐지 없음 {s['no_detection']} · "
+           f"49개 항목 밖 발견 {s['outside_findings']}건", "",
+           "| 항목 | 절 | 명칭 | 결과 | 자동 탐지 룰 |", "|---|---|---|---|---|"]
+    for r in table["items"]:
+        rules = ", ".join(f"`{x}`" for x in r["rules"][:4]) + (f" 외 {len(r['rules']) - 4}" if len(r["rules"]) > 4 else "")
+        out.append(f"| {r['id'][len('MOIS-49-'):]} | {r['section']} | {r['title']} | {_mois_status_md(r)} | {rules or '—'} |")
+    if table["outside"]:
+        out += ["", "### 49개 항목 밖 (공급망·개발환경·AI·플랫폼)", "",
+                "> 49개 항목은 개발자가 짠 코드의 약점을 전제합니다. 아래는 개발 환경·공급망·AI 연동에서 들어온 위험으로, 별도로 셉니다.", "",
+                "| 분류 | 발견(차단) | 룰 |", "|---|---|---|"]
+        for o in table["outside"]:
+            out.append(f"| {o['label']} | {o['findings']}({o['block']}) | {', '.join(f'`{x}`' for x in o['rules'][:5])} |")
+    out.append("")
+    return out
+
+
+def _render_mois_html(report: ScanReport) -> list[str]:
+    from .mois_table import mois_result_table
+
+    table = mois_result_table(report)
+    s = table["summary"]
+    p = ['<details class="sec"><summary>행정안전부 SW 개발보안 49개 항목 결과표 '
+         f'<span class="cnt">{s["with_findings"]}/{s["items"]}</span></summary>',
+         f'<p class="muted">{_esc(_MOIS_INTRO.replace("**", ""))}</p>',
+         "<table><tr><th>항목</th><th>절</th><th>명칭</th><th>결과</th><th>자동 탐지 룰</th></tr>"]
+    for r in table["items"]:
+        rules = ", ".join(f"<code>{_esc(x)}</code>" for x in r["rules"][:4]) + (f" 외 {len(r['rules']) - 4}" if len(r["rules"]) > 4 else "")
+        result = (f"<b>발견</b> {r['findings']}건(차단 {r['block']} · 경고 {r['warn']})" if r["findings"] else _esc(r["status"]))
+        p.append(f"<tr><td>{_esc(r['id'][len('MOIS-49-'):])}</td><td>{_esc(r['section'])}</td><td>{_esc(r['title'])}</td>"
+                 f"<td>{result}</td><td>{rules or '—'}</td></tr>")
+    p.append("</table>")
+    if table["outside"]:
+        p.append("<h4>49개 항목 밖 (공급망·개발환경·AI·플랫폼)</h4><table><tr><th>분류</th><th>발견(차단)</th><th>룰</th></tr>")
+        for o in table["outside"]:
+            p.append(f"<tr><td>{_esc(o['label'])}</td><td>{o['findings']}({o['block']})</td>"
+                     f"<td>{', '.join(f'<code>{_esc(x)}</code>' for x in o['rules'][:5])}</td></tr>")
+        p.append("</table>")
+    p.append("</details>")
+    return p

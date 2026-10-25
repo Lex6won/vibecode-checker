@@ -9,6 +9,7 @@ sources:
     document: SP 800-218 SSDF
   - publisher: Sigstore
     document: Sigstore overview
+cwe: [CWE-798, CWE-321]
 severity: critical
 decision_default: block
 domains: [secret-scanning]
