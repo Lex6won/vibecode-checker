@@ -908,16 +908,18 @@ def check_intel_cache() -> list[CheckResult]:
     offline = os.environ.get("GVSKB_MODE", "").lower() == "offline"
     cache = IntelCache()
     results: list[CheckResult] = []
-    for sid in ("osv-malicious", "cisa-kev"):
+    # 46차 — 패키지 검사 기본 모드(local)가 이 캐시로 판정한다. 없으면 **어느 모드든** 패키지
+    # 검사가 '판정 불가'가 되므로 온라인 PC 에서도 WARN 이다(예전에는 온라인이면 OK 였다).
+    for sid in ("osv-malicious", "osv-vulns", "cisa-kev"):
         entry = cache.load(sid)
         if entry is None:
-            status = _WARN if offline else _OK
             note = (
-                "캐시 없음 — offline에서는 check-package가 전부 '판정 불가'가 됩니다. "
-                "외부망에서 `gvskb update-intel --all` 후 캐시를 반입하세요."
-                if offline else "캐시 없음 (온라인은 실시간 OSV 조회를 사용)"
+                "캐시 없음 — 패키지 검사(기본 local 모드)가 전부 '판정 불가'가 됩니다. "
+                + ("외부망에서 `gvskb update-intel --all` 후 번들을 반입하세요(GVSKB_INTEL_DIR)."
+                   if offline else
+                   "`gvskb update-intel` 을 실행하세요(검사 시 하루 1회 자동 갱신도 시도합니다).")
             )
-            results.append(_check(f"Intel cache: {sid}", status, "missing", note=note))
+            results.append(_check(f"Intel cache: {sid}", _WARN, "missing", note=note))
             continue
         age = entry.age_days()
         stale = entry.is_stale()
@@ -928,6 +930,25 @@ def check_intel_cache() -> list[CheckResult]:
         if stale:
             note += f" · ⚠ 신선도 기준({intel_max_age_days()}일) 초과 — update-intel 권장"
         results.append(_check(f"Intel cache: {sid}", _WARN if stale else _OK, value, note=note))
+
+    # 46차 — 번들 서명 정책. 폐쇄망 자동 반입(공유 폴더)을 켠 기관은 '필수'여야 독 넣기를 막는다.
+    try:
+        from .intel.signing import signature_required, trusted_keys
+        n_keys = len(trusted_keys())
+        required = signature_required()
+        if required and n_keys == 0:
+            results.append(_check("Intel bundle signature", _WARN, "required · trusted keys 0",
+                                  note="서명 필수인데 신뢰 공개키가 없어 **모든 번들이 거부**됩니다 — "
+                                       "GVSKB_INTEL_TRUSTED_KEYS 또는 체커 갱신으로 공개키를 등록하세요."))
+        else:
+            results.append(_check(
+                "Intel bundle signature", _OK,
+                f"{'required' if required else 'optional'} · trusted keys {n_keys}",
+                note=("서명 없는 번들도 반입됩니다(GVSKB_INTEL_REQUIRE_SIGNATURE=1 로 필수화 가능)."
+                      if not required else "서명 없는 번들은 거부됩니다."),
+            ))
+    except Exception as exc:  # pragma: no cover - defensive
+        results.append(_check("Intel bundle signature", _WARN, "unavailable", note=str(exc)))
 
     # 자동 당김 설정 — 캐시가 낡았을 때 "왜 자동으로 안 채워지나"를 여기서 답한다.
     ap = _autopull_status_safe()

@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -68,8 +67,11 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
         parts += ["--max-files", str(args.max_files)]
     if getattr(args, "max_file_bytes", None) and args.max_file_bytes != DEFAULT_MAX_FILE_BYTES:
         parts += ["--max-file-bytes", str(args.max_file_bytes)]
-    if getattr(args, "check_deps", False):
-        parts += ["--check-deps"]
+    # 46차 — 패키지 검사는 기본(local)이다. 기본과 다를 때만 적는다: online 은 외부 조회가
+    # 더해져 발견이 **늘** 수 있고, off 는 **줄** 수 있다. 둘 다 재현에 필요하다.
+    mode = _requested_deps_mode(args)
+    if mode and mode != "local":
+        parts += ["--deps", mode]
     if getattr(args, "include_installed", False):
         parts += ["--include-installed"]
     if getattr(args, "env", None):
@@ -149,48 +151,27 @@ def _emit_doc_report(
     )
 
 
-def _norm_pkg(name: str, ecosystem: str) -> str:
-    """패키지 이름 비교용 정규화. pypi 는 ``-``/``_``/``.`` 를 구분하지 않는다(PEP 503)."""
-    low = name.strip().lower()
-    return re.sub(r"[-_.]+", "-", low) if ecosystem.lower() == "pypi" else low
-
-
-def _direct_dependency_names(
-    found: list[tuple[Path, str, str, str]], ecosystem: str,
-) -> set[str]:
-    """매니페스트에 **직접 적힌** 패키지 이름 집합.
-
-    락파일이 있어 검사에서 건너뛴 매니페스트도 읽는다 — 여기서 필요한 것은 검사가
-    아니라 '무엇이 직접 의존성인가'라는 목록이고, 그건 락파일에는 없다(락파일은
-    직접·전이를 구분하지 않고 평면으로 담는다).
-    """
-    from .scanner import parse_manifest_packages
-
-    names: set[str] = set()
-    for p, _rel, eco, kind in found:
-        if kind != "manifest" or eco != ecosystem:
-            continue
-        try:
-            text = p.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError):
-            continue  # 읽기 실패는 이미 검사 경로에서 드러난다
-        for pkg in parse_manifest_packages(text, eco):
-            names.add(_norm_pkg(str(pkg["name"]), eco))
-    return names
+def _requested_deps_mode(args: argparse.Namespace) -> str | None:
+    """사용자가 요청한 패키지 검사 모드 — ``--deps`` 가 우선, 예전 ``--check-deps`` 는 online 별칭."""
+    explicit = getattr(args, "deps", None)
+    if explicit:
+        return str(explicit)
+    if getattr(args, "check_deps", False):
+        return "online"
+    return None
 
 
 def _auto_refresh_intel() -> None:
-    """`--check-deps` 직전 인텔 자동 갱신 — 실패·망분리·옵트아웃은 조용히 넘어간다."""
+    """패키지 검사 직전 위협정보 자동 갱신 — 실패·망분리·옵트아웃은 조용히 넘어간다.
+
+    본문은 ``deps_check.auto_refresh_intel`` 로 옮겼다(CLI·MCP 공용). 이름은 기존 테스트·
+    문서가 가리키므로 남긴다.
+    """
     try:
-        from .intel.autopull import maybe_auto_update
-        res = maybe_auto_update(timeout=20.0, verbose=False)
+        from .deps_check import auto_refresh_intel
+        auto_refresh_intel()
     except Exception:  # noqa: BLE001 — 갱신 실패가 검사를 막으면 안 된다
         return
-    if getattr(res, "attempted", False):
-        if res.ok:
-            print(f"[gvskb] 인텔 캐시 자동 갱신 ← {res.source}", file=sys.stderr)
-        else:
-            print(f"[gvskb] ⚠ 인텔 자동 갱신 실패(검사는 계속): {res.error}", file=sys.stderr)
 
 
 def _run_dependency_audit(
@@ -198,161 +179,25 @@ def _run_dependency_audit(
     report: ScanReport,
     env_grade: str | None = None,
     include_installed: bool = False,
+    mode: str | None = None,
 ) -> dict | None:
     """스캔 결과에서 매니페스트를 찾아 패키지 취약·악성 검사를 수행한다.
 
-    requirements*.txt(pypi)는 스캔에서 제외(skipped)되고 package.json(npm)은
-    스캔 대상(scanned)이므로 두 목록을 모두 본다. 락파일은 audit_manifest 가
-    'unparsed'로 정직하게 거절하므로 여기서는 원본 매니페스트만 수집한다.
-    env_grade(E0~E2)는 쿨다운 기준일을 결정한다.
+    본문은 ``deps_check.run_dependency_audit`` 에 있다(CLI·MCP 가 같은 코드를 쓴다 — 46차).
+    ``mode`` 가 None 이면 예전 동작(``GVSKB_MODE=offline`` 이면 로컬, 아니면 온라인).
     """
-    from .tools.check_package import audit_manifest
+    from .deps_check import run_dependency_audit
 
-    # 락파일은 매니페스트의 **상위 집합**이다(전이 의존성 포함, 버전 고정).
-    # 둘 다 있으면 락파일만 검사한다 — 중복 조회를 피하고 더 정확한 쪽을 쓴다.
-    _LOCK_NAMES = {
-        "poetry.lock": "pypi", "uv.lock": "pypi",
-        "package-lock.json": "npm", "pnpm-lock.yaml": "npm", "yarn.lock": "npm",
-    }
-
-    def _classify(name: str) -> tuple[str, str] | None:
-        """파일명 → (ecosystem, kind). kind: 'lock' | 'manifest'."""
-        low = name.lower()
-        if low in _LOCK_NAMES:
-            return _LOCK_NAMES[low], "lock"
-        # `requirements.lock.txt`·`requirements-lock.txt`·`constraints.txt` — 고정 전수 목록이다. 매니페스트로
-        # 보면 기본 상한 20개만 조회된다(실측 2026-10-15 챗봇: 111개 중 20개).
-        if low.startswith(("requirements", "constraints")) and low.endswith(".txt") and (
-                ".lock" in low or "-lock" in low or "_lock" in low or low.startswith("constraints")):
-            return "pypi", "lock"
-        if low.startswith("requirements") and low.endswith(".txt"):
-            return "pypi", "manifest"
-        if low == "pyproject.toml":
-            # PEP 621 · poetry — 현대 Python 프로젝트의 주 매니페스트. 이것을 못 읽어
-            # 체커가 **자기 의존성을 한 번도 검사하지 못했다**(재점검 2026-08-29).
-            return "pypi", "manifest"
-        if low == "package.json":
-            return "npm", "manifest"
-        return None
-
-    found: list[tuple[Path, str, str, str]] = []  # (경로, 표시명, eco, kind)
-    if root.is_file():
-        hit = _classify(root.name)
-        if hit:
-            found.append((root, root.name, hit[0], hit[1]))
-    else:
-        seen: set[str] = set()
-        for rel in [s.path for s in report.skipped_files] + list(report.scanned_files):
-            name = rel.replace("\\", "/").rsplit("/", 1)[-1]
-            hit = _classify(name)
-            if not hit or rel in seen:
-                continue
-            seen.add(rel)
-            p = root / rel
-            if p.is_file():
-                found.append((p, rel, hit[0], hit[1]))
-
-    # 같은 디렉터리·같은 생태계에 락파일이 있으면 매니페스트는 건너뛴다.
-    lock_dirs = {
-        (rel.replace("\\", "/").rsplit("/", 1)[0] if "/" in rel.replace("\\", "/") else "", eco)
-        for _, rel, eco, kind in found if kind == "lock"
-    }
-    manifests: list[tuple[Path, str, str]] = []  # (절대경로, 표시명, ecosystem)
-    for p, rel, eco, kind in found:
-        norm = rel.replace("\\", "/")
-        d = norm.rsplit("/", 1)[0] if "/" in norm else ""
-        if kind == "manifest" and (d, eco) in lock_dirs:
-            continue  # 락파일이 이미 상위 집합을 검사한다
-        manifests.append((p, rel, eco))
-
-    # 벤더 번들(static/*.min.js)은 매니페스트가 없어도 검사 대상이다 — 매니페스트도
-    # node_modules 도 없는 프로젝트에서는 이것이 **유일한 컴포넌트 발견 경로**다.
-    vendor_bundles = list(getattr(report, "vendor_bundles", None) or [])
-
-    if not manifests and not include_installed and not vendor_bundles:
+    result = run_dependency_audit(
+        root, report, mode=mode, env_grade=env_grade, include_installed=include_installed,
+    )
+    if result is None and mode != "off":
         print(
-            "[gvskb] --check-deps: 검사할 매니페스트(requirements*.txt·pyproject.toml·package.json)를 찾지 못했습니다.",
+            "[gvskb] 패키지 검사: 검사할 매니페스트(requirements*.txt·pyproject.toml·package.json·락파일)를 "
+            "찾지 못했습니다 — 패키지가 없는 프로젝트가 아니라면 파일 위치를 확인하세요.",
             file=sys.stderr,
         )
-        return None
-
-    # 검사 전에 인텔 캐시를 **비차단**으로 갱신한다(하루 1회, 신선도 초과 시만, 실패해도 계속).
-    # 예전에는 MCP 서버 기동·`intel-sync` 때만 갱신돼 CLI/포털 경로의 캐시가 한 달 묵었다.
-    _auto_refresh_intel()
-
-    async def _gather() -> list[dict]:
-        out: list[dict] = []
-        for p, rel, eco in manifests:
-            try:
-                text = p.read_text(encoding="utf-8-sig")
-            except (OSError, UnicodeDecodeError) as exc:
-                out.append({
-                    "ecosystem": eco, "manifest": rel, "verdict": "unparsed",
-                    "requires_review": True, "parsed_count": 0, "checked_count": 0,
-                    "unchecked_count": 0, "blocked": False, "checks": [],
-                    "note": f"파일을 읽지 못했습니다: {exc}",
-                })
-                continue
-            # filename 을 넘겨야 락파일 형식을 파일명으로 확정할 수 있다.
-            audit = await audit_manifest(text, ecosystem=eco, env_grade=env_grade, filename=rel)
-            audit["manifest"] = rel
-            out.append(audit)
-
-        # 설치 흔적(.venv·휠·node_modules)까지 확대 — 매니페스트에 적힌 직접
-        # 의존성만 보면 **전이 의존성의 취약점을 통째로 놓친다**(상용 SCA 대비
-        # 유일한 실질 격차였음). 목록만 읽고 패키지를 실행하지 않는다.
-        if include_installed:
-            from .tools.installed_packages import collect_installed_packages, to_requirements_text
-
-            inv = collect_installed_packages(root)
-            for eco, pkgs in (("pypi", inv["pypi"]), ("npm", inv["npm"])):
-                if not pkgs:
-                    continue
-                text = to_requirements_text(pkgs, ecosystem=eco)
-                audit = await audit_manifest(
-                    text, ecosystem=eco, limit=len(pkgs), env_grade=env_grade,
-                )
-                audit["manifest"] = f"<설치된 패키지: {eco}>"
-                audit["source"] = "installed-inventory"
-                audit["inventory_stats"] = inv["stats"]
-                # 설치본 중 **매니페스트에 이름이 있는 것은 직접 의존성**이다
-                # (레지스트리 요청 §3). 이름은 매니페스트에, 정확한 버전은 설치
-                # 흔적에 있으므로 둘을 합쳐야 "직접 의존성 + 실제 버전"이 되고,
-                # 그 판단은 둘 다 읽는 이쪽에서만 할 수 있다.
-                #
-                # 이 구분이 없으면 심사 대기열이 구조적으로 빈다 — 매니페스트
-                # 경로는 경계값이라 제출에서 걸리고, 설치본 경로는 전이 의존성과
-                # 뭉뚱그려져 큐에 안 올라간다. 특히 not_found(슬롭스쿼팅 최강
-                # 신호)가 그 사이로 조용히 빠진다.
-                direct = _direct_dependency_names(found, eco)
-                for c in audit.get("checks", []):
-                    c["source_scope"] = (
-                        "manifest" if _norm_pkg(str(c.get("name", "")), eco) in direct
-                        else "installed"
-                    )
-                # 라이선스는 설치 메타데이터에서만 얻을 수 있다 — 검사 결과에 병기.
-                lic_by_name = {
-                    str(p.get("name", "")).lower(): p.get("license") for p in pkgs
-                }
-                for c in audit.get("checks", []):
-                    lic = lic_by_name.get(str(c.get("name", "")).lower())
-                    if lic and not (c.get("registry_metadata") or {}).get("license"):
-                        c.setdefault("registry_metadata", {})
-                        if isinstance(c["registry_metadata"], dict):
-                            c["registry_metadata"]["license"] = lic
-                        c["license_source"] = "installed-metadata"
-                out.append(audit)
-
-        # 벤더 번들(`static/*.min.js`) — 그 자체가 프로젝트가 실행하는 남의 코드다.
-        # 실측(공공 Flask 프로젝트): `xlsx 0.18.5` 가 CVE-2023-30533 등에 해당하는데, 예전에는
-        # '빌드 산출물'로 제외돼 매니페스트·설치본 어느 경로에도 걸리지 않았다.
-        if vendor_bundles:
-            from .tools.vendor_bundle import audit_vendor_bundles
-
-            out.append(await audit_vendor_bundles(vendor_bundles, env_grade=env_grade))
-        return out
-
-    return {"audits": asyncio.run(_gather())}
+    return result
 
 
 def _emit_registry_bundle(
@@ -370,6 +215,12 @@ def _emit_registry_bundle(
         return
     explicit = getattr(args, "registry_bundle", None)
     if not explicit and saved_report is None:
+        return
+    # 46차 — 패키지 검사가 기본이 되면서 **모든** 검사에 반입 번들 사이드카가 따라붙게 됐다. 번들은
+    # 기관 레지스트리 제출물(반출 심사 대상)이라 사용자가 뜻하지 않은 파일이 매번 생기면 안 된다.
+    # 예전 `--check-deps`(=online 요청) 때와 같은 조건, 즉 사용자가 온라인 조회를 **요청**했거나 경로를
+    # 명시했을 때만 만든다. 망분리라 local 로 내려갔어도 요청은 요청이다(예전 동작과 같다).
+    if not explicit and getattr(args, "_deps_requested", None) != "online":
         return
 
     from .tools.registry_bundle import bundle_notice, build_bundle, write_bundle
@@ -433,15 +284,27 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         max_file_bytes=getattr(args, "max_file_bytes", None) or DEFAULT_MAX_FILE_BYTES,
     )
 
-    # --check-deps: 발견된 매니페스트(requirements.txt·package.json)의 패키지
-    # 취약·악성 검사를 함께 수행해 리포트에 병합한다 — 보안팀이 "코드+패키지"
-    # 위험을 한 문서에서 보게 한다. 전송 데이터는 패키지명·버전뿐이다.
-    if getattr(args, "check_deps", False):
-        report.dependency_audit = _run_dependency_audit(
-            target, report,
-            env_grade=getattr(args, "env", None),
-            include_installed=getattr(args, "include_installed", False),
-        )
+    # 패키지(의존성) 검사 — 46차부터 **기본 실행**이다. 기본 모드 local 은 로컬 위협정보
+    # 캐시만 대조하므로 프로젝트 정보가 PC 밖으로 나가지 않는다. `--deps online` 이면 OSV·
+    # 공식 저장소 조회(패키지명·버전만 전송), `--deps off` 면 생략하되 생략 사실을 기록한다.
+    from .deps_check import attach_dependency_check, resolve_deps_mode, user_notice
+
+    requested = _requested_deps_mode(args)
+    deps_mode, deps_note = resolve_deps_mode(requested)
+    args._deps_requested = requested   # 반입 번들 사이드카 조건(_emit_registry_bundle)이 읽는다
+    if deps_note:
+        print(f"[gvskb] 패키지 검사 모드: {deps_note}", file=sys.stderr)
+    dep_audit = _run_dependency_audit(
+        target, report,
+        env_grade=getattr(args, "env", None),
+        include_installed=getattr(args, "include_installed", False),
+        mode=deps_mode,
+    )
+    dep_record = attach_dependency_check(
+        report, mode=deps_mode, requested=requested, audit=dep_audit, note=deps_note,
+    )
+    if (_dep_msg := user_notice(dep_record)):
+        print(f"[gvskb] {_dep_msg}", file=sys.stderr)
 
     # (#1) 경로는 존재하지만 검사 대상 파일이 0개인 경우(빈 폴더·확장자 불일치)
     # 도 "위험 없음"으로 오해하지 않도록 경고한다.
@@ -539,8 +402,9 @@ def _emit_sbom(args: argparse.Namespace, report: ScanReport) -> None:
     audit = report.dependency_audit
     if not audit or not any((a.get("checks") or []) for a in _sbom_audits(audit)):
         print(
-            "[gvskb] ⚠ --sbom: 의존성 검사 결과가 없어 SBOM 을 쓰지 않았습니다. "
-            "`--check-deps` 를 함께 주세요 — 컴포넌트 0개짜리 SBOM 은 "
+            "[gvskb] ⚠ --sbom: 패키지 검사 결과가 없어 SBOM 을 쓰지 않았습니다. "
+            "매니페스트(requirements*.txt·package.json·락파일)가 검사 경로 안에 있는지, "
+            "`--deps off` 로 생략하지 않았는지 확인하세요 — 컴포넌트 0개짜리 SBOM 은 "
             "'의존성이 없다'로 읽힙니다.",
             file=sys.stderr,
         )
@@ -987,12 +851,70 @@ def _cmd_update_intel(args: argparse.Namespace) -> int:
 
 
 def _cmd_intel_bundle(args: argparse.Namespace) -> int:
-    """망분리 반입 번들 — export(외부망)·import(망분리, sha256 전수 검증)."""
-    from .intel.bundle import export_bundle, import_bundle
+    """망분리 반입 번들 — export(외부망, 서명 가능)·import(망분리, 서명+sha256 전수 검증)·verify·keygen."""
+    from .intel.bundle import export_bundle, import_bundle, verify_bundle
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
-    if args.action == "export":
-        result = export_bundle(args.bundle, cache_dir=cache_dir)
+    action = args.action
+
+    if action == "keygen":
+        # 비밀키는 **파일로만** 남긴다(화면에 찍지 않는다). 공개키는 화면에 — 소스에 붙여 넣을 값이다.
+        from .intel.signing import ENV_SIGNING_KEY, generate_seed, key_id_for, public_key_from_seed
+
+        target = args.out or args.bundle
+        if not target:
+            print("[gvskb] ✖ keygen: 비밀키 파일 경로를 주세요 (`--out intel-signing.key`)", file=sys.stderr)
+            return EXIT_USAGE
+        out = Path(target)
+        if out.exists() and not args.force:
+            print(f"[gvskb] ✖ 이미 있습니다: {out} — 덮어쓰려면 --force (기존 키로 서명된 번들은 새 키로 검증되지 않습니다)",
+                  file=sys.stderr)
+            return EXIT_FINDINGS_WARN
+        seed = generate_seed()
+        pub = public_key_from_seed(seed)
+        kid = args.key_id or f"gvskb-intel-{key_id_for(pub)}"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(seed.hex() + "\n", encoding="utf-8")
+        try:
+            os.chmod(out, 0o600)
+        except OSError:
+            pass
+        result = {"ok": True, "key_id": kid, "public_key": pub.hex(), "secret_file": str(out)}
+        if args.json:
+            sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        else:
+            print(f"[gvskb] 서명 키를 만들었습니다 — 비밀키 파일: {out} (이 파일은 저장소에 넣지 말고 오프라인 보관)")
+            print(f"        key_id    : {kid}")
+            print(f"        public_key: {pub.hex()}")
+            print("        다음 절차:")
+            print(f"          1) GitHub 저장소 Settings → Secrets 에 {ENV_SIGNING_KEY} = (비밀키 파일 내용) 등록,")
+            print(f"             Variables 에 GVSKB_INTEL_KEY_ID = {kid} 등록")
+            print("          2) src/gvskb/intel/signing.py 의 TRUSTED_PUBLIC_KEYS 에 위 key_id·public_key 추가 → 배포")
+            print("          3) 공개키가 배포된 뒤 기관 PC 에 GVSKB_INTEL_REQUIRE_SIGNATURE=1 을 켜면 서명 없는 번들은 거부")
+        return EXIT_OK
+
+    if not args.bundle:
+        print(f"[gvskb] ✖ {action}: 번들 zip 경로를 주세요.", file=sys.stderr)
+        return EXIT_USAGE
+
+    if action == "export":
+        seed = None
+        if args.sign_key_env:
+            from .intel.signing import load_seed_hex
+
+            raw = os.environ.get(args.sign_key_env, "")
+            if not raw.strip():
+                print(f"[gvskb] ✖ 서명 키 환경변수 {args.sign_key_env} 가 비어 있습니다 — 서명 없이 내보내려면 옵션을 빼세요.",
+                      file=sys.stderr)
+                return EXIT_USAGE
+            try:
+                seed = load_seed_hex(raw)
+            except ValueError as exc:
+                print(f"[gvskb] ✖ 서명 키 형식 오류: {exc}", file=sys.stderr)
+                return EXIT_USAGE
+        result = export_bundle(args.bundle, cache_dir=cache_dir, sign_seed=seed, key_id=args.key_id)
+    elif action == "verify":
+        result = verify_bundle(args.bundle)
     else:
         result = import_bundle(args.bundle, cache_dir=cache_dir)
         if result.get("ok"):
@@ -1002,10 +924,16 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
     if args.json:
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     elif result.get("ok"):
-        verb = "내보냈습니다" if args.action == "export" else "반입했습니다(무결성 검증 통과)"
-        print(f"[gvskb] 번들 {verb}: {result.get('bundle') or result.get('cache_dir')}")
+        verb = {"export": "내보냈습니다", "verify": "검증했습니다(쓰지 않음)",
+                "import": "반입했습니다(무결성 검증 통과)"}[action]
+        print(f"[gvskb] 번들 {verb}: {result.get('bundle') or result.get('cache_dir') or args.bundle}")
         print(f"        sources: {', '.join(result.get('sources', []))}")
-        if args.action == "import":
+        if result.get("signed"):
+            print(f"        서명: {'붙임' if action == 'export' else '확인됨'} (key_id={result.get('key_id')})")
+        else:
+            print("        서명: 없음 — 폐쇄망 공유 폴더 자동 반입에 쓰려면 서명된 번들을 쓰세요"
+                  "(GVSKB_INTEL_REQUIRE_SIGNATURE=1 로 필수화 가능)")
+        if action == "import":
             print("        다음: `gvskb doctor --offline` 로 캐시 존재·신선도를 확인하세요.")
     else:
         print(f"[gvskb] ✖ {result.get('error', 'unknown error')}", file=sys.stderr)
@@ -1216,16 +1144,21 @@ def build_parser() -> argparse.ArgumentParser:
                       help=f"파일 하나의 크기 상한(바이트, 기본 {DEFAULT_MAX_FILE_BYTES:,}). "
                            "넘는 실행 소스는 coverage.oversized_source_files 에 남고 승인 판정이 나오지 않습니다")
     scan.add_argument(
+        "--deps", choices=["local", "online", "off"], default=None, metavar="{local,online,off}",
+        help="패키지(의존성) 검사 모드 (기본 local). local=로컬 위협정보 캐시로 취약·악성 대조, "
+             "네트워크 없음 / online=OSV.dev·공식 저장소까지 조회(패키지명·버전만 전송, 실재·발행일·"
+             "쿨다운 확인) / off=생략(생략 사실이 보고서에 남음). 기관 기본값은 GVSKB_DEPS_MODE 로. "
+             "위협정보가 없으면 판정 불가, 오래됐으면 조건부로 내려갑니다",
+    )
+    scan.add_argument(
         "--check-deps", action="store_true",
-        help="의존성 매니페스트(requirements*.txt·package.json)의 취약·악성 패키지 검사를 "
-             "함께 수행해 리포트에 병합 (온라인: OSV.dev 조회 — 패키지명·버전만 전송 / "
-             "오프라인: 로컬 인텔 캐시. 판정 불가는 '안전'이 아님)",
+        help="(구 옵션) `--deps online` 과 같음. 패키지 검사는 이제 기본으로 수행됩니다",
     )
     scan.add_argument(
         "--sbom", metavar="경로",
         help="검사 결과를 CycloneDX 1.6 SBOM 으로 저장 (조달 제출·자산 대장용). "
-             "`--check-deps` 와 함께 쓰세요 — 의존성을 검사하지 않으면 컴포넌트 0개짜리 "
-             "문서가 되어 '의존성이 없다'로 읽힙니다(그래서 그 경우 쓰지 않고 알립니다). "
+             "패키지 검사(기본 수행)의 결과로 만듭니다 — `--deps off` 면 컴포넌트 0개짜리 "
+             "문서가 되어 '의존성이 없다'로 읽히므로 그 경우 쓰지 않고 알립니다. "
              "판정 불가·상한 절단도 문서에 그대로 기록됩니다",
     )
     scan.add_argument(
@@ -1237,19 +1170,19 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--include-installed", action="store_true",
         help="의존성 검사 범위를 **설치 흔적까지** 확대(.venv의 dist-info·*.whl·node_modules). "
-             "매니페스트에 없는 전이 의존성의 취약점까지 잡습니다. --check-deps 와 함께 사용",
+             "매니페스트에 없는 전이 의존성의 취약점까지 잡습니다",
     )
     scan.add_argument(
         "--registry-bundle", metavar="파일", default=None,
         help="기관 레지스트리 반입용 번들(JSON)을 이 경로에 생성. 패키지 판정만 담기며 "
              "코드 조각·파일 경로·findings 는 담기지 않습니다(연동합의 §3). "
-             "무결성 확인용 .sha256 을 함께 만듭니다. --check-deps 와 함께 사용. "
+             "무결성 확인용 .sha256 을 함께 만듭니다. "
              "번들 자체도 '어떤 기관이 어떤 패키지를 쓰는가'라는 정보이므로 반출 심사 대상입니다",
     )
     scan.add_argument(
         "--env", choices=["E0", "E1", "E2"], default=None,
         help="실행환경 등급 — 쿨다운(발행 후 대기) 기준일 결정: E0=개인PC 일회성(3일), "
-             "E1=개인PC 반복도구(7일, 기본), E2=내부서버 공용(14일). --check-deps 와 함께 사용",
+             "E1=개인PC 반복도구(7일, 기본), E2=내부서버 공용(14일). 발행일은 `--deps online` 에서만 확인됩니다",
     )
     scan.add_argument(
         "--fail-on", choices=["block", "warn", "never", "dependency"], default="warn",
@@ -1399,11 +1332,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     bundle = sub.add_parser(
         "intel-bundle",
-        help="망분리 반입 번들 — export(외부망)에서 만들고 import(망분리)에서 sha256 전수 검증 후 반입",
+        help="망분리 반입 번들 — export(외부망, 서명 가능) · import(망분리, 서명+sha256 전수 검증) · "
+             "verify(쓰지 않고 검증) · keygen(서명 키 생성)",
     )
-    bundle.add_argument("action", choices=["export", "import"], help="export=캐시→zip, import=zip→캐시(검증)")
-    bundle.add_argument("bundle", help="번들 zip 경로")
+    bundle.add_argument("action", choices=["export", "import", "verify", "keygen"],
+                        help="export=캐시→zip, import=zip→캐시(검증), verify=검증만(망연계 수신 서버용), "
+                             "keygen=Ed25519 서명 키 생성(관리자, 처음 한 번)")
+    bundle.add_argument("bundle", nargs="?", default=None,
+                        help="번들 zip 경로 (keygen 은 비밀키 파일 경로 또는 --out)")
     bundle.add_argument("--cache-dir", help="캐시 디렉토리 오버라이드 (기본: ~/.gvskb/cache)")
+    bundle.add_argument("--sign-key-env", metavar="환경변수", default=None,
+                        help="export 시 서명 — 비밀키(64 hex)를 담은 **환경변수 이름**(값이 아님). "
+                             "명령줄에 키를 적지 않기 위한 방식. CI 는 GVSKB_INTEL_SIGNING_KEY")
+    bundle.add_argument("--key-id", default=None, help="서명 키 식별자(export·keygen). 미지정 시 공개키 지문으로 생성")
+    bundle.add_argument("--out", default=None, help="keygen: 비밀키 파일 경로")
+    bundle.add_argument("--force", action="store_true", help="keygen: 기존 키 파일 덮어쓰기")
     bundle.add_argument("--json", action="store_true", help="JSON 출력")
     bundle.set_defaults(func=_cmd_intel_bundle)
 

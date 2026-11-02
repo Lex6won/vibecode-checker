@@ -218,7 +218,9 @@ def test_unpinned_requirement_is_judged_by_latest_and_flagged(monkeypatch: pytes
 
 
 def test_requirements_lock_txt_is_classified_as_lockfile(tmp_path) -> None:
-    from gvskb.cli import _run_dependency_audit  # noqa: F401 — 분류 함수는 내부라 간접 확인
+    from gvskb.deps_check import classify_manifest  # 46차: 분류 본문은 deps_check 로 옮겨졌다
     import inspect
-    src = inspect.getsource(_run_dependency_audit)
+    src = inspect.getsource(classify_manifest)
     assert '".lock" in low' in src
+    assert classify_manifest("requirements.lock.txt") == ("pypi", "lock")
+    assert classify_manifest("requirements.txt") == ("pypi", "manifest")

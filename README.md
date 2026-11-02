@@ -11,7 +11,7 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-2645_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-2681_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-42%2F42_탐지_·_오탐_0-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-탐지_135_·_참조_120-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -296,7 +296,7 @@ MCP 설정 파일에 서버를 등록합니다. **Claude Desktop·Cursor·Claude
 gvskb doctor                                  # 1) 환경 점검(룰 수·인코딩·MCP·위협 정보 캐시)
 gvskb scan ./my-project                        # 2) 폴더 검사 → .check-reports/ 에 자동 저장
 gvskb scan ./my-project -o 보안점검.md          # 3) 지정한 이름으로 저장 → .md + .html 함께 생성
-gvskb scan ./my-project --check-deps -o 보안점검.md   # 4) 패키지 취약점 검사까지 보고서에 병합
+gvskb scan ./my-project --deps online -o 보안점검.md  # 4) 패키지를 공식 저장소·OSV 에 실시간 조회까지(패키지명·버전만 전송)
 
 # 5) GitHub 저장소는 받은 뒤 그 폴더를 검사 (설치·빌드·실행 없이 읽기만 합니다)
 git clone --depth 1 https://github.com/owner/repo /tmp/repo && gvskb scan /tmp/repo -o 보안점검.md
@@ -307,7 +307,10 @@ gvskb check-package reqeusts --ecosystem pypi    # 오타 패키지(typosquat) �
 ```
 
 - `-o 파일이름` : 결과를 그 이름으로 저장합니다. 마크다운/HTML 형식이면 텍스트 `.md` 와 인쇄용 `.html` 이 함께 만들어집니다.
-- `--check-deps` : requirements.txt·package.json의 패키지를 취약점 DB와 대조해 코드+패키지 위험을 보고서 한 장에 담습니다. 외부로 전송되는 것은 패키지명·버전뿐입니다.
+- **패키지(의존성) 검사는 기본입니다** (v0.6, 46차). requirements*.txt·pyproject.toml·package.json·락파일을 찾아 **로컬 위협정보 캐시**(OSV 취약점·악성, CISA KEV 등)와 대조하고 코드+패키지 위험을 보고서 한 장에 담습니다. 이 기본 모드는 네트워크를 쓰지 않습니다 — 프로젝트 정보가 PC 밖으로 나가지 않습니다.
+  - `--deps online` : 공식 저장소·OSV.dev 실시간 조회까지 더합니다(패키지 실재·발행일·쿨다운 확인). 외부로 전송되는 것은 패키지명·버전뿐입니다. 구 옵션 `--check-deps` 와 같습니다.
+  - `--deps off` : 패키지 검사를 생략합니다. 생략했다는 사실이 보고서 머리표와 배너에 남습니다.
+  - 위협정보가 이 PC에 **없으면 판정 불가**(종료코드 3), **오래됐으면 조건부**(종료코드 1)로 내려갑니다 — "확인하지 못함"을 "안전"으로 바꿔 말하지 않습니다. 보고서 머리표의 「판정 기준」에 위협정보 수집 시각이 함께 적힙니다. 기관 기본 모드는 `GVSKB_DEPS_MODE` 로 바꿉니다.
 
 ### B. AI 코딩 도구에서 — 자연어로
 
@@ -419,6 +422,8 @@ GitHub Actions가 **매일 03:17(KST)** 7개 소스(OSV 악성 패키지·OSV �
 - **망분리 PC**: [아래 절차](#망분리폐쇄망-환경에서-쓰기)대로 번들을 반입합니다. 관리자가 공유 폴더(`GVSKB_INTEL_DIR`)에 번들을 놓아두면 각 PC가 자동 반영합니다.
 - **서버·포털에서 쓸 때**: 검사를 실행하는 계정의 캐시가 쓰입니다. 서비스 계정이 따로 있으면 `GVSKB_CACHE_DIR` 로 캐시 폴더를 지정하세요. 갱신 잡의 소스별 결과(항목 수·수집 시각·커버리지)는 릴리스 노트에 매일 기록됩니다.
 - 자동으로 받은 위협 정보는 패키지 검사(악성·취약점·실제 악용 여부 대조)에 쓰입니다. 검사 판정 기준(룰)이 자동으로 바뀌지는 않습니다 — 판정에 쓰이는 룰은 사람이 검토·승인한 것만입니다.
+- **번들 내려받기는 보내는 것이 없습니다.** 그래서 기본 패키지 검사 모드(local)에서도 검사 직전 하루 1회 자동 갱신을 시도합니다(`GVSKB_AUTO_UPDATE=off` 로 끔, 망분리는 공유 폴더만). 패키지명·버전이 외부로 나가는 것은 `--deps online` 뿐입니다.
+- 번들은 **Ed25519 전자서명**으로 보호됩니다(서명이 있으면 반드시 일치해야 반입, `GVSKB_INTEL_REQUIRE_SIGNATURE=1` 이면 서명 없는 번들 거부). 절차는 아래 망분리 절 참고.
 
 ---
 
@@ -483,20 +488,44 @@ gvskb intel-bundle export gvskb-intel-bundle.zip    # 캐시 + sha256 목록을 
 **2단계 (망분리 PC) — 반입·검증·사용.**
 
 ```bash
-gvskb intel-bundle import gvskb-intel-bundle.zip   # 파일별 sha256 전수 검증 — 불일치 시 전체 거부
+gvskb intel-bundle import gvskb-intel-bundle.zip   # 서명(있으면) + 파일별 sha256 전수 검증 — 불일치 시 전체 거부
 $env:GVSKB_MODE = "offline"                        # PowerShell (bash: export GVSKB_MODE=offline)
 gvskb doctor --offline                             # 캐시 존재·신선도까지 점검
-gvskb scan ./my-project --check-deps
+gvskb scan ./my-project                            # 패키지 검사는 기본 — 반입한 캐시로 대조합니다
 ```
 
 캐시 위치는 `%USERPROFILE%\.gvskb\cache` 입니다(환경변수 `GVSKB_CACHE_DIR` 로 변경 가능). 반입 결과는 `gvskb update-intel --all --from-cache` 로 소스별 항목 수·수집 시각·신선도를 확인할 수 있습니다.
 
 **반입 이후 자동화** — 관리자가 공유 폴더에 새 번들을 놓아두고 각 PC에 `GVSKB_INTEL_DIR=\\공유폴더\경로` 를 설정하면, 검사 시점에 자기 캐시보다 새 번들을 발견했을 때 자동 반입합니다(사용자 조작 불필요, 하루 1회 확인). 수동 동기화는 `gvskb intel-sync`, 상태 확인은 `gvskb intel-sync --status`.
 
+### 폐쇄망 자동 반입 — 사람이 옮기지 않는 구조
+
+USB 이동은 처음 한 번의 절차이고, 운영은 자동화합니다. 공공기관이 이미 쓰는 경로를 그대로 탑니다.
+
+1. **인터넷망 수신 서버** 한 대가 매일 공식 번들과 해시를 받아 검증합니다(`gvskb intel-sync` 를 예약 작업으로).
+2. **망연계(일방향 자료전송) 솔루션**으로 zip 파일 하나를 업무망으로 자동 전송합니다 — 기관에 이미 승인된 경로라 새 보안 심의가 필요하지 않습니다.
+3. **업무망 배포 지점**에 놓습니다. 공유 폴더(`GVSKB_INTEL_DIR`)면 각 PC가 스스로 반입하고, 사내 웹 주소(`GVSKB_INTEL_URL`)면 PC 가 많거나 공유 폴더가 막힌 환경에 맞습니다.
+4. **각 PC**는 아무것도 하지 않습니다. 검사할 때 알아서 반입하고 보고서에 수집 시각이 찍힙니다.
+
+**전자서명이 이 구조의 전제입니다.** 해시(sha256)는 손상을 잡지만 위조는 못 잡습니다 — 공유 폴더에 쓰기 권한이 있는 사람이 취약점 항목을 지운 번들을 놓으면 해시는 맞게 다시 계산돼 있습니다. 그래서 번들의 `manifest.json` 에 **Ed25519 전자서명**을 붙이고, 반입 시 체커 안에 박힌 공개키로 확인합니다(틀리면 전체 거부). 공식 인증서는 필요 없습니다 — 검증하는 쪽이 체커 자신이고 공개키는 체커와 함께 배포되므로 제3자 증명이 끼어들 자리가 없습니다. 검증은 순수 파이썬(RFC 8032)이라 폐쇄망 설치본에 새 의존성이 없습니다.
+
+```bash
+# (관리자, 처음 한 번) 서명 키 생성 — 비밀키는 GitHub Secrets 에, 공개키는 체커 소스(TRUSTED_PUBLIC_KEYS)에
+gvskb intel-bundle keygen --out intel-signing.key
+# (수신 서버) 배포 전 검증만 — 서명·manifest·파일 해시 전수, 캐시에 쓰지 않음
+gvskb intel-bundle verify gvskb-intel-bundle.zip
+# (기관 정책) 공개키가 배포된 뒤 켜면 서명 없는 번들은 거부
+export GVSKB_INTEL_REQUIRE_SIGNATURE=1
+# (기관 자체 키로 서명하는 경우) 체커를 고치지 않고 공개키를 더한다
+export GVSKB_INTEL_TRUSTED_KEYS="gg-2026=<64 hex 공개키>"
+```
+
+비밀키가 새면 새 쌍을 만들어 공개키를 추가 배포하고, 교체 기간이 지나면 옛 키를 지웁니다 — 갈아끼우는 구조입니다.
+
 ### 오프라인 판정의 신뢰 장치
 
 - 반입한 캐시는 읽을 때마다 **sha256 무결성을 재검증**합니다. 변조·손상된 캐시는 판정에 쓰지 않고 무시하며, 다시 받으라고 안내합니다.
-- 캐시가 기본 **30일**(`GVSKB_INTEL_MAX_AGE_DAYS` 로 조정)을 넘으면 '이상 없음' 판정을 '판정 보류'로 낮춥니다 — 오래된 데이터가 최신처럼 보이지 않게 합니다.
+- 캐시가 기본 **2일**(`GVSKB_INTEL_MAX_AGE_DAYS` 로 조정 — 폐쇄망은 반입 주기에 맞추세요)을 넘으면 게이트가 **조건부**로 내려가고 보고서가 "위협정보가 N일 전 것입니다"라고 적습니다. 캐시가 아예 없으면 **판정 불가**입니다 — 오래된 데이터가 최신처럼, 없는 검사가 통과처럼 보이지 않게 합니다.
 - 보고서에 **어느 날짜 캐시 기준의 판정인지**(피드별 수집 시각)가 자동 표기됩니다. KEV 등재 취약점에는 EPSS 악용확률·CVSS 점수가, CVE가 정확히 일치하는 취약점에는 KISA KNVD 국내 보안공지 링크가 함께 실려 보안팀이 우선순위를 정하고 국내 공지를 바로 확인할 수 있습니다.
 - 반입 번들에는 **알려진 취약점 DB**(OSV 전체, 영향 버전 범위 포함)가 담겨, 망분리에서도 취약한 패키지 버전이 온라인 검사와 같은 기준으로 탐지되고 **올려야 할 버전까지 권고**됩니다(PyPI·npm).
 - 오프라인에서 확인하지 못한 것(패키지 실재 여부·발행일 등)은 '판정 불가'로 명시합니다 — '안전'으로 바꿔 말하지 않습니다.
@@ -512,9 +541,9 @@ gvskb scan ./my-project --check-deps
 | 종료 코드 | 의미 |
 |---|---|
 | `0` | 통과 — 게이트 판정 **승인**(조치할 것 없음) |
-| `1` | **조건부 승인** — 사람이 할 일이 남음(소스 발견 · 취약 패키지 · 버전 미고정 · 라이선스 검토 · 검사 범위 결손) |
+| `1` | **조건부 승인** — 사람이 할 일이 남음(소스 발견 · 취약 패키지 · 버전 미고정 · 라이선스 검토 · 검사 범위 결손 · 위협정보 오래됨) |
 | `2` | **차단** — 악성 · 기관 거부 · 미존재 · CISA KEV · CVSS CRITICAL 패키지 |
-| `3` | **판정 불가** — 검사된 파일이 없거나 필수 엔진이 돌지 않음('안전' 아님, v0.5.4) |
+| `3` | **판정 불가** — 검사된 파일이 없거나 필수 엔진이 돌지 않음, 또는 **위협정보가 없어 패키지를 보지 못함**('안전' 아님) |
 | `64` | 사용법 오류(잘못된 인자) |
 | `66` | 경로를 찾을 수 없음 |
 
@@ -545,7 +574,7 @@ gvskb scan ./src --fail-on never        # 항상 0 (보고서만 생성)
 ### SBOM — 만들기와 읽기
 
 ```bash
-gvskb scan . --check-deps --sbom sbom.json   # 검사하면서 CycloneDX 1.6 SBOM 생성
+gvskb scan . --sbom sbom.json                # 검사하면서 CycloneDX 1.6 SBOM 생성(패키지 검사는 기본)
 gvskb sbom vendor-sbom.json                  # 건네받은 SBOM 검사 (CycloneDX·SPDX JSON)
 ```
 
