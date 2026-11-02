@@ -196,17 +196,20 @@ async def resolve_npm_component(
     version: str,
     *,
     timeout: float = 10.0,
+    local: bool = False,
 ) -> tuple[str | None, str]:
     """후보 이름 중 **그 버전이 실제로 존재하는** npm 패키지를 고른다.
 
     반환 ``(이름 | None, 상태)``. 상태는 ``verified`` · ``no_match`` · ``unverified``.
-    ``unverified`` 는 오프라인·통신 실패로 확인하지 못한 것이며 **'맞다'는 뜻이 아니다.**
+    ``unverified`` 는 오프라인·로컬 모드·통신 실패로 확인하지 못한 것이며 **'맞다'는 뜻이 아니다.**
+    ``local=True``(46차 기본 패키지 검사 모드)면 레지스트리를 부르지 않는다 — 기본 모드는
+    "프로젝트 정보가 PC 밖으로 나가지 않는다"를 약속하고, 이 경로가 그 약속을 깨고 있었다(검증 지적).
     """
     import os
 
     import httpx
 
-    if os.environ.get("GVSKB_MODE", "").lower() == "offline":
+    if local or os.environ.get("GVSKB_MODE", "").lower() == "offline":
         return (candidates[0] if candidates else None), "unverified"
 
     unreachable = False
@@ -235,14 +238,20 @@ async def audit_vendor_bundles(
     bundles: list[dict],
     *,
     env_grade: str | None = None,
+    mode: str | None = None,
 ) -> dict:
     """식별된 벤더 번들을 npm 컴포넌트로 취약점 검사한다 → audit dict 1건.
 
     버전이 확정된 것만 조회하고, **버전 미상은 '판정 불가'로 남긴다**(추측 금지).
-    CLI(`--check-deps`)와 MCP(`scan_vendor_bundles`)가 같은 경로를 쓰도록 여기 둔다.
+    CLI(기본 패키지 검사)와 MCP(`scan_vendor_bundles`)가 같은 경로를 쓰도록 여기 둔다.
+    ``mode="local"`` 이면 레지스트리 실재 확인도, OSV 조회도 하지 않는다(로컬 캐시만).
     """
+    import os
+
     from .check_package import audit_manifest
     from .installed_packages import to_requirements_text
+
+    local = mode == "local" or os.environ.get("GVSKB_MODE", "").lower() == "offline"
 
     # 파일명으로 뽑은 이름을 그대로 믿지 않는다 — 그 버전이 레지스트리에 실재하는
     # 후보만 검사한다. 실측: `chart.min.js`(Chart.js 3.9.1)를 npm `chart` 로 조회하면
@@ -253,7 +262,10 @@ async def audit_vendor_bundles(
         if not b.get("version"):
             continue
         cands = b.get("name_candidates") or [b["name"]]
-        resolved, status = await resolve_npm_component(cands, str(b["version"]))
+        # `local` 은 True 일 때만 넘긴다 — 기존 호출·테스트 대역(fake)의 시그니처를 그대로 받아들인다.
+        resolved, status = await resolve_npm_component(
+            cands, str(b["version"]), **({"local": True} if local else {}),
+        )
         if status == "no_match" or not resolved:
             mismatched.append(b)
             continue
@@ -277,7 +289,7 @@ async def audit_vendor_bundles(
                 [{"name": b["name"], "version": b["version"]} for b in identified],
                 ecosystem="npm",
             ),
-            ecosystem="npm", limit=len(identified), env_grade=env_grade,
+            ecosystem="npm", limit=len(identified), env_grade=env_grade, mode=mode,
         )
     else:
         audit = {

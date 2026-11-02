@@ -63,10 +63,12 @@ mcp = FastMCP(
         "   - 로컬 파일·폴더 경로면 scan_path, 메모리의 코드 조각이면 scan_code 를 호출합니다.\n"
         "   - 단, GVSKB_MODE=offline(망분리)이면 clone(외부 통신)이 불가하므로 URL은 거부하고 "
         "사용자에게 외부망에서 받은 폴더를 반입하도록 안내합니다.\n"
-        "2) 결과에 의존성 매니페스트(requirements.txt, package.json 등)가 '검사 제외'로 "
-        "표시되면 scan_dependencies 로 패키지를 따로 검사하고, 그 결과를 scan 결과 JSON의 "
-        "dependency_audit 필드에 넣은 뒤 render_report 를 호출하세요(보고서에 의존성 섹션이 "
-        "함께 들어갑니다).\n"
+        "2) scan_path 는 패키지(의존성) 검사를 **기본으로 함께** 수행합니다(로컬 위협정보 대조 — "
+        "결과는 dependency_audit, 모드·위협정보 상태는 dependency_check). 결과의 gate.intel_gap 이 "
+        "'missing' 이면 위협정보가 없어 패키지를 보지 못한 것이니 사용자에게 `gvskb update-intel`"
+        "(폐쇄망은 번들 반입)을 안내하고, 'stale' 이면 갱신을 권하세요. 사용자가 온라인 조회"
+        "(실재·발행일 확인)를 원하면 deps='online' 으로 다시 호출하거나 scan_dependencies 를 쓰고, "
+        "그 결과를 dependency_audit 에 합쳐 render_report 를 호출하세요.\n"
         "2-1) 결과의 vendor_bundles 가 비어 있지 않으면 **반드시** scan_vendor_bundles 에 "
         "그 값을 그대로 넘겨 검사하세요. static/*.min.js 같은 벤더 라이브러리는 소스 룰 "
         "검사에서 제외되지만 알려진 취약점이 붙고, package.json 도 node_modules 도 없는 "
@@ -365,7 +367,7 @@ async def scan_sbom(
     다릅니다. ``truncated_count`` > 0 도 같은 뜻이니 limit 를 올려 재검사하세요.
 
     반대 방향(우리 검사 결과를 SBOM 으로 **내보내기**)은 CLI 의
-    `gvskb scan --check-deps --sbom <경로>` 입니다.
+    `gvskb scan --sbom <경로>` 입니다(패키지 검사는 기본 수행).
     """
     from .sbom import SbomParseError, parse_sbom
     from .tools.check_package import check_package_impl
@@ -485,6 +487,15 @@ def scan_path(
         "coverage.oversized_source_files 에 남고 게이트는 승인을 내리지 않는다"
     ))] = DEFAULT_MAX_FILE_BYTES,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
+    deps: Annotated[Literal["local", "online", "off"] | None, Field(description=(
+        "패키지(의존성) 검사 모드. local=로컬 위협정보 캐시로 취약·악성 대조, 네트워크 없음 / "
+        "online=OSV.dev·공식 저장소까지 조회(패키지명·버전만 전송) / off=생략(생략 사실이 결과에 남음). "
+        "**사용자가 요청하지 않았으면 비워 두세요** — 기관 기본값(GVSKB_DEPS_MODE, 없으면 local)이 적용됩니다"
+    ))] = None,
+    env_grade: Annotated[
+        Literal["E0", "E1", "E2"] | None,
+        Field(description=_ENV_GRADE_DESC),
+    ] = None,
 ) -> dict:
     """파일 또는 폴더를 공공기관 보안 기준으로 점검(보안·검토·체크·검사)합니다.
 
@@ -493,8 +504,12 @@ def scan_path(
     조각이면 대신 scan_code 를 씁니다. "기존 코드베이스 감사" 흐름의 진입점입니다.
 
     경로를 로컬에서 순회하며 빌드·vendor 디렉터리를 건너뛰고 바이너리는 무시하며,
-    소스 코드를 외부 API로 전혀 보내지 않습니다. 각 발견 사항에는 why_it_matters
-    와 safe_fix 가 포함됩니다. 검사 후 render_report 로 한국어 보고서를 만드세요.
+    소스 코드를 외부 API로 전혀 보내지 않습니다. **패키지(의존성) 검사도 기본으로
+    함께 수행**합니다 — requirements*.txt·pyproject.toml·package.json·락파일을 찾아
+    로컬 위협정보 캐시(OSV·CISA KEV 등)와 대조하고 결과를 ``dependency_audit`` 에,
+    검사 모드·위협정보 상태를 ``dependency_check`` 에 넣습니다. 위협정보가 없으면
+    게이트는 '판정 불가', 오래됐으면 '조건부'가 됩니다('안전' 아님). 각 발견 사항에는
+    why_it_matters 와 safe_fix 가 포함됩니다. 검사 후 render_report 로 한국어 보고서를 만드세요.
     """
     report = scan_path_impl(
         path,
@@ -504,6 +519,18 @@ def scan_path(
         max_file_bytes=max_file_bytes,
         caller=caller or "",
     )
+    # 46차 — 패키지 검사는 CLI 와 같은 코드·같은 기본값으로 여기서도 수행된다. 예전에는 이
+    # 도구가 의존성을 전혀 보지 않아, AI 코딩 도구에서 점검한 프로젝트는 패키지 공백을 안은
+    # 채 '승인'을 받았다(가장 큰 구멍).
+    from .deps_check import attach_dependency_check, resolve_deps_mode, run_dependency_audit
+
+    mode, note = resolve_deps_mode(deps)
+    try:
+        audit = run_dependency_audit(Path(path), report, mode=mode, env_grade=env_grade)
+    except Exception as exc:  # noqa: BLE001 — 패키지 검사 실패가 소스 결과까지 잃게 하면 안 된다
+        audit = None
+        note = f"{note + ' · ' if note else ''}패키지 검사 중 오류: {exc!s}"
+    attach_dependency_check(report, mode=mode, requested=deps, audit=audit, note=note)
     _stamp_checker_update(report)
     return attach_gate(report).model_dump(mode="json")
 
@@ -714,7 +741,7 @@ async def scan_installed_packages(
         audit["source"] = "installed-inventory"
         # 이 도구는 매니페스트를 읽지 않으므로 직접 의존성을 가려낼 수 없다 —
         # 전부 `installed` 로 둔다. 직접/전이 구분이 필요하면
-        # `scan_path --check-deps --include-installed` 경로를 쓸 것(그쪽은 매니페스트와
+        # `gvskb scan --include-installed` 경로를 쓸 것(그쪽은 매니페스트와
         # 대조한다). 여기서 임의로 `manifest` 를 붙이면 하네스 §4-0 의 차단 범위가
         # 근거 없이 넓어진다.
         for c in audit.get("checks", []):

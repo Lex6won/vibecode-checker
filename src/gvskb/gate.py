@@ -391,6 +391,12 @@ def gate_status(report: ScanReport) -> dict:
     coverage_gap = _coverage_gap(report)
     if coverage_gap:
         conditional_criteria.append("coverage")
+    # 46차 — 위협정보(인텔) 상태. 패키지 검사가 기본이 되면서 게이트는 "캐시가 없어 못 봤다"와
+    # "봤는데 깨끗하다"를 구분해야 한다. 로컬 모드에서만 판정에 올린다 — 온라인 모드는 OSV
+    # 실시간 조회가 1차 근거라 캐시 상태는 보조(배너)다. 오래됨은 조건부, 없음은 판정 불가.
+    intel_gap, intel = _intel_gap(report)
+    if intel_gap == "stale":
+        conditional_criteria.append("intel_stale")
     # 소스를 한 건도 보지 못했으면 '안전'이 아니라 '판정 불가'다.
     undetermined = (
         not blocked
@@ -402,6 +408,11 @@ def gate_status(report: ScanReport) -> dict:
         not blocked
         and coverage_gap
         and conditional_criteria == ["coverage"]
+    ) or (
+        # 위협정보가 없으면 패키지 검사 전체가 수행되지 않은 것이다 — 소스가 깨끗해도
+        # 이 결과로 '통과'를 말할 수 없다(사용자 결정 2026-11-02).
+        not blocked
+        and intel_gap == "missing"
     )
 
     if blocked:
@@ -433,6 +444,10 @@ def gate_status(report: ScanReport) -> dict:
         "dependency_unchecked": unchecked,
         "dependency_not_found": not_found,
         "coverage_gap": coverage_gap,
+        # 46차 — 패키지 검사 모드와 위협정보 공백("" | "stale" | "missing"). 포털·하네스가
+        # "판정 불가가 왜 났는지"를 키로 읽을 수 있게 한다.
+        "dependency_check_mode": ((getattr(report, "dependency_check", None) or {}).get("mode")),
+        "intel_gap": intel_gap,
         "license_review": license_review,
         "unpinned": unpinned,
         # 41차 — 신뢰 신호가 붙은 패키지(조건부 사유 `trust` 의 근거). 포털은 키를 모르면 표시만 한다.
@@ -442,8 +457,23 @@ def gate_status(report: ScanReport) -> dict:
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
                           block_count, vuln, unchecked, coverage_gap,
                           license_review=len(license_review), unpinned=len(unpinned),
-                          trust=len(trust_signals)),
+                          trust=len(trust_signals), intel_gap=intel_gap, intel=intel),
     }
+
+
+def _intel_gap(report: ScanReport) -> tuple[str, dict]:
+    """(위협정보 공백, 상태 dict) — 공백은 "" | "stale" | "missing".
+
+    로컬 모드이고 **실제로 파싱된 패키지가 있을 때만** 공백이다. 매니페스트가 없는 정적
+    페이지 프로젝트는 위협정보가 없어도 잃은 것이 없다. 구버전 JSON(``dependency_check``
+    없음)은 공백 없음 — 예전 판정을 지금 기준으로 뒤집지 않는다.
+    """
+    dc = getattr(report, "dependency_check", None) or {}
+    intel = dict(dc.get("intel") or {})
+    if dc.get("mode") != "local" or not dc.get("packages_parsed"):
+        return "", intel
+    state = str(intel.get("state") or "")
+    return (state if state in ("stale", "missing") else ""), intel
 
 
 def _engine_gap(report: ScanReport) -> str:
@@ -513,8 +543,17 @@ def _reason(
     license_review: int = 0,
     unpinned: int = 0,
     trust: int = 0,
+    intel_gap: str = "",
+    intel: dict | None = None,
 ) -> str:
     if verdict == "undetermined":
+        if intel_gap == "missing":
+            return (
+                "판정 불가 — **패키지 검사를 하지 못했습니다.** 위협정보가 이 PC에 없습니다. "
+                "소스 코드 검사는 끝났지만, 사용 중인 패키지가 안전한지는 확인되지 않았습니다. "
+                "**이 결과를 '통과'로 쓰지 마세요.** 조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · "
+                "(폐쇄망) 관리자가 배포한 위협정보 폴더를 `GVSKB_INTEL_DIR` 로 지정하세요."
+            )
         if coverage_gap:
             how = (
                 "`gvskb doctor` 로 엔진 설치·환경을 확인하고 다시 검사하세요."
@@ -575,8 +614,17 @@ def _reason(
         parts.append(f"버전 미고정 {unpinned}종")
     if trust:
         parts.append(f"패키지 신뢰 신호 {trust}종")
+    if intel_gap == "stale":
+        parts.append("위협정보 오래됨")
     body = " · ".join(parts) or "확인할 항목"
     tail = ""
+    if intel_gap == "stale":
+        age = (intel or {}).get("age_days")
+        when = f"{age}일 전" if age is not None else "오래된"
+        tail += (
+            f" **위협정보가 {when} 것입니다** — 그 사이 새로 알려진 취약점은 이 검사에 반영되지 않았습니다. "
+            "(인터넷망) `gvskb update-intel` 후 다시 검사 · (폐쇄망) 전산 담당자에게 위협정보 갱신을 요청하세요."
+        )
     if coverage_gap:
         tail += (
             " **필수 엔진이 돌지 않아 실행 소스가 온전히 검사되지 않았습니다 — 그 범위는 판정 밖입니다.**"

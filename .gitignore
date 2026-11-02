@@ -72,3 +72,7 @@ docs/*
 운영구조_*
 인텔_운영활용구조*
 스킬_빌드_프롬프트*
+
+# 46차 — 번들 서명 비밀키는 저장소에 두지 않는다 (gvskb intel-bundle keygen 산출물)
+intel-signing.key
+*.signing.key
