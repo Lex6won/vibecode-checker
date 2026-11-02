@@ -367,7 +367,7 @@ async def scan_sbom(
     다릅니다. ``truncated_count`` > 0 도 같은 뜻이니 limit 를 올려 재검사하세요.
 
     반대 방향(우리 검사 결과를 SBOM 으로 **내보내기**)은 CLI 의
-    `gvskb scan --check-deps --sbom <경로>` 입니다.
+    `gvskb scan --sbom <경로>` 입니다(패키지 검사는 기본 수행).
     """
     from .sbom import SbomParseError, parse_sbom
     from .tools.check_package import check_package_impl
@@ -487,11 +487,11 @@ def scan_path(
         "coverage.oversized_source_files 에 남고 게이트는 승인을 내리지 않는다"
     ))] = DEFAULT_MAX_FILE_BYTES,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto'). 감사 구분용")] = None,
-    deps: Annotated[Literal["local", "online", "off"], Field(description=(
-        "패키지(의존성) 검사 모드. local(기본)=로컬 위협정보 캐시로 취약·악성 대조, 네트워크 없음 / "
+    deps: Annotated[Literal["local", "online", "off"] | None, Field(description=(
+        "패키지(의존성) 검사 모드. local=로컬 위협정보 캐시로 취약·악성 대조, 네트워크 없음 / "
         "online=OSV.dev·공식 저장소까지 조회(패키지명·버전만 전송) / off=생략(생략 사실이 결과에 남음). "
-        "사용자가 요청하지 않았으면 기본값을 두세요"
-    ))] = "local",
+        "**사용자가 요청하지 않았으면 비워 두세요** — 기관 기본값(GVSKB_DEPS_MODE, 없으면 local)이 적용됩니다"
+    ))] = None,
     env_grade: Annotated[
         Literal["E0", "E1", "E2"] | None,
         Field(description=_ENV_GRADE_DESC),
@@ -741,7 +741,7 @@ async def scan_installed_packages(
         audit["source"] = "installed-inventory"
         # 이 도구는 매니페스트를 읽지 않으므로 직접 의존성을 가려낼 수 없다 —
         # 전부 `installed` 로 둔다. 직접/전이 구분이 필요하면
-        # `scan_path --check-deps --include-installed` 경로를 쓸 것(그쪽은 매니페스트와
+        # `gvskb scan --include-installed` 경로를 쓸 것(그쪽은 매니페스트와
         # 대조한다). 여기서 임의로 `manifest` 를 붙이면 하네스 §4-0 의 차단 범위가
         # 근거 없이 넓어진다.
         for c in audit.get("checks", []):

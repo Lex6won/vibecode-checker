@@ -340,7 +340,7 @@ def test_scope_and_limit_section_in_md_and_html() -> None:
         assert "발견 0건이" in out
         assert "보안성 검토를 대체하지 않습니다" in out
         # 46차: 패키지 검사는 기본으로 함께 돈다 — "별도 점검하라"가 아니라 그 한계(수집 시점)를 말한다.
-        assert "패키지 검사는 기본으로 함께 수행" in out
+        assert "기본으로 함께 수행" in out
     # 상단부(부록 아님): 상세 검토 결과(Layer 2) 헤더보다 앞에 위치
     # (Top 3 안내가 헤더를 '참조'하므로 헤더 형태로 정확히 비교한다)
     assert md.index("검토 범위 및 한계") < md.index("## 상세 검토 결과")

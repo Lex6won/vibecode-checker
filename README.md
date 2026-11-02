@@ -11,7 +11,7 @@ AI 코딩 도구(ChatGPT·Claude·Copilot·Cursor)로 만든 코드에 숨은
 
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
-![Tests](https://img.shields.io/badge/tests-2681_passed-success.svg)
+![Tests](https://img.shields.io/badge/tests-2695_passed-success.svg)
 ![독립 벤치마크](https://img.shields.io/badge/독립_벤치마크-42%2F42_탐지_·_오탐_0-success.svg)
 ![룰](https://img.shields.io/badge/보안_룰-탐지_135_·_참조_120-orange.svg)
 ![오프라인](https://img.shields.io/badge/망분리-offline_지원-informational.svg)
@@ -172,7 +172,7 @@ https://github.com/user-attachments/assets/f2a817ae-0a8d-440f-a832-b78bcdd05540
 # 권장 — 릴리스 wheel (git 불필요, 커밋 신원이 박혀 있어 `gvskb status` 로 대조 가능)
 #   최신 릴리스 페이지: https://github.com/Lex6won/vibecode-checker/releases/latest
 #   페이지의 Assets 에서 .whl 주소를 복사해 넣으세요. 릴리스 노트에 그 판의 설치 명령이 그대로 적혀 있습니다.
-pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.15/vibecode_checker-0.5.15-py3-none-any.whl
+pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/releases/download/v0.6.0/vibecode_checker-0.6.0-py3-none-any.whl
 
 # 대안 — 소스에서 한 줄 설치 (git 이 설치된 PC). main 의 최신 커밋이 설치됩니다.
 pip install --force-reinstall git+https://github.com/Lex6won/vibecode-checker.git
@@ -182,7 +182,7 @@ pip install --force-reinstall https://github.com/Lex6won/vibecode-checker/archiv
 
 # 선택 — JS/TS 구조 해석 엔진(tree-sitter, 바이너리 wheel). 없어도 판정 기준은 같고 보고서에 "미가동" 배너만 남습니다.
 #   글자를 쪼개 가린 eval(`window["ev"+"al"]`) 같은 일부 변형을 더 잡습니다. 망분리 PC 는 wheelhouse 반입 뒤 설치.
-pip install "vibecode-checker[ts] @ https://github.com/Lex6won/vibecode-checker/releases/download/v0.5.15/vibecode_checker-0.5.15-py3-none-any.whl"
+pip install "vibecode-checker[ts] @ https://github.com/Lex6won/vibecode-checker/releases/download/v0.6.0/vibecode_checker-0.6.0-py3-none-any.whl"
 
 # 소스를 받아 설치 (수정·기여하려면 -e 권장)
 git clone https://github.com/Lex6won/vibecode-checker.git
@@ -520,7 +520,7 @@ export GVSKB_INTEL_REQUIRE_SIGNATURE=1
 export GVSKB_INTEL_TRUSTED_KEYS="gg-2026=<64 hex 공개키>"
 ```
 
-비밀키가 새면 새 쌍을 만들어 공개키를 추가 배포하고, 교체 기간이 지나면 옛 키를 지웁니다 — 갈아끼우는 구조입니다.
+**순서가 중요합니다 — 공개키 배포가 먼저, 비밀키 등록은 그 다음.** 체커(공개키 포함)가 각 PC에 깔리기 전에 GitHub Secrets 에 비밀키를 넣으면, 서명된 번들을 구판 체커가 "신뢰 목록에 없는 키"로 거부해 **모든 PC 의 패키지 검사가 판정 불가**로 떨어집니다. 키 교체도 같은 순서입니다: 새 공개키를 추가한 체커 배포 → Secrets 교체 → 교체 기간 뒤 옛 공개키 제거. Secrets 와 함께 Variables `GVSKB_INTEL_KEY_ID` 도 등록합니다(없으면 갱신 워크플로가 즉시 실패해 알려 줍니다).
 
 ### 오프라인 판정의 신뢰 장치
 

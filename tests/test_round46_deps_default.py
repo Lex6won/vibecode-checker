@@ -155,6 +155,9 @@ def test_project_without_packages_is_not_punished_for_missing_intel(tmp_path: Pa
     dc = data["dependency_check"]
     assert dc["mode"] == "local" and dc["manifests_found"] == 0 and dc["packages_parsed"] == 0
     assert data["dependency_audit"] is None
+    assert dc["intel"] is None   # 매니페스트가 없으면 캐시를 적재하지 않는다(성능)
+    md = render_markdown(ScanReport.model_validate(data))
+    assert "패키지 매니페스트 없음" in md and "수집 시각 미상" not in md
 
 
 def test_deps_off_skips_but_records_the_skip(tmp_path: Path) -> None:
@@ -183,7 +186,9 @@ def test_check_deps_alias_still_works_and_is_recorded_as_online(tmp_path: Path, 
     dc = data["dependency_check"]
     assert dc["requested_mode"] == "online" and dc["mode"] == "local"
     assert dc["note"] and "offline" in dc["note"]
-    assert "--deps online" in data["reproduce_command"]
+    # 재현 명령은 **적용된** 모드를 적는다 — 망분리 강등으로 local 이 적용됐으니 기본값과 같아 생략된다.
+    # 요청(online)을 적으면 온라인 PC 의 재현자가 외부 조회까지 더한 다른 결과를 받는다.
+    assert "--deps" not in data["reproduce_command"]
 
 
 # ---------------------------------------------------------------------------

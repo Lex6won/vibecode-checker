@@ -319,8 +319,8 @@ async def run_dependency_audit_async(
         return None
 
     # 검사 전에 위협정보 캐시를 **비차단**으로 갱신한다(하루 1회, 신선도 초과 시만, 실패해도 계속).
-    if refresh:
-        auto_refresh_intel()
+    # 결과는 버리지 않고 기록으로 넘긴다 — "갱신을 시도했으나 실패했다"를 보고서가 말해야 한다.
+    refresh_result = auto_refresh_intel() if refresh else None
 
     out: list[dict] = []
     for p, rel, eco in manifests:
@@ -385,8 +385,8 @@ async def run_dependency_audit_async(
     if vendor_bundles:
         from .tools.vendor_bundle import audit_vendor_bundles
 
-        out.append(await audit_vendor_bundles(vendor_bundles, env_grade=env_grade))
-    return {"audits": out}
+        out.append(await audit_vendor_bundles(vendor_bundles, env_grade=env_grade, mode=mode))
+    return {"audits": out, "auto_refresh": refresh_result}
 
 
 def run_dependency_audit(
@@ -439,14 +439,20 @@ def attach_dependency_check(
     if audits:
         report.dependency_audit = audit
     parsed = sum(int(a.get("parsed_count") or 0) for a in audits)
-    state = intel_state() if mode != "off" else None
+    # '매니페스트' 는 매니페스트·락파일에서 온 감사만 센다 — 설치본·벤더 번들 감사는 따로.
+    manifests = sum(1 for a in audits if a.get("source") not in ("installed-inventory", "vendor-bundle"))
+    # 위협정보 상태는 **패키지를 실제로 봤을 때만** 계산한다 — 캐시 적재(수만 건 JSON 파싱 + sha256)는
+    # 싸지 않다. 매니페스트가 없는 정적 페이지 검사가 그 비용을 매번 내서는 안 된다(검증 지적).
+    state = intel_state() if (mode != "off" and audits) else None
     record = {
         "mode": mode,
         "mode_label": MODE_LABELS.get(mode, mode),
         "requested_mode": requested,
-        "manifests_found": len(audits),
+        "manifests_found": manifests,
+        "audits_total": len(audits),
         "packages_parsed": parsed,
         "intel": state,
+        "auto_refresh": (audit or {}).get("auto_refresh"),
         "note": note,
     }
     report.dependency_check = record
@@ -474,13 +480,22 @@ def user_notice(record: dict | None) -> str | None:
         return (
             "⛔ 패키지 검사를 하지 못했습니다 — 위협정보가 이 PC에 없습니다. "
             "이 결과를 '통과'로 쓰지 마세요. (인터넷망) `gvskb update-intel` 후 재검사 · "
-            "(폐쇄망) 관리자가 배포한 위협정보 폴더를 GVSKB_INTEL_DIR 로 지정"
+            "(폐쇄망) 관리자가 배포한 위협정보 폴더를 GVSKB_INTEL_DIR 로 지정" + refresh_failure_note(record)
         )
     if state == "stale" and record.get("packages_parsed"):
         age = intel.get("age_days")
         when = f"{age}일 전" if age is not None else "오래된"
         return (
             f"⚠ 위협정보가 {when} 것입니다 — 그 사이 알려진 취약점은 반영되지 않았습니다. "
-            "(인터넷망) `gvskb update-intel` · (폐쇄망) 전산 담당자에게 위협정보 갱신 요청"
+            "(인터넷망) `gvskb update-intel` · (폐쇄망) 전산 담당자에게 위협정보 갱신 요청" + refresh_failure_note(record)
         )
     return None
+
+
+def refresh_failure_note(record: dict | None) -> str:
+    """자동 갱신을 시도했는데 실패했으면 그 사실과 사유를 한 조각으로. 아니면 빈 문자열."""
+    ar = (record or {}).get("auto_refresh") or {}
+    if ar.get("attempted") and not ar.get("ok"):
+        err = str(ar.get("error") or "사유 미상").strip()
+        return f" (자동 갱신 시도 실패: {err[:160]})"
+    return ""

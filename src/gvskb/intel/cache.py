@@ -41,7 +41,7 @@ CACHE_VERSION = 2
 # 캐시 신선도 기준(일). 망분리 반입 캐시가 몇 달 묵어도 "깨끗함"으로 판정되지
 # 않도록, 초과 시 소비자(check_package·doctor)가 stale로 승격한다.
 # 2일: KEV·OSV 악성 목록은 매일 바뀐다. 30일이던 때 서버 캐시가 한 달 묵은 채 판정을 냈다
-# (실측 2026-10-13, KEV 30건 누락). 온라인 PC 는 `scan --check-deps` 가 하루 1회 자동 갱신하므로
+# (실측 2026-10-13, KEV 30건 누락). 온라인 PC 는 기본 패키지 검사가 하루 1회 자동 갱신하므로
 # 짧아도 부담이 없고, 망분리 PC 는 보고서가 "N일 경과"를 정직하게 적는다.
 DEFAULT_INTEL_MAX_AGE_DAYS = 2
 
@@ -129,6 +129,45 @@ _LOAD_MEMO_MAX = 8
 _COMPACT_THRESHOLD_ITEMS = 10_000
 
 
+# ---------------------------------------------------------------------------
+# 검증 스탬프 — 프로세스가 바뀌어도 sha256 재계산을 반복하지 않는다(46차 검증 지적 HIGH-3).
+#
+# 패키지 검사가 기본이 되면서 CLI·pre-commit·VS Code 태스크 같은 **단명 프로세스**가 매번
+# osv-vulns(수십 MB)의 items 를 다시 직렬화해 해시했다(실측 2.6s/프로세스). 한 번 검증한
+# 파일은 (mtime_ns, size, 기록된 sha256) 을 사이드카 `<이름>.verified` 에 남기고, 다음 로드에서
+# 세 값이 같으면 해시 계산만 건너뛴다(JSON 파싱은 그대로 한다).
+#
+# 위협 모델: 이 envelope sha256 은 **손상** 감지용이다. 캐시 폴더에 쓸 수 있는 사람은 sha256
+# 필드도 함께 고칠 수 있으므로 스탬프가 보안 수준을 낮추지 않는다. 위조 방어는 번들 서명
+# (intel/signing.py)이 맡는다. 파일이 바뀌면 mtime·size 가 달라져 자연히 다시 해시한다.
+# ---------------------------------------------------------------------------
+def _stamp_path(p: Path) -> Path:
+    return p.with_name(p.name + ".verified")
+
+
+def _stamp_matches(p: Path, st: "os.stat_result | None", recorded: str) -> bool:
+    if st is None:
+        return False
+    try:
+        d = json.loads(_stamp_path(p).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    return (d.get("mtime_ns") == st.st_mtime_ns and d.get("size") == st.st_size
+            and d.get("sha256") == recorded)
+
+
+def _write_stamp(p: Path, st: "os.stat_result | None", recorded: str) -> None:
+    if st is None:
+        return
+    try:
+        _stamp_path(p).write_text(
+            json.dumps({"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass   # 스탬프는 편의 장치 — 못 써도 검증은 된다
+
+
 def _memo_put(key: str, sig: tuple[int, int], entry: "CacheEntry | None") -> None:
     if len(_LOAD_MEMO) >= _LOAD_MEMO_MAX and key not in _LOAD_MEMO:
         _LOAD_MEMO.pop(next(iter(_LOAD_MEMO)), None)
@@ -198,6 +237,10 @@ class IntelCache:
 
     def _load_uncached(self, source_id: str, p: Path) -> CacheEntry | None:
         try:
+            st: os.stat_result | None = p.stat()
+        except OSError:
+            st = None
+        try:
             data = json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return None
@@ -216,14 +259,16 @@ class IntelCache:
                 file=sys.stderr,
             )
             return None
-        if _sha256(items) != recorded:
-            print(
-                f"[gvskb] ⚠ intel cache integrity check failed: {p.name} — "
-                "sha256 불일치(변조·손상 가능). 이 캐시는 무시합니다. "
-                "`gvskb update-intel`로 다시 받으세요.",
-                file=sys.stderr,
-            )
-            return None
+        if not _stamp_matches(p, st, recorded):
+            if _sha256(items) != recorded:
+                print(
+                    f"[gvskb] ⚠ intel cache integrity check failed: {p.name} — "
+                    "sha256 불일치(변조·손상 가능). 이 캐시는 무시합니다. "
+                    "`gvskb update-intel`로 다시 받으세요.",
+                    file=sys.stderr,
+                )
+                return None
+            _write_stamp(p, st, recorded)
         return CacheEntry(
             schema_version=data.get("schema_version", 0),
             source_id=data.get("source_id", source_id),

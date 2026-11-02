@@ -772,8 +772,8 @@ def _offline_cache_check(
     base = dict(
         name=name,
         ecosystem=ecosystem,
-        offline=True,
-        exists=None,  # 오프라인 — 공식 저장소 실재 미확인
+        offline=not local_mode,   # 로컬 모드(온라인 PC)는 '오프라인'이 아니다 — SBOM 속성에도 그대로 실린다
+        exists=None,  # 오프라인·로컬 — 공식 저장소 실재 미확인
         registry_metadata=None,
         max_cve="UNKNOWN",  # CVE DB 미보유 — '없음'이 아니라 '미확인'
         heuristics=_basic_heuristics(name, ecosystem),
@@ -1032,9 +1032,8 @@ def _offline_cache_check(
         note=(
             f"{how} 캐시에 **악성 등록은 없습니다**. 다만 이 캐시에는 CVE 데이터가 "
             "없어 **알려진 취약점 여부는 확인하지 못했습니다**('이상 없음'이 아닙니다). "
-            "최신 인텔 번들(osv-vulns 포함)을 반입하면 오프라인에서도 알려진 취약점까지 "
-            "대조됩니다. 취약점까지 보려면 외부망에서 검사하거나(GVSKB_MODE 를 offline 로 "
-            "고정하지 마세요) 온라인 검사 결과를 반입하세요." + kev_note
+            f"최신 위협정보 번들(osv-vulns 포함)을 받으면 {how} 검사에서도 알려진 취약점까지 대조됩니다 — "
+            "`gvskb update-intel`(폐쇄망은 번들 반입). 실재·발행일까지 보려면 `--deps online`." + kev_note
         ),
     ).model_dump(mode="json")
 
