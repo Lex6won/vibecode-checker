@@ -30,16 +30,17 @@ def test_reproduce_command_survives_json_roundtrip(tmp_path: Path):
     _cli("scan", str(tmp_path), "--format", "json", "--output", str(out), "--check-deps",
          "--max-files", "700", "--profile", "dev-quick", "--fail-on", "never")
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert "--check-deps" in data["reproduce_command"] and "--max-files 700" in data["reproduce_command"]
+    # 46차: `--check-deps` 는 `--deps online` 의 별칭 — 재현 명령은 현재 이름으로 적힌다.
+    assert "--deps online" in data["reproduce_command"] and "--max-files 700" in data["reproduce_command"]
     html = render_html(ScanReport.model_validate(data))
-    assert "--check-deps" in html and "재현 명령 미기록" not in html
+    assert "--deps online" in html and "재현 명령 미기록" not in html
 
 
 def test_legacy_json_without_reproduce_command_says_so():
     rep = scan_code('password = "hunter2plus9"', filename="app.py")
     rep.dependency_audit = {"audits": [{"ecosystem": "pypi", "checks": []}]}
     md = render_markdown(rep)
-    assert "재현 명령 미기록" in md and "--check-deps" in md
+    assert "재현 명령 미기록" in md and "--deps online" in md
 
 
 # ── P-2 자기 위치 ──

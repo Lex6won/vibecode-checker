@@ -565,8 +565,8 @@ _LIMIT_HEAD = "본 도구는 정적 분석 기반의 1차 보안 린터입니다
 _LIMIT_ZERO = "발견 0건이 '안전'을 보장하지 않습니다."
 _LIMIT_BODY = (
     "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입, 설계·인가·업무로직상 취약점, "
-    "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 의존성(패키지) 취약점은 "
-    "scan_dependencies(또는 gvskb check-package)로 별도 점검하세요."
+    "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 패키지(의존성) 검사는 기본으로 함께 수행되지만 "
+    "위협정보 수집 시점 이후의 신규 취약점은 반영되지 않습니다."
 )
 _LIMIT_TAIL = "본 결과는 보안담당자의 공식 보안성 검토를 대체하지 않습니다."
 
@@ -1018,8 +1018,10 @@ _CRITERIA_ROWS: tuple[tuple[str, str, str], ...] = (
      "CISA KEV 등재 · CVSS CRITICAL"),
     ("warn", "조건부 승인",
      "CVSS HIGH 이하 취약점 · 발행 직후 버전 · 판정 불가 · 소스 코드 발견 · 라이선스 검토 필요 · "
-     "버전 미고정 · 검사 범위 결손"),
+     "버전 미고정 · 검사 범위 결손 · 위협정보 오래됨"),
     ("ok", "승인", "조치할 항목 없음"),
+    ("none", "판정 불가",   # _deploy_status 의 tone 키 'none' 과 맞춘다
+     "검사된 파일 없음 · 필수 엔진 미가동 · 위협정보 없음(패키지 검사 불가) — '안전' 아님"),
 )
 
 
@@ -1281,7 +1283,7 @@ def _repro_command(report: ScanReport, explicit: str | None) -> tuple[str, str]:
         return cmd, ""
     fallback = f"gvskb scan {report.target} --profile {report.profile}"
     if report.dependency_audit:
-        fallback += " --check-deps"
+        fallback += " --deps online"   # 46차: 구 `--check-deps` 의 현재 이름
     return fallback, (
         "재현 명령 미기록 — 이 보고서는 실행 옵션이 저장되지 않은 결과에서 렌더됐습니다. "
         "아래 명령은 최소 재구성이며 `--max-files`·`--env`·`--include-installed` 등이 "
@@ -1303,6 +1305,8 @@ def _criteria_cell(report: ScanReport) -> str:
     else:
         ruleset = "룰셋 (미상)"
     cell = f"엔진 {engine} · {ruleset}"
+    if (_intel := _intel_cell(report)):
+        cell += f" · {_intel}"
     if report.ruleset_drift:
         cell += f" ⚠ {report.ruleset_drift}"
     if report.ruleset_note:
@@ -1317,6 +1321,68 @@ def _criteria_cell(report: ScanReport) -> str:
             f"({upd.get('tag')})로 갱신 후 재점검 권장: {how}"
         )
     return cell
+
+
+def _intel_cell(report: ScanReport) -> str:
+    """머리표 한 조각 — "위협정보 11.02 03:17 수집". 46차: 패키지 판정의 기준 시각도 재현성의 일부다.
+
+    생략(off)이면 그 사실을, 캐시가 없으면 '없음'을 적는다. 구버전 JSON(기록 없음)은 빈 문자열.
+    """
+    dc = getattr(report, "dependency_check", None) or {}
+    if not dc:
+        return ""
+    if dc.get("mode") == "off":
+        return "패키지 검사 생략"
+    if not dc.get("manifests_found") and not dc.get("packages_parsed"):
+        return "패키지 매니페스트 없음"
+    intel = dc.get("intel") or {}
+    state = intel.get("state")
+    if state == "missing":
+        return "위협정보 없음"
+    from .deps_check import format_as_of
+    when = format_as_of(intel.get("as_of"))
+    text = f"위협정보 {when} 수집" if when else "위협정보 수집 시각 미상"
+    if state == "stale":
+        age = intel.get("age_days")
+        text += f" ⚠ {age}일 경과" if age is not None else " ⚠ 오래됨"
+    return text
+
+
+def _dependency_check_banner(report: ScanReport) -> str | None:
+    """패키지 검사 **환경**에 대한 한 줄(Markdown) — 패키지 개별 문제와 구분한다.
+
+    사용자가 알아야 할 것은 두 가지다: 지금 결과를 믿어도 되는가, 안 되면 무엇을 하면 되는가.
+    CVE 번호·점수·캐시 파일명 같은 근거는 여기 적지 않는다(부록·JSON 에 있다).
+    """
+    dc = getattr(report, "dependency_check", None) or {}
+    if not dc:
+        return None
+    mode = dc.get("mode")
+    if mode == "off":
+        return (
+            "ℹ **패키지 검사를 생략했습니다**(`--deps off`) — 패키지 취약점은 이 보고서에 없습니다. "
+            "배포 전에는 생략하지 않은 검사 결과를 쓰세요."
+        )
+    if mode != "local" or not dc.get("packages_parsed"):
+        return None
+    # 결론 박스(게이트 사유)가 이미 상황을 설명했으므로 여기서는 **조치만** 짧게 — 같은 문장을 두 번
+    # 읽게 하지 않는다(검증 지적 LOW-1).
+    from .deps_check import refresh_failure_note
+    intel = dc.get("intel") or {}
+    state = intel.get("state")
+    if state == "missing":
+        return (
+            "⛔ **패키지 검사 미수행(위협정보 없음)** — 조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · "
+            "(폐쇄망) 관리자가 배포한 위협정보 폴더를 `GVSKB_INTEL_DIR` 로 지정" + refresh_failure_note(dc)
+        )
+    if state == "stale":
+        age = intel.get("age_days")
+        when = f"{age}일 경과" if age is not None else "오래됨"
+        return (
+            f"⚠ **위협정보 {when}** — 조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · "
+            "(폐쇄망) 전산 담당자에게 위협정보 갱신 요청" + refresh_failure_note(dc)
+        )
+    return None
 
 
 def _profile_cell(report: ScanReport) -> str:
@@ -1587,12 +1653,17 @@ def render_markdown(
         lines.append("")
 
     # 의존성 결과는 아래 '의존성(패키지) 취약점 검사' 섹션 + 요약 수치로 전달한다.
-    # 여기서는 --check-deps 를 안 써서 아예 검사되지 않은 경우만 경고한다.
+    # 여기서는 검사 **환경**(위협정보 없음·오래됨·생략)만 한 줄로 알린다(46차).
     dep_audits = _dep_audits(report)
+    _dc_banner = _dependency_check_banner(report)
+    if _dc_banner:
+        lines.append(f"> {_dc_banner}")
+        lines.append("")
     if dep_audits and (_reg_banner := _registry_banner(dep_audits)):
         lines.append(f"> {_reg_banner}")
         lines.append("")
-    if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
+    # 패키지별 캐시 집계 배너는 환경 배너가 이미 같은 말을 했으면 생략한다(같은 조치를 두 번 말하지 않는다).
+    if dep_audits and not _dc_banner and (_intel_banner := _intel_cache_banner(dep_audits)):
         lines.append(f"> {_intel_banner}")
         lines.append("")
     # 검사되지 않은 패키지는 '이상 없음'이 아니다 — 결론 근처에서 알린다.
@@ -1613,7 +1684,8 @@ def render_markdown(
     manifest_skips = [
         s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")
     ]
-    if not dep_audits and manifest_skips:
+    # 구버전 JSON(패키지 검사 기록 없음)에서만 — 46차부터는 환경 배너가 생략·미검사를 말한다.
+    if not dep_audits and manifest_skips and not getattr(report, "dependency_check", None):
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
         lines.append(
             f"> ⚠ **의존성 검사 별도 필요** — {names} 은(는) 코드 스캔 대상이 아닙니다. "
@@ -2351,9 +2423,12 @@ def render_html(
     if _adj := _adjustment_banner(report):
         p.append(f'<div class="scanmode">{_md_inline_to_html(_adj)}</div>')
     dep_audits = _dep_audits(report)
+    _dc_banner = _dependency_check_banner(report)
+    if _dc_banner:
+        p.append(f'<div class="depwarn">{_md_inline_to_html(_dc_banner)}</div>')
     if dep_audits and (_reg_banner := _registry_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_reg_banner).replace("**", "")}</div>')
-    if dep_audits and (_intel_banner := _intel_cache_banner(dep_audits)):
+    if dep_audits and not _dc_banner and (_intel_banner := _intel_cache_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_intel_banner).replace("**", "")}</div>')
     if dep_audits and (_trunc_banner := _dep_truncation_banner(dep_audits)):
         p.append(f'<div class="depwarn">{_esc(_trunc_banner).replace("**", "")}</div>')
@@ -2364,7 +2439,7 @@ def render_html(
     for _rs in _ruleset_banners(report):
         p.append(f'<div class="depwarn">{_esc(_rs).replace("**", "")}</div>')
     manifest_skips = [s for s in report.skipped_files if "의존성 매니페스트" in (s.reason or "")]
-    if not dep_audits and manifest_skips:
+    if not dep_audits and manifest_skips and not getattr(report, "dependency_check", None):
         names = ", ".join(s.path.replace("\\", "/").rsplit("/", 1)[-1] for s in manifest_skips)
         p.append(
             '<div class="depwarn">⚠ <b>의존성 검사 별도 필요</b> — '

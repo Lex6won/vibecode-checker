@@ -301,7 +301,7 @@ def test_cli_refuses_to_write_an_empty_sbom(tmp_path, capsys) -> None:
     out = tmp_path / "sbom.json"
     _emit_sbom(argparse.Namespace(sbom=str(out)), scan_code("x = 1\n", filename="a.py"))
     assert not out.exists()
-    assert "--check-deps" in capsys.readouterr().err
+    assert "--deps off" in capsys.readouterr().err   # 46차: 패키지 검사는 기본 — 생략했는지 확인하라고 말한다
 
 
 def test_cli_writes_sbom_when_dependencies_were_checked(tmp_path) -> None:

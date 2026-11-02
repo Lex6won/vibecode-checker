@@ -53,6 +53,9 @@ DEFAULT_BUNDLE_URL = (
 
 STATE_FILENAME = ".autopull-state.json"
 DEFAULT_THROTTLE_HOURS = 24
+#: 직전 시도가 **실패**했으면 재시도 간격을 이만큼으로 줄인다. 첫 검사에서 프록시·VPN 으로 20초 안에
+#: 번들을 못 받은 PC 가 24시간 동안 '판정 불가'에 묶이는 것을 막는다(검증 지적 MEDIUM-3).
+FAIL_RETRY_HOURS = 1
 
 # 자동 당김이 '있어야 한다'고 보는 핵심 소스 — 하나라도 없으면 낡음 이전에
 # '비어 있음'이므로 즉시 당김 대상이다.
@@ -181,6 +184,14 @@ def _pull_from_dir(d: Path, cache_dir: Path | None) -> AutoPullResult:
     if bundle is None:
         return AutoPullResult(attempted=True, ok=False, source=str(d),
                               error="폴더에서 번들(zip)을 찾지 못했습니다")
+    try:
+        size = bundle.stat().st_size
+    except OSError as exc:
+        return AutoPullResult(attempted=True, ok=False, source=str(bundle), error=f"번들 파일을 읽지 못했습니다: {exc}")
+    if size > MAX_BUNDLE_BYTES:
+        # URL 경로와 같은 상한 — 공유 폴더에 놓인 거대 zip 이 각 PC 를 멈추게 하지 않도록.
+        return AutoPullResult(attempted=True, ok=False, source=str(bundle),
+                              error=f"번들이 상한({MAX_BUNDLE_BYTES:,}B)을 넘습니다({size:,}B) — 반입하지 않음.")
     res = import_bundle(bundle, cache_dir=cache_dir)
     if res.get("ok"):
         return AutoPullResult(attempted=True, ok=True, source=str(bundle),
@@ -257,6 +268,8 @@ def maybe_auto_update(
             return AutoPullResult(skipped_reason=reason)
         hours = _hours_since_last_attempt(cdir)
         limit = throttle_hours()
+        if _read_state(cdir).get("last_result") == "fail":
+            limit = min(limit, FAIL_RETRY_HOURS)
         if hours is not None and hours < limit:
             return AutoPullResult(
                 skipped_reason=f"최근 {hours:.1f}시간 전 시도함(재시도 간격 {limit}시간)"

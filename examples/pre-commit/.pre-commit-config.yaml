@@ -9,7 +9,10 @@ repos:
     hooks:
       - id: gvskb-secrets-pii
         name: gvskb — secret + PII fast scan
-        entry: gvskb scan --format markdown
+        # --deps off: 커밋 훅은 비밀·개인정보 빠른 검사다 — 패키지 검사(기본)는 위협정보 캐시 상태에
+        # 따라 조건부·판정 불가가 되어 날짜에 따라 커밋을 막는다. 패키지 검사는 CI 에서.
+        # --fail-on block: 차단(exit 2)일 때만 커밋 거부.
+        entry: gvskb scan --deps off --fail-on block --format markdown
         language: system
         pass_filenames: false
         # 변경된 파일만 검사하려면 다음 옵션을 활용:
