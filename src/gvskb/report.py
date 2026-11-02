@@ -565,8 +565,8 @@ _LIMIT_HEAD = "본 도구는 정적 분석 기반의 1차 보안 린터입니다
 _LIMIT_ZERO = "발견 0건이 '안전'을 보장하지 않습니다."
 _LIMIT_BODY = (
     "여러 줄에 걸쳐 조립되는 일부 SQL/명령 삽입, 설계·인가·업무로직상 취약점, "
-    "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 의존성(패키지) 취약점은 "
-    "패키지 검사는 기본으로 함께 수행되지만 위협정보 수집 시점 이후의 신규 취약점은 반영되지 않습니다."
+    "실행 중에만 드러나는 취약점은 놓칠 수 있습니다. 패키지(의존성) 검사는 기본으로 함께 수행되지만 "
+    "위협정보 수집 시점 이후의 신규 취약점은 반영되지 않습니다."
 )
 _LIMIT_TAIL = "본 결과는 보안담당자의 공식 보안성 검토를 대체하지 않습니다."
 
@@ -1333,6 +1333,8 @@ def _intel_cell(report: ScanReport) -> str:
         return ""
     if dc.get("mode") == "off":
         return "패키지 검사 생략"
+    if not dc.get("manifests_found") and not dc.get("packages_parsed"):
+        return "패키지 매니페스트 없음"
     intel = dc.get("intel") or {}
     state = intel.get("state")
     if state == "missing":
@@ -1363,22 +1365,22 @@ def _dependency_check_banner(report: ScanReport) -> str | None:
         )
     if mode != "local" or not dc.get("packages_parsed"):
         return None
+    # 결론 박스(게이트 사유)가 이미 상황을 설명했으므로 여기서는 **조치만** 짧게 — 같은 문장을 두 번
+    # 읽게 하지 않는다(검증 지적 LOW-1).
+    from .deps_check import refresh_failure_note
     intel = dc.get("intel") or {}
     state = intel.get("state")
     if state == "missing":
         return (
-            "⛔ **패키지 검사를 하지 못했습니다** — 위협정보가 이 PC에 없습니다. 소스 코드 검사는 끝났지만, "
-            "사용 중인 패키지가 안전한지는 확인되지 않았습니다. **이 결과를 '통과'로 쓰지 마세요.** "
-            "조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · "
-            "(폐쇄망) 관리자가 배포한 위협정보 폴더를 `GVSKB_INTEL_DIR` 로 지정"
+            "⛔ **패키지 검사 미수행(위협정보 없음)** — 조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · "
+            "(폐쇄망) 관리자가 배포한 위협정보 폴더를 `GVSKB_INTEL_DIR` 로 지정" + refresh_failure_note(dc)
         )
     if state == "stale":
         age = intel.get("age_days")
-        when = f"{age}일 전" if age is not None else "오래된"
+        when = f"{age}일 경과" if age is not None else "오래됨"
         return (
-            f"⚠ **위협정보가 {when} 것입니다** — 그 사이 새로 알려진 취약점은 이 검사에 반영되지 않았습니다. "
-            "패키지 판정은 '조건부'로 표시했습니다. "
-            "조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · (폐쇄망) 전산 담당자에게 위협정보 갱신 요청"
+            f"⚠ **위협정보 {when}** — 조치: (인터넷망) `gvskb update-intel` 실행 후 다시 검사 · "
+            "(폐쇄망) 전산 담당자에게 위협정보 갱신 요청" + refresh_failure_note(dc)
         )
     return None
 

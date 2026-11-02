@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import zipfile
 import zlib
@@ -32,6 +33,10 @@ from .cache import IntelCache, default_cache_dir
 from .signing import SIG_MEMBER, sign_manifest, signature_required, verify_manifest
 
 MANIFEST_NAME = "manifest.json"
+#: 서명·manifest 는 작다. 읽기 **전에** 크기를 본다 — 공유 폴더 쓰기 권한자가 수 GB 로 부풀린
+#: 멤버를 놓으면 서명 검증 이전에 각 PC 가 메모리로 전부 읽어 멈춘다(검증 지적 MEDIUM-6).
+MAX_SIG_BYTES = 64 * 1024
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _CACHES_PREFIX = "caches/"
 BUNDLE_FORMAT_VERSION = 1
 
@@ -121,6 +126,9 @@ def _check_signature(zf: zipfile.ZipFile, manifest_bytes: bytes) -> tuple[bool, 
                     "서명된 공식 번들(intel-latest)을 쓰거나 관리자 키로 서명해 배포하세요.")
         return True, False, None, "서명 없음(허용 — 정책 미설정)"
     try:
+        info = zf.getinfo(SIG_MEMBER)
+        if info.file_size > MAX_SIG_BYTES:
+            return False, True, None, f"서명 문서(manifest.sig)가 비정상적으로 큽니다({info.file_size:,}B) — 반입 중단."
         sig_doc = json.loads(zf.read(SIG_MEMBER).decode("utf-8"))
     except (KeyError, json.JSONDecodeError, UnicodeDecodeError,
             zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
@@ -149,6 +157,9 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None, verify
 
     with zf:
         try:
+            if zf.getinfo(MANIFEST_NAME).file_size > MAX_MANIFEST_BYTES:
+                return {"ok": False, "sources": [],
+                        "error": f"manifest.json 이 비정상적으로 큽니다(상한 {MAX_MANIFEST_BYTES:,}B) — 반입 중단."}
             manifest_bytes = zf.read(MANIFEST_NAME)
             manifest = json.loads(manifest_bytes.decode("utf-8"))
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError,
@@ -217,7 +228,11 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None, verify
             if dest.resolve().parent != target_resolved:
                 return {"ok": False, "sources": [],
                         "error": f"'{fname}' 의 기록 경로가 캐시 디렉터리를 벗어납니다 — 반입 중단."}
-            dest.write_bytes(data)
+            # 원자적 교체 — 검사마다 자동 갱신이 돌게 되면서(46차) 쓰는 중인 파일을 다른 스레드·
+            # 프로세스가 읽어 "반쯤 쓰인 캐시 = sha256 불일치 = 없음" 으로 판정하는 틈이 생겼다.
+            tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
 
     return {
         "ok": True,

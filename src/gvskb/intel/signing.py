@@ -59,7 +59,8 @@ ENV_SIGNING_KEY = "GVSKB_INTEL_SIGNING_KEY"
 #: 체커가 신뢰하는 번들 서명 공개키 — ``key_id -> 32바이트 hex``.
 #: 운영 키는 관리자가 keygen 뒤 PR 로 추가한다. 비밀키는 **절대** 저장소에 두지 않는다.
 TRUSTED_PUBLIC_KEYS: dict[str, str] = {
-    # "gvskb-intel-2026a": "<64 hex>",
+    # 운영 키 1호(2026-11-02 생성, 관리자 PC 오프라인 보관). 비밀키는 GitHub Secrets GVSKB_INTEL_SIGNING_KEY.
+    "gvskb-intel-2026a": "a6e1fa595f1444d81f07bcca5702d3281d82f675405cb3fd2b0874811ea1f8c5",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -221,7 +222,7 @@ def signature_required() -> bool:
 
 
 def trusted_keys() -> dict[str, bytes]:
-    """체커 내장 키 + 기관이 환경변수로 더한 키(``id=hex,id2=hex``). 잘못된 항목은 조용히 버리지 않고 뺀다."""
+    """체커 내장 키 + 기관이 환경변수로 더한 키(``id=hex,id2=hex``). 형식이 틀린 항목(길이·hex 오류)은 뺀다 — doctor 가 키 수를 보여 준다."""
     out: dict[str, bytes] = {}
     for kid, hx in TRUSTED_PUBLIC_KEYS.items():
         try:
@@ -259,9 +260,12 @@ def sign_manifest(manifest_bytes: bytes, seed: bytes, key_id: str | None = None)
 
 
 def verify_manifest(manifest_bytes: bytes, sig_doc: dict, keys: dict[str, bytes] | None = None) -> tuple[bool, str]:
-    """(검증 성공, 사유). 성공 시 사유는 ``key_id``.
+    """(검증 성공, 사유). 성공 시 사유는 신뢰 목록의 ``key_id``.
 
-    key_id 가 신뢰 목록에 없으면 실패다 — 문서 안의 public_key 로 대신 검증하지 않는다.
+    검증에 쓰는 공개키는 **항상 신뢰 목록의 바이트**다. key_id 가 목록과 다르면(운영자가
+    CI 변수 GVSKB_INTEL_KEY_ID 를 빠뜨려 지문 id 로 서명된 경우 등) 문서 속 public_key 와
+    **같은 바이트를 가진 신뢰 키**를 찾아 그 키로 검증한다 — 문서의 키를 믿는 것이 아니라
+    목록에서 고르는 데만 쓰므로 위조자가 자기 키를 넣어도 통하지 않는다(검증 지적 HIGH-2).
     """
     keys = trusted_keys() if keys is None else keys
     if not isinstance(sig_doc, dict):
@@ -271,7 +275,15 @@ def verify_manifest(manifest_bytes: bytes, sig_doc: dict, keys: dict[str, bytes]
     kid = str(sig_doc.get("key_id") or "")
     public = keys.get(kid)
     if public is None:
-        return False, f"신뢰 목록에 없는 서명 키: {kid or '(key_id 없음)'}"
+        try:
+            embedded = bytes.fromhex(str(sig_doc.get("public_key") or ""))
+        except ValueError:
+            embedded = b""
+        matched = [k for k, v in keys.items() if embedded and v == embedded]
+        if not matched:
+            return False, f"신뢰 목록에 없는 서명 키: {kid or '(key_id 없음)'}"
+        kid = matched[0]
+        public = keys[kid]
     try:
         sig = bytes.fromhex(str(sig_doc.get("sig") or ""))
     except ValueError:

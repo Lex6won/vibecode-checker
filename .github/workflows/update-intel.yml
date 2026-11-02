@@ -211,7 +211,11 @@ jobs:
           GVSKB_INTEL_KEY_ID: ${{ vars.GVSKB_INTEL_KEY_ID }}
         run: |
           if [ -n "$GVSKB_INTEL_SIGNING_KEY" ]; then
-            gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"               --sign-key-env GVSKB_INTEL_SIGNING_KEY ${GVSKB_INTEL_KEY_ID:+--key-id "$GVSKB_INTEL_KEY_ID"}
+            if [ -z "$GVSKB_INTEL_KEY_ID" ]; then
+              echo "::error::Secrets GVSKB_INTEL_SIGNING_KEY 는 있는데 Variables GVSKB_INTEL_KEY_ID 가 없습니다 — key_id 가 신뢰 목록(signing.py)과 어긋나면 모든 PC 가 번들을 거부합니다. 변수를 등록하세요."
+              exit 1
+            fi
+            gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"               --sign-key-env GVSKB_INTEL_SIGNING_KEY --key-id "$GVSKB_INTEL_KEY_ID"
           else
             echo "::warning::서명 키(secrets.GVSKB_INTEL_SIGNING_KEY)가 없어 번들을 서명 없이 게시합니다 — 폐쇄망 자동 반입 전에 'gvskb intel-bundle keygen' 으로 키를 만들어 등록하세요(src/gvskb/intel/signing.py 절차)."
             gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"

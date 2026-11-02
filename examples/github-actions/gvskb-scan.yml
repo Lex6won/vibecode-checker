@@ -36,6 +36,12 @@ jobs:
           python -m pip install "git+https://github.com/Lex6won/vibecode-checker.git"
           # 사내 미러 사용 시: --index-url https://pypi.internal.example.gov/simple/
 
+      # 46차 — 패키지(의존성) 검사가 기본이라 위협정보 캐시가 필요합니다. 검사 직전 자동 갱신도
+      # 시도하지만, CI 러너는 매번 새 환경이므로 명시적으로 한 번 받아 둡니다(공개 GitHub 릴리스,
+      # 보내는 것 없음). 사내 미러가 있으면 GVSKB_INTEL_URL 로 지정하세요.
+      - name: Fetch threat intel bundle
+        run: gvskb intel-sync
+
       - name: Verify environment
         run: gvskb doctor --offline
 
@@ -58,8 +64,15 @@ jobs:
 
       - name: Fail PR on block findings
         run: |
-          BLOCKED=$(python -c "import json,sys; r=json.load(open('/tmp/gvskb-report.json')); print(r['summary']['blocked'])")
-          if [ "$BLOCKED" = "True" ]; then
-            echo "::error::gvskb detected block-level findings. See artifact 'gvskb-report'."
+          # 게이트 판정으로 본다 — summary.blocked 는 소스 발견만 세고, '판정 불가'(검사 0건·필수 엔진
+          # 미가동·위협정보 없음)는 통과가 아니다(조용한 초록불 방지).
+          VERDICT=$(python -c "import json; r=json.load(open('/tmp/gvskb-report.json')); print((r.get('gate') or {}).get('verdict',''))")
+          echo "gate.verdict=$VERDICT"
+          if [ "$VERDICT" = "blocked" ]; then
+            echo "::error::gvskb gate: blocked — 차단 기준 패키지/발견. See artifact 'gvskb-report'."
             exit 2
+          fi
+          if [ "$VERDICT" = "undetermined" ] || [ -z "$VERDICT" ]; then
+            echo "::error::gvskb gate: 판정 불가 — 검사되지 않은 것은 '안전'이 아닙니다(위협정보·엔진·경로 확인)."
+            exit 3
           fi

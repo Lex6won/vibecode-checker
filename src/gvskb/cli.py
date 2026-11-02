@@ -69,7 +69,9 @@ def _scan_reproduce_command(args: argparse.Namespace) -> str:
         parts += ["--max-file-bytes", str(args.max_file_bytes)]
     # 46차 — 패키지 검사는 기본(local)이다. 기본과 다를 때만 적는다: online 은 외부 조회가
     # 더해져 발견이 **늘** 수 있고, off 는 **줄** 수 있다. 둘 다 재현에 필요하다.
-    mode = _requested_deps_mode(args)
+    # **적용된** 모드를 적는다(환경변수 GVSKB_DEPS_MODE 로 바뀐 것도 포함) — 요청만 적으면 다른 PC 의
+    # 재현자가 기본값으로 돌려 다른 결과를 받는다(검증 지적 MEDIUM-2).
+    mode = getattr(args, "_deps_mode", None) or _requested_deps_mode(args)
     if mode and mode != "local":
         parts += ["--deps", mode]
     if getattr(args, "include_installed", False):
@@ -180,6 +182,7 @@ def _run_dependency_audit(
     env_grade: str | None = None,
     include_installed: bool = False,
     mode: str | None = None,
+    _explicit: bool = False,
 ) -> dict | None:
     """스캔 결과에서 매니페스트를 찾아 패키지 취약·악성 검사를 수행한다.
 
@@ -191,7 +194,9 @@ def _run_dependency_audit(
     result = run_dependency_audit(
         root, report, mode=mode, env_grade=env_grade, include_installed=include_installed,
     )
-    if result is None and mode != "off":
+    # 못 찾았다는 알림은 사용자가 모드를 **직접 지정**했을 때만 — 기본 검사에서 정적 페이지마다
+    # 같은 줄이 찍히면 소음이 된다. 기록은 보고서 머리표(패키지 매니페스트 없음)에 남는다.
+    if result is None and mode in ("local", "online") and _explicit:
         print(
             "[gvskb] 패키지 검사: 검사할 매니페스트(requirements*.txt·pyproject.toml·package.json·락파일)를 "
             "찾지 못했습니다 — 패키지가 없는 프로젝트가 아니라면 파일 위치를 확인하세요.",
@@ -292,6 +297,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     requested = _requested_deps_mode(args)
     deps_mode, deps_note = resolve_deps_mode(requested)
     args._deps_requested = requested   # 반입 번들 사이드카 조건(_emit_registry_bundle)이 읽는다
+    args._deps_mode = deps_mode        # 재현 명령(_scan_reproduce_command)이 적용 모드를 읽는다
     if deps_note:
         print(f"[gvskb] 패키지 검사 모드: {deps_note}", file=sys.stderr)
     dep_audit = _run_dependency_audit(
@@ -299,6 +305,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         env_grade=getattr(args, "env", None),
         include_installed=getattr(args, "include_installed", False),
         mode=deps_mode,
+        _explicit=requested is not None,
     )
     dep_record = attach_dependency_check(
         report, mode=deps_mode, requested=requested, audit=dep_audit, note=deps_note,
