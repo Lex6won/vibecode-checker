@@ -55,7 +55,8 @@ def test_env_grade_is_carried() -> None:
 def test_full_invocation_round_trips() -> None:
     """실제로 쓰는 조합이 그대로 복원되는가."""
     cmd = _scan_reproduce_command(_args(check_deps=True, include_installed=True, env="E2"))
-    assert cmd == "gvskb scan ./proj --check-deps --include-installed --env E2"
+    # 46차: 패키지 검사는 기본(local)이고 `--check-deps` 는 `--deps online` 의 별칭이다.
+    assert cmd == "gvskb scan ./proj --deps online --include-installed --env E2"
 
 
 def test_common_case_stays_short() -> None:

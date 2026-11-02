@@ -640,6 +640,19 @@ class ScanReport(BaseModel):
         default=None,
         description="배포 게이트 판정(verdict/blocked/block_reasons/…). None=아직 계산 전",
     )
+    #: 46차 — 패키지(의존성) 검사가 **어떤 모드로, 어떤 위협정보 기준으로** 수행됐는가.
+    #: 패키지 검사는 이제 옵션이 아니라 기본이다. 그래서 "안 했다"도 기록해야 한다 —
+    #: 기록이 없으면 '검사했는데 깨끗함'과 '검사하지 않음'이 같은 모양이 된다.
+    #: {'mode': 'local'|'online'|'off', 'requested_mode', 'manifests_found': int,
+    #:  'intel': {'state': 'ok'|'stale'|'missing', 'as_of', 'max_age_days', 'sources', 'missing', 'stale'},
+    #:  'auto_refresh': {...} | None, 'note': str}. None = 구버전 JSON(모드 미기록).
+    dependency_check: dict | None = Field(
+        default=None,
+        description=(
+            "패키지 검사 실행 기록 — mode(local=로컬 위협정보 대조·네트워크 없음 / online=OSV·저장소 실시간 조회 / "
+            "off=사용자가 생략), intel(위협정보 캐시 상태: ok|stale|missing, as_of 수집 시각). None=미기록(구버전)."
+        ),
+    )
     posture_notes: list[dict] = Field(
         default_factory=list,
         description=(
@@ -841,6 +854,8 @@ class PackageCheckResult(BaseModel):
     verdict_severity: Literal["info", "low", "medium", "high", "critical"] = "info"
     requires_review: bool = True
     offline: bool = False
+    #: 46차 — 어느 경로로 판정했나: 'local'(기본, 로컬 위협정보 캐시) | 'offline'(GVSKB_MODE=offline) | None(온라인).
+    check_mode: str | None = None
     # 실재·메타데이터 (VCPS C4/C1/C2/LIC)
     exists: bool | None = Field(default=None, description="registry_metadata.exists 의 요약 복사본")
     registry_metadata: PackageRegistryMetadata | None = None

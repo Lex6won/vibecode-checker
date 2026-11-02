@@ -36,6 +36,15 @@ def _is_offline() -> bool:
     return os.environ.get("GVSKB_MODE", "").lower() == "offline"
 
 
+def _use_local_cache(mode: str | None) -> bool:
+    """로컬 위협정보 캐시만으로 판정하는가(네트워크 0).
+
+    46차: ``mode="local"`` 은 패키지 검사의 **기본값**이다 — 망분리 전용이던 캐시 대조 경로를
+    모든 PC 의 1층 검사로 쓴다. ``None`` 은 예전 동작(``GVSKB_MODE=offline`` 일 때만 로컬).
+    """
+    return mode == "local" or _is_offline()
+
+
 # 편집거리 typosquat 비교용 인기 패키지 (상위 다운로드 일부). 완전한 목록이
 # 아니라 흔한 오타 표적만 둔다 — 신호용이며 차단 근거가 아니다.
 _POPULAR_PYPI = frozenset({
@@ -739,8 +748,13 @@ def _offline_vuln_hits(
 
 def _offline_cache_check(
     name: str, ecosystem: str, ecosystem_label: str, version: str | None = None,
+    *, local_mode: bool = False,
 ) -> dict:
     """Consult the local intel cache and return a unified PackageCheckResult dict.
+
+    ``local_mode=True`` 는 46차의 기본 경로(온라인 PC 에서도 로컬 캐시만 대조)다 — 판정
+    로직은 오프라인과 같고, 사람에게 보이는 말만 "오프라인"이 아니라 "로컬 위협정보"로 적는다.
+    오프라인 PC 에서 "오프라인이라 확인 못 함"은 맞는 말이지만 온라인 PC 에서는 틀린 말이다.
 
     오프라인은 실재·발행일을 확인할 수 없다 — exists=None 으로 '미확인'을
     명시한다. 미확인은 '안전'이 아니다. 알려진 취약점(CVE)은 **osv-vulns 캐시가
@@ -752,6 +766,8 @@ def _offline_cache_check(
     osv_entry = cache.load("osv-malicious")
     kev_entry = cache.load("cisa-kev")
     vulns_entry = cache.load("osv-vulns")
+    how = "로컬 위협정보" if local_mode else "오프라인"           # 사람에게 보이는 말
+    how_adj = "로컬 캐시 검사라" if local_mode else "오프라인 검사라"
 
     base = dict(
         name=name,
@@ -774,8 +790,10 @@ def _offline_cache_check(
             verdict_severity="info",
             requires_review=True,
             note=(
-                "GVSKB_MODE=offline 이며 로컬 인텔 캐시가 비어 있습니다. "
-                "`gvskb update-intel` 을 먼저 실행해 OSV malicious feed와 CISA KEV 캐시를 만든 뒤 다시 검사하세요."
+                ("로컬 위협정보 캐시가 비어 있습니다. " if local_mode
+                 else "GVSKB_MODE=offline 이며 로컬 인텔 캐시가 비어 있습니다. ")
+                + "인터넷이 되는 PC 라면 `gvskb update-intel`, 폐쇄망이면 관리자가 배포한 "
+                "위협정보 번들(GVSKB_INTEL_DIR)을 반입한 뒤 다시 검사하세요."
             ),
             disclaimer=(
                 "이 결과는 휴리스틱 보조 신호이며 캐시 기반 검사가 수행되지 않았습니다. "
@@ -846,9 +864,10 @@ def _offline_cache_check(
         cache_freshness=cache_freshness,
         cache_ecosystems=covered_ecosystems,
         cache_stale_sources=stale_sources,
-        source="local intel cache (GVSKB_MODE=offline)",
+        source=("local intel cache (deps=local)" if local_mode else "local intel cache (GVSKB_MODE=offline)"),
+        check_mode=("local" if local_mode else "offline"),
         disclaimer=(
-            "오프라인 캐시 기반 검사입니다. 캐시 갱신 시점 이후의 신규 advisory는 반영되지 않습니다. "
+            f"{how} 캐시 기반 검사입니다. 캐시 갱신 시점 이후의 신규 advisory는 반영되지 않습니다. "
             "운영 반영 전 `gvskb update-intel` 최신 실행 시각을 확인하세요."
         ),
     )
@@ -899,7 +918,7 @@ def _offline_cache_check(
             notes.append(
                 f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 취약 판정(양성)은 유효합니다."
             )
-        notes.append("오프라인 검사라 공식 저장소 실재·발행일(쿨다운)은 확인하지 못했습니다.")
+        notes.append(f"{how_adj} 공식 저장소 실재·발행일(쿨다운)은 확인하지 못했습니다.")
         base.update(
             verdict_severity=sev,
             vulnerability_count=len(vuln_hits),
@@ -961,7 +980,7 @@ def _offline_cache_check(
             verdict="unknown",
             requires_review=True,
             note=(
-                f"오프라인 캐시에 이 패키지의 advisory {vuln_undetermined}건이 있으나 "
+                f"{how} 캐시에 이 패키지의 advisory {vuln_undetermined}건이 있으나 "
                 f"버전 {version} 의 적용 여부를 해석하지 못했습니다('이상 없음'이 아닙니다). "
                 "버전 표기를 확인하거나 온라인 검사로 재확인하세요."
             ),
@@ -982,8 +1001,8 @@ def _offline_cache_check(
             verdict="checked_clean",
             requires_review=True,
             note=(
-                "오프라인 캐시 대조: 악성 등록 없음 · 알려진 취약점(OSV) 없음. "
-                "다만 오프라인은 공식 저장소 실재(슬롭스쿼팅)와 발행일(쿨다운)을 "
+                f"{how} 캐시 대조: 악성 등록 없음 · 알려진 취약점(OSV) 없음. "
+                f"다만 {how} 검사는 공식 저장소 실재(슬롭스쿼팅)와 발행일(쿨다운)을 "
                 "확인하지 못합니다 — 처음 쓰는 패키지라면 외부망에서 한 번 확인하세요."
                 + clean_kev_note
             ),
@@ -1011,7 +1030,7 @@ def _offline_cache_check(
         verdict="unknown",
         requires_review=True,
         note=(
-            "오프라인 캐시에 **악성 등록은 없습니다**. 다만 오프라인에는 CVE 데이터가 "
+            f"{how} 캐시에 **악성 등록은 없습니다**. 다만 이 캐시에는 CVE 데이터가 "
             "없어 **알려진 취약점 여부는 확인하지 못했습니다**('이상 없음'이 아닙니다). "
             "최신 인텔 번들(osv-vulns 포함)을 반입하면 오프라인에서도 알려진 취약점까지 "
             "대조됩니다. 취약점까지 보려면 외부망에서 검사하거나(GVSKB_MODE 를 offline 로 "
@@ -1360,8 +1379,12 @@ async def audit_manifest(
     env_grade: str | None = None,
     filename: str = "",
     on_progress: "Callable[[int, int, str], None] | None" = None,
+    mode: str | None = None,
 ) -> dict:
     """의존성 매니페스트·**락파일**을 파싱해 패키지별 취약·악성 검사를 수행한다.
+
+    ``mode``: ``"local"`` 이면 네트워크 없이 로컬 위협정보 캐시만 대조한다(46차 기본값).
+    ``"online"`` 은 OSV·공식 저장소 조회. ``None`` 은 예전 동작(``GVSKB_MODE=offline`` 따라감).
 
     온라인: 공식 저장소 실재·발행일 확인 + OSV.dev 조회(패키지명·버전만 전송).
     오프라인(GVSKB_MODE=offline): 로컬 인텔 캐시 기반 — 판정 불가는 '안전'이
@@ -1457,6 +1480,7 @@ async def audit_manifest(
                 env_grade=env_grade,
                 client=client,
                 version_exact=bool(package.get("version_exact", True)),
+                mode=mode,
             )
         done += 1
         if on_progress is not None:
@@ -1491,9 +1515,9 @@ async def audit_manifest(
     )
 
     # 연결을 하나로 모은다 — 906개면 예전에는 TLS 핸드셰이크도 906번이었고,
-    # 연결이 많을수록 일시 실패(getaddrinfo)가 늘었다. 오프라인 모드는 네트워크를
+    # 연결이 많을수록 일시 실패(getaddrinfo)가 늘었다. 로컬·오프라인 모드는 네트워크를
     # 쓰지 않으므로 열지 않는다.
-    if _is_offline():
+    if _use_local_cache(mode):
         checks = list(await asyncio.gather(*(_one(p, None) for p in limited)))
     else:
         pool = httpx.Limits(max_connections=_concurrency(),
@@ -1629,6 +1653,7 @@ async def check_package_impl(
     env_grade: str | None = None,
     client: "httpx.AsyncClient | None" = None,
     version_exact: bool = True,
+    mode: str | None = None,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
@@ -1661,8 +1686,8 @@ async def check_package_impl(
             checked_at=_now_iso(),
         ).model_dump(mode="json")
 
-    if _is_offline():
-        result = _offline_cache_check(name, ecosystem, eco, version)
+    if _use_local_cache(mode):
+        result = _offline_cache_check(name, ecosystem, eco, version, local_mode=not _is_offline())
         if version is not None:
             result["version"] = version
         # 오프라인은 발행일을 알 수 없어 쿨다운 판정 불가(ok=None) — '통과' 아님.

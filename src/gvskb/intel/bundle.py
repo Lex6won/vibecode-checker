@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .cache import IntelCache, default_cache_dir
+from .signing import SIG_MEMBER, sign_manifest, signature_required, verify_manifest
 
 MANIFEST_NAME = "manifest.json"
 _CACHES_PREFIX = "caches/"
@@ -55,8 +56,18 @@ def _is_safe_member_name(fname: str) -> bool:
     return _SAFE_MEMBER_RE.match(fname) is not None
 
 
-def export_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dict:
-    """현재 인텔 캐시 전체를 manifest(sha256) 포함 zip으로 내보낸다."""
+def export_bundle(
+    zip_path: str | Path,
+    *,
+    cache_dir: Path | None = None,
+    sign_seed: bytes | None = None,
+    key_id: str | None = None,
+) -> dict:
+    """현재 인텔 캐시 전체를 manifest(sha256) 포함 zip으로 내보낸다.
+
+    ``sign_seed`` 를 주면 manifest 바이트에 Ed25519 서명을 붙인다(``manifest.sig``). 서명은
+    위조를 막는 장치다 — sha256 은 손상만 잡는다(signing.py 참조).
+    """
     cache = IntelCache(cache_dir)
     source_ids = cache.list_sources()
     if not source_ids:
@@ -90,13 +101,43 @@ def export_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
             "tool": "vibecode-checker intel-bundle",
             "files": files,
         }
-        zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
+        manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+        zf.writestr(MANIFEST_NAME, manifest_bytes)
+        signed_key: str | None = None
+        if sign_seed is not None:
+            sig_doc = sign_manifest(manifest_bytes, sign_seed, key_id)
+            zf.writestr(SIG_MEMBER, json.dumps(sig_doc, ensure_ascii=False, indent=2))
+            signed_key = sig_doc["key_id"]
     return {"ok": True, "bundle": str(out), "sources": [f["source_id"] for f in files],
-            "file_count": len(files)}
+            "file_count": len(files), "signed": sign_seed is not None, "key_id": signed_key}
 
 
-def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dict:
-    """번들을 전수 검증 후 캐시 디렉터리로 반입한다. 검증 실패 시 전체 거부."""
+def _check_signature(zf: zipfile.ZipFile, manifest_bytes: bytes) -> tuple[bool, bool, str | None, str]:
+    """(통과, 서명 있음, key_id, 사유). 서명이 있으면 맞아야 하고, 없으면 정책에 따른다."""
+    if SIG_MEMBER not in zf.namelist():
+        if signature_required():
+            return (False, False, None,
+                    "서명 없는 번들 — GVSKB_INTEL_REQUIRE_SIGNATURE=1 정책에 따라 거부합니다. "
+                    "서명된 공식 번들(intel-latest)을 쓰거나 관리자 키로 서명해 배포하세요.")
+        return True, False, None, "서명 없음(허용 — 정책 미설정)"
+    try:
+        sig_doc = json.loads(zf.read(SIG_MEMBER).decode("utf-8"))
+    except (KeyError, json.JSONDecodeError, UnicodeDecodeError,
+            zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
+        return False, True, None, "서명 문서(manifest.sig)가 손상됐습니다 — 반입 중단."
+    ok, why = verify_manifest(manifest_bytes, sig_doc)
+    if not ok:
+        return (False, True, None,
+                f"번들 서명 검증 실패 — {why}. 위조·변조 의심으로 반입을 전체 중단합니다.")
+    return True, True, why, f"서명 확인(key_id={why})"
+
+
+def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None, verify_only: bool = False) -> dict:
+    """번들을 전수 검증 후 캐시 디렉터리로 반입한다. 검증 실패 시 전체 거부.
+
+    검증 순서: 서명(있으면 반드시 일치, 정책에 따라 필수) → manifest → 파일별 sha256 전수.
+    ``verify_only`` 면 기록하지 않고 결과만 돌려준다(``verify_bundle``).
+    """
     src = Path(zip_path)
     if not src.exists():
         return {"ok": False, "error": f"번들 파일이 없습니다: {src}", "sources": []}
@@ -108,12 +149,19 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
 
     with zf:
         try:
-            manifest = json.loads(zf.read(MANIFEST_NAME).decode("utf-8"))
+            manifest_bytes = zf.read(MANIFEST_NAME)
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError,
                 zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
             # manifest 자체가 손상된 경우(압축 스트림 오류 포함)도 예외를 흘리지 않고 거부한다.
             return {"ok": False, "error": "manifest.json이 없거나 손상됐습니다 — 정식 export 번들이 아닙니다.",
                     "sources": []}
+
+        # 0단계: 서명 — 파일 해시보다 먼저 본다. 해시는 번들이 **스스로** 주장하는 값이라
+        # 위조자가 함께 고칠 수 있고, 서명만이 "누가 만들었나"를 말한다.
+        sig_ok, signed, key_id, sig_note = _check_signature(zf, manifest_bytes)
+        if not sig_ok:
+            return {"ok": False, "error": sig_note, "sources": [], "signed": signed}
 
         files = manifest.get("files") or []
         if not files:
@@ -153,6 +201,13 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
                         "error": f"'{fname}' sha256 불일치 — 이동 중 변조·손상 가능. 반입을 전체 중단합니다."}
             verified.append((fname, data))
 
+        if verify_only:
+            return {
+                "ok": True, "sources": [f["source_id"] for f in files], "file_count": len(verified),
+                "created_at": manifest.get("created_at", ""), "signed": signed, "key_id": key_id,
+                "signature": sig_note,
+            }
+
         # 2단계: 전부 통과한 경우에만 기록
         target = cache_dir or default_cache_dir()
         target.mkdir(parents=True, exist_ok=True)
@@ -170,4 +225,12 @@ def import_bundle(zip_path: str | Path, *, cache_dir: Path | None = None) -> dic
         "sources": [f["source_id"] for f in files],
         "file_count": len(verified),
         "created_at": manifest.get("created_at", ""),
+        "signed": signed,
+        "key_id": key_id,
+        "signature": sig_note,
     }
+
+
+def verify_bundle(zip_path: str | Path) -> dict:
+    """번들을 **쓰지 않고** 검증만 — 서명·manifest·파일 해시 전수. 망연계 수신 서버가 배포 전에 쓴다."""
+    return import_bundle(zip_path, verify_only=True)

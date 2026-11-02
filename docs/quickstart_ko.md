@@ -133,7 +133,7 @@ sha256sum -c gvskb-intel-bundle.zip.sha256
 
 # (망분리 PC) 반입 후 검증하며 등록 — 해시가 다르면 전체 거부됩니다
 gvskb intel-bundle import gvskb-intel-bundle.zip
-gvskb scan ./my-project --check-deps     # 외부 통신 없이 로컬 룰·캐시로만 점검
+gvskb scan ./my-project                  # 패키지 검사는 기본 — 외부 통신 없이 로컬 룰·캐시로만 점검
 ```
 
 `GVSKB_MODE=offline` 을 설정하면 외부 통신을 완전히 차단합니다. 자세한 절차는

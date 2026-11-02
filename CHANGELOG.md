@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+### 46차 — 패키지(의존성) 검사 기본 실행 · 위협정보 신선도 게이트 · 번들 전자서명 (엔진, 룰셋 변경 없음)
+
+**판정 기준이 바뀝니다.** 지금까지 `--check-deps` 없이 "승인"을 받던 프로젝트가 패키지 때문에 조건부·차단·판정 불가로
+바뀔 수 있습니다 — 의도한 결과입니다. 바이브코딩 앱의 실제 위험은 직접 쓴 코드보다 가져다 쓴 패키지에 있는데, 옵션을
+붙여야만 보는 검사는 공무원에게 조용한 초록불이었습니다(사용자 결정 2026-11-02).
+
+- **기본 실행**: `gvskb scan` 과 MCP `scan_path` 가 매니페스트·락파일을 찾아 **로컬 위협정보 캐시**와 대조한다(`--deps local`,
+  네트워크 0). `--deps online` 은 구 `--check-deps`(별칭 유지), `--deps off` 는 생략하되 기록. 기관 기본값 `GVSKB_DEPS_MODE`.
+  공용 본문 `deps_check.py`(CLI·MCP 같은 코드). MCP `scan_path` 는 예전에 의존성을 전혀 보지 않았다 — 가장 큰 구멍.
+- **신선도 게이트**: 위협정보 캐시가 없으면 `undetermined`(종료코드 3, `gate.intel_gap="missing"`), 오래됐으면 `conditional`
+  (`intel_stale`). 매니페스트가 없는 프로젝트는 영향 없음. 결과 JSON 에 `dependency_check`(mode·intel 상태) 신설,
+  보고서 머리표 「판정 기준」에 "위협정보 MM.DD HH:MM 수집", 상태별 배너 한 줄(없음·오래됨·생략 — 조치만, 근거는 부록).
+- **자동 갱신**: 번들 내려받기는 프로젝트 정보를 보내지 않으므로 local 모드에서도 검사 직전 시도(하루 1회, 망분리는 폴더만).
+- **번들 전자서명(Ed25519, RFC 8032)**: `manifest.json` 서명(`manifest.sig`). 서명이 있으면 반드시 일치, `GVSKB_INTEL_REQUIRE_SIGNATURE=1`
+  이면 서명 없는 번들 거부. 검증은 순수 파이썬(새 의존성 없음, RFC 시험 벡터 고정). 신뢰 공개키는 `intel/signing.py`
+  `TRUSTED_PUBLIC_KEYS` + `GVSKB_INTEL_TRUSTED_KEYS`. CLI `intel-bundle keygen|verify`, `export --sign-key-env`. 갱신 워크플로는
+  Secrets `GVSKB_INTEL_SIGNING_KEY` 가 있으면 서명해 게시(없으면 경고). 해시로 다시 맞춘 독 넣기 번들이 서명에 막히는 테스트 포함.
+- doctor: 위협정보 캐시 없음은 모드와 무관하게 WARN(osv-vulns 포함 3종), 서명 정책 줄 추가.
+- 테스트: 46차 2파일(패키지 기본 19 · 서명 11). conftest 가 모든 테스트에 빈 캐시 폴더·자동 갱신 꺼짐을 기본으로 고정.
+
 ## [0.5.9] - 2026-10-25
 
 ### 40차 — 생태계별 보안 설정 판정: Electron · VS Code 확장 · 브라우저 확장 · MCP 서버 (룰셋 2026.10.25b)

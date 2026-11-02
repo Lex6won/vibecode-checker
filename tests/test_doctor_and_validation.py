@@ -229,11 +229,12 @@ def test_doctor_intel_cache_warns_when_offline_and_missing(monkeypatch, tmp_path
     """망분리 + 캐시 없음 = check-package 전건 판정불가 상황 — doctor가 WARN으로 알린다."""
     monkeypatch.setenv("GVSKB_MODE", "offline")
     monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path / "none"))
+    monkeypatch.delenv("GVSKB_AUTO_UPDATE", raising=False)   # conftest 기본(off)을 풀어 자동 당김 진단을 본다
     from gvskb.diagnostics import check_intel_cache
 
     results = check_intel_cache()
     cache_checks = [r for r in results if r["name"].startswith("Intel cache:")]
-    assert len(cache_checks) == 2  # osv-malicious · cisa-kev
+    assert len(cache_checks) == 3  # osv-malicious · osv-vulns · cisa-kev (46차: 필수 3종)
     assert all(r["status"] == "warn" for r in cache_checks)
     assert any("update-intel" in r.get("note", "") for r in cache_checks)
     # 자동 당김 진단도 함께 나온다 — 오프라인인데 배포 폴더가 없으면 경고.
@@ -245,11 +246,13 @@ def test_doctor_intel_cache_warns_when_offline_and_missing(monkeypatch, tmp_path
 
 def test_doctor_intel_cache_ok_when_fresh(monkeypatch, tmp_path):
     monkeypatch.delenv("GVSKB_MODE", raising=False)
+    monkeypatch.delenv("GVSKB_AUTO_UPDATE", raising=False)   # conftest 기본(off)이면 자동 당김 줄이 WARN 이다
     monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
     from gvskb.intel.cache import IntelCache
 
     cache = IntelCache()
     cache.save("osv-malicious", "https://example/x", [], ecosystems=["PyPI"])
+    cache.save("osv-vulns", "https://example/x", [], ecosystems=["PyPI"])
     cache.save("cisa-kev", "https://example/x", [])
     from gvskb.diagnostics import check_intel_cache
 
