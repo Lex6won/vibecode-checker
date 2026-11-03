@@ -511,12 +511,31 @@ def _cmd_sbom(args: argparse.Namespace) -> int:
     return EXIT_FINDINGS_WARN if (unchecked or parsed["skipped"] or dropped > 0) else EXIT_OK
 
 
+def _single_check_mode(requested: str | None) -> str | None:
+    """단건 조회(check-package)의 경로 — 요청값 → ``GVSKB_DEPS_MODE`` → None(기본: 온라인, 망분리면 로컬).
+
+    scan 의 기본은 local 이지만 단건 **설치 전 확인**은 다르다: 로컬 캐시만으로는 존재하지 않는
+    패키지(슬롭스쿼팅)를 '알려진 문제 없음'으로 읽게 되므로 온라인 실재 확인이 핵심 가치다(VCPS-C4).
+    그래서 기본을 바꾸지 않고, 기관이 ``GVSKB_DEPS_MODE`` 로 정했거나 사용자가 ``--deps`` 로 고르면 따른다.
+    ``off`` 는 단건 조회에 뜻이 없으므로 무시한다(47차, 하네스 관찰 반영).
+    """
+    from .deps_check import ENV_DEPS_MODE
+
+    mode = (requested or "").strip().lower() or None
+    if mode is None:
+        env = os.environ.get(ENV_DEPS_MODE, "").strip().lower()
+        if env in ("local", "online"):
+            mode = env
+    return mode
+
+
 def _cmd_check_package(args: argparse.Namespace) -> int:
     from .tools.check_package import check_package_impl
 
     result = asyncio.run(check_package_impl(
         name=args.name, ecosystem=args.ecosystem, version=args.version,
         env_grade=getattr(args, "env", None),
+        mode=_single_check_mode(getattr(args, "deps", None)),
     ))
     sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
@@ -610,9 +629,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
         "scan_report_schema_version": SCAN_REPORT_SCHEMA_VERSION,
         # 47차 — 포털·하네스가 "지금 이 설치본이 패키지 판정을 할 수 있는가"와 "판정을 어떻게 옮겨
         # 적어야 하는가"를 같은 호출로 받는다. 둘 다 네트워크·캐시 본문 파싱 없이 답한다.
-        "intel": _safe_intel_summary(),
         "gate_contract": diagnostics.gate_contract(),
     }
+    if args.json:
+        payload["intel"] = _safe_intel_summary()   # 텍스트 모드는 쓰지 않으므로 계산하지 않는다(리뷰 L-8)
     if args.json:
         sys.stdout.write(json.dumps(payload, ensure_ascii=False))
         sys.stdout.write("\n")
@@ -1230,6 +1250,12 @@ def build_parser() -> argparse.ArgumentParser:
     pkg.add_argument(
         "--env", choices=["E0", "E1", "E2"], default=None,
         help="실행환경 등급(쿨다운 기준일): E0=3일, E1=7일(기본), E2=14일",
+    )
+    pkg.add_argument(
+        "--deps", choices=["local", "online"], default=None, metavar="{local,online}",
+        help="단건 조회 경로. local=로컬 위협정보 캐시만(네트워크 0) · online=공식 저장소·OSV 조회(실재·발행일 확인, "
+             "패키지명·버전만 전송). 미지정 시 GVSKB_DEPS_MODE, 그것도 없으면 설치 전 확인의 목적상 online "
+             "(GVSKB_MODE=offline 이면 자동으로 local)",
     )
     pkg.set_defaults(func=_cmd_check_package)
 

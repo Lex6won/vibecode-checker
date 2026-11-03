@@ -789,6 +789,8 @@ def _offline_cache_check(
             verdict="unknown",
             verdict_severity="info",
             requires_review=True,
+            # 47차 — 캐시가 비어 '판정 불가'인 결과도 어느 경로였는지는 남긴다(하네스가 incomplete 사유에 쓴다).
+            check_mode=("local" if local_mode else "offline"),
             note=(
                 ("로컬 위협정보 캐시가 비어 있습니다. " if local_mode
                  else "GVSKB_MODE=offline 이며 로컬 인텔 캐시가 비어 있습니다. ")
@@ -1711,6 +1713,7 @@ async def check_package_impl(
         engine_version=_engine_version(),
         checked_at=_now_iso(),
         disclaimer=_ONLINE_DISCLAIMER,
+        check_mode="online",   # 47차 — 소비자(하네스 영수증)가 어느 경로로 판정했는지 늘 알 수 있게
     )
 
     if meta.exists is False:
