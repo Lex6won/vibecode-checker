@@ -156,16 +156,41 @@ def _stamp_matches(p: Path, st: "os.stat_result | None", recorded: str) -> bool:
             and d.get("sha256") == recorded)
 
 
-def _write_stamp(p: Path, st: "os.stat_result | None", recorded: str) -> None:
+def _write_stamp(
+    p: Path,
+    st: "os.stat_result | None",
+    recorded: str,
+    *,
+    fetched_at: str = "",
+    item_count: int | None = None,
+) -> None:
     if st is None:
         return
+    # 47차 — 수집 시각·항목 수도 스탬프에 적는다. `peek()` 가 수십 MB JSON 을 열지 않고
+    # 신선도를 답할 수 있게 하기 위한 것(포털 /health · 하네스 doctor 가 매번 묻는다).
     try:
         _stamp_path(p).write_text(
-            json.dumps({"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded}),
+            json.dumps({
+                "mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded,
+                "fetched_at": fetched_at, "item_count": item_count,
+            }),
             encoding="utf-8",
         )
     except OSError:
         pass   # 스탬프는 편의 장치 — 못 써도 검증은 된다
+
+
+def _read_stamp(p: Path, st: "os.stat_result | None") -> dict | None:
+    """(mtime, size) 가 지금 파일과 같은 스탬프 dict. 없거나 어긋나면 None."""
+    if st is None:
+        return None
+    try:
+        d = json.loads(_stamp_path(p).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if d.get("mtime_ns") != st.st_mtime_ns or d.get("size") != st.st_size:
+        return None
+    return d
 
 
 def _memo_put(key: str, sig: tuple[int, int], entry: "CacheEntry | None") -> None:
@@ -212,6 +237,8 @@ class IntelCache:
         try:
             st = p.stat()
             _memo_put(str(p.resolve()), (st.st_mtime_ns, st.st_size), entry)
+            # 방금 쓴 본문은 검증할 것이 없다 — 스탬프를 바로 남겨 다음 프로세스의 peek·load 가 빠르다.
+            _write_stamp(p, st, entry.sha256, fetched_at=entry.fetched_at, item_count=entry.item_count)
         except OSError:
             pass
         return entry
@@ -259,6 +286,7 @@ class IntelCache:
                 file=sys.stderr,
             )
             return None
+        stamp = _read_stamp(p, st)
         if not _stamp_matches(p, st, recorded):
             if _sha256(items) != recorded:
                 print(
@@ -268,7 +296,11 @@ class IntelCache:
                     file=sys.stderr,
                 )
                 return None
-            _write_stamp(p, st, recorded)
+            stamp = None
+        if stamp is None or "fetched_at" not in stamp:
+            # 새 스탬프이거나 46차 형식(수집 시각 없음) — peek 가 쓸 수 있게 다시 적는다.
+            _write_stamp(p, st, recorded, fetched_at=str(data.get("fetched_at", "") or ""),
+                         item_count=int(data.get("item_count", 0) or 0))
         return CacheEntry(
             schema_version=data.get("schema_version", 0),
             source_id=data.get("source_id", source_id),
@@ -278,6 +310,45 @@ class IntelCache:
             item_count=data.get("item_count", 0),
             items=items,
             ecosystems=data.get("ecosystems"),
+        )
+
+    def peek(self, source_id: str) -> CacheEntry | None:
+        """신선도만 필요할 때 — JSON 본문을 열지 않고 스탬프에서 수집 시각을 읽는다(47차).
+
+        스탬프가 없거나 46차 형식(수집 시각 없음)이면 ``load()`` 로 한 번 내려가 스탬프를 다시
+        쓴다(그 뒤로는 빠르다). 돌려주는 엔트리의 ``items`` 는 **비어 있다** — 판정에 쓰지 말고
+        ``fetched_at``·``age_days()``·``is_stale()``·``item_count`` 만 읽는다.
+
+        스탬프는 손상 감지용 편의 장치이고 캐시 폴더에 쓸 수 있는 사람은 스탬프도 고칠 수 있다.
+        그래서 이 값은 **상태 표시**(doctor·status·포털 /health)에만 쓰고, 패키지 판정은
+        여전히 ``load()`` 가 무결성을 재검증한 본문으로 한다.
+        """
+        p = self.path_for(source_id)
+        if not p.exists():
+            return None
+        try:
+            st: os.stat_result | None = p.stat()
+        except OSError:
+            st = None
+        stamp = _read_stamp(p, st)
+        if not stamp or "fetched_at" not in stamp or not stamp.get("sha256"):
+            # 메모를 거치지 않는다 — 메모 적중이면 스탬프가 새로 적히지 않아 다음 peek 도 느리다.
+            entry = self._load_uncached(source_id, p)
+            if st is not None:
+                try:
+                    _memo_put(str(p.resolve()), (st.st_mtime_ns, st.st_size), entry)
+                except OSError:
+                    pass
+            return entry
+        return CacheEntry(
+            schema_version=CACHE_VERSION,
+            source_id=source_id,
+            fetched_at=str(stamp.get("fetched_at") or ""),
+            url="",
+            sha256=str(stamp.get("sha256") or ""),
+            item_count=int(stamp.get("item_count") or 0),
+            items=[],
+            ecosystems=None,
         )
 
     def list_sources(self) -> list[str]:
