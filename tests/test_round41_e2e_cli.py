@@ -69,7 +69,9 @@ def test_portal_mapping_table_matches_contract() -> None:
 
 
 @pytest.mark.skipif(not HARNESS.exists(), reason="하네스가 옆에 없음(CI)")
-def test_harness_calls_nonzero_exit_blocked_by_design() -> None:
+def test_harness_never_approves_and_keeps_undetermined_distinct() -> None:
+    """47차부터 하네스는 `gate.verdict` 로 상태를 정한다(표는 test_round47_contract 가 대조). 여기서는
+    두 불변만 본다 — 승인하지 않는다, 판정 불가를 차단으로 적지 않는다."""
     text = HARNESS.read_text(encoding="utf-8")
-    assert 'exitCode === 0 ? "review_required" : exitCode === 3 ? "undetermined" : "blocked"' in text
     assert 'final_verdict: "review_required"' in text
+    assert '"undetermined"' in text and 'undetermined: "blocked"' not in text
