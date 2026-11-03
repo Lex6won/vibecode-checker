@@ -518,6 +518,155 @@ def package_result_contract() -> dict:
     }
 
 
+#: 게이트 판정값 — ``gate.verdict`` 가 낼 수 있는 전부. 이 밖의 값은 소비자가 '판정 불가'로 다룬다.
+GATE_VERDICTS: tuple[str, ...] = ("approved", "conditional", "blocked", "undetermined")
+
+#: 판정 → ``gvskb scan`` 종료코드(``--fail-on warn`` 기본). ``--fail-on block`` 이면 conditional 도 0.
+GATE_EXIT_CODES: dict[str, int] = {"approved": 0, "conditional": 1, "blocked": 2, "undetermined": 3}
+
+#: 소비자 표기 — 같은 판정을 세 시스템이 다른 말로 적는다. 포털·하네스는 이 표를 **그대로** 옮겨 적고,
+#: 자기 사유로 판정을 낮추거나(blocked → incomplete) 올리지(undetermined → approved) 않는다.
+GATE_CONSUMER_MAPPING: dict[str, dict[str, str]] = {
+    # 하네스(개발 PC): 승인하지 않는다. 승인·조건부는 모두 '사람 검토', 차단은 차단, 판정 불가는 판정 불가.
+    "harness": {
+        "approved": "review_required", "conditional": "review_required",
+        "blocked": "blocked", "undetermined": "undetermined",
+    },
+    # 포털(서버): 사람이 볼 네 단계.
+    "portal": {
+        "approved": "allow", "conditional": "needs_review",
+        "blocked": "blocked", "undetermined": "incomplete",
+    },
+}
+
+
+def gate_contract() -> dict:
+    """게이트 판정의 **소비자 계약**(47차) — 포털·하네스가 대조할 수 있게 한 곳에서 노출한다.
+
+    **왜 필요한가(실측 2026-11-03)**: 포털은 자기 미완 사유가 하나라도 있으면 ``gate.verdict=blocked`` 를
+    ``incomplete`` 로 덮어 KEV 차단이 화면에서 '재점검 필요'로 낮아졌고, 하네스는 종료코드 3(판정 불가)을
+    '차단'으로 기록했으며, 둘 다 0.5 시절의 ``--check-deps`` 를 박아 두어 0.6 의 로컬 기본값과 위협정보
+    신선도 게이트를 우회했다. 세 시스템이 같은 표를 보지 않아서 생긴 일이라, 표를 체커가 낸다.
+    ``package_result_contract()`` 와 같은 이유·같은 자리다.
+    """
+    from .schema import SCAN_REPORT_SCHEMA_VERSION
+
+    return {
+        "scan_report_schema_version": SCAN_REPORT_SCHEMA_VERSION,
+        "verdicts": list(GATE_VERDICTS),
+        # 종료코드는 `--fail-on` 정책에 따라 달라진다(리뷰 M-4). 아래 `exit_codes` 는 기본값(warn) 기준이며,
+        # 소비자는 종료코드가 아니라 **gate.verdict** 로 판정을 읽고 종료코드는 교차 확인에만 쓴다.
+        "exit_codes": dict(GATE_EXIT_CODES),
+        "exit_codes_policy": "fail_on=warn",
+        "exit_codes_by_fail_on": {
+            "warn": {"approved": 0, "conditional": 1, "blocked": 2, "undetermined": 3},
+            "block": {"approved": 0, "conditional": 0, "blocked": 2, "undetermined": 3},
+            "dependency": {"approved": 0, "conditional": 0, "blocked": 2, "undetermined": 0},
+            "never": {"approved": 0, "conditional": 0, "blocked": 0, "undetermined": 0},
+        },
+        "non_verdict_exit_codes": {"64": "usage", "66": "not_found"},
+        # 소비자가 판정에 읽어야 하는 gate 필드 — 테스트가 실제 gate dict 와의 일치를 강제한다.
+        "decision_fields": [
+            "verdict", "blocked", "conditional", "requires_action", "complete",
+            "block_reasons", "conditional_criteria", "coverage_gap", "blocked_dependency",
+            "intel_gap", "dependency_check_mode", "reason",
+        ],
+        "intel_gap_values": ["", "stale", "missing"],
+        # 구버전 보고서(dependency_check 없음)는 null — 소비자는 null 을 '모름'으로 다룬다.
+        "dependency_check_modes": ["local", "online", "off", None],
+        "consumer_mapping": {k: dict(v) for k, v in GATE_CONSUMER_MAPPING.items()},
+        "rules": [
+            "blocked 는 소비자 쪽 어떤 미완 사유보다 우선한다 — blocked 를 incomplete 로 낮추지 않는다.",
+            "undetermined 는 '검사하지 못함'이다 — 차단도 승인도 아니다. 종료코드 3 을 차단으로 적지 않는다.",
+            "모르는 verdict 값은 통과가 아니라 판정 불가로 다룬다.",
+            "필드 추가는 scan_report_schema_version 을 올리지 않는다. 필드 제거·의미 변경만 올린다.",
+            "패키지 검사는 0.6.0 부터 기본(local)이다. `--check-deps` 는 `--deps online` 의 별칭이며 "
+            "폐쇄망·개발 PC 의 기본 호출에 넣지 않는다.",
+        ],
+        "deprecated_flags": {"--check-deps": "--deps online"},
+        "min_version_for_default_deps": "0.6.0",
+    }
+
+
+def intel_summary() -> dict:
+    """필수 위협정보 캐시의 상태 한 묶음 — 네트워크·본문 파싱·캐시 폴더 쓰기 없이 답한다(47차).
+
+    포털 ``/health``·하네스 ``doctor`` 가 "이 서버(PC)가 지금 패키지 판정을 할 수 있는가"를 묻는 데
+    쓴다. **표시용**이다: 값은 검증 스탬프 또는 파일 머리(앞 1KB)에서 오며 무결성을 재검증하지 않는다
+    (``basis`` 로 출처를 밝힌다). 판정은 ``load()`` 가 재검증한 본문으로만 한다(``IntelCache.peek_info``).
+    """
+    from .intel.autopull import ESSENTIAL_SOURCES
+    from .intel.cache import IntelCache, intel_max_age_days
+    from .intel.signing import signature_required, trusted_keys
+
+    cache = IntelCache()
+    limit = intel_max_age_days()
+    sources: dict[str, dict] = {}
+    missing: list[str] = []
+    stale: list[str] = []
+    unknown: list[str] = []
+    mismatched: list[str] = []
+    bases: set[str] = set()
+    oldest: str | None = None
+    for sid in ESSENTIAL_SOURCES:
+        try:
+            info = cache.peek_info(sid)
+        except Exception:  # noqa: BLE001 — 손상 캐시는 '없음'
+            info = None
+        if info is None:
+            missing.append(sid)
+            sources[sid] = {"present": False, "fetched_at": None, "age_days": None, "stale": True, "basis": None}
+            continue
+        entry = cache.peek(sid)
+        bases.add(str(info.get("basis")))
+        if info.get("stamp_mismatch"):
+            mismatched.append(sid)
+        if entry is None:
+            unknown.append(sid)
+            sources[sid] = {"present": True, "fetched_at": None, "age_days": None, "stale": None,
+                            "basis": info.get("basis"), "stamp_mismatch": bool(info.get("stamp_mismatch"))}
+            continue
+        age = entry.age_days()
+        is_stale = entry.is_stale(limit)
+        if is_stale:
+            stale.append(sid)
+        sources[sid] = {"present": True, "fetched_at": entry.fetched_at, "age_days": age,
+                        "stale": is_stale, "item_count": entry.item_count,
+                        "basis": info.get("basis"), "stamp_mismatch": bool(info.get("stamp_mismatch"))}
+        if entry.fetched_at and (oldest is None or entry.fetched_at < oldest):
+            oldest = entry.fetched_at
+    if missing:
+        state = "missing"
+    elif unknown:
+        state = "unknown"
+    elif stale:
+        state = "stale"
+    else:
+        state = "ok"
+    ages = [s["age_days"] for s in sources.values() if s.get("age_days") is not None]
+    try:
+        sig = {"required": bool(signature_required()), "trusted_keys": len(trusted_keys())}
+    except Exception:  # noqa: BLE001
+        sig = {"required": None, "trusted_keys": None}
+    return {
+        "state": state,
+        "as_of": oldest,
+        "age_days": max(ages) if ages else None,
+        "max_age_days": limit,
+        "missing": missing,
+        "stale": stale,
+        "unknown": unknown,
+        # 출처 — "stamp"(검증 스탬프) · "header"(파일 머리, 무결성 미검증) · "mixed". 어느 쪽이든 표시용.
+        "basis": (next(iter(bases)) if len(bases) == 1 else ("mixed" if bases else None)),
+        "verified": False,
+        "stamp_mismatch": mismatched,
+        "sources": sources,
+        "cache_dir": str(cache.cache_dir),
+        "signature": sig,
+        "offline_mode": os.environ.get("GVSKB_MODE", "").lower() == "offline",
+    }
+
+
 def check_install_identity() -> list[CheckResult]:
     """doctor 용 — 커밋 신원과 MCP 도구 재고를 사람이 읽는 형태로."""
     identity = install_identity()
@@ -1043,6 +1192,8 @@ def run_diagnostics(*, network: bool = True, expected_minimum: int = 20) -> dict
     return {
         "overall": overall,
         "checks": checks,
+        # 47차 — 소비자 계약을 doctor --json 에도 싣는다(status --json 과 같은 값).
+        "gate_contract": gate_contract(),
         "summary": {
             "ok": sum(1 for c in checks if c["status"] == _OK),
             "warn": sum(1 for c in checks if c["status"] == _WARN),
@@ -1138,6 +1289,8 @@ def runtime_status_for_mcp() -> dict:
         "tool_inventory_ok": inventory["inventory_ok"],
         # 결과 필드 계약 — 게이트가 없는 이름을 읽고 조용히 통과시키는 일을 막는다.
         "package_result_contract": package_result_contract(),
+        # 47차 — 게이트 판정의 소비자 계약(포털·하네스 표기 표·종료코드·필드).
+        "gate_contract": gate_contract(),
         "module_path": _gvskb_path(),
         "rules_dir": str(rules_dir),
         "rules_dir_source": src,
