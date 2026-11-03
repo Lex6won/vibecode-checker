@@ -369,7 +369,7 @@ gvskb scan ./my-project --report-dir "D:\임시"  # 이번 한 번만 다른 곳
 - 코드에 문제가 없어도, 사용 중인 패키지에 알려진 취약점이 있거나 패키지를 확인하지 못했다면(오프라인 등) 승인 판정을 내리지 않습니다.
 - **검사된 파일이 0개**면 "안전"이 아니라 경로·확장자를 확인하라는 안내가 나오고 결론은 '판정 불가'가 됩니다.
 - **실행 소스 파일이 크기 상한(기본 8MB)을 넘어 검사되지 않으면** 그 사실이 `coverage.oversized_source_files` 에 남고 승인 판정이 나오지 않습니다(`--max-file-bytes` 로 상한 조정). 빠진 파일은 "이상 없음"이 아니라 "판정 밖"입니다.
-- 반입한 위협 정보 캐시가 오래되면(기본 30일 초과) '이상 없음'을 '판정 보류'로 낮춥니다.
+- 반입한 위협 정보 캐시가 오래되면(기본 **2일** 초과, `GVSKB_INTEL_MAX_AGE_DAYS` 로 조정) '이상 없음'을 '조건부(판정 보류)'로 낮추고, 캐시가 아예 없으면 '판정 불가'로 둡니다.
 
 ---
 
@@ -552,15 +552,19 @@ export GVSKB_INTEL_TRUSTED_KEYS="gg-2026=<64 hex 공개키>"
 
 **표기 차이는 설계입니다** — 같은 결과를 세 곳이 다른 말로 적습니다. 버그가 아닙니다.
 
-| 체커 | 하네스(개발 PC) | 포털 |
+| 체커 `gate.verdict` | 하네스(개발 PC) `checker_status` | 포털 화면 |
 |---|---|---|
-| 종료 1 · `conditional` | `checker_status: blocked`(0 이 아니면 전부), `final_verdict: review_required` | `needs_review` |
-| 종료 2 · `blocked` | `checker_status: blocked` | `blocked` |
-| 종료 3 · `undetermined` | `checker_status: undetermined` | `incomplete` |
-| 종료 0 · `approved` | `checker_status: review_required`(하네스는 승인하지 않음) | `allow` |
+| 종료 0 · `approved` | `review_required`(하네스는 승인하지 않음) | `allow` |
+| 종료 1 · `conditional` | `review_required`(사유는 `conditional_criteria` 로 영수증에 남김) | `needs_review` |
+| 종료 2 · `blocked` | `blocked` | `blocked` |
+| 종료 3 · `undetermined` | `undetermined`(차단이 아니라 '검사하지 못함') | `incomplete` |
 
-하네스는 "막혔다/안 막혔다"만 구분하고 승인은 절대 하지 않으며, 포털은 사람이 볼 네 단계로 옮겨 적습니다.
-"개발 PC 에서는 막혔는데 포털에서는 검토"는 이 표 그대로입니다.
+하네스는 승인을 절대 하지 않으며, 포털은 사람이 볼 네 단계로 옮겨 적습니다. 두 소비자 모두 **판정은 `gate.verdict`
+에서 읽고 종료코드는 교차 확인에만** 씁니다. 이 표와 종료코드·필드 목록은 체커가 `gvskb status --json` 의
+`gate_contract` 로 함께 내보내므로(0.6.1), 포털·하네스 테스트가 그 값과 자기 코드를 대조합니다. 규칙 두 가지:
+**차단은 소비자 쪽 어떤 미완 사유보다 우선**하고(차단을 '재점검'으로 낮추지 않음), **판정 불가는 차단이 아닙니다**
+(위협정보가 없어 패키지를 못 본 결과를 '막혔다'고 적지 않음). `status --json` 의 `intel` 은 그 설치본이 지금
+패키지 판정을 할 수 있는지(`state: ok|stale|missing`, 수집 시각)를 캐시 본문을 열지 않고 답합니다.
 
 ```bash
 gvskb scan ./src --fail-on dependency   # 의존성 차단만 실패(2) — 판정 불가·검사 불완전은 통과(임계값 정책)

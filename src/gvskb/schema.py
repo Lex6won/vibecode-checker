@@ -854,7 +854,7 @@ class PackageCheckResult(BaseModel):
     verdict_severity: Literal["info", "low", "medium", "high", "critical"] = "info"
     requires_review: bool = True
     offline: bool = False
-    #: 46차 — 어느 경로로 판정했나: 'local'(기본, 로컬 위협정보 캐시) | 'offline'(GVSKB_MODE=offline) | None(온라인).
+    #: 46차 — 어느 경로로 판정했나: 'local'(로컬 위협정보 캐시) | 'offline'(GVSKB_MODE=offline) | 'online'(47차부터 명시) | None(구버전).
     check_mode: str | None = None
     # 실재·메타데이터 (VCPS C4/C1/C2/LIC)
     exists: bool | None = Field(default=None, description="registry_metadata.exists 의 요약 복사본")

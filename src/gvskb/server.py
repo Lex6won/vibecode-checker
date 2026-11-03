@@ -264,6 +264,11 @@ async def check_package(
         Field(description=_ENV_GRADE_DESC + " E3(대민·개인정보)는 바이브코딩 대상이 아니므로 받지 않음"),
     ] = None,
     caller: Annotated[str | None, Field(description="호출 주체 자율 신고 (예: 'harness:auto', 'registry:manual'). 감사 구분용")] = None,
+    deps: Annotated[
+        Literal["local", "online"] | None,
+        Field(description="조회 경로. local=로컬 위협정보 캐시만(네트워크 0) · online=공식 저장소·OSV(실재·발행일 확인). "
+                          "미지정 시 GVSKB_DEPS_MODE, 없으면 online(망분리면 자동 local)"),
+    ] = None,
 ) -> dict:
     """단일 패키지의 실재·취약점·악성·발행경과일(쿨다운)을 설치 전에 확인합니다.
 
@@ -285,7 +290,10 @@ async def check_package(
     패키지명·버전만 전송합니다(코드 미전송). GVSKB_MODE=offline(망분리)이면 외부
     호출 없이 로컬 인텔 캐시로 대체하며, 실재·발행일은 '미확인'으로 표시됩니다.
     """
-    result = await check_package_impl(name=name, ecosystem=ecosystem, version=version, env_grade=env_grade)
+    from .cli import _single_check_mode
+
+    result = await check_package_impl(name=name, ecosystem=ecosystem, version=version, env_grade=env_grade,
+                                      mode=_single_check_mode(deps))
     # result 에 실린 caller 는 감사로그뿐 아니라 레지스트리 봉투의 result 로도
     # 그대로 나간다 — 검증은 감사 기록 직전이 아니라 **값이 들어오는 지점**에서
     # 해야 두 경로가 모두 덮인다(연동합의 §3 개인 식별자 금지).

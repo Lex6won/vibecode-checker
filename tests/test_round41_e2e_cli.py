@@ -2,8 +2,9 @@
 
 판정 표기 차이는 **설계**다(B6):
 - 체커 CLI: 종료코드 1 = 조건부(소스 발견은 게이트를 막지 않는다)
-- 하네스(.vibecode-harness/lib/checker-evidence.mjs): 0 이 아니면 `checker_status: "blocked"`(3 은 undetermined),
-  `final_verdict` 는 언제나 `review_required` — 하네스는 승인하지 않는다
+- 하네스(vibecode-harness/lib/checker-evidence.mjs, 47차): `gate.verdict` 로 상태를 정한다 — approved·conditional 은
+  `review_required`, blocked 는 `blocked`, undetermined 는 `undetermined`(차단이 아님). `final_verdict` 는 언제나
+  `review_required` — 하네스는 승인하지 않는다(표 대조는 test_round47_contract)
 - 포털(src/scan-summary.mjs GATE_VERDICT_TO_DECISION): conditional → `needs_review`
 같은 결과를 "개발 PC 에서는 막혔는데 포털에서는 검토"로 보는 것은 버그가 아니다.
 """
@@ -21,7 +22,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 HOLDOUT = REPO / "eval_corpus" / "projects" / "j_agentic_2026"
 PORTAL = REPO.parent / "vibecode-security-gate-portal" / "src" / "scan-summary.mjs"
-HARNESS = REPO.parent / ".vibecode-harness" / "lib" / "checker-evidence.mjs"
+HARNESS = REPO.parent / "vibecode-harness-github" / "lib" / "checker-evidence.mjs"
 
 #: 포털 계약 — 체커가 내는 verdict 와 포털 화면 판정. 새 verdict 값을 만들지 않는 이유(표 밖은 incomplete).
 PORTAL_VERDICT_TO_DECISION = {"blocked": "blocked", "conditional": "needs_review",
@@ -69,7 +70,9 @@ def test_portal_mapping_table_matches_contract() -> None:
 
 
 @pytest.mark.skipif(not HARNESS.exists(), reason="하네스가 옆에 없음(CI)")
-def test_harness_calls_nonzero_exit_blocked_by_design() -> None:
+def test_harness_never_approves_and_keeps_undetermined_distinct() -> None:
+    """47차부터 하네스는 `gate.verdict` 로 상태를 정한다(표는 test_round47_contract 가 대조). 여기서는
+    두 불변만 본다 — 승인하지 않는다, 판정 불가를 차단으로 적지 않는다."""
     text = HARNESS.read_text(encoding="utf-8")
-    assert 'exitCode === 0 ? "review_required" : exitCode === 3 ? "undetermined" : "blocked"' in text
     assert 'final_verdict: "review_required"' in text
+    assert '"undetermined"' in text and 'undetermined: "blocked"' not in text

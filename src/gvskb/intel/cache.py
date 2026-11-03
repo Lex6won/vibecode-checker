@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
@@ -141,6 +142,14 @@ _COMPACT_THRESHOLD_ITEMS = 10_000
 # 필드도 함께 고칠 수 있으므로 스탬프가 보안 수준을 낮추지 않는다. 위조 방어는 번들 서명
 # (intel/signing.py)이 맡는다. 파일이 바뀌면 mtime·size 가 달라져 자연히 다시 해시한다.
 # ---------------------------------------------------------------------------
+def _safe_int(value: Any) -> int:
+    """손상된 ``item_count``(비정수)가 적재를 **크래시**시키지 않게 한다(리뷰 L-3) — 0 으로 둔다."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _stamp_path(p: Path) -> Path:
     return p.with_name(p.name + ".verified")
 
@@ -156,16 +165,87 @@ def _stamp_matches(p: Path, st: "os.stat_result | None", recorded: str) -> bool:
             and d.get("sha256") == recorded)
 
 
-def _write_stamp(p: Path, st: "os.stat_result | None", recorded: str) -> None:
+def _write_stamp(
+    p: Path,
+    st: "os.stat_result | None",
+    recorded: str,
+    *,
+    fetched_at: str = "",
+    item_count: int | None = None,
+) -> None:
     if st is None:
         return
+    # 47차 — 수집 시각·항목 수도 스탬프에 적는다. `peek()` 가 수십 MB JSON 을 열지 않고
+    # 신선도를 답할 수 있게 하기 위한 것(포털 /health · 하네스 doctor 가 매번 묻는다).
+    target = _stamp_path(p)
+    tmp = target.with_name(target.name + f".{os.getpid()}.tmp")
     try:
-        _stamp_path(p).write_text(
-            json.dumps({"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded}),
+        # 임시파일 + 교체 — 폴링 중인 다른 프로세스가 반쯤 쓰인 스탬프를 읽지 않게 한다(리뷰 M-2c).
+        tmp.write_text(
+            json.dumps({
+                "mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded,
+                "fetched_at": fetched_at, "item_count": item_count,
+            }),
             encoding="utf-8",
         )
+        os.replace(tmp, target)
     except OSError:
-        pass   # 스탬프는 편의 장치 — 못 써도 검증은 된다
+        # 스탬프는 편의 장치 — 못 써도 검증은 된다. 다만 **매 프로세스가 재해시**하게 되므로
+        # 한 번은 알린다(읽기 전용 공유 폴더·다른 계정 소유 캐시에서 실제로 일어난다).
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _warn_stamp_unwritable_once(target)
+
+
+_STAMP_WARNED: set[str] = set()
+
+
+def _warn_stamp_unwritable_once(target: Path) -> None:
+    key = str(target.parent)
+    if key in _STAMP_WARNED:
+        return
+    _STAMP_WARNED.add(key)
+    print(
+        f"[gvskb] 참고: 위협정보 캐시 폴더에 검증 스탬프를 쓸 수 없습니다({target.parent}) — 판정은 그대로지만 "
+        "매 실행마다 캐시 무결성을 다시 계산해 느립니다. 폴더 쓰기 권한 또는 GVSKB_CACHE_DIR 을 확인하세요.",
+        file=sys.stderr,
+    )
+
+
+_HEADER_BYTES = 1024
+_HEADER_FETCHED_RE = re.compile(r'"fetched_at"\s*:\s*"([^"]*)"')
+_HEADER_COUNT_RE = re.compile(r'"item_count"\s*:\s*(\d+)')
+
+
+def _read_header(p: Path) -> tuple[str | None, int | None]:
+    """캐시 파일 **앞 1KB** 에서 수집 시각·항목 수만 뽑는다 — 본문(items, 수십 MB)은 열지 않는다.
+
+    envelope 은 ``asdict`` 순서(schema_version, source_id, fetched_at, url, sha256, item_count, items…)로
+    직렬화되므로 두 값은 항상 머리에 있다. 무결성은 보장하지 않는다(표시용).
+    """
+    try:
+        with p.open("rb") as fh:
+            head = fh.read(_HEADER_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return None, None
+    m1 = _HEADER_FETCHED_RE.search(head)
+    m2 = _HEADER_COUNT_RE.search(head)
+    return (m1.group(1) if m1 else None), (int(m2.group(1)) if m2 else None)
+
+
+def _read_stamp(p: Path, st: "os.stat_result | None") -> dict | None:
+    """(mtime, size) 가 지금 파일과 같은 스탬프 dict. 없거나 어긋나면 None."""
+    if st is None:
+        return None
+    try:
+        d = json.loads(_stamp_path(p).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if d.get("mtime_ns") != st.st_mtime_ns or d.get("size") != st.st_size:
+        return None
+    return d
 
 
 def _memo_put(key: str, sig: tuple[int, int], entry: "CacheEntry | None") -> None:
@@ -212,6 +292,8 @@ class IntelCache:
         try:
             st = p.stat()
             _memo_put(str(p.resolve()), (st.st_mtime_ns, st.st_size), entry)
+            # 방금 쓴 본문은 검증할 것이 없다 — 스탬프를 바로 남겨 다음 프로세스의 peek·load 가 빠르다.
+            _write_stamp(p, st, entry.sha256, fetched_at=entry.fetched_at, item_count=entry.item_count)
         except OSError:
             pass
         return entry
@@ -259,7 +341,9 @@ class IntelCache:
                 file=sys.stderr,
             )
             return None
-        if not _stamp_matches(p, st, recorded):
+        stamp = _read_stamp(p, st)
+        # 스탬프의 (mtime, size) 는 _read_stamp 가 이미 대조했다 — 남은 조건은 기록된 sha256 일치(리뷰 L-1).
+        if not (stamp and stamp.get("sha256") == recorded):
             if _sha256(items) != recorded:
                 print(
                     f"[gvskb] ⚠ intel cache integrity check failed: {p.name} — "
@@ -268,16 +352,75 @@ class IntelCache:
                     file=sys.stderr,
                 )
                 return None
-            _write_stamp(p, st, recorded)
+            stamp = None
+        if stamp is None or "fetched_at" not in stamp:
+            # 새 스탬프이거나 46차 형식(수집 시각 없음) — peek 가 쓸 수 있게 다시 적는다.
+            _write_stamp(p, st, recorded, fetched_at=str(data.get("fetched_at", "") or ""),
+                         item_count=_safe_int(data.get("item_count")))
         return CacheEntry(
             schema_version=data.get("schema_version", 0),
             source_id=data.get("source_id", source_id),
             fetched_at=data.get("fetched_at", ""),
             url=data.get("url", ""),
             sha256=recorded,
-            item_count=data.get("item_count", 0),
+            item_count=_safe_int(data.get("item_count")),
             items=items,
             ecosystems=data.get("ecosystems"),
+        )
+
+    def peek_info(self, source_id: str) -> dict | None:
+        """상태 표시용 경량 조회 — **본문을 열지 않는다**(47차, 리뷰 M-1·M-2 반영).
+
+        반환: ``{"present", "fetched_at", "item_count", "sha256", "basis", "stamp_mismatch"}``
+        - ``basis="stamp"``: (mtime, size) 가 맞는 검증 스탬프에서 읽음. 파일 앞 1KB 의 수집 시각과도
+          대조해 다르면 머리값을 쓰고 ``stamp_mismatch=True`` 로 알린다(스탬프만 고친 조작·복사 흔적).
+        - ``basis="header"``: 스탬프가 없거나 구형 — 파일 앞 1KB 에서만 읽음(무결성 미검증).
+        - ``basis="unknown"``: 둘 다 못 읽음 — 상태는 '알 수 없음'.
+        어느 경우에도 수십 MB 본문을 파싱하거나 캐시 폴더에 **쓰지 않는다**. 판정은 ``load()`` 로만.
+        """
+        p = self.path_for(source_id)
+        if not p.exists():
+            return None
+        try:
+            st: os.stat_result | None = p.stat()
+        except OSError:
+            st = None
+        stamp = _read_stamp(p, st) or {}
+        head_fetched, head_count = _read_header(p)
+        info: dict = {"present": True, "fetched_at": None, "item_count": None,
+                      "sha256": stamp.get("sha256") or None, "basis": "unknown", "stamp_mismatch": False}
+        if stamp.get("sha256") and "fetched_at" in stamp:
+            info["fetched_at"] = str(stamp.get("fetched_at") or "") or None
+            info["item_count"] = _safe_int(stamp.get("item_count")) if stamp.get("item_count") is not None else None
+            info["basis"] = "stamp"
+            if head_fetched is not None and head_fetched != info["fetched_at"]:
+                info["stamp_mismatch"] = True
+                info["fetched_at"] = head_fetched or None
+                info["item_count"] = head_count
+                info["basis"] = "header"
+        elif head_fetched is not None:
+            info["fetched_at"] = head_fetched or None
+            info["item_count"] = head_count
+            info["basis"] = "header"
+        return info
+
+    def peek(self, source_id: str) -> CacheEntry | None:
+        """``peek_info`` 를 CacheEntry 모양으로 — ``items`` 는 비어 있고 수집 시각을 모르면 None.
+
+        판정에 쓰지 말 것(무결성 미검증). ``fetched_at``·``age_days()``·``is_stale()``·``item_count`` 만 읽는다.
+        """
+        info = self.peek_info(source_id)
+        if not info or not info.get("fetched_at"):
+            return None
+        return CacheEntry(
+            schema_version=CACHE_VERSION,
+            source_id=source_id,
+            fetched_at=str(info["fetched_at"]),
+            url="",
+            sha256=str(info.get("sha256") or ""),
+            item_count=int(info.get("item_count") or 0),
+            items=[],
+            ecosystems=None,
         )
 
     def list_sources(self) -> list[str]:
