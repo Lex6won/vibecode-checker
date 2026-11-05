@@ -640,6 +640,14 @@ class ScanReport(BaseModel):
         default=None,
         description="배포 게이트 판정(verdict/blocked/block_reasons/…). None=아직 계산 전",
     )
+    #: 보안성검토 서식 v1.2 「AI 체커 점검 항목」 8개 결과표(설계 A4). 게이트 판정과 별개의 칸이다.
+    form_v12: dict | None = Field(
+        default=None,
+        description=(
+            "보안성검토 서식 v1.2 AI체커 8개 항목 결과 — items[{key,label,result(적합|부적합|확인 필요|판정 불가),"
+            "count,basis,action,rules}] · overall · summary. 「적합」은 탐지 룰 기준이며 안전 보증이 아니다. None=계산 전"
+        ),
+    )
     #: 46차 — 패키지(의존성) 검사가 **어떤 모드로, 어떤 위협정보 기준으로** 수행됐는가.
     #: 패키지 검사는 이제 옵션이 아니라 기본이다. 그래서 "안 했다"도 기록해야 한다 —
     #: 기록이 없으면 '검사했는데 깨끗함'과 '검사하지 않음'이 같은 모양이 된다.
@@ -660,6 +668,13 @@ class ScanReport(BaseModel):
             "CSP·X-Frame-Options·쿠키 보호 속성 설정 흔적이 저장소 어디에도 없을 때. "
             "판정(block/warn)·게이트와 무관하며 finding 이 아니다(개선요청 #34 D4·E). "
             "각 항목: id · level · title · detail · files · safe_fix · references."
+        ),
+    )
+    runtime_pins: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "프로젝트가 선언한 런타임 버전 — [{runtime(node|python|electron|next), spec, where, file, line}]. "
+            "서식 「언어(버전)」과 지원 종료 판단의 근거다. 비어 있으면 **근거 없음**이지 최신이 아니다."
         ),
     )
     autoexec_surface: list[dict] = Field(

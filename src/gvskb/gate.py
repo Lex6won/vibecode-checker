@@ -395,6 +395,9 @@ def attach_gate(report: ScanReport) -> ScanReport:
     읽는 쪽이 ``summary.blocked``(소스 기준)가 아니라 이 값을 보게 하기 위한 것.
     """
     report.gate = gate_status(report)
+    # 서식 v1.2 8개 항목 결과표도 같은 시점(의존성 감사·게이트가 붙은 뒤)에 새긴다 — CLI·MCP 모든 경로가 여기를 지난다.
+    from .form_v12 import attach_form_v12
+    attach_form_v12(report)
     return report
 
 

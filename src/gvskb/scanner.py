@@ -2092,6 +2092,7 @@ def scan_path(
     # 제외하거나 읽지 않는 자리를 **제외 규칙과 무관하게** 이름으로 찾아 파서로만 읽는다.
     # 2026-08 npm 웜·2026-10 PyPI 사고가 숨은 자리다. 어떤 설정도 실행하지 않는다.
     autoexec_entries: list[dict] = []
+    runtime_pins: list[dict] = []
     if is_dir:
         from .scanners.autoexec_surface import collect_autoexec_surface
         try:
@@ -2109,6 +2110,7 @@ def scan_path(
             skipped.extend(surface.skipped)
             scanned.extend(surface.scanned)
             autoexec_entries = [e.as_dict() for e in surface.entries]
+            runtime_pins = surface.pins
         # 40차 — 생태계별(Electron·VS Code 확장·Chrome 확장·MCP 서버) 설정·구조 판정. 의존성이 있을 때만 켜진다.
         from .scanners.ecosystem_surface import collect_ecosystem_surface
         try:
@@ -2188,6 +2190,7 @@ def scan_path(
         vendor_bundles=vendor_bundles,
         posture_notes=_posture_notes(posture, skipped),
         autoexec_surface=autoexec_entries,
+        runtime_pins=runtime_pins,
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}

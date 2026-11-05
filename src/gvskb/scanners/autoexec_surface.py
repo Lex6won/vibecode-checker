@@ -131,6 +131,8 @@ class SurfaceResult:
     findings: list[Finding] = field(default_factory=list)
     skipped: list[SkippedFile] = field(default_factory=list)
     scanned: list[str] = field(default_factory=list)
+    #: 런타임 버전 핀 — 서식 「언어(버전)」·EOL 판단의 재료. 핀이 없으면 '최신'이 아니라 '근거 없음'이다.
+    pins: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +377,10 @@ def _judge_claude_settings(data, text: str, rel: str, root: Path) -> list[Findin
     return out
 
 
+def _pin_dict(pin, rel: str) -> dict:
+    return {"runtime": pin.runtime, "spec": pin.spec, "where": pin.where, "file": rel, "line": pin.line}
+
+
 def _mcp_servers(data) -> dict:
     if not isinstance(data, dict):
         return {}
@@ -599,12 +605,16 @@ def collect_autoexec_surface(
                 from . import ci_workflow, runtime_version
                 wf = yaml.safe_load(text)
                 findings += ci_workflow.judge_workflow(wf, text, rel)
-                findings += runtime_version.judge_pins(runtime_version.pins_from_workflow(text), rel)
+                _pins = runtime_version.pins_from_workflow(text)
+                res.pins.extend(_pin_dict(pin, rel) for pin in _pins)
+                findings += runtime_version.judge_pins(_pins, rel)
             elif kind == "npm-manifest":
                 from . import npm_surface, runtime_version
                 pj = npm_surface.load_json_lenient(text)
                 findings += npm_surface.judge_package_json(pj, text, rel)
-                findings += runtime_version.judge_pins(runtime_version.pins_from_package_json(pj), rel)
+                _pins = runtime_version.pins_from_package_json(pj)
+                res.pins.extend(_pin_dict(pin, rel) for pin in _pins)
+                findings += runtime_version.judge_pins(_pins, rel)
             elif kind == "npm-lock":
                 from . import npm_surface
                 low = p.name.lower()
@@ -626,6 +636,7 @@ def collect_autoexec_surface(
                     pins = runtime_version.pins_from_pyproject(text)
                 else:
                     pins = runtime_version.pins_from_version_file(p.name, text)
+                res.pins.extend(_pin_dict(pin, rel) for pin in pins)
                 findings += runtime_version.judge_pins(pins, rel)
             # 39차 — 지시 파일의 위험 지시 신호를 모은다(권한 신호와 결합은 루프 뒤 후처리에서).
             if kind == "agent-instructions":

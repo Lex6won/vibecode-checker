@@ -1820,6 +1820,7 @@ def render_markdown(
     # --- ⑨-4 행정안전부 49개 항목 결과표(43차) ------------------------------
     # --- ⑨-5 검사 엔진 가동 현황(45차) ----------------------------------------
     lines.extend(_render_engines_md(report))
+    lines.extend(_render_form_v12_md(report))
     lines.extend(_render_mois_md(report))
 
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
@@ -2596,6 +2597,7 @@ def render_html(
 
     # === 행정안전부 49개 항목 결과표(43차) ================================
     p.extend(_render_engines_html(report))
+    p.extend(_render_form_v12_html(report))
     p.extend(_render_mois_html(report))
 
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
@@ -4291,4 +4293,35 @@ def _render_engines_html(report: ScanReport) -> list[str]:
         tag = "필수 미가동" if e.name in (eng.required or []) else "미가동(선택)"
         p.append(f"<p><b>{_esc(tag)}</b> <code>{_esc(e.name)}</code> — {_esc(e.reason.replace('`', ''))}</p>")
     p.append("</details>")
+    return p
+
+# --- 보안성검토 서식 v1.2 대응 (설계 A4) -----------------------------------------
+_FORM_V12_INTRO = ("보안성검토 서식 v1.2 의 「AI 체커 점검 항목」 8개에 대한 결과입니다. "
+                   "「적합」은 자동 탐지 룰 기준의 결과이며 안전 보증이 아닙니다. 배포 게이트 판정과는 별개의 칸입니다.")
+
+
+def _render_form_v12_md(report: ScanReport) -> list[str]:
+    t = report.form_v12
+    if not t:
+        return []
+    out = ["## 보안성검토 서식 대응 — AI 체커 점검 항목", "", f"> {_FORM_V12_INTRO}", "",
+           f"종합: **{t['overall']}** ({t['summary']})", "", "| 점검 항목 | 결과 | 근거 | 조치 |", "|---|---|---|---|"]
+    for r in t["items"]:
+        out.append(f"| {r['label']} | **{r['result']}** | {r['basis']} | {r['action'] or '—'} |")
+    out.append("")
+    return out
+
+
+def _render_form_v12_html(report: ScanReport) -> list[str]:
+    t = report.form_v12
+    if not t:
+        return []
+    p = ['<details class="sec" open><summary>보안성검토 서식 대응 — AI 체커 점검 항목 '
+         f'<span class="cnt">{_esc(t["overall"])}</span></summary>',
+         f'<p class="muted">{_esc(_FORM_V12_INTRO)} 종합: <b>{_esc(t["overall"])}</b> ({_esc(t["summary"])})</p>',
+         "<table><tr><th>점검 항목</th><th>결과</th><th>근거</th><th>조치</th></tr>"]
+    for r in t["items"]:
+        p.append(f"<tr><td>{_esc(r['label'])}</td><td><b>{_esc(r['result'])}</b></td><td>{_esc(r['basis'])}</td>"
+                 f"<td>{_esc(r['action'] or '—')}</td></tr>")
+    p.append("</table></details>")
     return p
