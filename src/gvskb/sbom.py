@@ -130,6 +130,8 @@ def _properties(check: dict) -> list[dict]:
 
     put("verdict", check.get("verdict"))
     put("checked", "true" if check.get("checked") else "false")
+    if check.get("is_malicious_package"):
+        put("is_malicious_package", "true")
     if check.get("error"):
         put("error", check["error"])
     if check.get("requires_review"):

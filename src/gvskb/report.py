@@ -4302,7 +4302,7 @@ _FORM_V12_INTRO = ("보안성검토 서식 v1.2 의 「AI 체커 점검 항목�
 
 def _render_form_v12_md(report: ScanReport) -> list[str]:
     t = report.form_v12
-    if not t:
+    if not t or not t.get("items"):
         return []
     out = ["## 보안성검토 서식 대응 — AI 체커 점검 항목", "", f"> {_FORM_V12_INTRO}", "",
            f"종합: **{t['overall']}** ({t['summary']})", "", "| 점검 항목 | 결과 | 근거 | 조치 |", "|---|---|---|---|"]
@@ -4313,7 +4313,7 @@ def _render_form_v12_md(report: ScanReport) -> list[str]:
 
 
 def _render_form_v12_html(report: ScanReport) -> list[str]:
-    t = report.form_v12
+    t = report.form_v12 if report.form_v12 and report.form_v12.get("items") else None
     if not t:
         return []
     p = ['<details class="sec" open><summary>보안성검토 서식 대응 — AI 체커 점검 항목 '

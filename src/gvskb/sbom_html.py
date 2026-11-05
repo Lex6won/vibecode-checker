@@ -15,6 +15,7 @@ import html
 import json
 import re
 from typing import Any
+from urllib.parse import quote
 
 from .sbom_html_assets import SBOM_REPORT_CSS, SBOM_REPORT_JS
 
@@ -139,7 +140,10 @@ def render_sbom_html(doc: dict, *, source_name: str, source_sha256: str) -> str:
         raw_verdict = _prop(props, "gvskb:verdict")
         checked = _prop(props, "gvskb:checked")
         review = _truth(_prop(props, "gvskb:requires_review"))
-        status = "vulnerable" if found else "review" if review or not _truth(checked) else "no-recorded-vulnerability"
+        malicious = raw_verdict == "malicious" or _truth(_prop(props, "gvskb:is_malicious_package"))
+        possible = _prop(props, "gvskb:malicious_possible")
+        status = ("malicious" if malicious else "vulnerable" if found
+                  else "review" if review or possible or not _truth(checked) else "no-recorded-vulnerability")
         origin_refs = [(r.get("url"), r.get("type", "출처")) for r in c.get("externalReferences") or []
                        if r.get("type") in ("distribution", "vcs", "website", "source-distribution", "documentation")]
         origin = _prop(props, "gvskb:source_registry", "gvskb:registry_url")
@@ -158,7 +162,8 @@ def render_sbom_html(doc: dict, *, source_name: str, source_sha256: str) -> str:
             "supplier": _organization(c.get("supplier")) or MISSING,
             "origin_refs": origin_refs, "hashes": c.get("hashes") or [], "purl": purl or MISSING,
             "status": status,
-            "status_text": "취약점 기록 있음" if found else "검토 필요" if status == "review" else "확인된 취약점 기록 없음",
+            "status_text": ("악성 패키지" if malicious else "취약점 기록 있음" if found else "악성 권고 — 확인 필요" if possible
+                            else "검토 필요" if status == "review" else "확인된 취약점 기록 없음"),
             "vulnerability_count": len(found), "severity": sev, "severity_rank": _RANK.get(sev, -1),
             "recommended": _prop(props, "gvskb:recommended_version") or MISSING,
             "raw_verdict": raw_verdict or MISSING, "checked": _truth(checked), "review": review,
@@ -174,9 +179,11 @@ def render_sbom_html(doc: dict, *, source_name: str, source_sha256: str) -> str:
     dangling = [(a, b) for a, b in edges if a not in known_refs or b not in known_refs]
     duplicate_refs = len([c for c in components if c.get("bom-ref")]) - len(by_ref)
 
-    def attrs(r: dict, extra: str = "") -> str:
-        search = " ".join(str(r.get(k, "")) for k in ("name", "version", "ecosystem", "area", "kind_text", "parents", "licenses",
-                                                     "supplier", "purl", "status_text", "recommended", "raw_verdict", "vuln_search"))
+    def attrs(r: dict, extra: str = "", *, with_parents: bool = True) -> str:
+        # 관계 표는 행마다 상위 목록을 또 실으면 공통 의존 패키지에서 크기가 제곱으로 는다(n=5000 에 361MB, 실측).
+        keys = ("name", "version", "ecosystem", "area", "kind_text", *(("parents",) if with_parents else ()), "licenses",
+                "supplier", "purl", "status_text", "recommended", "raw_verdict", "vuln_search")
+        search = " ".join(str(r.get(k, "")) for k in keys)
         return (f'data-search="{_h((search + " " + extra).lower())}" data-ecosystem="{_h(r["ecosystem"])}" data-status="{_h(r["status"])}" '
                 f'data-kind="{_h(r["kind"])}" data-name="{_h(str(r["name"]).lower())}" data-count="{r["vulnerability_count"]}" '
                 f'data-severity="{r["severity_rank"]}"')
@@ -203,7 +210,7 @@ def render_sbom_html(doc: dict, *, source_name: str, source_sha256: str) -> str:
         r = by_row.get(b, {"name": label(b), "ecosystem": "미기재", "status": "review", "kind": "unknown",
                            "vulnerability_count": 0, "severity_rank": -1})
         dependency_rows.append(
-            f'<tr {attrs(r, label(a) + " " + label(b))}><td>{_h(label(a))}</td><td><button class="package-button" data-component="{_h(b)}">'
+            f'<tr {attrs(r, label(a) + " " + label(b), with_parents=False)}><td>{_h(label(a))}</td><td><button class="package-button" data-component="{_h(b)}">'
             f'{_h(label(b))}</button></td><td>{"프로그램의 직접 사용" if a == root_ref else "원본에 기재된 패키지 의존"}</td>'
             f'<td>{"참조 확인" if a in known_refs and b in known_refs else "참조 미확인"}</td></tr>')
 
@@ -276,13 +283,13 @@ def render_sbom_html(doc: dict, *, source_name: str, source_sha256: str) -> str:
 
     nojs = '<p class="nojs-note">이 화면에서는 탭·검색이 꺼져 있어 모든 표를 차례로 보여 줍니다. 파일을 내려받아 열면 탭·검색·정렬·상세 보기가 켜집니다.</p>'
     return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SBOM 구성요소·의존관계 보고서 | {_h(root_name)}</title><style>{SBOM_REPORT_CSS}</style></head><body>
-<header class="topbar"><div><span class="eyebrow">SBOM REVIEW</span><h1>패키지와 의존관계,<br>한눈에 확인합니다.</h1><p>{_h(root_name)} · CycloneDX {_h(doc.get("specVersion"))} · 원본 데이터 기반 보기</p></div><div class="top-actions"><button id="print-report">인쇄 / PDF</button><button id="csv-export">패키지 CSV ↓</button><a href="{_h(source_name)}" download>SBOM JSON ↓</a></div></header>
+<header class="topbar"><div><span class="eyebrow">SBOM REVIEW</span><h1>패키지와 의존관계,<br>한눈에 확인합니다.</h1><p>{_h(root_name)} · CycloneDX {_h(doc.get("specVersion"))} · 원본 데이터 기반 보기</p></div><div class="top-actions"><button id="print-report">인쇄 / PDF</button><button id="csv-export">패키지 CSV ↓</button><a href="{_h(quote(source_name))}" download>SBOM JSON ↓</a></div></header>
 <main><div class="sample-note"><b>SBOM 열람용</b> 체커가 만든 SBOM 원본(JSON)을 사람이 읽기 쉽게 옮겼습니다. 값과 권고 버전은 원본 생성 시점의 정보이며, 이 화면에서 새로 조회·판정하지 않습니다.</div>
 {nojs}
 <div class="stats"><article><span>구성요소</span><b>{len(rows)}<small>개</small></b><p>{_h(eco_counts)}</p></article><article><span>취약점 기록</span><b>{len(vulnerabilities)}<small>건</small></b><p>영향 구성요소 {affected}개 · 원본 레코드 기준</p></article><article><span>기록된 의존관계</span><b>{len(edges)}<small>건</small></b><p>직접 {direct}개 · 간접 {indirect}개 기재</p></article><article><span>추가 확인</span><b>{sum(r["review"] or not r["checked"] for r in rows)}<small>개</small></b><p>원본의 검토 필요·미검사 표시 기준</p></article></div>
 <div class="scope-note"><b>관계 범위</b><span>{_h(scope)}</span></div>
 <nav class="tabs" role="tablist" aria-label="SBOM 보기"><button role="tab" id="tab-packages" aria-controls="pane-packages" data-tab="packages" aria-selected="true">패키지 목록 <span>{len(rows)}</span></button><button role="tab" id="tab-dependencies" aria-controls="pane-dependencies" data-tab="dependencies" aria-selected="false">의존관계 <span>{len(edges)}</span></button><button role="tab" id="tab-vulnerabilities" aria-controls="pane-vulnerabilities" data-tab="vulnerabilities" aria-selected="false">취약점 <span>{len(vulnerabilities)}</span></button><button role="tab" id="tab-provenance" aria-controls="pane-provenance" data-tab="provenance" aria-selected="false">원본·확인 범위</button></nav>
-<div class="filters" id="filters"><label class="search">검색<input id="search" type="search" placeholder="패키지명 · 버전 · 취약점 ID · 설명" autocomplete="off"></label><label>생태계<select id="ecosystem"><option value="">전체</option>{"".join(f"<option>{_h(e)}</option>" for e in ecosystems)}</select></label><label>보안정보<select id="risk"><option value="">전체</option><option value="vulnerable">취약점 기록 있음</option><option value="review">검토 필요</option><option value="no-recorded-vulnerability">취약점 미기록</option></select></label><button id="reset-filters">초기화</button><span id="visible-count" aria-live="polite"></span></div>
+<div class="filters" id="filters"><label class="search">검색<input id="search" type="search" placeholder="패키지명 · 버전 · 취약점 ID · 설명" autocomplete="off"></label><label>생태계<select id="ecosystem"><option value="">전체</option>{"".join(f"<option>{_h(e)}</option>" for e in ecosystems)}</select></label><label>보안정보<select id="risk"><option value="">전체</option><option value="malicious">악성 패키지</option><option value="vulnerable">취약점 기록 있음</option><option value="review">검토 필요</option><option value="no-recorded-vulnerability">취약점 미기록</option></select></label><button id="reset-filters">초기화</button><span id="visible-count" aria-live="polite"></span></div>
 <section id="pane-packages" class="pane" role="tabpanel" aria-labelledby="tab-packages"><div class="section-intro"><h2>패키지 목록</h2><p>원본에 없는 정보는 미기재로 표시합니다.</p></div><div class="table-wrap"><table id="package-table"><caption>SBOM 구성요소 상세 목록</caption><thead><tr>{th("No.")}{th("패키지 · 버전", "name")}{th("생태계 · 구성영역")}{th("의존분류 · 상위")}{th("라이선스")}{th("공급자 · 출처")}{th("보안정보", "count", True)}{th("원본 권고 버전")}{th("식별 · 무결성")}</tr></thead><tbody>{"".join(package_rows)}</tbody></table></div><p class="table-foot">직접·간접 분류는 프로그램 루트에서의 기록된 관계를 기준으로 합니다. 생태계는 PURL로 구분하며 구성영역·배포 출처를 생태계로 추정하지 않습니다.</p><p id="empty-packages" class="empty" hidden>검색 조건에 맞는 패키지가 없습니다.</p></section>
 <section id="pane-dependencies" class="pane" role="tabpanel" aria-labelledby="tab-dependencies"><div class="section-intro"><h2>구성요소 의존관계</h2><p>원본에 기록된 연결만 그렸습니다. 패키지의 하위 관계가 미기재된 경우, 하위 의존성이 없다는 뜻은 아닙니다.</p></div><div class="dependency-layout"><div class="graph-panel"><h3>프로그램 → 직접 의존 패키지</h3>{"".join(svg)}<p class="graph-caption">선은 원본에 기록된 관계</p></div><div class="relation-panel"><h3>의존관계 표</h3><div class="table-wrap"><table id="dependency-table"><caption>상위·하위 패키지 관계</caption><thead><tr>{th("상위 구성요소")}{th("하위 구성요소", "name")}{th("관계 설명")}{th("참조 상태")}</tr></thead><tbody>{"".join(dependency_rows)}</tbody></table></div><p class="table-foot">원본의 관계 데이터에 대한 참조 확인입니다. 코드 실행·설치·실제 동작 검증을 뜻하지 않습니다.</p></div></div><p id="empty-dependencies" class="empty" hidden>검색 조건에 맞는 관계가 없습니다.</p></section>
 <section id="pane-vulnerabilities" class="pane" role="tabpanel" aria-labelledby="tab-vulnerabilities"><div class="section-intro"><h2>패키지 취약점 기록</h2><p>동일 CVE의 별도 자문 기록이 있을 수 있습니다. 건수는 원본 레코드 수이며 중복된 피해·사건 수를 뜻하지 않습니다.</p></div><div class="table-wrap"><table id="vulnerability-table"><caption>취약점 ID·영향 구성요소·심각도·권고</caption><thead><tr>{th("취약점 ID / CVE")}{th("영향 구성요소", "name")}{th("최고 심각도", "severity", True)}{th("원본 설명")}{th("원본 권고")}{th("근거 정보원")}</tr></thead><tbody>{"".join(vuln_rows)}</tbody></table></div><p id="empty-vulnerabilities" class="empty" {"" if not vuln_rows else "hidden"}>{"원본에 취약점 기록이 없습니다(취약점 미기록 ≠ 안전 보증)." if not vuln_rows else "검색 조건에 맞는 취약점이 없습니다."}</p></section>
@@ -304,6 +311,12 @@ def render_sbom_html_file(sbom_path, output_path=None) -> str:
         stem = name[: -len(".sbom.cdx.json")] if name.endswith(".sbom.cdx.json") else source.stem
         output_path = source.with_name(f"{stem}.sbom.html")
     out = Path(output_path)
+    if out.resolve() == source.resolve():
+        raise ValueError("출력 경로가 원본 SBOM 과 같습니다 — 원본을 덮어쓸 수 없습니다.")
+    try:
+        rendered = render_sbom_html(doc, source_name=source.name, source_sha256=hashlib.sha256(raw).hexdigest())
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise ValueError(f"CycloneDX 구조가 예상과 다릅니다: {exc}") from exc
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_sbom_html(doc, source_name=source.name, source_sha256=hashlib.sha256(raw).hexdigest()), encoding="utf-8")
+    out.write_text(rendered, encoding="utf-8")
     return str(out)

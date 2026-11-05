@@ -632,6 +632,7 @@ def collect_autoexec_surface(
                 low = p.name.lower()
                 if low.startswith("dockerfile") or low.endswith(".dockerfile"):
                     pins = runtime_version.pins_from_dockerfile(text)
+                    res.pins.extend(_pin_dict(pin, rel) for pin in runtime_version.other_images_from_dockerfile(text))
                 elif low == "pyproject.toml":
                     pins = runtime_version.pins_from_pyproject(text)
                 else:
