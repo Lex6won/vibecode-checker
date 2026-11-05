@@ -100,8 +100,8 @@ LISTED = {"versions": ["12.15.13"]}
 @pytest.mark.parametrize("version,exact,recognized,expected", [
     # 지목 버전은 누구든 차단
     ("12.15.13", True, True, "hit"), ("12.15.13", True, False, "hit"),
-    # 지목보다 오래된 판 — 오염 이전이다
-    ("1.0.0", True, True, "miss"), ("1.0.0", True, False, "miss"),
+    # 지목보다 낮은 번호 — 정상 패키지면 오염 이전 판이지만, 근거가 없으면 낮은 번호만 적어 통과할 수 있다
+    ("1.0.0", True, True, "miss"), ("1.0.0", True, False, "possible"),
     # 지목보다 새로운 판 — 정상 패키지면 수정판, 아니면 신고 뒤에 올라온 판일 수 있다
     ("12.15.14", True, True, "miss"), ("12.15.14", True, False, "possible"),
     # 버전을 모르면 정상 패키지는 확인 필요, 근거 없는 패키지는 차단
@@ -155,7 +155,7 @@ def test_npm_range_bounds_refuses_other_spellings(spec):
 
 @pytest.mark.parametrize("spec,recognized,expected", [
     ("^4.1.2", True, "miss"),       # chalk ^4 는 5.6.1 이 될 수 없다
-    ("^4.1.2", False, "miss"),      # 지목보다 앞 구간
+    ("^4.1.2", False, "possible"),  # 지목보다 앞 구간이어도 근거가 없으면 통과가 아니다
     ("^5.3.0", True, "possible"),   # 5.6.1 을 받을 수 있다
     ("^5.3.0", False, "hit"),
     ("^5.6.2", True, "miss"),       # 지목보다 뒤 구간
@@ -335,3 +335,100 @@ def test_project_scan_reads_manifest_beyond_default_limit(intel, tmp_path):
     attach_dependency_check(report, mode="local", requested="local", audit=audit)
     gate = gate_status(report)
     assert gate["verdict"] == "blocked" and gate["dependency_truncated"] == 0
+
+
+# ── 차단되면 무엇을 해야 하는가 ───────────────────────────────────────
+def _gate_for(tmp_path, requirements: str) -> dict:
+    from gvskb.deps_check import attach_dependency_check, run_dependency_audit
+    from gvskb.scanner import scan_path
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "requirements.txt").write_text(requirements, encoding="utf-8")
+    (project / "a.py").write_text("x = 1", encoding="utf-8")   # 소스 0개는 그 자체로 판정 불가다
+    report = scan_path(str(project))
+    attach_dependency_check(report, mode="local", requested="local", audit=run_dependency_audit(project, report, mode="local", refresh=False))
+    return gate_status(report)
+
+
+def test_unverified_block_says_it_is_not_confirmed_and_what_to_do(intel, tmp_path):
+    gate = _gate_for(tmp_path, "beautifulsoup-requests\n")
+    assert gate["verdict"] == "blocked"
+    row = gate["block_reasons"][0]
+    assert row["malicious_kind"] == "unverified" and row["labels"] == ["악성 권고 — 버전 미확인"]
+    assert row["versions"] == ["12.15.13"]
+    reason = gate["reason"]
+    assert "악성으로 확정된 것은 아닙니다" in reason and "12.15.13" in reason
+    for step in ("공식 저장소", "제거하고 올바른 패키지", "고정", "설치된 버전을 확인", "보안담당자"):
+        assert step in reason, step
+    assert "PC 는 점검(비밀값" not in reason, "must not read like a confirmed infection"
+
+
+def test_confirmed_block_says_remove_and_check_pc(intel, tmp_path):
+    gate = _gate_for(tmp_path, "pure-evil==1.0.0\n")
+    row = gate["block_reasons"][0]
+    assert row["malicious_kind"] == "confirmed" and row["labels"] == ["악성 패키지"]
+    assert "악성으로 확인됐습니다" in gate["reason"]
+    for step in ("제거", "PC", "보안담당자", "대체 패키지"):
+        assert step in gate["reason"], step
+    assert "확정된 것은 아닙니다" not in gate["reason"]
+
+
+def test_listed_version_is_confirmed_not_unverified(intel, tmp_path):
+    gate = _gate_for(tmp_path, "beautifulsoup-requests==12.15.13\n")
+    assert gate["block_reasons"][0]["malicious_kind"] == "confirmed"
+
+
+@pytest.mark.parametrize("line", ["beautifulsoup-requests==1.0.0", "beautifulsoup-requests==0.0.1", "beautifulsoup-requests==12.15.14"])
+def test_low_number_pin_is_not_a_way_around(intel, tmp_path, line):
+    gate = _gate_for(tmp_path, f"{line}\n")
+    assert gate["verdict"] == "conditional", gate["verdict"]
+    assert "malicious_possible" in gate["conditional_criteria"]
+    assert "정상 패키지인지 확인" in gate["reason"]
+
+
+def test_legit_package_low_pin_stays_clean(intel, tmp_path):
+    from gvskb.tools.check_package import audit_manifest
+
+    audit = asyncio.run(audit_manifest('{"dependencies":{"chalk":"4.1.2"}}', ecosystem="npm", mode="local"))
+    assert not audit["checks"][0]["malicious_possible"] and not audit["checks"][0]["is_malicious_package"]
+
+
+def test_report_shows_the_action_not_upgrade_hint(intel, tmp_path):
+    from gvskb.deps_check import attach_dependency_check, run_dependency_audit
+    from gvskb.gate import attach_gate
+    from gvskb.report import render_markdown
+    from gvskb.scanner import scan_path
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "requirements.txt").write_text("beautifulsoup-requests\n", encoding="utf-8")
+    report = scan_path(str(project))
+    attach_dependency_check(report, mode="local", requested="local", audit=run_dependency_audit(project, report, mode="local", refresh=False))
+    attach_gate(report)
+    text = render_markdown(report)
+    assert "악성 권고 — 버전 미확인" in text and "공식 저장소에서 이 이름이 의도한 패키지인지" in text
+    assert "안전한 상위 버전을 찾지 못했습니다" not in text
+    assert "악성 의심" not in text
+
+
+def test_old_format_block_tells_to_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path / "c"))
+    monkeypatch.setenv("GVSKB_MODE", "")
+    cache = IntelCache(tmp_path / "c")
+    cache.save("osv-malicious", "t", [{"id": "MAL-1", "affected": [{"package": "real-evil", "ecosystem": "PyPI"}]}], ecosystems=["PyPI", "npm"])
+    cache.save("osv-vulns", "t", [], ecosystems=["PyPI", "npm"])
+    gate = _gate_for(tmp_path, "real-evil==1.0.0\n")
+    assert gate["block_reasons"][0]["malicious_kind"] == "old_format"
+    assert "update-intel" in gate["reason"]
+
+
+def test_malicious_kind_table():
+    from gvskb.gate import malicious_kind
+
+    assert malicious_kind({}) is None
+    assert malicious_kind({"is_malicious_package": True}) == "confirmed"
+    assert malicious_kind({"is_malicious_package": True, "advisories": [{"id": "MAL-1"}]}) == "confirmed"
+    assert malicious_kind({"is_malicious_package": True, "advisories": [{"id": "MAL-1", "reason": "version_unpinned"}]}) == "unverified"
+    assert malicious_kind({"is_malicious_package": True, "advisories": [{"id": "MAL-1", "reason": "version_unpinned"}, {"id": "MAL-2"}]}) == "confirmed"
+    assert malicious_kind({"is_malicious_package": True, "advisories": [{"id": "MAL-1", "reason": "advisory_without_versions"}]}) == "old_format"

@@ -1105,6 +1105,8 @@ def _remedy_lines(report: ScanReport) -> list[str]:
                    "미고정이면 설치 시점에 최신판이 들어옵니다")
         else:
             fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"))
+        if r.get("action"):   # 악성 차단은 '올리면 된다'가 아니다 — 종류별로 할 일을 적는다
+            fix = r["action"]
         out.append(f"`{pkg}` ({' · '.join(r['labels'])}) → {fix}")
     if len(g["block_reasons"]) > 5:
         out.append(f"외 {len(g['block_reasons']) - 5}종 — 아래 의존성 섹션 참조")
@@ -2737,7 +2739,8 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
         c = comp["check"]
         detail: list[str] = []
         if c.get("is_malicious_package"):
-            detail.append("악성 패키지 — 즉시 제거")
+            from .gate import malicious_kind
+            detail.append("악성 패키지 — 즉시 제거" if malicious_kind(c) == "confirmed" else "악성 권고 — 버전 미확인(확정 아님)")
         if c.get("verdict") == "not_found":
             detail.append("레지스트리에 없는 이름(가짜 이름 의심) — 철자 확인 후 제거")
         if c.get("verdict") == "registry_rejected":
@@ -3492,7 +3495,8 @@ def _pkg_verdict_label(check: dict) -> str:
     if check.get("verdict") == "not_found":
         return "❌ 저장소에 없음(가짜 이름 의심)"
     if check.get("is_malicious_package"):
-        return "악성 의심"
+        from .gate import malicious_kind
+        return "악성 의심" if malicious_kind(check) == "confirmed" else "악성 권고 — 버전 미확인"
     n = check.get("vulnerability_count") or 0
     if n:
         # 단위를 붙인다 — '취약·악성 3건'(패키지 수)과 섞여 읽히던 숫자다.

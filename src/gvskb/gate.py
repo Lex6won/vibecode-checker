@@ -91,6 +91,45 @@ BLOCK_CRITERIA: dict[str, str] = {
     "critical": "CVSS CRITICAL 취약점",
 }
 
+#: 악성 차단의 세 종류. 막는 것은 같아도 **사람이 할 일이 다르다** — 패키지 이름이 악성으로 확정된 사람에게 할 말과,
+#: 버전을 몰라 막힌 정상 패키지 사용자에게 할 말을 하나로 쓰면 뒤쪽은 PC 가 감염된 줄 알게 된다.
+MAL_CONFIRMED_ACTION = (
+    "패키지를 제거하고, 설치한 적이 있는 PC 는 점검(비밀값 재발급 포함)한 뒤 보안담당자에게 알리고 대체 패키지를 쓰세요."
+)
+MAL_UNVERIFIED_ACTION = (
+    "① 공식 저장소에서 이 이름이 의도한 패키지인지 확인합니다(오타나 AI 가 지어낸 이름일 수 있습니다). "
+    "② 아니면 제거하고 올바른 패키지로 바꿉니다. "
+    "③ 맞으면 실제 쓸 버전을 고정(==·락파일)해 다시 점검합니다 — 지목된 버전은 쓰지 않습니다. "
+    "④ 이미 설치했다면 설치된 버전을 확인하고, 지목된 버전이면 PC 를 점검합니다. "
+    "판단이 어려우면 보안담당자에게 문의하세요."
+)
+MAL_OLD_FORMAT_ACTION = (
+    "위협정보에 영향 버전이 없는 구형식이라 패키지 전체를 막았습니다. 위협정보를 다시 받은 뒤"
+    "(인터넷망 `gvskb update-intel` · 폐쇄망 새 번들 반입) 다시 점검하세요."
+)
+_MAL_LABELS = {"unverified": "악성 권고 — 버전 미확인", "old_format": "악성 권고 — 구형식 위협정보"}
+_MAL_ACTIONS = {"confirmed": MAL_CONFIRMED_ACTION, "unverified": MAL_UNVERIFIED_ACTION, "old_format": MAL_OLD_FORMAT_ACTION}
+
+
+def malicious_kind(check: dict) -> str | None:
+    """악성 차단의 종류 — ``confirmed`` | ``unverified`` | ``old_format``. 악성이 아니면 None.
+
+    권고 행의 ``reason`` 은 '확정하지 못한 채 막았다'는 표시다. 하나라도 사유 없는 권고가 있으면 확정이다.
+    """
+    if not check.get("is_malicious_package"):
+        return None
+    rows = [a for a in check.get("advisories") or [] if isinstance(a, dict) and str(a.get("id") or "").startswith("MAL-")]
+    if not rows or not all(a.get("reason") for a in rows):
+        return "confirmed"
+    return "old_format" if any(a.get("reason") == "advisory_without_versions" for a in rows) else "unverified"
+
+
+def malicious_action(check: dict) -> str | None:
+    """이 차단에서 사람이 할 일. 악성이 아니면 None."""
+    kind = malicious_kind(check)
+    return _MAL_ACTIONS[kind] if kind else None
+
+
 #: 사람이 확인해야 하지만 배포를 막지는 않는 사유.
 CONDITIONAL_CRITERIA: dict[str, str] = {
     "vulnerable": "CVSS HIGH 이하 취약점",
@@ -165,13 +204,17 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
         # 그 최신판이 설치된다) 근거를 사유에 적는다. 그래야 담당자가 "안전한 버전으로 고정"으로 풀 수 있다.
         assumed = check.get("version_resolution") == "latest-assumed"
         basis = f"(미고정 — 가정 최신판 {check.get('resolved_version') or '?'} 기준)" if assumed else ""
+        kind = malicious_kind(check)
         reasons.append({
             "package": check.get("name"),
             "version": check.get("version"),
             "resolved_version": check.get("resolved_version"),
             "version_resolution": check.get("version_resolution") or ("pinned" if check.get("version") else None),
             "criteria": hits,
-            "labels": [BLOCK_CRITERIA[h] + basis for h in hits],
+            "labels": [(_MAL_LABELS.get(kind, BLOCK_CRITERIA[h]) if h == "malicious" else BLOCK_CRITERIA[h]) + basis for h in hits],
+            "malicious_kind": kind,
+            "action": _MAL_ACTIONS.get(kind),
+            "versions": sorted({str(v) for a in check.get("advisories") or [] if isinstance(a, dict) for v in a.get("versions") or []})[:6] if kind == "unverified" else [],
             "recommended_version": check.get("recommended_version"),
             "latest_version": (check.get("registry_metadata") or {}).get("latest_version"),
         })
@@ -626,6 +669,19 @@ def _reason(
             f"배포 불가 — {' · '.join(labels)}에 해당하는 패키지가 있습니다"
             f"({names}{more}). 사유 기록으로 넘길 수 없는 등급입니다."
         )
+        # 어떻게 해야 풀리는가 — 판정과 함께 간다. 포털·CLI 가 이 문장을 그대로 보여 준다.
+        for kind in ("confirmed", "unverified", "old_format"):
+            rows = [r for r in block_reasons if r.get("malicious_kind") == kind]
+            if not rows:
+                continue
+            who = ", ".join(str(r["package"]) for r in rows[:3])
+            if kind == "confirmed":
+                head += f" **{who}: 악성으로 확인됐습니다.** {MAL_CONFIRMED_ACTION}"
+            else:
+                listed = sorted({v for r in rows for v in r.get("versions") or []})
+                target = f" 지목된 버전: {', '.join(listed)}." if listed else ""
+                head += (f" **{who}: 악성으로 확정된 것은 아닙니다 — 설치될 버전과 정상 패키지 여부를 확인하지 못해 막았습니다.**"
+                         f"{target} {_MAL_ACTIONS[kind]}")
         if any(r.get("version_resolution") == "latest-assumed" for r in block_reasons):
             head += (
                 " 버전이 고정되지 않은 패키지는 **설치 시점에 들어올 최신판**을 기준으로 판정했습니다 — "

@@ -181,12 +181,6 @@ def _npm_range_bounds(spec: str | None) -> tuple[tuple[int, ...], tuple[int, ...
     return (lo, hi) if lo is not None and hi is not None else None
 
 
-def _mal_listed_keys(aff: dict) -> list[tuple[int, ...]]:
-    """권고가 지목한 버전과 구간 시작점의 비교 키. 읽지 못한 표기는 뺀다."""
-    raw = [str(v) for v in aff.get("versions") or []] + [start for start, _, _ in _affected_intervals(aff)]
-    return [k for k in map(_version_key, raw) if k is not None]
-
-
 def _mal_window_closed(aff: dict) -> bool:
     """권고의 구간이 모두 닫혔는가(``fixed``·``last_affected`` 가 있다). 그 밖의 버전은 권고가 해당 없다고 말한 것이다."""
     intervals = _affected_intervals(aff)
@@ -205,9 +199,9 @@ def _mal_scope(
 
     - hit: 패키지 전체 악성 · 고정 버전이 권고에 들어 있음 · 버전을 모르는데 정상 패키지라는 근거도 없음 → 차단.
       마지막 경우의 사유는 ``reason`` 에 남는다.
-    - miss: 고정 버전이 권고 밖이고, 정상 패키지이거나 지목 버전보다 오래됐거나(오염 이전 판) 구간이 닫혔다.
-    - possible: 판단 근거가 모자란다 → 조건부. 버전을 모르는 정상 패키지, 또는 지목 버전보다 새로운 미확인
-      패키지(신고 뒤에 올라온 판일 수 있다).
+    - miss: 고정 버전이 권고 밖이고, 정상 패키지이거나 권고 구간이 닫혔다.
+    - possible: 판단 근거가 모자란다 → 조건부. 버전을 모르는 정상 패키지, 또는 지목되지 않은 판을 고정한 미확인 패키지.
+      지목보다 낮은 번호도 여기다 — '오염 이전 판'으로 봐 통과시키면, 위장 패키지에 낮은 번호만 적어도 승인이 났다.
     """
     if _mal_covers_whole_package(aff):
         return "hit", ""
@@ -228,17 +222,14 @@ def _mal_scope(
         listed = [k for k in map(_version_key, (str(v) for v in aff.get("versions") or [])) if k is not None]
         # `^4.1.2` 는 5.6.1 이 될 수 없다 — 지목 버전이 모두 범위 밖이면 버전을 아는 경우와 같다.
         if bounds and listed and not aff.get("ranges") and not any(bounds[0] <= k < bounds[1] for k in listed):
-            older = bounds[1] <= min(listed)
-            return ("miss", "") if recognized or older else ("possible", "version_outside_unverified")
+            return ("miss", "") if recognized else ("possible", "version_outside_unverified")
         return unknown("version_range")
     inside = _version_in_affected(aff, str(version))
     if inside is True:
         return "hit", ""
     if inside is None:
         return unknown("version_unparsed")
-    vk = _version_key(str(version))
-    keys = _mal_listed_keys(aff)
-    if recognized or _mal_window_closed(aff) or (vk is not None and keys and vk < min(keys)):
+    if recognized or _mal_window_closed(aff):
         return "miss", ""
     return "possible", "version_outside_unverified"
 
@@ -329,17 +320,18 @@ def _apply_mal_possible(result: dict) -> dict:
     return result
 
 
-def _mal_unverified_note(advisories: list[dict]) -> str | None:
-    """버전을 몰라 차단했을 때의 안내 — 진짜 악성 확정과 구분해 푸는 길을 적는다."""
+def _mal_block_note(advisories: list[dict]) -> str:
+    """악성 차단의 안내 — 확정과 미확정을 구분해 할 일을 적는다."""
+    from ..gate import MAL_CONFIRMED_ACTION, MAL_OLD_FORMAT_ACTION, MAL_UNVERIFIED_ACTION
+
     if not advisories or not all(a.get("reason") for a in advisories):
-        return None
+        return f"악성으로 확인됐습니다. {MAL_CONFIRMED_ACTION}"
+    if any(a.get("reason") == "advisory_without_versions" for a in advisories):
+        return MAL_OLD_FORMAT_ACTION
     versions = sorted({v for a in advisories for v in a.get("versions") or []})[:6]
     target = f" 지목된 버전: {', '.join(versions)}." if versions else ""
-    if any(a.get("reason") == "advisory_without_versions" for a in advisories):
-        return ("악성 권고에 영향 버전이 없는 구형식 위협정보라 전체를 악성으로 보고 차단했습니다. "
-                "위협정보를 다시 받은 뒤(`gvskb update-intel` 또는 번들 반입) 재검사하세요.")
-    return ("특정 버전을 지목한 악성 권고가 있는데, 설치될 버전을 알 수 없고 정상 패키지라는 근거도 없어 차단했습니다."
-            f"{target} 의도한 정상 패키지가 맞으면 지목되지 않은 버전으로 고정(==·락파일)해 다시 검사하세요.")
+    return ("악성으로 확정된 것은 아닙니다 — 특정 버전을 지목한 악성 권고가 있는데, 설치될 버전을 알 수 없고 정상 패키지라는 근거도 없어 막았습니다."
+            f"{target} {MAL_UNVERIFIED_ACTION}")
 
 
 def _local_mal_possible(
@@ -1116,10 +1108,9 @@ def _offline_cache_check(
 
     if has_malicious:
         # 양성 판정(악성 발견)은 캐시가 오래됐어도 유효한 신호다.
-        note = _mal_unverified_note(advisories)
+        note = _mal_block_note(advisories)
         if stale_sources:
-            stale_note = f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
-            note = f"{note} {stale_note}" if note else stale_note
+            note = f"{note} 캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
         return PackageCheckResult(
             **base, checked=True, verdict="malicious", requires_review=True, note=note,
         ).model_dump(mode="json")
@@ -2179,6 +2170,10 @@ async def check_package_impl(
     if vulns:
         online_cache_sources.extend(_attach_knvd_evidence(advisory_rows, vulns, _intel))
 
+    if has_malicious:
+        from ..gate import MAL_CONFIRMED_ACTION
+
+        notes.append(f"악성으로 확인됐습니다. {MAL_CONFIRMED_ACTION}")
     return _apply_mal_possible(PackageCheckResult(
         **base,
         checked=True,
