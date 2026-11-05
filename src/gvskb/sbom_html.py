@@ -162,7 +162,8 @@ def render_sbom_html(doc: dict, *, source_name: str, source_sha256: str) -> str:
             "supplier": _organization(c.get("supplier")) or MISSING,
             "origin_refs": origin_refs, "hashes": c.get("hashes") or [], "purl": purl or MISSING,
             "status": status,
-            "status_text": ("악성 패키지" if malicious else "취약점 기록 있음" if found else "악성 권고 — 확인 필요" if possible
+            "status_text": ("악성 권고 — 버전 미확인" if malicious and _prop(props, "gvskb:malicious_kind") in ("unverified", "old_format")
+                            else "악성 패키지" if malicious else "취약점 기록 있음" if found else "악성 권고 — 확인 필요" if possible
                             else "검토 필요" if status == "review" else "확인된 취약점 기록 없음"),
             "vulnerability_count": len(found), "severity": sev, "severity_rank": _RANK.get(sev, -1),
             "recommended": _prop(props, "gvskb:recommended_version") or MISSING,

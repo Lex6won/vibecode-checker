@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import warnings
 
+from .gate import MAL_CONFIRMED_ACTION, malicious_action, malicious_kind
 from .schema import Decision, ScanReport
 
 FORM_V12_VERSION = "1"
@@ -222,14 +223,24 @@ def form_v12_table(report: ScanReport) -> dict:
 
     rows.append(_eol_row(report, active, comps))
 
-    rows.append(pkg_row(
-        "malicious_package",
-        [c for c in comps if c.get("is_malicious_package") or c.get("verdict") == "malicious"],
-        # 특정 버전 악성 권고인데 설치될 버전을 모르면 '적합'이 아니다.
-        [c for c in comps if c.get("verdict") == "suspicious_name" or c.get("malicious_possible")],
-        f"패키지 {len(comps)}개 악성·위장 목록 대조 결과 해당 없음",
-        "즉시 제거하고 설치된 PC 를 점검하세요.",
-        review_action="버전을 고정하고 공식 저장소에서 의도한 정상 패키지인지 확인하세요.", version_matters=True))
+    # 버전을 몰라 막은 것은 '서식이 금지하는 것이 나왔다'가 아니다 — 부적합으로 적으면 악성으로 확정된 것처럼 읽힌다.
+    malicious = [c for c in comps if c.get("is_malicious_package") or c.get("verdict") == "malicious"]
+    confirmed = [c for c in malicious if malicious_kind(c) in ("confirmed", None)]
+    unconfirmed = [c for c in malicious if c not in confirmed]
+    if unconfirmed and not confirmed:
+        names = ", ".join(sorted({str(c.get("name")) for c in unconfirmed})[:5])
+        rows.append(_row("malicious_package", REVIEW, len(unconfirmed),
+                         f"{len(unconfirmed)}개 패키지 악성 권고 있음·버전 미확인으로 배포 차단(악성 확정 아님): {names}",
+                         malicious_action(unconfirmed[0]) or ""))
+    else:
+        rows.append(pkg_row(
+            "malicious_package",
+            confirmed,
+            # 특정 버전 악성 권고인데 설치될 버전을 모르면 '적합'이 아니다.
+            [c for c in comps if c.get("verdict") == "suspicious_name" or c.get("malicious_possible")],
+            f"패키지 {len(comps)}개 악성·위장 목록 대조 결과 해당 없음",
+            MAL_CONFIRMED_ACTION,
+            review_action="공식 저장소에서 게시자·배포 이력을 확인해 의도한 정상 패키지인지 확인하고, 버전을 고정하세요.", version_matters=True))
 
     lic_review = [c for c in comps if c.get("license_verdict") in ("review_required", "unknown")]
     # 라이선스 판정값이 비어 있으면 **조회하지 않은 것**이다(로컬 모드는 레지스트리를 묻지 않는다) — 적합이 아니다.

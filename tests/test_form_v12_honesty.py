@@ -217,3 +217,31 @@ def test_sbom_report_turns_malformed_structure_into_value_error(patch: dict, tmp
     source.write_text(json.dumps({**_doc([]), **patch}), encoding="utf-8")
     with pytest.raises(ValueError):
         render_sbom_html_file(source, tmp_path / "x.html")
+
+
+# ── 버전을 몰라 막은 것과 확정 악성 ──────────────────────────────────
+def test_unverified_block_is_not_written_as_ng(tmp_path: Path) -> None:
+    row = _rows(_with_deps(_source(tmp_path), [_clean("squat", version=None, is_malicious_package=True, verdict="malicious",
+                                                     advisories=[{"id": "MAL-1", "reason": "version_unpinned"}])]))["malicious_package"]
+    assert row["result"] == REVIEW and "악성 확정 아님" in row["basis"] and "차단" in row["basis"]
+    assert "공식 저장소" in row["action"] and "즉시 제거" not in row["action"]
+
+
+def test_confirmed_block_stays_ng_with_steps(tmp_path: Path) -> None:
+    row = _rows(_with_deps(_source(tmp_path), [_clean("evil", is_malicious_package=True, verdict="malicious",
+                                                     advisories=[{"id": "MAL-1"}])]))["malicious_package"]
+    assert row["result"] == NG and "제거" in row["action"] and "보안담당자" in row["action"]
+
+
+def test_confirmed_wins_over_unverified_in_the_same_project(tmp_path: Path) -> None:
+    row = _rows(_with_deps(_source(tmp_path), [
+        _clean("evil", is_malicious_package=True, verdict="malicious", advisories=[{"id": "MAL-1"}]),
+        _clean("squat", version=None, is_malicious_package=True, verdict="malicious", advisories=[{"id": "MAL-2", "reason": "version_unpinned"}]),
+    ]))["malicious_package"]
+    assert row["result"] == NG
+
+
+def test_sbom_html_labels_unverified_block() -> None:
+    html = render_sbom_html(_doc([_component("squat", verdict="malicious", checked="true", is_malicious_package="true", malicious_kind="unverified")]),
+                            source_name="s.json", source_sha256="0")
+    assert "악성 권고 — 버전 미확인" in html
