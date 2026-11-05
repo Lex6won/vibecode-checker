@@ -1470,7 +1470,7 @@ VENDOR_BUNDLE_SKIP_REASON = (
 )
 
 # 내용은 미니파이드인데 **어떤 라이브러리인지 식별되지 않은** 파일. 실측(2026-10-13,
-# 약관검색기): 앱이 직접 만든 검색 데이터 535개(`data/catalog.js`·해시 이름의 gzip 조각)가
+# 약관 검색 프로젝트): 앱이 직접 만든 검색 데이터 535개(`data/catalog.js`·해시 이름의 gzip 조각)가
 # "벤더 번들(외부 라이브러리)"로 적혀, 보고서만 보면 외부 라이브러리 535개가 있는 것처럼
 # 읽혔다. 라이브러리라는 근거(이름 `.min.`·배너·버전)가 하나도 없으면 그렇게 부르지 않는다.
 GENERATED_BUNDLE_SKIP_REASON = (
@@ -1639,7 +1639,7 @@ def _identify_vendor_bundle_file(
 
 
 # 본문에 박아 넣은 이미지·글꼴(`data:image/png;base64,…`). 코드가 아니라 자산이다.
-# 실측(2026-10-13, 약관검색기): 로고 한 장이 27,893자 한 줄이라 **메인 HTML 전체가**
+# 실측(2026-10-13, 약관 검색 프로젝트): 로고 한 장이 27,893자 한 줄이라 **메인 HTML 전체가**
 # "빌드 산출물"로 빠졌다. 그 파일에 인라인 스크립트가 있었다면 아무도 보지 않았다.
 _DATA_URI_RE = re.compile(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
 
@@ -1652,11 +1652,11 @@ _SECRET_ONLY_MAX_BYTES = 2_000_000
 #: 파일 하나에서 비밀값 룰로 따로 보는 거대 줄의 수 — 데이터 파일이 수백 줄짜리 거대 줄로 돼 있을 때 상한.
 _GIANT_LINES_PER_FILE = 40
 #: 검사 한 번에 비밀값 룰로 훑는 미니파이드 산출물의 수 상한(경로 순, 결정적). 실측 2026-10-14
-#: 약관검색기: 한 줄짜리 데이터 JSON 536개 × 14ms = 7초. 이름이 비밀을 뜻하는 파일은 상한과 무관하게 본다.
+#: 약관 검색 프로젝트: 한 줄짜리 데이터 JSON 536개 × 14ms = 7초. 이름이 비밀을 뜻하는 파일은 상한과 무관하게 본다.
 _SECRET_SWEEP_MAX_FILES = 150
 _SECRET_ONLY_CATEGORIES = frozenset({"secret-scanning"})
 #: 비밀값 룰을 돌리기 전의 값싼 선별 — 이 낱말·접두어가 하나도 없는 번들은 볼 필요가 없다
-#: (실측 2026-10-14 약관검색기: 미니파이드 조각 536개 × 룰 패턴 96개 = 6.7초).
+#: (실측 2026-10-14 약관 검색 프로젝트: 미니파이드 조각 536개 × 룰 패턴 96개 = 6.7초).
 _SECRET_HINT_RE = re.compile(
     r"(?i)secret|passw|pwd|api[_-]?key|token|private[_-]?key|credential|BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE"
     r"|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20}|sk_(?:live|test)_|gh[pousr]_|github_pat_|glpat-|xox[baprs]-|npm_[A-Za-z0-9]{36}"
@@ -1669,7 +1669,7 @@ def _looks_minified(text: str) -> bool:
 
     `data:` URI 의 base64 본문은 길이에서 뺀다 — 자산이 길다고 코드가 압축된 것은 아니다.
     평균이 아니라 중앙값을 쓴다: 평범한 300줄 페이지에 1MB JSON 리터럴 한 줄이 박히면 평균은
-    치솟지만 파일은 소스다(전면 점검 §3-1, 파노라마뷰 DEMO 페이지가 통째로 빠졌다). 그 한 줄은
+    치솟지만 파일은 소스다(전면 점검 §3-1, 지도 뷰 프로젝트 DEMO 페이지가 통째로 빠졌다). 그 한 줄은
     `_mask_giant_lines` 가 따로 가린다.
     """
     if len(text) < _MINIFIED_MIN_BYTES:
@@ -1710,7 +1710,7 @@ def _secret_only_findings(text: str, rel: str, *, line_offset_map: dict[int, int
     if len(text) > _SECRET_ONLY_MAX_BYTES or not _SECRET_HINT_RE.search(text):
         return []
     # 정규식 엔진만 돌린다 — 비밀값 룰은 전부 정규식이고, JS 오염 추적·외부 연결 추출을 1MB 데이터
-    # 줄에 돌리면 파일당 수십 초가 든다(실측 2026-10-14 파노라마뷰: 0.2초 → 38초).
+    # 줄에 돌리면 파일당 수십 초가 든다(실측 2026-10-14 지도 뷰 프로젝트: 0.2초 → 38초).
     try:
         from .scanners.regex_scanner import RegexScanner
         found = RegexScanner().scan(text, filename=rel, scenario=scenario, profile=profile,

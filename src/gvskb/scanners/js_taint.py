@@ -129,7 +129,7 @@ _NUMERIC_MEMBER_RE = re.compile(
     # 서버가 매기는 날짜·시각·프로세스 번호: `s.ended_at`·`row.reg_date`·`job.createdAt`·`d.pid`
     # (실측 2026-10-13 safe_check: XSS '확인됨' 차단 19건 중 7건이 이 값만 넣는 자리였다)
     r"|pid|ppid|port|date|time|datetime|[a-z]+_(?:at|date|time|dt|ts)|[a-z]+(?:At|Date|Time|Dt)"
-    # camelCase 도 같은 뜻이다: `item.pageNumber`·`row.rowCount` (실측 2026-10-13 약관검색기)
+    # camelCase 도 같은 뜻이다: `item.pageNumber`·`row.rowCount` (실측 2026-10-13 약관 검색 프로젝트)
     r"|[a-z]+(?:Number|Num|No|Count|Cnt|Index|Idx|Size|Length|Len|Total|Qty|Seq|Width|Height))$",
 )
 # 이름이 숫자를 뜻하는 **단독 식별자** — `pageNumber`·`rowCount`·`i`. 출처를 못 찾았을 때
@@ -729,7 +729,7 @@ class _Classifier:
         """지역 함수 이름 → ([(return 식, 줄 index)], 매개변수 이름). sink 인자가 ``rowHtml(x)`` 일 때 한 홉 본다.
 
         줄 index 를 함께 두는 이유: 반환식 안의 지역 변수(`const suffix = …; return `…${suffix}``)는
-        **그 함수의 범위**에서 찾아야 한다. 실측(2026-10-13 약관검색기 pdfUrl)에서 sink 줄의 범위로
+        **그 함수의 범위**에서 찾아야 한다. 실측(2026-10-13 약관 검색 프로젝트 pdfUrl)에서 sink 줄의 범위로
         찾다가 못 찾아 출처 미상이 됐다.
         """
         out: dict[str, tuple[list[tuple[str, int]], list[str]]] = {}
@@ -784,7 +784,7 @@ class _Classifier:
         """줄 idx 에서 시작한 식이 여러 줄이면 닫힐 때까지 이어 붙인다. (식, 소비한 줄 수).
 
         여러 줄 템플릿뿐 아니라 **화살표 본문이 다음 줄로 넘어간 선언**도 따라간다 — 실측
-        (2026-10-13 약관검색기 app.js:79) `const validities = (…).map((item) =>` 줄바꿈 뒤 템플릿.
+        (2026-10-13 약관 검색 프로젝트 app.js:79) `const validities = (…).map((item) =>` 줄바꿈 뒤 템플릿.
         예전엔 첫 줄만 보고 출처 미상으로 남겨 정화된 값이 '높음'으로 올라갔다.
         """
         first = head.find("`")
@@ -879,7 +879,7 @@ class _Classifier:
                 verdict = SinkVerdict(UNKNOWN, "템플릿 뒤에 해석하지 못한 식")
             return verdict
         # `arr.map(esc).join('')` · `arr.map(x => esc(x))` — 요소마다 정화 함수를 거친다.
-        # 실측(2026-10-13 약관검색기 app.js:85) `evidence.map(escapeHtml).join("<br>")`.
+        # 실측(2026-10-13 약관 검색 프로젝트 app.js:85) `evidence.map(escapeHtml).join("<br>")`.
         mm = _MAP_SANITIZER_RE.match(expr)
         if mm and "`" not in expr:
             fn = mm.group("fn")
