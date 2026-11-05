@@ -98,6 +98,7 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "unchecked": "판정 불가 — '안전'이라는 뜻이 아님",
     "suspicious_name": "인기 패키지와 이름이 거의 같음(타이포스쿼팅 의심)",
     "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
+    "malicious_possible": "특정 버전이 악성으로 보고된 패키지 — 버전을 고정해야 판정됨",
     "source": "소스 코드 발견",
     "license": "라이선스 검토 필요(GPL·AGPL 등 — 배포·네트워크 제공 형태에 따라 의무 발생)",
     # 35차(2026-10-15). 34차가 미고정 패키지를 "최신판 기준"으로 조회해 역대 취약점 차단
@@ -247,6 +248,27 @@ def _license_review_packages(report: ScanReport) -> list[dict]:
     return out
 
 
+def _malicious_possible_packages(report: ScanReport) -> list[dict]:
+    """악성 권고가 있으나 설치본 해당 여부를 판정하지 못한 컴포넌트 — [{'name','version','advisories','versions'}]."""
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    out: list[dict] = []
+    for comp in _dep_merged_components(audits):
+        check = comp.get("check") or {}
+        rows = check.get("malicious_possible") or []
+        if not rows or check.get("is_malicious_package"):
+            continue
+        out.append({
+            "name": check.get("name"), "version": check.get("version"),
+            "advisories": [r.get("id") for r in rows],
+            "versions": sorted({v for r in rows for v in r.get("versions") or []})[:10],
+        })
+    return out
+
+
 def _unpinned_packages(report: ScanReport) -> list[dict]:
     """버전 미고정으로 **최신판을 가정해** 조회한 컴포넌트 — [{'name','resolved_version'}].
 
@@ -379,6 +401,9 @@ def gate_status(report: ScanReport) -> dict:
     unpinned = _unpinned_packages(report)
     if unpinned:
         conditional_criteria.append("unpinned")
+    malicious_possible = _malicious_possible_packages(report)
+    if malicious_possible:
+        conditional_criteria.append("malicious_possible")
     trust_signals = _trust_signal_packages(report)
     if trust_signals:
         conditional_criteria.append("trust")
@@ -450,6 +475,7 @@ def gate_status(report: ScanReport) -> dict:
         "intel_gap": intel_gap,
         "license_review": license_review,
         "unpinned": unpinned,
+        "malicious_possible": malicious_possible,
         # 41차 — 신뢰 신호가 붙은 패키지(조건부 사유 `trust` 의 근거). 포털은 키를 모르면 표시만 한다.
         "trust_signals": trust_signals,
         # 가정 최신판 기준으로 취약 판정된 미고정 컴포넌트 수 — `dependency_vulnerable` 에 포함돼 있다.
@@ -457,6 +483,7 @@ def gate_status(report: ScanReport) -> dict:
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
                           block_count, vuln, unchecked, coverage_gap,
                           license_review=len(license_review), unpinned=len(unpinned),
+                          malicious_possible=len(malicious_possible),
                           trust=len(trust_signals), intel_gap=intel_gap, intel=intel),
     }
 
@@ -542,6 +569,7 @@ def _reason(
     coverage_gap: str = "",
     license_review: int = 0,
     unpinned: int = 0,
+    malicious_possible: int = 0,
     trust: int = 0,
     intel_gap: str = "",
     intel: dict | None = None,
@@ -612,6 +640,8 @@ def _reason(
         parts.append(f"라이선스 검토 {license_review}종")
     if unpinned:
         parts.append(f"버전 미고정 {unpinned}종")
+    if malicious_possible:
+        parts.append(f"특정 버전 악성 권고 {malicious_possible}종")
     if trust:
         parts.append(f"패키지 신뢰 신호 {trust}종")
     if intel_gap == "stale":
@@ -631,6 +661,8 @@ def _reason(
             if "필수 엔진 미가동" in coverage_gap and "상한" not in coverage_gap
             else " **검사되지 않은 실행 소스가 있습니다 — 그 파일은 판정 밖입니다.**"
         )
+    if malicious_possible:
+        tail += " 특정 버전이 악성으로 보고된 패키지는 **버전을 고정해야** 해당 여부를 판정할 수 있습니다."
     if unpinned:
         tail += (
             " 버전 미고정 패키지는 **최신판 기준으로 조회했을 뿐** 설치본이 안전하다는 근거가 아닙니다 — "

@@ -867,6 +867,13 @@ class PackageCheckResult(BaseModel):
     is_malicious_package: bool = False
     vulnerability_count: int = 0
     malicious_advisory_count: int = 0
+    malicious_possible: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "악성 권고가 있지만 이 설치본이 해당하는지 판정하지 못한 경우 — 버전 미고정·범위 표기 등. "
+            "[{id, summary, modified, versions, reason}]. 악성 확정이 아니고 안전도 아니다(게이트 조건부)."
+        ),
+    )
     max_cve: Literal["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"] = Field(
         default="NONE",
         description="발견된 취약점의 최고 심각도. UNKNOWN=취약점은 있으나 심각도 미상(안전 아님)",

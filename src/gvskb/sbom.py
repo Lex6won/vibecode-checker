@@ -139,6 +139,7 @@ def _properties(check: dict) -> list[dict]:
     put("recommended_version", check.get("recommended_version"))
     if check.get("in_kev"):
         put("in_kev", "true")
+    put("malicious_possible", ",".join(str(r.get("id")) for r in check.get("malicious_possible") or []))
     if not check.get("version_exact", True):
         put("version_exact", "false")
     return out

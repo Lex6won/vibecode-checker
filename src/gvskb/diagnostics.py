@@ -635,6 +635,8 @@ def intel_summary() -> dict:
                         "basis": info.get("basis"), "stamp_mismatch": bool(info.get("stamp_mismatch"))}
         if entry.fetched_at and (oldest is None or entry.fetched_at < oldest):
             oldest = entry.fetched_at
+    # 악성 권고에 영향 버전이 있는가 — 없으면 구형식이라 악성 대조가 전부 '판정 불가'가 된다(재반입 필요).
+    mal_versioned = cache.head_contains("osv-malicious", '"whole"', '"versions"', '"ranges"')
     if missing:
         state = "missing"
     elif unknown:
@@ -664,6 +666,8 @@ def intel_summary() -> dict:
         "cache_dir": str(cache.cache_dir),
         "signature": sig,
         "offline_mode": os.environ.get("GVSKB_MODE", "").lower() == "offline",
+        # False = 구형식 캐시(악성 권고에 영향 버전 없음) — 위협정보를 다시 받아야 한다. None = 캐시 없음.
+        "mal_versioned": mal_versioned,
     }
 
 

@@ -1123,6 +1123,11 @@ def _remedy_lines(report: ScanReport) -> list[str]:
             out.append(
                 f"소스 높은 위험 **{g['source_block_count']}건** — 아래 '상세 검토 "
                 "결과'의 안전한 수정 방향을 적용하세요")
+        if g.get("malicious_possible"):
+            names = ", ".join(f"`{u['name']}`" for u in g["malicious_possible"][:5])
+            out.append(
+                f"특정 버전 악성 권고 **{len(g['malicious_possible'])}종**({names}) — 설치될 버전을 몰라 해당 여부를 "
+                "판정하지 못했습니다. 버전을 고정(`==`·락파일)하고 다시 검사하세요")
         if g.get("unpinned"):
             names = ", ".join(f"`{u['name']}`" for u in g["unpinned"][:5])
             more = f" 외 {len(g['unpinned']) - 5}종" if len(g["unpinned"]) > 5 else ""
