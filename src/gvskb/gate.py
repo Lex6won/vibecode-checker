@@ -98,7 +98,9 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "unchecked": "판정 불가 — '안전'이라는 뜻이 아님",
     "suspicious_name": "인기 패키지와 이름이 거의 같음(타이포스쿼팅 의심)",
     "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
-    "malicious_possible": "특정 버전이 악성으로 보고된 패키지 — 버전을 고정해야 판정됨",
+    "malicious_possible": "특정 버전이 악성으로 보고된 패키지 — 버전을 고정하거나 정상 패키지인지 확인해야 판정됨",
+    "dependency_truncated": "패키지 수 상한으로 검사하지 못한 의존성이 있음",
+    "intel_old_format": "악성 권고에 영향 버전이 없는 구형식 위협정보 — 다시 받아야 함",
     "source": "소스 코드 발견",
     "license": "라이선스 검토 필요(GPL·AGPL 등 — 배포·네트워크 제공 형태에 따라 의무 발생)",
     # 35차(2026-10-15). 34차가 미고정 패키지를 "최신판 기준"으로 조회해 역대 취약점 차단
@@ -269,6 +271,13 @@ def _malicious_possible_packages(report: ScanReport) -> list[dict]:
     return out
 
 
+def _dependency_truncated(report: ScanReport) -> int:
+    """상한에 걸려 **아예 보지 않은** 패키지 수 — 보지 않은 것은 승인 근거가 아니다."""
+    from .report import _dep_audits
+
+    return sum(int(a.get("truncated_count") or 0) for a in _dep_audits(report))
+
+
 def _unpinned_packages(report: ScanReport) -> list[dict]:
     """버전 미고정으로 **최신판을 가정해** 조회한 컴포넌트 — [{'name','resolved_version'}].
 
@@ -404,6 +413,9 @@ def gate_status(report: ScanReport) -> dict:
     malicious_possible = _malicious_possible_packages(report)
     if malicious_possible:
         conditional_criteria.append("malicious_possible")
+    dependency_truncated = _dependency_truncated(report)
+    if dependency_truncated:
+        conditional_criteria.append("dependency_truncated")
     trust_signals = _trust_signal_packages(report)
     if trust_signals:
         conditional_criteria.append("trust")
@@ -422,6 +434,10 @@ def gate_status(report: ScanReport) -> dict:
     intel_gap, intel = _intel_gap(report)
     if intel_gap == "stale":
         conditional_criteria.append("intel_stale")
+    intel_old_format = bool(
+        (getattr(report, "dependency_check", None) or {}).get("packages_parsed") and intel.get("mal_old_format"))
+    if intel_old_format:
+        conditional_criteria.append("intel_old_format")
     # 소스를 한 건도 보지 못했으면 '안전'이 아니라 '판정 불가'다.
     undetermined = (
         not blocked
@@ -476,6 +492,7 @@ def gate_status(report: ScanReport) -> dict:
         "license_review": license_review,
         "unpinned": unpinned,
         "malicious_possible": malicious_possible,
+        "dependency_truncated": dependency_truncated,
         # 41차 — 신뢰 신호가 붙은 패키지(조건부 사유 `trust` 의 근거). 포털은 키를 모르면 표시만 한다.
         "trust_signals": trust_signals,
         # 가정 최신판 기준으로 취약 판정된 미고정 컴포넌트 수 — `dependency_vulnerable` 에 포함돼 있다.
@@ -484,7 +501,8 @@ def gate_status(report: ScanReport) -> dict:
                           block_count, vuln, unchecked, coverage_gap,
                           license_review=len(license_review), unpinned=len(unpinned),
                           malicious_possible=len(malicious_possible),
-                          trust=len(trust_signals), intel_gap=intel_gap, intel=intel),
+                          trust=len(trust_signals), intel_gap=intel_gap, intel=intel,
+                          dependency_truncated=dependency_truncated, intel_old_format=intel_old_format),
     }
 
 
@@ -573,6 +591,8 @@ def _reason(
     trust: int = 0,
     intel_gap: str = "",
     intel: dict | None = None,
+    dependency_truncated: int = 0,
+    intel_old_format: bool = False,
 ) -> str:
     if verdict == "undetermined":
         if intel_gap == "missing":
@@ -642,6 +662,10 @@ def _reason(
         parts.append(f"버전 미고정 {unpinned}종")
     if malicious_possible:
         parts.append(f"특정 버전 악성 권고 {malicious_possible}종")
+    if dependency_truncated:
+        parts.append(f"미검사 패키지 {dependency_truncated}종")
+    if intel_old_format:
+        parts.append("구형식 위협정보")
     if trust:
         parts.append(f"패키지 신뢰 신호 {trust}종")
     if intel_gap == "stale":
@@ -662,7 +686,11 @@ def _reason(
             else " **검사되지 않은 실행 소스가 있습니다 — 그 파일은 판정 밖입니다.**"
         )
     if malicious_possible:
-        tail += " 특정 버전이 악성으로 보고된 패키지는 **버전을 고정해야** 해당 여부를 판정할 수 있습니다."
+        tail += " 특정 버전이 악성으로 보고된 패키지는 **버전을 고정하거나 정상 패키지인지 확인해야** 해당 여부를 판정할 수 있습니다."
+    if dependency_truncated:
+        tail += f" **패키지 {dependency_truncated}종은 상한에 걸려 검사하지 못했습니다 — 그 패키지는 판정 밖입니다.**"
+    if intel_old_format:
+        tail += " **위협정보가 구형식입니다** — (인터넷망) `gvskb update-intel` · (폐쇄망) 새 위협정보 번들을 반입한 뒤 다시 검사하세요."
     if unpinned:
         tail += (
             " 버전 미고정 패키지는 **최신판 기준으로 조회했을 뿐** 설치본이 안전하다는 근거가 아닙니다 — "

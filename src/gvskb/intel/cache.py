@@ -378,6 +378,11 @@ class IntelCache:
             return None
         return any(n in head for n in needles)
 
+    def mal_old_format(self) -> bool:
+        """악성 권고에 영향 버전이 없는 구형식 캐시인가 — 버전 단위 대조를 못 해 다시 받아야 한다."""
+        return bool(self.head_contains("osv-malicious", '"affected"')) and not self.head_contains(
+            "osv-malicious", '"whole"', '"versions"', '"ranges"')
+
     def peek_info(self, source_id: str) -> dict | None:
         """상태 표시용 경량 조회 — **본문을 열지 않는다**(47차, 리뷰 M-1·M-2 반영).
 

@@ -2327,15 +2327,14 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
             line = raw.strip()
             if not line or line.startswith("#") or line.startswith("-"):
                 continue
-            m = re.match(r"([A-Za-z0-9_.-]+)\s*(==|>=|<=|~=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
+            m = re.match(r"([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*(===|==|>=|<=|~=|!=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
             if m:
                 version, op = m.group(3), m.group(2)
                 packages.append({
                     "name": m.group(1),
                     "version": version,
-                    # ``===`` 는 정규식상 ``==`` + 남은 ``=`` 로 잡히지 않으므로 다루지 않는다.
                     # 와일드카드(``2.*``)는 고정이 아니다.
-                    "version_exact": bool(version) and op == "==" and "*" not in version,
+                    "version_exact": bool(version) and op in ("==", "===") and "*" not in version,
                 })
     elif eco == "npm":
         try:
@@ -2346,14 +2345,22 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
         for key in ("dependencies", "devDependencies", "optionalDependencies"):
             deps.update(data.get(key, {}) or {})
         for name, spec in deps.items():
-            raw_spec = str(spec) if spec else ""
+            raw_spec = str(spec).strip() if spec else ""
+            # 별칭은 실제로 설치되는 패키지로 본다 — `"x": "npm:axios@1.14.1"` 을 x 로 읽으면 악성 대조를 비껴간다.
+            alias = re.fullmatch(r"npm:((?:@[^/@\s]+/)?[^/@\s]+)(?:@(.+))?", raw_spec)
+            if alias:
+                name, raw_spec = alias.group(1), alias.group(2) or ""
+            raw_spec = re.sub(r"^(?:=\s*|v(?=\d))", "", raw_spec)   # `=1.2.3`·`v1.2.3` 도 고정 표기다
             version = raw_spec.lstrip("^~") if raw_spec else None
-            # npm 은 접두사가 없어야 고정이다. ``4.17.0`` 은 고정, ``^4.17.0``·``>=4``·
-            # ``*``·``latest``·git URL 은 아니다.
+            # npm 은 접두사가 없고 세 마디가 모두 있어야 고정이다. ``4.17.0`` 은 고정, ``4.17``(>=4.17.0 <4.18.0)·
+            # ``^4.17.0``·``>=4``·``*``·``latest``·git URL 은 아니다.
             exact = bool(version) and raw_spec == version and re.fullmatch(
-                r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
+                r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
             ) is not None
-            packages.append({"name": name, "version": version, "version_exact": exact})
+            packages.append({
+                "name": name, "version": version, "version_exact": exact,
+                **({"spec": raw_spec} if raw_spec[:1] in ("^", "~") else {}),
+            })
     return packages
 
 

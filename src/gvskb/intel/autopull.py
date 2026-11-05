@@ -167,6 +167,8 @@ def cache_needs_refresh(cache_dir: Path | None = None) -> tuple[bool, str]:
              if (e := cache.load(sid)) is not None and e.is_stale()]
     if stale:
         return True, f"캐시 신선도({intel_max_age_days()}일) 초과: {', '.join(stale)}"
+    if cache.mal_old_format():
+        return True, "악성 권고에 영향 버전이 없는 구형식 캐시"
     return False, "캐시가 최신입니다"
 
 

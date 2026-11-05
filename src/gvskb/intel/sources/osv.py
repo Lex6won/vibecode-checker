@@ -81,8 +81,8 @@ def _mal_affected(aff: dict) -> dict:
     """악성 권고의 영향 범위를 **판정에 필요한 만큼만** 남긴다.
 
     예전에는 패키지 이름만 남겨, 특정 버전만 오염된 인기 패키지(axios 1.14.1, chalk 5.6.1, debug 4.4.2 …)가
-    모든 버전에서 악성으로 차단됐다(실측 2026-11-05). OSV 의 MAL 권고는 91% 가 ``introduced: 0``(패키지 전체),
-    9% 가 버전 열거·구간이다. 전체 악성은 ``whole`` 표시 하나로 줄여 번들 크기를 지킨다.
+    모든 버전에서 악성으로 차단됐다(실측 2026-11-05). OSV 의 MAL 권고 대부분은 ``introduced: 0``(패키지 전체)이고
+    나머지는 버전 열거·구간이다 — 합산 9% 지만 PyPI 만 보면 46% 다. 전체 악성은 ``whole`` 표시 하나로 줄여 번들 크기를 지킨다.
     """
     pkg = aff.get("package") or {}
     rec: dict = {"package": pkg.get("name"), "ecosystem": pkg.get("ecosystem")}
@@ -95,7 +95,7 @@ def _mal_affected(aff: dict) -> dict:
             for ev in rng.get("events") or [] if isinstance(ev, dict)
         ]
         events = [ev for ev in events if ev]
-        if any(ev.get("introduced") == "0" for ev in events) and not any(
+        if any(ev.get("introduced") in ("0", "0.0.0") for ev in events) and not any(
             "fixed" in ev or "last_affected" in ev for ev in events
         ):
             rec["whole"] = True
