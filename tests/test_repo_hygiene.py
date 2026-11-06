@@ -33,14 +33,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # 도메인·비밀번호 검사는 이 파일에도 그대로 적용된다.
 _NAME_SCAN_EXEMPT = frozenset({"tests/test_repo_hygiene.py"})
 
-# 이력 재작성(docs 인계 §C) 전까지 남아 있는 과거 커밋. 새 커밋은 예외가 없다.
-# 재작성 후에는 SHA 가 바뀌므로 이 목록은 자연히 빈 목록이 된다.
-_PENDING_HISTORY_REWRITE: frozenset[str] = frozenset({
-    # 커밋 메시지 본문에 감사 대상 기관의 개인키 파일명(도메인 포함)이 들어 있다.
-    # 이미 공개 원격에 푸시된 커밋이라 amend 로 지울 수 없다 — 이력 재작성 대상.
-    # 이 가드가 처음 잡아낸 실제 유출이며, 재작성 후 이 항목을 지운다.
-    "97e6ef7c38869252fc1fa3a28cd3ef9542df5aed",
-})
+# 2026-11-06 이력을 재작성해 예외가 없다. 새 커밋도 예외를 두지 않는다.
+_PENDING_HISTORY_REWRITE: frozenset[str] = frozenset()
 
 _BINARY_SUFFIXES = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".pdf", ".zip", ".gz",
