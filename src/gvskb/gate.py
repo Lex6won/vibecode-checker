@@ -82,15 +82,15 @@ from __future__ import annotations
 
 from .schema import Decision, ScanReport
 
-#: 기관 표준(Python·JavaScript·TypeScript 웹서비스) 밖의 실행 형태. 패키지가 아니라 프로젝트 형태가 사유다.
+#: Electron·확장은 기본 패키지(언어·런타임 기본 제공 + 보안담당자 안전 목록)만 쓸 때만 승인할 수 있다.
 UNSUPPORTED_PLATFORM_ACTION = (
-    "이 형태는 기관 표준 밖이라 승인할 수 없습니다. 전용 런타임·자체 갱신·외부 CDN 연결에 기대므로 폐쇄망에서 동작하지 않고, "
-    "구성요소를 검증하기 어려워 위험할 수 있습니다. Python·JavaScript·TypeScript 웹서비스와 기본 패키지로 교체한 뒤 다시 점검하세요."
+    "이 구성은 승인할 수 없습니다. 기본 패키지가 아니거나 외부 CDN 에 연결하면 폐쇄망에서 동작하지 않고 구성요소를 검증하기 어려워 위험할 수 있습니다. "
+    "언어·런타임 기본 기능이나 보안담당자가 안전 목록으로 지정한 패키지로 교체하고, 외부 CDN 파일은 프로젝트 안에 포함한 뒤 다시 점검하세요."
 )
 
 #: 배포를 **막는** 사유. 이 여섯만 차단이다.
 BLOCK_CRITERIA: dict[str, str] = {
-    "unsupported_platform": "기관 표준 밖의 실행 형태",
+    "unsupported_platform": "기본 패키지 밖의 구성을 쓰는 Electron·확장",
     "malicious": "악성 패키지",
     "registry_rejected": "기관 레지스트리 거부",
     "not_found": "레지스트리에 없는 이름(가짜 이름 의심)",
@@ -229,16 +229,28 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
 
 
 def _platform_block_reasons(report: ScanReport) -> list[dict]:
-    """Electron·브라우저 확장·VS Code 확장 — 설정이 안전해도 승인하지 않는다."""
+    """Electron·브라우저 확장·VS Code 확장 중 기본 패키지 밖을 쓰거나 외부 CDN 에 연결하는 것.
+
+    기본 패키지만 쓰면 형태만으로 막지 않는다. 안전 목록에 지정된 패키지는 기본 패키지로 본다.
+    """
+    from .tools.check_package import _approved_packages, _mal_name_key
+
+    approved = _approved_packages()
+    cdn = sorted({str(c.target) for c in getattr(report, "external_surface", None) or []
+                  if getattr(c, "category", "") == "cdn" and getattr(c, "context", "runtime") == "runtime"})
     seen: dict[str, dict] = {}
     for item in getattr(report, "unsupported_platforms", None) or []:
+        packages = [p for p in item.get("packages") or [] if _mal_name_key(str(p), "npm") not in approved]
+        if not packages and not cdn:
+            continue
         label = str(item.get("label") or item.get("kind") or "")
         row = seen.setdefault(label, {
             "package": label, "version": None, "resolved_version": None, "version_resolution": None,
             "criteria": ["unsupported_platform"], "labels": [BLOCK_CRITERIA["unsupported_platform"]],
             "malicious_kind": None, "action": UNSUPPORTED_PLATFORM_ACTION, "versions": [],
-            "recommended_version": None, "latest_version": None, "files": [],
+            "recommended_version": None, "latest_version": None, "files": [], "packages": [], "cdn": cdn,
         })
+        row["packages"] = sorted({*row["packages"], *packages})
         if item.get("file") and item["file"] not in row["files"]:
             row["files"].append(item["file"])
     return list(seen.values())
@@ -696,6 +708,13 @@ def _reason(
             f"배포 불가 — {' · '.join(labels)}에 해당하는 패키지가 있습니다"
             f"({names}{more}). 사유 기록으로 넘길 수 없는 등급입니다."
         )
+        for row in (r for r in block_reasons if "unsupported_platform" in r["criteria"]):
+            parts = []
+            if row["packages"]:
+                parts.append(f"기본 패키지가 아닌 {', '.join(row['packages'][:5])}" + (f" 외 {len(row['packages']) - 5}개" if len(row["packages"]) > 5 else ""))
+            if row["cdn"]:
+                parts.append(f"외부 CDN {', '.join(row['cdn'][:3])}")
+            head += f" **{row['package']}: {' · '.join(parts)}.**"
         if any("unsupported_platform" in r["criteria"] for r in block_reasons):
             head += f" {UNSUPPORTED_PLATFORM_ACTION}"
         # 어떻게 해야 풀리는가 — 판정과 함께 간다. 포털·CLI 가 이 문장을 그대로 보여 준다.

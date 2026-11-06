@@ -672,7 +672,7 @@ class ScanReport(BaseModel):
     )
     unsupported_platforms: list[dict] = Field(
         default_factory=list,
-        description="기관 표준 밖의 실행 형태 — [{kind, label, file}]. Electron·브라우저 확장·VS Code 확장. 게이트 차단 사유다.",
+        description="Electron·브라우저 확장·VS Code 확장 — [{kind, label, file, packages}]. 기본 패키지 밖이나 외부 CDN 을 쓰면 게이트 차단 사유다.",
     )
     runtime_pins: list[dict] = Field(
         default_factory=list,

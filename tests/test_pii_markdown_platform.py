@@ -77,39 +77,80 @@ def test_markdown_finding_reaches_the_form(tmp_path: Path) -> None:
     assert row["result"] != "적합"
 
 
-@pytest.mark.parametrize("files,label", [
-    ({"package.json": json.dumps({"name": "a", "devDependencies": {"electron": "41.0.0"}})}, "Electron 앱"),
-    ({"electron-builder.yml": "appId: a\n"}, "Electron 앱"),
-    ({"manifest.json": json.dumps({"manifest_version": 3, "name": "a", "permissions": []})}, "브라우저 확장"),
-    ({"package.json": json.dumps({"name": "a", "engines": {"vscode": "^1.90.0"}})}, "VS Code 확장"),
-    ({"apps/desktop/package.json": json.dumps({"name": "a", "dependencies": {"electron": "41.0.0"}})}, "Electron 앱"),
+ELECTRON = {"name": "a", "devDependencies": {"electron": "41.0.0", "electron-builder": "26.0.0", "typescript": "5.0.0"}}
+CHROME = {"manifest_version": 3, "name": "a", "permissions": []}
+VSCODE = {"name": "a", "engines": {"vscode": "^1.90.0"}, "devDependencies": {"@types/vscode": "1.90.0"}}
+
+
+@pytest.mark.parametrize("files,label,package", [
+    ({"package.json": json.dumps({**ELECTRON, "dependencies": {"axios": "1.7.9"}})}, "Electron 앱", "axios"),
+    ({"apps/desktop/package.json": json.dumps({**ELECTRON, "dependencies": {"sqlite3": "5.0.0"}})}, "Electron 앱", "sqlite3"),
+    ({"manifest.json": json.dumps(CHROME), "package.json": json.dumps({"name": "a", "dependencies": {"lodash": "4.17.21"}})}, "브라우저 확장", "lodash"),
+    ({"package.json": json.dumps({**VSCODE, "dependencies": {"got": "14.0.0"}})}, "VS Code 확장", "got"),
 ])
-def test_unsupported_platform_is_not_approved(files: dict[str, str], label: str, tmp_path: Path) -> None:
-    report = _project(tmp_path, {"a.js": "const x = 1;\n", **files})
-    gate = gate_status(report)
+def test_platform_with_non_base_package_is_blocked_and_says_what(files: dict[str, str], label: str, package: str, tmp_path: Path) -> None:
+    gate = gate_status(_project(tmp_path, {"a.js": "const x = 1;\n", **files}))
     assert gate["verdict"] == "blocked" and gate["blocked_dependency"] is False
     row = next(r for r in gate["block_reasons"] if r["package"] == label)
-    assert row["criteria"] == ["unsupported_platform"] and row["files"]
-    assert "승인할 수 없습니다" in gate["reason"] and "교체" in gate["reason"] and "CDN" in gate["reason"]
+    assert row["criteria"] == ["unsupported_platform"] and row["files"] and row["packages"] == [package]
+    for word in (package, "승인할 수 없습니다", "교체", "CDN", "안전 목록"):
+        assert word in gate["reason"], word
+
+
+@pytest.mark.parametrize("files", [
+    {"package.json": json.dumps(ELECTRON)},                   # 런타임·개발 도구뿐
+    {"electron-builder.yml": "appId: a\n"},
+    {"manifest.json": json.dumps(CHROME)},                    # 패키지 없는 확장
+    {"package.json": json.dumps(VSCODE)},
+])
+def test_platform_with_base_packages_only_is_not_blocked(files: dict[str, str], tmp_path: Path) -> None:
+    report = _project(tmp_path, {"a.js": "const x = 1;\n", **files})
+    assert report.unsupported_platforms, "형태는 알아본다"
+    assert not any("unsupported_platform" in r["criteria"] for r in gate_status(report)["block_reasons"])
+
+
+def test_platform_loading_external_cdn_is_blocked(tmp_path: Path) -> None:
+    report = _project(tmp_path, {
+        "manifest.json": json.dumps(CHROME),
+        "popup.js": 'const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/vue@3/dist/vue.js"; document.head.append(s);\n',
+    })
+    gate = gate_status(report)
+    row = next(r for r in gate["block_reasons"] if r["package"] == "브라우저 확장")
+    assert "cdn.jsdelivr.net" in row["cdn"] and "cdn.jsdelivr.net" in gate["reason"]
+
+
+def test_web_project_using_cdn_is_not_this_rule(tmp_path: Path) -> None:
+    report = _project(tmp_path, {"app.js": 'fetch("https://cdn.jsdelivr.net/npm/vue@3/dist/vue.js");\n', "package.json": json.dumps({"name": "a", "dependencies": {"express": "5.0.0"}})})
+    assert not any("unsupported_platform" in r["criteria"] for r in gate_status(report)["block_reasons"])
+
+
+def test_approved_package_counts_as_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    listed = tmp_path / "approved.json"
+    listed.write_text('{"packages":[{"ecosystem":"npm","name":"axios"}]}', encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(listed))
+    project = tmp_path / "p"
+    report = _project(project, {"a.js": "const x = 1;\n", "package.json": json.dumps({**ELECTRON, "dependencies": {"axios": "1.7.9"}})})
+    assert not any("unsupported_platform" in r["criteria"] for r in gate_status(report)["block_reasons"])
+    listed.write_text('{"packages":[]}', encoding="utf-8")
+    assert any("unsupported_platform" in r["criteria"] for r in gate_status(report)["block_reasons"])
 
 
 @pytest.mark.parametrize("files", [
     {"package.json": json.dumps({"name": "a", "dependencies": {"express": "5.0.0"}})},
     {"manifest.json": json.dumps({"name": "pwa", "short_name": "p", "icons": []})},   # 웹앱 매니페스트
-    {"tests/fixtures/package.json": json.dumps({"name": "a", "dependencies": {"electron": "41.0.0"}})},
-    {"examples/ext/manifest.json": json.dumps({"manifest_version": 3, "permissions": []})},
+    {"tests/fixtures/package.json": json.dumps({"name": "a", "dependencies": {"electron": "41.0.0", "axios": "1.0.0"}})},
+    {"examples/ext/manifest.json": json.dumps(CHROME)},
 ])
 def test_standard_web_project_is_not_flagged(files: dict[str, str], tmp_path: Path) -> None:
     report = _project(tmp_path, {"a.js": "const x = 1;\n", **files})
     assert not report.unsupported_platforms
-    assert not any("unsupported_platform" in r["criteria"] for r in gate_status(report)["block_reasons"])
 
 
 def test_platform_action_reaches_the_report(tmp_path: Path) -> None:
     from gvskb.gate import attach_gate
     from gvskb.report import render_markdown
 
-    report = _project(tmp_path, {"a.js": "const x = 1;\n", "package.json": json.dumps({"name": "a", "dependencies": {"electron": "41.0.0"}})})
+    report = _project(tmp_path, {"a.js": "const x = 1;\n", "package.json": json.dumps({**ELECTRON, "dependencies": {"axios": "1.7.9"}})})
     attach_gate(report)
     text = render_markdown(report)
-    assert "기관 표준 밖" in text and "웹서비스와 기본 패키지로 교체" in text
+    assert "기본 패키지" in text and "안전 목록으로 지정한 패키지로 교체" in text

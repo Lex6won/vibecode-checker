@@ -71,6 +71,23 @@ _PLATFORM_LABELS = {
     "vscode-manifest": ("vscode-ext", "VS Code 확장"),
     "chrome-manifest": ("browser-ext", "브라우저 확장"),
 }
+# 런타임 자체와 타입 정의는 '쓰는 패키지'로 치지 않는다. 런타임이 끌고 오는 것이지 업무 코드가 고른 것이 아니다.
+_PLATFORM_RUNTIME_PACKAGES = frozenset({"electron", "vscode"})
+
+
+def _platform_packages(manifest: Path) -> list[str]:
+    """실행 때 쓰는 패키지(dependencies·optionalDependencies). 개발 도구는 배포본에 들어가지 않으므로 뺀다."""
+    pj = manifest if manifest.name.lower() == "package.json" else manifest.parent / "package.json"
+    data = _json(_read(pj) or "") if pj.is_file() else None
+    if not isinstance(data, dict):
+        return []
+    names: set[str] = set()
+    for key in ("dependencies", "optionalDependencies"):
+        if isinstance(data.get(key), dict):
+            names.update(str(name) for name in data[key])
+    return sorted(n for n in names if n not in _PLATFORM_RUNTIME_PACKAGES and not n.startswith("@types/"))
+
+
 # 시험·예제의 설정은 이 프로젝트의 실행 형태가 아니다.
 _NONPRODUCTION_PATH = re.compile(r"(^|/)(tests?|__tests__|fixtures?|examples?|samples?|docs?)(/|$)", re.I)
 
@@ -527,7 +544,8 @@ def collect_ecosystem_surface(root: Path, *, policy: PolicyFn) -> EcoResult:
     for path, kind in manifests:
         rel = _rel(path, root)
         if kind in _PLATFORM_LABELS and not _NONPRODUCTION_PATH.search(rel):
-            res.platforms.append({"kind": _PLATFORM_LABELS[kind][0], "label": _PLATFORM_LABELS[kind][1], "file": rel})
+            res.platforms.append({"kind": _PLATFORM_LABELS[kind][0], "label": _PLATFORM_LABELS[kind][1], "file": rel,
+                                  "packages": _platform_packages(path)})
     if not active and not manifests:
         return res
     untrusted_supported = False
