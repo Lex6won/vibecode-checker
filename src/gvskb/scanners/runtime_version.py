@@ -140,6 +140,21 @@ def pins_from_dockerfile(text: str) -> list[Pin]:
     return out
 
 
+def other_images_from_dockerfile(text: str) -> list[Pin]:
+    """지원 기간을 판정할 수 없는 베이스 이미지 — `ruby:2.3`, 태그 없는 `python`. 멀티 스테이지 별칭은 뺀다."""
+    aliases = {m.group(1).lower() for m in re.finditer(r"^\s*FROM\s+\S+\s+AS\s+(\S+)", text, re.I | re.M)}
+    out: list[Pin] = []
+    for m in _DOCKER_FROM_RE.finditer(text):
+        img = m.group("image")
+        if img.lower() == "scratch" or img.lower() in aliases:
+            continue
+        im = _IMAGE_RE.match(img)
+        if im and im.group("tag"):
+            continue
+        out.append(Pin("image", img, text.count("\n", 0, m.start()) + 1, f"Dockerfile FROM {img}"))
+    return out
+
+
 def pins_from_package_json(data) -> list[Pin]:
     out: list[Pin] = []
     if not isinstance(data, dict):
@@ -215,6 +230,38 @@ def _today() -> date:
         except ValueError:
             pass
     return date.today()
+
+
+def pin_support(runtime: str, spec: str) -> str:
+    """이 선언의 지원 상태 — ``supported`` | ``eol`` | ``outdated`` | ``unknown``.
+
+    ``supported`` 는 **기준표에서 지원 기간 안임을 확인한** 경우뿐이다. `lts/*`·`3`·표에 없는 메이저(node 21)는
+    ``unknown`` 이다 — 미확정이지 안전이 아니다.
+    """
+    base = load_baselines()
+    today = _today()
+    ver = _parse_version(spec)
+    if ver is None:
+        return "unknown"
+    if runtime == "node":
+        table = base["node"]
+        eol_date = table["eol"].get(str(ver[0]))
+        if eol_date is None:
+            return "eol" if ver[0] < min(int(k) for k in table["eol"]) else "unknown"
+        if date.fromisoformat(eol_date) <= today:
+            return "eol"
+        ms = table.get("min_secure", {}).get(str(ver[0]))
+        return "outdated" if ms and len(ver) >= 3 and _lt(ver, _ver_tuple(ms)) else "supported"
+    if runtime == "python":
+        if len(ver) < 2:
+            return "unknown"
+        table = base["python"]["eol"]
+        eol_date = table.get(f"{ver[0]}.{ver[1]}")
+        if eol_date is None:
+            known = sorted(table, key=_ver_tuple)
+            return "eol" if _lt(ver, _ver_tuple(known[0])) else "unknown"
+        return "eol" if date.fromisoformat(eol_date) <= today else "supported"
+    return "unknown"
 
 
 def judge_pins(pins: list[Pin], rel: str) -> list[Finding]:

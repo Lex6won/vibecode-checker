@@ -171,13 +171,33 @@ def test_versionless_vulns_capped_to_review(monkeypatch, osv) -> None:
 
 
 def test_unresolved_still_reports_malicious(monkeypatch, osv) -> None:
-    """버전과 무관한 악성 패키지 판정은 버전 미확정이라도 면제하지 않는다."""
+    """패키지 전체 악성 판정은 버전 미확정이라도 면제하지 않는다."""
     _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=300))
-    osv({"vulns": [{"id": "MAL-2025-1", "database_specific": {"severity": "CRITICAL"}},
+    whole = [{"package": {"name": "evil", "ecosystem": "PyPI"},
+              "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]}]
+    osv({"vulns": [{"id": "MAL-2025-1", "affected": whole, "database_specific": {"severity": "CRITICAL"}},
                    {"id": "GHSA-old", "database_specific": {"severity": "HIGH"}}]})
     r = _run(cp.check_package_impl("evil", "pypi"))
     assert r["is_malicious_package"] is True and r["verdict"] == "malicious"
     assert r["vulnerability_count"] == 1          # MAL- 만 남고 역대 이력은 빠진다
+
+
+def test_unresolved_version_specific_mal_is_possible_not_malicious(monkeypatch, osv) -> None:
+    """버전을 모를 때 특정 버전 오염 권고는 확정이 아니다 — 로컬 경로와 같은 판정(온라인·로컬이 갈리지 않게)."""
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=300))
+    osv({"vulns": [{"id": "MAL-2026-2", "summary": "s", "affected": [
+        {"package": {"name": "axios", "ecosystem": "npm"}, "versions": ["1.14.1"]}]}]})
+    r = _run(cp.check_package_impl("axios", "npm"))
+    assert r["is_malicious_package"] is False and r["verdict"] != "malicious"
+    assert r["malicious_possible"][0]["id"] == "MAL-2026-2" and r["malicious_possible"][0]["versions"] == ["1.14.1"]
+
+
+def test_online_withdrawn_advisory_is_ignored(monkeypatch, osv) -> None:
+    _patch_metadata(monkeypatch, _meta(exists=True, version_age_days=300))
+    osv({"vulns": [{"id": "MAL-2024-9", "withdrawn": "2024-07-01T00:00:00Z", "affected": [
+        {"package": {"name": "react", "ecosystem": "npm"}, "versions": ["18.3.1"]}]}]})
+    r = _run(cp.check_package_impl("react", "npm", version="18.3.1"))
+    assert r["is_malicious_package"] is False and r["vulnerability_count"] == 0
 
 
 def test_install_script_flagged_for_review(monkeypatch, osv) -> None:

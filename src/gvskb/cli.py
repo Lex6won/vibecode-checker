@@ -446,6 +446,19 @@ def _sbom_audits(audit: dict) -> list[dict]:
     return [a for a in inner if isinstance(a, dict)] if isinstance(inner, list) else [audit]
 
 
+def _cmd_sbom_report(args: argparse.Namespace) -> int:
+    """SBOM → HTML 열람 보고서(설계 A3). 원본에 없는 값은 「원본 미기재」로 둔다."""
+    from .sbom_html import render_sbom_html_file
+
+    try:
+        out = render_sbom_html_file(args.file, args.output)
+    except (OSError, ValueError) as exc:
+        print(f"[gvskb] SBOM HTML 을 만들지 못했습니다: {exc}", file=sys.stderr)
+        return 2
+    print(f"[gvskb] SBOM HTML 저장: {out}", file=sys.stderr)
+    return 0
+
+
 def _cmd_sbom(args: argparse.Namespace) -> int:
     """건네받은 SBOM 을 그대로 검사한다 — 소스가 없어도 컴포넌트는 볼 수 있다."""
     import asyncio as _asyncio
@@ -1344,6 +1357,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="검사할 최대 컴포넌트 수 (기본 2000). 초과분은 건수를 알려 줍니다")
     sb.add_argument("--json", action="store_true", help="JSON 출력")
     sb.set_defaults(func=_cmd_sbom)
+
+    sr = sub.add_parser(
+        "sbom-report",
+        help="SBOM(CycloneDX JSON)을 사람이 읽는 HTML 보고서로 — 패키지 목록·의존관계·취약점·원본 범위(값 보강·판정 없음)",
+    )
+    sr.add_argument("file", help="CycloneDX SBOM 파일 경로 (.sbom.cdx.json)")
+    sr.add_argument("--output", "-o", help="HTML 저장 경로. 미지정 시 <stem>.sbom.html")
+    sr.set_defaults(func=_cmd_sbom_report)
 
     rs = sub.add_parser("ruleset", help="룰셋 버전·지문 확인(게이트 재현성) · --bump 로 갱신")
     rs.add_argument("--rules-dir", help="대상 룰 디렉토리 (기본: 자동 해석)")

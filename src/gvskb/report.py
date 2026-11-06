@@ -1105,6 +1105,8 @@ def _remedy_lines(report: ScanReport) -> list[str]:
                    "미고정이면 설치 시점에 최신판이 들어옵니다")
         else:
             fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"))
+        if r.get("action"):   # 악성 차단은 '올리면 된다'가 아니다 — 종류별로 할 일을 적는다
+            fix = r["action"]
         out.append(f"`{pkg}` ({' · '.join(r['labels'])}) → {fix}")
     if len(g["block_reasons"]) > 5:
         out.append(f"외 {len(g['block_reasons']) - 5}종 — 아래 의존성 섹션 참조")
@@ -1123,6 +1125,11 @@ def _remedy_lines(report: ScanReport) -> list[str]:
             out.append(
                 f"소스 높은 위험 **{g['source_block_count']}건** — 아래 '상세 검토 "
                 "결과'의 안전한 수정 방향을 적용하세요")
+        if g.get("malicious_possible"):
+            names = ", ".join(f"`{u['name']}`" for u in g["malicious_possible"][:5])
+            out.append(
+                f"특정 버전 악성 권고 **{len(g['malicious_possible'])}종**({names}) — 이 설치본의 해당 여부를 "
+                "판정하지 못했습니다. 버전을 고정(`==`·락파일)하거나 공식 저장소에서 정상 패키지인지 확인하고 다시 검사하세요")
         if g.get("unpinned"):
             names = ", ".join(f"`{u['name']}`" for u in g["unpinned"][:5])
             more = f" 외 {len(g['unpinned']) - 5}종" if len(g["unpinned"]) > 5 else ""
@@ -1813,6 +1820,7 @@ def render_markdown(
     # --- ⑨-4 행정안전부 49개 항목 결과표(43차) ------------------------------
     # --- ⑨-5 검사 엔진 가동 현황(45차) ----------------------------------------
     lines.extend(_render_engines_md(report))
+    lines.extend(_render_form_v12_md(report))
     lines.extend(_render_mois_md(report))
 
     # --- ⑩ 의존성(패키지) 취약점 검사 — 병합된 경우에만 표시 ----------------
@@ -2589,6 +2597,7 @@ def render_html(
 
     # === 행정안전부 49개 항목 결과표(43차) ================================
     p.extend(_render_engines_html(report))
+    p.extend(_render_form_v12_html(report))
     p.extend(_render_mois_html(report))
 
     # === 수정 프롬프트 (복사용) — 기본 접기. 각 블록에 복사 버튼(인라인 JS) ===
@@ -2732,7 +2741,8 @@ def _dep_fix_prompt_text(report: ScanReport) -> str | None:
         c = comp["check"]
         detail: list[str] = []
         if c.get("is_malicious_package"):
-            detail.append("악성 패키지 — 즉시 제거")
+            from .gate import malicious_kind
+            detail.append("악성 패키지 — 즉시 제거" if malicious_kind(c) == "confirmed" else "악성 권고 — 버전 미확인(확정 아님)")
         if c.get("verdict") == "not_found":
             detail.append("레지스트리에 없는 이름(가짜 이름 의심) — 철자 확인 후 제거")
         if c.get("verdict") == "registry_rejected":
@@ -3487,7 +3497,8 @@ def _pkg_verdict_label(check: dict) -> str:
     if check.get("verdict") == "not_found":
         return "❌ 저장소에 없음(가짜 이름 의심)"
     if check.get("is_malicious_package"):
-        return "악성 의심"
+        from .gate import malicious_kind
+        return "악성 의심" if malicious_kind(check) == "confirmed" else "악성 권고 — 버전 미확인"
     n = check.get("vulnerability_count") or 0
     if n:
         # 단위를 붙인다 — '취약·악성 3건'(패키지 수)과 섞여 읽히던 숫자다.
@@ -4282,4 +4293,35 @@ def _render_engines_html(report: ScanReport) -> list[str]:
         tag = "필수 미가동" if e.name in (eng.required or []) else "미가동(선택)"
         p.append(f"<p><b>{_esc(tag)}</b> <code>{_esc(e.name)}</code> — {_esc(e.reason.replace('`', ''))}</p>")
     p.append("</details>")
+    return p
+
+# --- 보안성검토 서식 v1.2 대응 (설계 A4) -----------------------------------------
+_FORM_V12_INTRO = ("보안성검토 서식 v1.2 의 「AI 체커 점검 항목」 8개에 대한 결과입니다. "
+                   "「적합」은 자동 탐지 룰 기준의 결과이며 안전 보증이 아닙니다. 배포 게이트 판정과는 별개의 칸입니다.")
+
+
+def _render_form_v12_md(report: ScanReport) -> list[str]:
+    t = report.form_v12
+    if not t or not t.get("items"):
+        return []
+    out = ["## 보안성검토 서식 대응 — AI 체커 점검 항목", "", f"> {_FORM_V12_INTRO}", "",
+           f"종합: **{t['overall']}** ({t['summary']})", "", "| 점검 항목 | 결과 | 근거 | 조치 |", "|---|---|---|---|"]
+    for r in t["items"]:
+        out.append(f"| {r['label']} | **{r['result']}** | {r['basis']} | {r['action'] or '—'} |")
+    out.append("")
+    return out
+
+
+def _render_form_v12_html(report: ScanReport) -> list[str]:
+    t = report.form_v12 if report.form_v12 and report.form_v12.get("items") else None
+    if not t:
+        return []
+    p = ['<details class="sec" open><summary>보안성검토 서식 대응 — AI 체커 점검 항목 '
+         f'<span class="cnt">{_esc(t["overall"])}</span></summary>',
+         f'<p class="muted">{_esc(_FORM_V12_INTRO)} 종합: <b>{_esc(t["overall"])}</b> ({_esc(t["summary"])})</p>',
+         "<table><tr><th>점검 항목</th><th>결과</th><th>근거</th><th>조치</th></tr>"]
+    for r in t["items"]:
+        p.append(f"<tr><td>{_esc(r['label'])}</td><td><b>{_esc(r['result'])}</b></td><td>{_esc(r['basis'])}</td>"
+                 f"<td>{_esc(r['action'] or '—')}</td></tr>")
+    p.append("</table></details>")
     return p

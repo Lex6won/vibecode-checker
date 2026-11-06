@@ -368,6 +368,21 @@ class IntelCache:
             ecosystems=data.get("ecosystems"),
         )
 
+    def head_contains(self, source_id: str, *needles: str) -> bool | None:
+        """캐시 파일 앞부분에 문자열이 있는가(표시용). 파일이 없으면 None. 본문을 파싱하지 않는다."""
+        p = self.path_for(source_id)
+        try:
+            with p.open("rb") as fh:
+                head = fh.read(_HEADER_BYTES * 8).decode("utf-8", errors="replace")
+        except OSError:
+            return None
+        return any(n in head for n in needles)
+
+    def mal_old_format(self) -> bool:
+        """악성 권고에 영향 버전이 없는 구형식 캐시인가 — 버전 단위 대조를 못 해 다시 받아야 한다."""
+        return bool(self.head_contains("osv-malicious", '"affected"')) and not self.head_contains(
+            "osv-malicious", '"whole"', '"versions"', '"ranges"')
+
     def peek_info(self, source_id: str) -> dict | None:
         """상태 표시용 경량 조회 — **본문을 열지 않는다**(47차, 리뷰 M-1·M-2 반영).
 

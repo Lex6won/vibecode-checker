@@ -130,6 +130,11 @@ def _properties(check: dict) -> list[dict]:
 
     put("verdict", check.get("verdict"))
     put("checked", "true" if check.get("checked") else "false")
+    if check.get("is_malicious_package"):
+        from .gate import malicious_kind
+
+        put("is_malicious_package", "true")
+        put("malicious_kind", malicious_kind(check))
     if check.get("error"):
         put("error", check["error"])
     if check.get("requires_review"):
@@ -139,6 +144,7 @@ def _properties(check: dict) -> list[dict]:
     put("recommended_version", check.get("recommended_version"))
     if check.get("in_kev"):
         put("in_kev", "true")
+    put("malicious_possible", ",".join(str(r.get("id")) for r in check.get("malicious_possible") or []))
     if not check.get("version_exact", True):
         put("version_exact", "false")
     return out

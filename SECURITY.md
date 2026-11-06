@@ -5,8 +5,7 @@
 vibecode-checker는 보안 도구이므로, 도구 **자체의 취약점**은
 공개 이슈로 올리지 말고 **비공개로** 제보해 주세요.
 
-- **이메일**: security@example.com (제목에 `[vibecode-checker security]` 표기)
-- 또는 GitHub **Security Advisory** (저장소 → Security → Report a vulnerability)
+- GitHub **Security Advisory** (저장소 → Security → Report a vulnerability)
 
 제보 시 가능하면 다음을 포함해 주세요:
 

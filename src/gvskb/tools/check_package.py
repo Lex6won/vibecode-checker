@@ -10,6 +10,7 @@ points the operator at ``gvskb update-intel``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from typing import Literal
 
 import httpx
 
-from ..intel.cache import IntelCache
+from ..intel.cache import CacheEntry, IntelCache
 from ..schema import CooldownCheck, PackageCheckResult, PackageRegistryMetadata
 from ..vcps import cooldown_days_for, env_grade_supported, license_verdict, normalize_env_grade
 from .package_metadata import fetch_registry_metadata
@@ -120,23 +121,258 @@ def _basic_heuristics(name: str, ecosystem: str = "pypi") -> dict:
     }
 
 
-def _osv_advisories_for(items: list[dict], name: str, ecosystem_label: str) -> list[dict]:
-    """Return cached OSV MAL advisories whose ``affected`` list mentions this package."""
-    name_l = name.lower()
-    eco_l = ecosystem_label.lower()
-    hits: list[dict] = []
+def _mal_name_key(name: str, ecosystem_label: str) -> tuple[str, str]:
+    """악성 권고 색인 키. PyPI 이름은 PEP 503 으로 맞춘다(`Foo_Bar` 와 `foo-bar` 는 같은 패키지)."""
+    from .installed_packages import _normalize as _norm_name
+
+    eco = ecosystem_label.lower()
+    return eco, (_norm_name(name) if eco == "pypi" else name.lower())
+
+
+def _build_mal_index(items: list[dict]) -> dict:
+    """(생태계, 이름) → [(권고, affected 항목)] — 패키지마다 23만 건을 다시 훑지 않는다."""
+    index: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
     for item in items:
-        for aff in item.get("affected", []) or []:
-            pkg = (aff.get("package") or "").lower()
-            eco = (aff.get("ecosystem") or "").lower()
-            if pkg == name_l and eco == eco_l:
-                hits.append({
-                    "id": item.get("id"),
-                    "summary": (item.get("summary") or "")[:200],
-                    "modified": item.get("modified"),
-                })
-                break
-    return hits
+        for aff in item.get("affected") or []:
+            pkg = aff.get("package")
+            if isinstance(pkg, dict):   # OSV 원형 구조도 받는다
+                pkg_name, eco = pkg.get("name"), pkg.get("ecosystem")
+            else:
+                pkg_name, eco = pkg, aff.get("ecosystem")
+            if pkg_name and eco:
+                index.setdefault(_mal_name_key(str(pkg_name), str(eco)), []).append((item, aff))
+    return index
+
+
+def _mal_covers_whole_package(aff: dict) -> bool:
+    """이 권고가 패키지 **전체**를 악성으로 지목하는가(``introduced: 0`` 이고 끝이 없다)."""
+    if aff.get("whole"):
+        return True
+    return any(_version_key(start) == (0,) and end is None for start, end, _ in _affected_intervals(aff))
+
+
+_NPM_FULL_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?")
+
+
+def _npm_range_bounds(spec: str | None) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """``^1.2.3``·``~1.2.3`` 가 허용하는 [하한, 상한) — 다른 표기는 해석하지 않는다(None)."""
+    m = re.fullmatch(r"([\^~])(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(spec or "").strip())
+    if not m:
+        return None
+    major, minor, patch = int(m.group(2)), int(m.group(3) or 0), int(m.group(4) or 0)
+    if m.group(1) == "~":
+        upper = f"{major + 1}.0.0" if m.group(3) is None else f"{major}.{minor + 1}.0"
+    elif major:
+        upper = f"{major + 1}.0.0"
+    elif minor or m.group(4) is None:
+        upper = f"0.{minor + 1}.0"
+    else:
+        upper = f"0.0.{patch + 1}"
+    lo, hi = _version_key(f"{major}.{minor}.{patch}"), _version_key(upper)
+    return (lo, hi) if lo is not None and hi is not None else None
+
+
+def _mal_window_closed(aff: dict) -> bool:
+    """권고의 구간이 모두 닫혔는가(``fixed``·``last_affected`` 가 있다). 그 밖의 버전은 권고가 해당 없다고 말한 것이다."""
+    intervals = _affected_intervals(aff)
+    return bool(intervals) and all(end is not None for _, end, _ in intervals)
+
+
+def _mal_scope(
+    aff: dict, version: str | None, version_exact: bool, *,
+    recognized: bool = True, ecosystem: str = "", spec: str | None = None,
+) -> tuple[str, str]:
+    """(hit | miss | possible, 사유) — 악성 권고가 **이 버전**에 해당하는가.
+
+    특정 버전만 지목한 권고는 두 종류다: 계정이 탈취된 **정상 패키지**(chalk 5.6.1)와, 올라온 판만 신고된
+    **위장 패키지**(PyPI 권고의 46%). 정상 패키지의 다른 버전은 막으면 오탐이고, 위장 패키지의 다른 버전은 놓치면
+    미탐이다. ``recognized`` 는 정상 패키지라는 근거가 있는지, 없으면 차단 쪽으로 기운다.
+
+    - hit: 패키지 전체 악성 · 고정 버전이 권고에 들어 있음 · 버전을 모르는데 정상 패키지라는 근거도 없음 → 차단.
+      마지막 경우의 사유는 ``reason`` 에 남는다.
+    - miss: 고정 버전이 권고 밖이고, 정상 패키지이거나 권고 구간이 닫혔다.
+    - possible: 판단 근거가 모자란다 → 조건부. 버전을 모르는 정상 패키지, 또는 지목되지 않은 판을 고정한 미확인 패키지.
+      지목보다 낮은 번호도 여기다 — '오염 이전 판'으로 봐 통과시키면, 위장 패키지에 낮은 번호만 적어도 승인이 났다.
+    """
+    if _mal_covers_whole_package(aff):
+        return "hit", ""
+
+    def unknown(reason: str) -> tuple[str, str]:
+        return ("possible" if recognized else "hit"), reason
+
+    if not aff.get("versions") and not aff.get("ranges"):
+        return unknown("advisory_without_versions")   # 구형식 캐시 — 위협정보를 다시 받아야 한다
+    if not version:
+        return unknown("version_unpinned")
+    npm = ecosystem.lower() == "npm"
+    # npm 의 `5.6` 은 `>=5.6.0 <5.7.0` 이다 — 세 마디가 모두 있어야 고정이다.
+    if npm and not _NPM_FULL_VERSION_RE.fullmatch(str(version)):
+        version_exact = False
+    if not version_exact:
+        bounds = _npm_range_bounds(spec) if npm else None
+        listed = [k for k in map(_version_key, (str(v) for v in aff.get("versions") or [])) if k is not None]
+        # `^4.1.2` 는 5.6.1 이 될 수 없다 — 지목 버전이 모두 범위 밖이면 버전을 아는 경우와 같다.
+        if bounds and listed and not aff.get("ranges") and not any(bounds[0] <= k < bounds[1] for k in listed):
+            return ("miss", "") if recognized else ("possible", "version_outside_unverified")
+        return unknown("version_range")
+    inside = _version_in_affected(aff, str(version))
+    if inside is True:
+        return "hit", ""
+    if inside is None:
+        return unknown("version_unparsed")
+    if recognized or _mal_window_closed(aff):
+        return "miss", ""
+    return "possible", "version_outside_unverified"
+
+
+def _build_legit_index(items: list[dict]) -> dict:
+    """일반 취약점 권고가 있는 이름 — CVE 가 붙는 패키지는 실제로 쓰이는 패키지다. 악성 권고에서 온 항목은 근거로 치지 않는다."""
+    index: dict[tuple[str, str], bool] = {}
+    for item in items:
+        ids = [str(item.get("id") or ""), *(str(a) for a in item.get("aliases") or [])]
+        if any(i.startswith("MAL-") for i in ids) or "malicious" in str(item.get("summary") or "").lower():
+            continue
+        for aff in item.get("affected") or []:
+            pkg = aff.get("package") or {}
+            if pkg.get("name") and pkg.get("ecosystem"):
+                index[_mal_name_key(str(pkg["name"]), str(pkg["ecosystem"]))] = True
+    return index
+
+
+_APPROVED_MEMO: dict[tuple[str, int, int], frozenset[tuple[str, str]]] = {}
+
+
+def _approved_packages() -> frozenset[tuple[str, str]]:
+    """기관 보안담당자가 지정한 안전 목록(`GVSKB_APPROVED_PACKAGES`, 포털이 만든다). 파일이 없거나 깨졌으면 빈 목록이다.
+
+    점검이 쌓인 패키지를 보안담당자가 검토해 지정한다 — 코드에 정상 패키지 이름을 박아 두지 않는다.
+    지정은 '이 이름은 정상 패키지'라는 근거일 뿐이다. 지목된 버전과 패키지 전체 악성은 지정해도 차단된다.
+    """
+    path = os.environ.get("GVSKB_APPROVED_PACKAGES", "").strip()
+    if not path:
+        return frozenset()
+    try:
+        info = os.stat(path)
+    except OSError:
+        return frozenset()
+    key = (path, info.st_mtime_ns, info.st_size)
+    if key in _APPROVED_MEMO:
+        return _APPROVED_MEMO[key]
+    names: set[tuple[str, str]] = set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for row in data.get("packages") or []:
+            if row.get("ecosystem") and row.get("name"):
+                names.add(_mal_name_key(str(row["name"]), str(row["ecosystem"])))
+    except (OSError, ValueError, AttributeError, TypeError):
+        names = set()
+    _APPROVED_MEMO.clear()
+    _APPROVED_MEMO[key] = frozenset(names)
+    return _APPROVED_MEMO[key]
+
+
+def _known_legit_package(name: str, ecosystem_label: str, vulns_entry: CacheEntry | None) -> bool:
+    """정상 패키지라는 근거가 있는가 — 기관 지정 목록 또는 일반 취약점 이력. 없다고 위장이라는 뜻은 아니다."""
+    from ..intel.lookup import _indexed
+
+    key = _mal_name_key(name, ecosystem_label)
+    return key in _approved_packages() or key in _indexed(vulns_entry, "legit-by-vuln", _build_legit_index)
+
+
+def _classify_mal_advisories(
+    entry: CacheEntry, name: str, ecosystem_label: str, version: str | None, version_exact: bool = True,
+    *, vulns_entry: CacheEntry | None = None, spec: str | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """캐시된 악성 권고를 (확정, 판정 불가)로 나눈다. 같은 권고는 더 강한 쪽 한 번만 센다."""
+    from ..intel.lookup import _indexed
+
+    index = _indexed(entry, "mal-by-name", _build_mal_index)
+    rows = index.get(_mal_name_key(name, ecosystem_label), [])
+    recognized = bool(rows) and _known_legit_package(name, ecosystem_label, vulns_entry)
+    found: dict[str, dict] = {}
+    for item, aff in rows:
+        scope, reason = _mal_scope(aff, version, version_exact, recognized=recognized, ecosystem=ecosystem_label, spec=spec)
+        if scope == "miss":
+            continue
+        vid = str(item.get("id"))
+        row = {"id": item.get("id"), "summary": (item.get("summary") or "")[:200], "modified": item.get("modified"),
+               "versions": [str(v) for v in (aff.get("versions") or [])[:10]]}
+        prev = found.get(vid, {})
+        if scope == "hit":
+            if prev.get("_scope") != "hit" or (prev.get("reason") and not reason):
+                found[vid] = {**row, "_scope": "hit", **({"reason": reason} if reason else {})}
+        elif prev.get("_scope") != "hit":
+            found[vid] = {**row, "_scope": "possible", "reason": reason}
+    hits = [{k: v for k, v in r.items() if k != "_scope"} for r in found.values() if r["_scope"] == "hit"]
+    possible = [{k: v for k, v in r.items() if k != "_scope"} for r in found.values() if r["_scope"] == "possible"]
+    return hits, possible
+
+
+_MAL_POSSIBLE_REASON = {
+    "version_unpinned": "버전이 고정되지 않아",
+    "version_range": "버전이 범위로만 적혀 있어",
+    "version_unparsed": "버전 표기를 해석하지 못해",
+    "advisory_without_versions": "위협정보에 영향 버전이 없어(구형식)",
+    "version_outside_unverified": "이 버전은 지목되지 않았지만 정상 패키지라는 근거가 없어",
+}
+_MAL_POSSIBLE_ACTION = {
+    "advisory_without_versions": "위협정보를 다시 받으세요(`gvskb update-intel` 또는 번들 반입).",
+    "version_outside_unverified": "공식 저장소에서 게시자·배포 이력을 확인해 의도한 정상 패키지인지 확인하세요. 보안담당자가 안전 목록으로 지정하면 해소됩니다.",
+}
+_MAL_POSSIBLE_DEFAULT_ACTION = "버전을 고정(==·락파일)하고 다시 검사하세요."
+
+
+def _apply_mal_possible(result: dict) -> dict:
+    """악성 판정 불가 사유를 결과에 드러낸다 — 깨끗함으로 읽히지 않게 검토 필요로 올린다."""
+    rows = result.get("malicious_possible") or []
+    if not rows or result.get("is_malicious_package"):
+        return result
+    result["requires_review"] = True
+    if result.get("verdict_severity") in (None, "info", "low"):
+        result["verdict_severity"] = "medium"
+    ids = ", ".join(str(r.get("id")) for r in rows[:3])
+    versions = sorted({v for r in rows for v in r.get("versions") or []})[:6]
+    target = f" 지목된 버전: {', '.join(versions)}." if versions else ""
+    reason = rows[0].get("reason")
+    text = (f"악성 권고({ids})가 있으나 {_MAL_POSSIBLE_REASON.get(reason, '')} 이 설치본이 해당하는지 판정하지 못했습니다."
+            f"{target} {_MAL_POSSIBLE_ACTION.get(reason, _MAL_POSSIBLE_DEFAULT_ACTION)}")
+    # 같은 노트가 '악성 등록 없음'과 '악성 권고가 있으나'를 함께 말하지 않게 한다.
+    note = str(result.get("note") or "").replace("악성 등록 없음", "악성 확정 없음").replace("**악성 등록은 없습니다**", "**악성으로 확정된 등록은 없습니다**")
+    result["note"] = f"{note} {text}" if note else text
+    return result
+
+
+def _mal_block_note(advisories: list[dict]) -> str:
+    """악성 차단의 안내 — 확정과 미확정을 구분해 할 일을 적는다."""
+    from ..gate import MAL_CONFIRMED_ACTION, MAL_OLD_FORMAT_ACTION, MAL_UNVERIFIED_ACTION
+
+    if not advisories or not all(a.get("reason") for a in advisories):
+        return f"악성으로 확인됐습니다. {MAL_CONFIRMED_ACTION}"
+    if any(a.get("reason") == "advisory_without_versions" for a in advisories):
+        return MAL_OLD_FORMAT_ACTION
+    versions = sorted({v for a in advisories for v in a.get("versions") or []})[:6]
+    target = f" 지목된 버전: {', '.join(versions)}." if versions else ""
+    return ("악성으로 확정된 것은 아닙니다 — 특정 버전을 지목한 악성 권고가 있는데, 설치될 버전을 알 수 없고 정상 패키지라는 근거도 없어 막았습니다."
+            f"{target} {MAL_UNVERIFIED_ACTION}")
+
+
+def _local_mal_possible(
+    name: str, ecosystem_label: str, version: str | None, version_exact: bool, spec: str | None, seen: set[str],
+) -> list[dict]:
+    """온라인 경로 보강 — OSV 실시간 조회는 물어본 버전 하나만 답하므로, 범위·미고정·지목 밖 판단은 로컬 색인이 맡는다.
+
+    온라인에서는 실시간 답이 1차 근거라 여기서 차단으로 올리지 않는다. 실시간 답에 있던 권고(철회 포함)는 뺀다.
+    """
+    cache = IntelCache()
+    entry = cache.load("osv-malicious")
+    if entry is None:
+        return []
+    hits, possible = _classify_mal_advisories(
+        entry, name, ecosystem_label, version, version_exact, vulns_entry=cache.load("osv-vulns"), spec=spec,
+    )
+    return [{**row, "reason": row.get("reason") or "local_feed_only"}
+            for row in [*hits, *possible] if str(row.get("id")) not in seen]
 
 
 def _enrich_with_epss_nvd(kev_signals: list[dict], cache: "IntelCache") -> list[str]:
@@ -256,19 +492,30 @@ def _advisory_severity(vuln: dict) -> str:
 
 
 def _version_key(version: str) -> tuple[int, ...] | None:
-    """'12.3.0' → (12, 3, 0). 숫자 마디로만 비교하고, 못 읽으면 None.
+    """'12.3.1' → (12, 3, 1). 숫자 마디로만 비교하고, 못 읽으면 None.
 
     ``packaging`` 을 의존성에 추가하지 않으려고 최소 구현만 둔다. 프리릴리스·
     빌드 메타데이터(``1.2.0-rc1``·``+build``)는 앞 숫자 마디까지만 본다.
     **못 읽으면 추측하지 않고 None** 을 돌려준다 — 틀린 버전을 권고하느니
     권고하지 않는 편이 낫다.
+
+    뒤쪽 0 은 떼어 낸다 — ``1.3`` 과 ``1.3.0`` 은 같은 버전이다(PEP 440). 튜플을 그대로 비교하면
+    다른 버전이 되어, 권고가 ``1.3`` 인 악성을 ``==1.3.0`` 으로 고정하면 놓쳤다.
     """
     core = re.split(r"[-+ ]", str(version).strip(), maxsplit=1)[0]
     parts = core.split(".")
     if not parts or not all(p.isdigit() for p in parts if p != ""):
         return None
     nums = [int(p) for p in parts if p != ""]
+    while len(nums) > 1 and nums[-1] == 0:
+        nums.pop()
     return tuple(nums) if nums else None
+
+
+def _version_prerelease(version: str) -> str:
+    """``1.0.0-rc.1+b`` → ``rc.1``. 프리릴리스 꼬리표가 없으면 빈 문자열(빌드 메타데이터는 버전을 가르지 않는다)."""
+    core = str(version).strip().split("+", 1)[0]
+    return core.split("-", 1)[1].lower() if "-" in core else ""
 
 
 def _highest_version(versions: list[str]) -> str | None:
@@ -680,10 +927,12 @@ def _version_in_affected(aff: dict, version: str) -> bool | None:
     """
     vers = [str(v) for v in (aff.get("versions") or [])]
     vk = _version_key(version)
+    pre = _version_prerelease(version)
     if vers:
         if version in vers:
             return True
-        if vk is not None and any(_version_key(v) == vk for v in vers):
+        # 열거는 같은 릴리스만 맞는다 — 1.0.0-beta.1 만 오염됐으면 1.0.0 은 해당하지 않는다.
+        if vk is not None and any(_version_key(v) == vk and _version_prerelease(v) == pre for v in vers):
             return True
     intervals = _affected_intervals(aff)
     if vk is None:
@@ -704,7 +953,9 @@ def _version_in_affected(aff: dict, version: str) -> bool | None:
         if ek is None:
             continue
         decidable = True
-        if sk <= vk and (vk < ek or (inclusive and vk == ek)):
+        # 프리릴리스는 같은 숫자의 정식판보다 앞이다 — 1.0.1-rc.1 은 [1.0.0, 1.0.1) 안, 1.0.0-rc.1 은 그 밖이다.
+        below_start = bool(pre) and vk == sk and sk != (0,) and not _version_prerelease(start)
+        if sk <= vk and not below_start and (vk < ek or (vk == ek and (inclusive or bool(pre)))):
             return True
     return False if decidable else None
 
@@ -748,7 +999,7 @@ def _offline_vuln_hits(
 
 def _offline_cache_check(
     name: str, ecosystem: str, ecosystem_label: str, version: str | None = None,
-    *, local_mode: bool = False,
+    *, local_mode: bool = False, version_exact: bool = True, version_spec: str | None = None,
 ) -> dict:
     """Consult the local intel cache and return a unified PackageCheckResult dict.
 
@@ -813,7 +1064,11 @@ def _offline_cache_check(
         cache_freshness["osv-malicious"] = osv_entry.fetched_at
         if osv_entry.is_stale():
             stale_sources.append("osv-malicious")
-        advisories.extend(_osv_advisories_for(osv_entry.items, name, ecosystem_label))
+        mal_hits, mal_possible = _classify_mal_advisories(
+            osv_entry, name, ecosystem_label, version, version_exact, vulns_entry=vulns_entry, spec=version_spec,
+        )
+        advisories.extend(mal_hits)
+        base["malicious_possible"] = mal_possible
 
     kev_signals: list[dict] = []
     if kev_entry is not None:
@@ -876,9 +1131,9 @@ def _offline_cache_check(
 
     if has_malicious:
         # 양성 판정(악성 발견)은 캐시가 오래됐어도 유효한 신호다.
-        note = None
+        note = _mal_block_note(advisories)
         if stale_sources:
-            note = f"캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
+            note = f"{note} 캐시가 오래됐습니다({', '.join(stale_sources)}) — 그래도 악성 판정은 유효합니다."
         return PackageCheckResult(
             **base, checked=True, verdict="malicious", requires_review=True, note=note,
         ).model_dump(mode="json")
@@ -1267,6 +1522,13 @@ def apply_registry_decision(local: dict, decision: dict) -> dict:
             + (local.get("note") or "")
         ).strip()
         return out
+    if local.get("malicious_possible"):
+        # 승인 시점에 알 수 없던 특정 버전 오염일 수 있다 — '이상 없음'으로 덮지 않는다.
+        out["note"] = (
+            "⚠ 기관 승인 패키지이나 특정 버전을 지목한 악성 권고가 있습니다 — 확인이 필요합니다. "
+            + (local.get("note") or "")
+        ).strip()
+        return out
 
     # ── 캐시 신선도에 따라 갈린다 ──
     stale = bool(local.get("cache_stale_sources")) or not local.get("cache_sources_used")
@@ -1482,6 +1744,7 @@ async def audit_manifest(
                 client=client,
                 version_exact=bool(package.get("version_exact", True)),
                 mode=mode,
+                version_spec=package.get("spec"),
             )
         done += 1
         if on_progress is not None:
@@ -1655,6 +1918,7 @@ async def check_package_impl(
     client: "httpx.AsyncClient | None" = None,
     version_exact: bool = True,
     mode: str | None = None,
+    version_spec: str | None = None,
 ) -> dict:
     eco = ECOSYSTEM_MAP.get(ecosystem.lower())
     if not eco:
@@ -1688,7 +1952,10 @@ async def check_package_impl(
         ).model_dump(mode="json")
 
     if _use_local_cache(mode):
-        result = _offline_cache_check(name, ecosystem, eco, version, local_mode=not _is_offline())
+        result = _apply_mal_possible(
+            _offline_cache_check(name, ecosystem, eco, version, local_mode=not _is_offline(),
+                                 version_exact=version_exact, version_spec=version_spec)
+        )
         if version is not None:
             result["version"] = version
         # 오프라인은 발행일을 알 수 없어 쿨다운 판정 불가(ok=None) — '통과' 아님.
@@ -1762,10 +2029,30 @@ async def check_package_impl(
             license_verdict=license_verdict(meta.license) if meta.license else None,
         ).model_dump(mode="json")
 
-    vulns = data.get("vulns", []) or []
+    vulns = [v for v in (data.get("vulns", []) or []) if not v.get("withdrawn")]
     malicious_advisories = [v for v in vulns if str(v.get("id", "")).startswith("MAL-")]
-    has_malicious = bool(malicious_advisories)
     unresolved_history = 0
+    if version_resolution == "unresolved" and malicious_advisories:
+        # 버전을 모르면 OSV 는 역대 권고를 전부 준다. 패키지 전체 악성만 확정하고, 특정 버전 오염은
+        # 로컬 경로와 같게 '판정 불가'로 둔다 — 두 모드의 판정이 갈리지 않게 한다.
+        whole, possible = [], []
+        for adv in malicious_advisories:
+            (whole if any(_mal_covers_whole_package(a) for a in adv.get("affected") or []) else possible).append(adv)
+        base["malicious_possible"] = [
+            {"id": adv.get("id"), "summary": (adv.get("summary") or "")[:200], "modified": adv.get("modified"),
+             "reason": "version_unpinned",
+             "versions": [str(v) for a in adv.get("affected") or [] for v in (a.get("versions") or [])][:10]}
+            for adv in possible
+        ]
+        vulns = [v for v in vulns if v not in possible]
+        malicious_advisories = whole
+    # 실시간 답에 없어도 로컬 색인에는 판단 재료가 있다(범위·미고정·지목 밖 판).
+    answered = {str(v.get("id")) for v in data.get("vulns", []) or []}
+    base["malicious_possible"] = [
+        *(base.get("malicious_possible") or []),
+        *_local_mal_possible(name, eco, version if version_exact else None, version_exact, version_spec, answered),
+    ]
+    has_malicious = bool(malicious_advisories)
     if version_resolution == "unresolved" and vulns:
         # 버전도 없고 최신판 정보도 없다(오프라인·조회 실패·사설 패키지) — OSV 는 **역대 전체 이력**을
         # 돌려줬다. 34차는 latest-assumed 경로만 고쳐 이 경로는 여전히 몇 년 전 CRITICAL 로 차단됐다(36차).
@@ -1906,7 +2193,11 @@ async def check_package_impl(
     if vulns:
         online_cache_sources.extend(_attach_knvd_evidence(advisory_rows, vulns, _intel))
 
-    return PackageCheckResult(
+    if has_malicious:
+        from ..gate import MAL_CONFIRMED_ACTION
+
+        notes.append(f"악성으로 확인됐습니다. {MAL_CONFIRMED_ACTION}")
+    return _apply_mal_possible(PackageCheckResult(
         **base,
         checked=True,
         verdict=verdict,
@@ -1936,4 +2227,4 @@ async def check_package_impl(
         ),
         cache_stale_sources=["cisa-kev"] if kev_cache["state"] == "stale" else [],
         note=" ".join(notes) if notes else None,
-    ).model_dump(mode="json")
+    ).model_dump(mode="json"))

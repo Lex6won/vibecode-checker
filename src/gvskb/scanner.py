@@ -1190,6 +1190,8 @@ def scan_file(path: str | Path, *, language: str | None = None, scenario: str | 
 
 DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".py", ".pyw",
+    # 문서 — 개인정보·비밀값만 본다(regex_scanner). 인수인계 문서에 실명·연락처·키가 그대로 들어간다.
+    ".md",
     # 서버 템플릿·노트북 — 실행 코드와 비밀값이 실린다(전면 점검 2026-10-13 §3-1 미검사 목록).
     ".jsp", ".ejs", ".hbs", ".ipynb",
     # .mts/.cts 는 TypeScript 의 ESM/CJS 명시 확장자다. 실측(lexdiff)에서 이 두
@@ -2092,6 +2094,8 @@ def scan_path(
     # 제외하거나 읽지 않는 자리를 **제외 규칙과 무관하게** 이름으로 찾아 파서로만 읽는다.
     # 2026-08 npm 웜·2026-10 PyPI 사고가 숨은 자리다. 어떤 설정도 실행하지 않는다.
     autoexec_entries: list[dict] = []
+    runtime_pins: list[dict] = []
+    unsupported_platforms: list[dict] = []
     if is_dir:
         from .scanners.autoexec_surface import collect_autoexec_surface
         try:
@@ -2109,6 +2113,7 @@ def scan_path(
             skipped.extend(surface.skipped)
             scanned.extend(surface.scanned)
             autoexec_entries = [e.as_dict() for e in surface.entries]
+            runtime_pins = surface.pins
         # 40차 — 생태계별(Electron·VS Code 확장·Chrome 확장·MCP 서버) 설정·구조 판정. 의존성이 있을 때만 켜진다.
         from .scanners.ecosystem_surface import collect_ecosystem_surface
         try:
@@ -2120,6 +2125,7 @@ def scan_path(
             all_findings.extend(eco.findings)
             skipped.extend(eco.skipped)
             autoexec_entries.extend(e.as_dict() for e in eco.entries)
+            unsupported_platforms = eco.platforms
         # 42차 — 인가 자세(P0-03): 관리자 경로의 서버측 보호 근거 부재 · 공개 번들 비밀/클라이언트 전용 관문.
         from .scanners.authz_posture import collect_authz_posture
         try:
@@ -2188,6 +2194,8 @@ def scan_path(
         vendor_bundles=vendor_bundles,
         posture_notes=_posture_notes(posture, skipped),
         autoexec_surface=autoexec_entries,
+        runtime_pins=runtime_pins,
+        unsupported_platforms=unsupported_platforms,
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}
@@ -2327,15 +2335,14 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
             line = raw.strip()
             if not line or line.startswith("#") or line.startswith("-"):
                 continue
-            m = re.match(r"([A-Za-z0-9_.-]+)\s*(==|>=|<=|~=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
+            m = re.match(r"([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*(===|==|>=|<=|~=|!=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
             if m:
                 version, op = m.group(3), m.group(2)
                 packages.append({
                     "name": m.group(1),
                     "version": version,
-                    # ``===`` 는 정규식상 ``==`` + 남은 ``=`` 로 잡히지 않으므로 다루지 않는다.
                     # 와일드카드(``2.*``)는 고정이 아니다.
-                    "version_exact": bool(version) and op == "==" and "*" not in version,
+                    "version_exact": bool(version) and op in ("==", "===") and "*" not in version,
                 })
     elif eco == "npm":
         try:
@@ -2346,14 +2353,22 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
         for key in ("dependencies", "devDependencies", "optionalDependencies"):
             deps.update(data.get(key, {}) or {})
         for name, spec in deps.items():
-            raw_spec = str(spec) if spec else ""
+            raw_spec = str(spec).strip() if spec else ""
+            # 별칭은 실제로 설치되는 패키지로 본다 — `"x": "npm:axios@1.14.1"` 을 x 로 읽으면 악성 대조를 비껴간다.
+            alias = re.fullmatch(r"npm:((?:@[^/@\s]+/)?[^/@\s]+)(?:@(.+))?", raw_spec)
+            if alias:
+                name, raw_spec = alias.group(1), alias.group(2) or ""
+            raw_spec = re.sub(r"^(?:=\s*|v(?=\d))", "", raw_spec)   # `=1.2.3`·`v1.2.3` 도 고정 표기다
             version = raw_spec.lstrip("^~") if raw_spec else None
-            # npm 은 접두사가 없어야 고정이다. ``4.17.0`` 은 고정, ``^4.17.0``·``>=4``·
-            # ``*``·``latest``·git URL 은 아니다.
+            # npm 은 접두사가 없고 세 마디가 모두 있어야 고정이다. ``4.17.0`` 은 고정, ``4.17``(>=4.17.0 <4.18.0)·
+            # ``^4.17.0``·``>=4``·``*``·``latest``·git URL 은 아니다.
             exact = bool(version) and raw_spec == version and re.fullmatch(
-                r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
+                r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
             ) is not None
-            packages.append({"name": name, "version": version, "version_exact": exact})
+            packages.append({
+                "name": name, "version": version, "version_exact": exact,
+                **({"spec": raw_spec} if raw_spec[:1] in ("^", "~") else {}),
+            })
     return packages
 
 

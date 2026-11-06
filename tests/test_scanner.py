@@ -98,7 +98,7 @@ def test_parse_manifest_packages_for_pypi_and_npm():
     ]
 
     npm = parse_manifest_packages('{"dependencies": {"react": "^19.0.0"}}', "npm")
-    assert npm == [{"name": "react", "version": "19.0.0", "version_exact": False}]
+    assert npm == [{"name": "react", "version": "19.0.0", "version_exact": False, "spec": "^19.0.0"}]
 
 
 def test_manifest_constraints_are_not_mistaken_for_installed_versions():

@@ -9,7 +9,7 @@
     python scripts/precision_gate.py compare before.json after.json --labels "C:/…/labels.json"
 
 라벨 파일 형식(목록):
-    {"tree": "실측 사례_점검_20261013", "file": "sample_db.py", "line": 242,
+    {"tree": "sample-tree_점검_20261013", "file": "sample_db.py", "line": 242,
      "rule": "GOV-SQL-INJECTION-001", "verdict": "fp", "note": "바인딩만 쓰는 SQL"}
   verdict: tp = 반드시 발견돼야 한다(사라지면 미탐 후퇴) · fp = 발견되면 안 된다(오탐 재발)
            · fp-block = 발견은 남아도 되나 차단(block)이면 안 된다(정화·숫자 값 등)

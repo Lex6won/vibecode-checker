@@ -132,6 +132,7 @@ def intel_state(cache_dir: Path | None = None) -> dict:
     ages = [s["age_days"] for s in sources.values() if s["age_days"] is not None]
     return {
         "state": state,
+        "mal_old_format": cache.mal_old_format(),
         "as_of": oldest,
         "age_days": max(ages) if ages else None,
         "max_age_days": limit,
@@ -305,7 +306,7 @@ async def run_dependency_audit_async(
     ``GVSKB_MODE=offline`` 이면 로컬, 아니면 온라인). ``off`` 면 아무것도 하지 않는다.
     검사할 것이 없으면 None — 호출자가 "패키지 없음"과 "검사 안 함"을 구분해 기록한다.
     """
-    from .tools.check_package import audit_manifest
+    from .tools.check_package import _MAX_PACKAGES, audit_manifest
 
     if mode == "off":
         return None
@@ -335,7 +336,8 @@ async def run_dependency_audit_async(
             })
             continue
         # filename 을 넘겨야 락파일 형식을 파일명으로 확정할 수 있다.
-        audit = await audit_manifest(text, ecosystem=eco, env_grade=env_grade, filename=rel, mode=mode)
+        # 프로젝트 검사는 매니페스트를 끝까지 본다 — 21번째 줄의 악성이 승인으로 빠졌다(적대적 검증 2026-11-06).
+        audit = await audit_manifest(text, ecosystem=eco, limit=_MAX_PACKAGES, env_grade=env_grade, filename=rel, mode=mode)
         audit["manifest"] = rel
         out.append(audit)
 

@@ -62,6 +62,17 @@ class EcoResult:
     entries: list[EcoEntry] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     skipped: list[SkippedFile] = field(default_factory=list)
+    platforms: list[dict] = field(default_factory=list)
+
+
+_PLATFORM_LABELS = {
+    "electron-manifest": ("electron", "Electron 앱"),
+    "electron-builder": ("electron", "Electron 앱"),
+    "vscode-manifest": ("vscode-ext", "VS Code 확장"),
+    "chrome-manifest": ("browser-ext", "브라우저 확장"),
+}
+# 시험·예제의 설정은 이 프로젝트의 실행 형태가 아니다.
+_NONPRODUCTION_PATH = re.compile(r"(^|/)(tests?|__tests__|fixtures?|examples?|samples?|docs?)(/|$)", re.I)
 
 
 def _rel(p: Path, root: Path) -> str:
@@ -513,6 +524,10 @@ def collect_ecosystem_surface(root: Path, *, policy: PolicyFn) -> EcoResult:
         return res
     active, manifests = detect_ecosystems(root)
     res.active = active
+    for path, kind in manifests:
+        rel = _rel(path, root)
+        if kind in _PLATFORM_LABELS and not _NONPRODUCTION_PATH.search(rel):
+            res.platforms.append({"kind": _PLATFORM_LABELS[kind][0], "label": _PLATFORM_LABELS[kind][1], "file": rel})
     if not active and not manifests:
         return res
     untrusted_supported = False
