@@ -828,7 +828,7 @@ class PackageCheckResult(BaseModel):
     checked_clean > unknown > error. '판정 불가(unknown)'는 안전이 아니며
     requires_review=True 로 명시된다.
 
-    ``registry_*`` 는 기관 레지스트리(gg-trusted-registry 등)의 **판정**이고
+    ``registry_*`` 는 기관 레지스트리의 **판정**이고
     나머지는 이 도구의 **관측**이다. 둘을 섞지 않는다:
 
     - ``registry_rejected`` 가 ``not_found`` 보다 위 — 기관의 명시적 차단이 더 강한 신호
