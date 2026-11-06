@@ -851,7 +851,7 @@ def _attenuate_xss_by_taint(
 
 # ── 근거 수준 × 판정 ─────────────────────────────────────────────────────────
 # 발견마다 근거 수준(confirmed · likely · pattern-only)을 적으면서도 **판정은 룰의
-# 기본값(block)을 그대로 썼다.** 실측(2026-10-13, safe_check 비교): 차단 71건 중
+# 기본값(block)을 그대로 썼다.** 실측(2026-10-13, 실측 사례 비교): 차단 71건 중
 # 정규식 한 줄로만 잡힌 15건(경로 조작 `tag=month.replace(…)`, XPath 의 서버 XML id,
 # 함수명에 `Llm` 이 든 줄의 innerHTML, `disable_warnings`)이 전부 오탐이었고, 매개변수만
 # 동적인 '유력' SQL 3건도 오탐이었다. 입력의 출처를 확인하지 못한 발견은 "확인 필요"로
@@ -1190,6 +1190,8 @@ def scan_file(path: str | Path, *, language: str | None = None, scenario: str | 
 
 DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".py", ".pyw",
+    # 문서 — 개인정보·비밀값만 본다(regex_scanner). 인수인계 문서에 실명·연락처·키가 그대로 들어간다.
+    ".md",
     # 서버 템플릿·노트북 — 실행 코드와 비밀값이 실린다(전면 점검 2026-10-13 §3-1 미검사 목록).
     ".jsp", ".ejs", ".hbs", ".ipynb",
     # .mts/.cts 는 TypeScript 의 ESM/CJS 명시 확장자다. 실측(lexdiff)에서 이 두
@@ -2093,6 +2095,7 @@ def scan_path(
     # 2026-08 npm 웜·2026-10 PyPI 사고가 숨은 자리다. 어떤 설정도 실행하지 않는다.
     autoexec_entries: list[dict] = []
     runtime_pins: list[dict] = []
+    unsupported_platforms: list[dict] = []
     if is_dir:
         from .scanners.autoexec_surface import collect_autoexec_surface
         try:
@@ -2122,6 +2125,7 @@ def scan_path(
             all_findings.extend(eco.findings)
             skipped.extend(eco.skipped)
             autoexec_entries.extend(e.as_dict() for e in eco.entries)
+            unsupported_platforms = eco.platforms
         # 42차 — 인가 자세(P0-03): 관리자 경로의 서버측 보호 근거 부재 · 공개 번들 비밀/클라이언트 전용 관문.
         from .scanners.authz_posture import collect_authz_posture
         try:
@@ -2191,6 +2195,7 @@ def scan_path(
         posture_notes=_posture_notes(posture, skipped),
         autoexec_surface=autoexec_entries,
         runtime_pins=runtime_pins,
+        unsupported_platforms=unsupported_platforms,
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}

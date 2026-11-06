@@ -1,7 +1,7 @@
 """28차 — 읽기 전용 내장 함수는 상수를 실격시키지 않는다 · 라이선스 검토가 게이트에 들어간다 ·
-권고 버전 미확정 문구 · SPDX 복합식 (코덱스 STARS 분석 2026-10-13 반영).
+권고 버전 미확정 문구 · SPDX 복합식 (코덱스 실측 사례 분석 2026-10-13 반영).
 
-실측: STARS `stars_db.py` 는 모듈 상수 `ALL_COLUMNS` 를 `dict(zip(ALL_COLUMNS, row))` 로 읽는데
+실측: 실측 사례 `sample_db.py` 는 모듈 상수 `ALL_COLUMNS` 를 `dict(zip(ALL_COLUMNS, row))` 로 읽는데
 그 한 줄 때문에 상수 자격을 잃어, 바인딩만 쓰는 SQL 2건이 '치명·유력'으로 남았다. ultralytics
 AGPL 은 표에만 ⚠ 가 찍히고 종합 판정에는 없었다. 아래는 같은 모양의 합성 코드다.
 """
@@ -55,7 +55,7 @@ def get_record(db_path, record_id):
 
 
 def _sql_findings(code: str) -> list:
-    r = scan_code(code, filename="stars_db.py")
+    r = scan_code(code, filename="sample_db.py")
     return [f for f in r.findings if "SQL" in f.rule_id]
 
 

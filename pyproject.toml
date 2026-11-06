@@ -7,7 +7,7 @@ description = "Public-sector vibe-coding security knowledge base and MCP guardra
 readme = "README.md"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 requires-python = ">=3.11"
-authors = [{ name = "Lex6won", email = "firstwon77@gmail.com" }]
+authors = [{ name = "Lex6won" }]
 keywords = ["mcp", "security", "vibe-coding", "public-sector", "korean", "llm-security"]
 classifiers = [
     "Development Status :: 3 - Alpha",

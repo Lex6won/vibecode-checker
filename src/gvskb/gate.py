@@ -82,8 +82,15 @@ from __future__ import annotations
 
 from .schema import Decision, ScanReport
 
-#: 배포를 **막는** 사유. 이 다섯만 차단이다.
+#: 기관 표준(Python·JavaScript·TypeScript 웹서비스) 밖의 실행 형태. 패키지가 아니라 프로젝트 형태가 사유다.
+UNSUPPORTED_PLATFORM_ACTION = (
+    "이 형태는 기관 표준 밖이라 승인할 수 없습니다. 전용 런타임·자체 갱신·외부 CDN 연결에 기대므로 폐쇄망에서 동작하지 않고, "
+    "구성요소를 검증하기 어려워 위험할 수 있습니다. Python·JavaScript·TypeScript 웹서비스와 기본 패키지로 교체한 뒤 다시 점검하세요."
+)
+
+#: 배포를 **막는** 사유. 이 여섯만 차단이다.
 BLOCK_CRITERIA: dict[str, str] = {
+    "unsupported_platform": "기관 표준 밖의 실행 형태",
     "malicious": "악성 패키지",
     "registry_rejected": "기관 레지스트리 거부",
     "not_found": "레지스트리에 없는 이름(가짜 이름 의심)",
@@ -101,7 +108,7 @@ MAL_UNVERIFIED_ACTION = (
     "② 아니면 제거하고 올바른 패키지로 바꿉니다. "
     "③ 맞으면 실제 쓸 버전을 고정(==·락파일)해 다시 점검합니다 — 지목된 버전은 쓰지 않습니다. "
     "④ 이미 설치했다면 설치된 버전을 확인하고, 지목된 버전이면 PC 를 점검합니다. "
-    "판단이 어려우면 보안담당자에게 문의하세요."
+    "판단이 어려우면 보안담당자에게 문의하세요. 정상 패키지로 확인되면 보안담당자가 안전 목록으로 지정할 수 있습니다."
 )
 MAL_OLD_FORMAT_ACTION = (
     "위협정보에 영향 버전이 없는 구형식이라 패키지 전체를 막았습니다. 위협정보를 다시 받은 뒤"
@@ -221,6 +228,22 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
     return reasons
 
 
+def _platform_block_reasons(report: ScanReport) -> list[dict]:
+    """Electron·브라우저 확장·VS Code 확장 — 설정이 안전해도 승인하지 않는다."""
+    seen: dict[str, dict] = {}
+    for item in getattr(report, "unsupported_platforms", None) or []:
+        label = str(item.get("label") or item.get("kind") or "")
+        row = seen.setdefault(label, {
+            "package": label, "version": None, "resolved_version": None, "version_resolution": None,
+            "criteria": ["unsupported_platform"], "labels": [BLOCK_CRITERIA["unsupported_platform"]],
+            "malicious_kind": None, "action": UNSUPPORTED_PLATFORM_ACTION, "versions": [],
+            "recommended_version": None, "latest_version": None, "files": [],
+        })
+        if item.get("file") and item["file"] not in row["files"]:
+            row["files"].append(item["file"])
+    return list(seen.values())
+
+
 def _trust_signal_packages(report: ScanReport) -> list[dict]:
     """41차 — 신뢰 신호가 붙은 패키지 ``[{name, version, signals:[key]}]``. 조건부 사유 ``trust`` 의 근거."""
     from .report import _dep_audits, _dep_merged_components
@@ -272,7 +295,7 @@ def _has_cooldown_hold(report: ScanReport) -> bool:
 def _license_review_packages(report: ScanReport) -> list[dict]:
     """라이선스 검토가 필요한 컴포넌트 — [{'name','version','license'}].
 
-    실측(2026-10-13 STARS): ultralytics AGPL-3.0 이 `license_verdict=review_required` 로
+    실측(2026-10-13 실측 사례): ultralytics AGPL-3.0 이 `license_verdict=review_required` 로
     표에는 ⚠ 로 찍히는데 **종합 판정 사유에는 없어**, 취약 패키지와 소스 발견만 해소하면
     '승인'이 났다. 배포 뒤 라이선스 문제는 보안 사고만큼 되돌리기 어렵다.
     """
@@ -434,7 +457,8 @@ def gate_status(report: ScanReport) -> dict:
     has_source_block = bool(block_count) or bool(report.summary.blocked)
     vuln, unchecked, not_found, _audit_flag = _dep_risk(report)
 
-    block_reasons = _dependency_block_reasons(report)
+    dependency_block_reasons = _dependency_block_reasons(report)
+    block_reasons = dependency_block_reasons + _platform_block_reasons(report)
     blocked = bool(block_reasons)
 
     conditional_criteria: list[str] = []
@@ -525,7 +549,7 @@ def gate_status(report: ScanReport) -> dict:
         # 아래 둘은 **사실 보고**다. `blocked_source` 는 더 이상 배포를 막지
         # 않지만(소스는 보조), 자기 정책으로 막고 싶은 소비자를 위해 남긴다.
         "blocked_source": has_source_block,
-        "blocked_dependency": blocked,
+        "blocked_dependency": bool(dependency_block_reasons),
         "source_block_count": block_count,
         "dependency_vulnerable": vuln,
         "dependency_unchecked": unchecked,
@@ -672,6 +696,8 @@ def _reason(
             f"배포 불가 — {' · '.join(labels)}에 해당하는 패키지가 있습니다"
             f"({names}{more}). 사유 기록으로 넘길 수 없는 등급입니다."
         )
+        if any("unsupported_platform" in r["criteria"] for r in block_reasons):
+            head += f" {UNSUPPORTED_PLATFORM_ACTION}"
         # 어떻게 해야 풀리는가 — 판정과 함께 간다. 포털·CLI 가 이 문장을 그대로 보여 준다.
         for kind in ("confirmed", "unverified", "old_format"):
             rows = [r for r in block_reasons if r.get("malicious_kind") == kind]

@@ -670,6 +670,10 @@ class ScanReport(BaseModel):
             "각 항목: id · level · title · detail · files · safe_fix · references."
         ),
     )
+    unsupported_platforms: list[dict] = Field(
+        default_factory=list,
+        description="기관 표준 밖의 실행 형태 — [{kind, label, file}]. Electron·브라우저 확장·VS Code 확장. 게이트 차단 사유다.",
+    )
     runtime_pins: list[dict] = Field(
         default_factory=list,
         description=(

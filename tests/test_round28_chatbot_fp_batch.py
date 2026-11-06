@@ -26,7 +26,7 @@ def _ids(code: str, filename: str) -> list[tuple[str, str, str]]:
 
 @pytest.mark.parametrize("code, filename", [
     ("interface Session {\n  token: string;\n}\n", "app/admin/users/page.tsx"),
-    ("g.auth_token = auth_token\n", "gemini6.py"),
+    ("g.auth_token = auth_token\n", "app.py"),
     ('const SESSION_KEY = "admin_authenticated";\n', "app/admin/layout.tsx"),
     ("const TOKEN_KEY = 'nyh_admin_session_v1';\n", "lib/auth.ts"),
 ])
@@ -160,7 +160,7 @@ export default async function Page({ searchParams }) {
 
 def test_markdown_table_safe_word_is_not_jinja_filter() -> None:
     code = 'PROMPT = """\n| danger | 생명 위험 |\n| safe | 자진 귀가 |\n"""\n'
-    assert not [x for x in _ids(code, "gemini6.py") if x[0] == "KISA-PY-INPUT-04"]
+    assert not [x for x in _ids(code, "app.py") if x[0] == "KISA-PY-INPUT-04"]
     assert [x for x in _ids('t = render_template_string("{{ name | safe }}", name=request.args["n"])\n', "a.py")
             if x[0] == "KISA-PY-INPUT-04"]
 

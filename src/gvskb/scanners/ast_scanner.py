@@ -351,7 +351,7 @@ _PLACEHOLDER_FUNCS: contextvars.ContextVar[frozenset[str]] = contextvars.Context
 def _is_placeholder_expr(node: ast.AST, env: ConstEnv | None = None) -> bool:
     """**자리표시자 목록을 늘려 넣는 식** — 값은 바인딩으로 가므로 동적 SQL 이 아니다.
 
-    실측(2026-10-13 safe_check): `','.join('?' * len(xs))` · `", ".join("?" for _ in rows)` 를
+    실측(2026-10-13 실측 사례): `','.join('?' * len(xs))` · `", ".join("?" for _ in rows)` 를
     f-string 에 넣고 값은 params 로 넘기는 안전한 코드 36곳 중 대부분이 "확인된 SQL 삽입"
     으로 차단됐다. 인정하는 모양만 좁게 둔다 — 구분자 리터럴 `.join(` 의 인자가
     자리표시자 리터럴의 반복·내포·리스트일 때, 그리고 그런 식과 상수만 보간한 f-string.
@@ -534,7 +534,7 @@ def _fixed_width_int_calls(stmt: ast.stmt) -> list[ast.Call]:
     """고정 비트 정수로 바꾸는 호출 — `x.astype(np.int32)`·`np.int32(x)`·`np.power(…, dtype=np.int64)`·`struct.pack`.
 
     정규식 룰(KISA-PY-INPUT-14)은 `astype(np.uint8)` 만 보고도 울려 이미지 처리 코드에서 줄마다
-    오탐이 났다(실측 2026-10-13 STARS: 13건 전부 bool 마스크·clip 뒤 변환). 정수 오버플로는
+    오탐이 났다(실측 2026-10-13 실측 사례: 13건 전부 bool 마스크·clip 뒤 변환). 정수 오버플로는
     **외부 입력이 범위 검사 없이** 고정 폭으로 들어갈 때의 약점이므로, 출처가 닿은 호출만 올린다.
     """
     out: list[ast.Call] = []
@@ -625,7 +625,7 @@ def _unwrap_sql(expr: ast.AST) -> ast.AST:
         if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
                 and expr.func.attr in {"strip", "lstrip", "rstrip", "upper", "lower"} \
                 and all(isinstance(a, ast.Constant) for a in expr.args) and not expr.keywords:
-            expr = expr.func.value      # `.rstrip(";")` 도 값을 바꾸지 않는다(33차: safe_check _db_run_sql)
+            expr = expr.func.value      # `.rstrip(";")` 도 값을 바꾸지 않는다(33차: 실측 사례 _db_run_sql)
             continue
         break
     return expr
@@ -823,7 +823,7 @@ _NON_DATA_PARAMS = frozenset({"self", "cls", "con", "conn", "connection", "cur",
 def _tool_functions(tree: ast.AST) -> frozenset[str]:
     """LLM·MCP 도구로 노출된 함수 이름 — 그 매개변수는 **모델이 정한 값**이다.
 
-    실측(2026-10-13 safe_check `analyzer/rep20/v4_tools.py`): `TOOLS = [{"name": "run_sql", …}]`
+    실측(2026-10-13 실측 사례 `analyzer/rep20/v4_tools.py`): `TOOLS = [{"name": "run_sql", …}]`
     로 에이전트에 노출된 `run_sql(con, sql)` 이 받은 SQL 을 정규식 검사만 하고 실행했다.
     근거 정책 뒤로 이 진짜 위험이 '유력·검토'로 내려갔다 — 매개변수를 출처로 몰랐기 때문이다.
     두 가지를 인정한다: 도구 데코레이터(`@tool`·`@mcp.tool()`·`@function_tool` …)와,
@@ -1134,7 +1134,7 @@ def _scan_taint_flows(tree: ast.AST, source_lines: list[str]) -> list[tuple[str,
 def _placeholder_functions(tree: ast.AST) -> frozenset[str]:
     """모든 ``return`` 이 자리표시자 확장인 모듈 함수 이름 — `_ph(codes)` 호출도 자리표시자다.
 
-    실측(2026-10-13 safe_check `soosiro_mcp_server.py`): `def _fact_placeholders(xs): return
+    실측(2026-10-13 실측 사례 `soosiro_mcp_server.py`): `def _fact_placeholders(xs): return
     ",".join("?" * len(xs))` 를 9곳의 f-string 이 썼고 전부 "확인된 SQL 삽입"이 됐다.
     """
     out: set[str] = set()

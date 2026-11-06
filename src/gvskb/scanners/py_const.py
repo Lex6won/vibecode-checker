@@ -288,8 +288,8 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
                 _mutated_names.add(base.id)
 
     # 6) 함수 인자로 넘겨 변형될 수 있는 컨테이너도 보수적으로 실격
-    #    — 단, **가려지지 않은 읽기 전용 내장 함수**는 예외다. 실측(2026-10-13 STARS
-    #    stars_db.py): `dict(zip(ALL_COLUMNS, row))` 한 줄이 모듈 상수 ALL_COLUMNS 를
+    #    — 단, **가려지지 않은 읽기 전용 내장 함수**는 예외다. 실측(2026-10-13 실측 사례
+    #    sample_db.py): `dict(zip(ALL_COLUMNS, row))` 한 줄이 모듈 상수 ALL_COLUMNS 를
     #    실격시켜 바인딩만 쓰는 SQL 2건이 '치명·유력'으로 남았다. zip/len/sorted 는
     #    인자를 바꾸지 않는다. 같은 이름을 다시 정의했으면(`def zip`·`zip = …`) 예외 없음.
     bound = _bound_names(stmts) | SHADOWED_BUILTINS.get()
@@ -323,7 +323,7 @@ def collect_constants(stmts: list[ast.stmt], seed: ConstEnv | None = None) -> Co
         containers=container_candidates - container_disqualified,
     )
     # 바깥 범위(모듈)에서 증명된 상수. 고정점 **전에** 넣어야 `cols = ", ".join(ALL_COLUMNS)`
-    # 처럼 모듈 상수에서 파생한 지역 이름이 승격된다 — 실측(2026-10-13 STARS stars_db.py):
+    # 처럼 모듈 상수에서 파생한 지역 이름이 승격된다 — 실측(2026-10-13 실측 사례 sample_db.py):
     # 끝난 뒤에 얹으니 `cols` 가 동적으로 남아 바인딩만 쓰는 SQL 2건이 '유력'으로 올라갔다.
     # 호출자가 이 범위에서 다시 대입·매개변수로 가린 이름은 빼고 준다.
     if seed is not None:
@@ -370,7 +370,7 @@ def expr_is_constant(node: ast.AST, env: ConstEnv) -> bool:
     if isinstance(node, ast.IfExp):
         return expr_is_constant(node.body, env) and expr_is_constant(node.orelse, env)
     # 리터럴만 담긴 컨테이너에서 **무엇을** 꺼내든 리터럴이다 — `ORDER[key]`·`FILTERS.get(k, "id")`.
-    # 화이트리스트 조회는 SQL 식별자를 안전하게 고르는 정석인데 동적으로 취급됐다(STARS 실측).
+    # 화이트리스트 조회는 SQL 식별자를 안전하게 고르는 정석인데 동적으로 취급됐다(실측 사례 실측).
     if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in env.containers:
         return True
     if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"

@@ -190,9 +190,37 @@ def test_legit_signal_sources():
     assert not _known_legit_package("alias-squat", "PyPI", vulns)
     assert not _known_legit_package("text-squat", "PyPI", vulns)
     assert not _known_legit_package("beautifulsoup-requests", "PyPI", vulns)
-    assert _known_legit_package("ansi-styles", "npm", None)     # 내장 목록
-    assert _known_legit_package("axios", "npm", None)
-    assert not _known_legit_package("ansi-styles", "PyPI", None)   # 생태계가 다르면 근거가 아니다
+    # 코드에 박힌 이름은 근거가 아니다 — 인기 패키지도 지정이나 이력이 있어야 한다
+    assert not _known_legit_package("axios", "npm", None)
+    assert not _known_legit_package("ansi-styles", "npm", None)
+
+
+def test_approved_list_is_the_legit_signal(tmp_path, monkeypatch):
+    listed = tmp_path / "approved.json"
+    listed.write_text('{"packages":[{"ecosystem":"npm","name":"ansi-styles"},{"ecosystem":"pypi","name":"Foo_Bar"}]}', encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(listed))
+    assert _known_legit_package("ansi-styles", "npm", None)
+    assert _known_legit_package("foo-bar", "PyPI", None), "PEP 503"
+    assert not _known_legit_package("ansi-styles", "PyPI", None), "생태계가 다르면 근거가 아니다"
+    listed.write_text('{"packages":[]}', encoding="utf-8")
+    assert not _known_legit_package("ansi-styles", "npm", None), "지정을 해제하면 바로 근거가 사라진다"
+    listed.write_text("{ broken", encoding="utf-8")
+    assert not _known_legit_package("ansi-styles", "npm", None), "깨진 목록은 빈 목록이다"
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(tmp_path / "none.json"))
+    assert not _known_legit_package("ansi-styles", "npm", None)
+
+
+def test_approved_package_listed_version_still_blocks(tmp_path, monkeypatch):
+    listed = tmp_path / "approved.json"
+    listed.write_text('{"packages":[{"ecosystem":"npm","name":"chalk"}]}', encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(listed))
+    mal = _Entry([
+        {"id": "MAL-A", "affected": [{"package": "chalk", "ecosystem": "npm", "versions": ["5.6.1"]}]},
+        {"id": "MAL-B", "affected": [{"package": "chalk", "ecosystem": "npm", "whole": True}]},
+    ], "approved-still-blocks")
+    mal.source_id = "osv-malicious"
+    hits, _ = _classify_mal_advisories(mal, "chalk", "npm", "5.6.1", True)
+    assert {h["id"] for h in hits} == {"MAL-A", "MAL-B"}, "지정은 악성 차단을 풀지 않는다"
 
 
 def test_classify_keeps_stronger_scope_and_reason():
@@ -220,6 +248,9 @@ def intel(tmp_path, monkeypatch):
     ]
     cache.save("osv-malicious", "test", mal, ecosystems=["PyPI", "npm"])
     cache.save("cisa-kev", "test", [])
+    approved = tmp_path / "approved-packages.json"
+    approved.write_text('{"packages":[{"ecosystem":"npm","name":"chalk"}]}', encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(approved))
     cache.save("osv-vulns", "test", [], ecosystems=["PyPI", "npm"])
     return cache
 
@@ -295,6 +326,9 @@ def test_old_format_cache_still_blocks_whole_malware(tmp_path, monkeypatch):
         {"id": "MAL-2", "affected": [{"package": "chalk", "ecosystem": "npm"}]},
     ], ecosystems=["PyPI", "npm"])
     cache.save("osv-vulns", "t", [], ecosystems=["PyPI", "npm"])
+    approved = tmp_path / "approved-packages.json"
+    approved.write_text('{"packages":[{"ecosystem":"npm","name":"chalk"}]}', encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(approved))
     evil = _check("real-evil", "pypi", "1.0.0")
     assert evil["is_malicious_package"] is True and "구형식" in evil["note"]
     popular = _check("chalk", "npm", "5.3.0")

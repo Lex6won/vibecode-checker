@@ -88,8 +88,11 @@ def test_latest_assumed_consults_local_index(online: dict, tmp_path: Path) -> No
     assert out["version_resolution"] == "latest-assumed" and out["malicious_possible"]
 
 
-def test_pinned_legit_outside_listing_stays_clean_online(online: dict, tmp_path: Path) -> None:
+def test_pinned_legit_outside_listing_stays_clean_online(online: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed(tmp_path, _mal("MAL-2025-1", "chalk", "5.6.1"))
+    listed = tmp_path / "approved.json"
+    listed.write_text('{"packages":[{"ecosystem":"npm","name":"chalk"}]}', encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(listed))
     out = _check("chalk", "5.3.0")
     assert not out["malicious_possible"] and out["is_malicious_package"] is False
 

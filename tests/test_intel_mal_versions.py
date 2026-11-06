@@ -33,6 +33,15 @@ def _raw(vid: str, name: str, eco: str = "npm", *, versions=None, ranges=None, w
 WHOLE = [{"type": "SEMVER", "events": [{"introduced": "0"}]}]
 
 
+@pytest.fixture(autouse=True)
+def approved_legit_packages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """이 파일의 정상 패키지는 보안담당자가 지정한 것으로 둔다. 지정이 없는 경우는 test_intel_mal_recall 이 본다."""
+    listed = tmp_path / "approved-packages.json"
+    names = ("axios", "chalk", "debug", "lodash", "express", "react")
+    listed.write_text('{"packages":[' + ",".join('{"ecosystem":"npm","name":"%s"}' % n for n in names) + "]}", encoding="utf-8")
+    monkeypatch.setenv("GVSKB_APPROVED_PACKAGES", str(listed))
+
+
 @pytest.fixture
 def cache_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path))
@@ -162,7 +171,7 @@ def test_old_format_cache_is_possible_with_refresh_hint(tmp_path: Path, monkeypa
 
 
 def test_unparsable_version_is_possible() -> None:
-    assert _mal_scope({"versions": ["1.0.0"]}, "not a version!!", True)[0] in ("possible", "miss")
+    assert _mal_scope({"versions": ["1.0.0"]}, "not a version!!", True)[0] == "possible"
     assert _mal_scope({"whole": True}, "not a version!!", True)[0] == "hit"
 
 

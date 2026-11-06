@@ -10,6 +10,7 @@ points the operator at ``gvskb update-intel``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -58,16 +59,6 @@ _POPULAR_NPM = frozenset({
     "express", "lodash", "react", "axios", "chalk", "commander", "moment",
     "webpack", "vue", "next", "typescript", "eslint", "prettier", "jest",
     "minimist", "debug", "async", "request", "bluebird", "underscore",
-})
-# 계정 탈취로 **특정 버전만** 오염됐던 정상 패키지. 전이 의존성으로 거의 모든 프로젝트에 들어오는데 CVE 이력이
-# 없어 아래 신호(`_known_legit_package`)로는 알 수 없다. 여기 없다고 차단되는 것은 아니다 — '확인 필요'로 남을 뿐이다.
-_HIJACKED_LEGIT_NPM = frozenset({
-    "ansi-regex", "ansi-styles", "backslash", "chalk-template", "color", "color-convert", "color-name",
-    "color-string", "error-ex", "has-ansi", "is-arrayish", "simple-swizzle", "slice-ansi", "strip-ansi",
-    "supports-color", "supports-hyperlinks", "wrap-ansi",
-    "eslint-config-prettier", "eslint-plugin-prettier", "synckit", "@pkgr/core", "napi-postinstall", "is",
-    "file-entry-cache", "flat-cache", "keyv",
-    "ua-parser-js", "coa", "rc", "node-ipc", "colors", "eslint-scope", "@ctrl/tinycolor", "nx",
 })
 
 
@@ -248,13 +239,45 @@ def _build_legit_index(items: list[dict]) -> dict:
     return index
 
 
+_APPROVED_MEMO: dict[tuple[str, int, int], frozenset[tuple[str, str]]] = {}
+
+
+def _approved_packages() -> frozenset[tuple[str, str]]:
+    """기관 보안담당자가 지정한 안전 목록(`GVSKB_APPROVED_PACKAGES`, 포털이 만든다). 파일이 없거나 깨졌으면 빈 목록이다.
+
+    점검이 쌓인 패키지를 보안담당자가 검토해 지정한다 — 코드에 정상 패키지 이름을 박아 두지 않는다.
+    지정은 '이 이름은 정상 패키지'라는 근거일 뿐이다. 지목된 버전과 패키지 전체 악성은 지정해도 차단된다.
+    """
+    path = os.environ.get("GVSKB_APPROVED_PACKAGES", "").strip()
+    if not path:
+        return frozenset()
+    try:
+        info = os.stat(path)
+    except OSError:
+        return frozenset()
+    key = (path, info.st_mtime_ns, info.st_size)
+    if key in _APPROVED_MEMO:
+        return _APPROVED_MEMO[key]
+    names: set[tuple[str, str]] = set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for row in data.get("packages") or []:
+            if row.get("ecosystem") and row.get("name"):
+                names.add(_mal_name_key(str(row["name"]), str(row["ecosystem"])))
+    except (OSError, ValueError, AttributeError, TypeError):
+        names = set()
+    _APPROVED_MEMO.clear()
+    _APPROVED_MEMO[key] = frozenset(names)
+    return _APPROVED_MEMO[key]
+
+
 def _known_legit_package(name: str, ecosystem_label: str, vulns_entry: CacheEntry | None) -> bool:
-    """정상 패키지라는 근거가 있는가 — 내장 목록 또는 일반 취약점 이력. 없다고 위장이라는 뜻은 아니다."""
+    """정상 패키지라는 근거가 있는가 — 기관 지정 목록 또는 일반 취약점 이력. 없다고 위장이라는 뜻은 아니다."""
     from ..intel.lookup import _indexed
 
-    eco, key = _mal_name_key(name, ecosystem_label)
-    pool = (_POPULAR_NPM | _HIJACKED_LEGIT_NPM) if eco == "npm" else _POPULAR_PYPI
-    return key in pool or (eco, key) in _indexed(vulns_entry, "legit-by-vuln", _build_legit_index)
+    key = _mal_name_key(name, ecosystem_label)
+    return key in _approved_packages() or key in _indexed(vulns_entry, "legit-by-vuln", _build_legit_index)
 
 
 def _classify_mal_advisories(
@@ -295,7 +318,7 @@ _MAL_POSSIBLE_REASON = {
 }
 _MAL_POSSIBLE_ACTION = {
     "advisory_without_versions": "위협정보를 다시 받으세요(`gvskb update-intel` 또는 번들 반입).",
-    "version_outside_unverified": "공식 저장소에서 게시자·배포 이력을 확인해 의도한 정상 패키지인지 확인하세요.",
+    "version_outside_unverified": "공식 저장소에서 게시자·배포 이력을 확인해 의도한 정상 패키지인지 확인하세요. 보안담당자가 안전 목록으로 지정하면 해소됩니다.",
 }
 _MAL_POSSIBLE_DEFAULT_ACTION = "버전을 고정(==·락파일)하고 다시 검사하세요."
 

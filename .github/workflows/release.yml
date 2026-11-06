@@ -75,7 +75,6 @@ jobs:
             echo
             echo "- sha256: \`$sha\`"
             echo "- 룰셋: $(python -c "import json;print(json.load(open('dist/$base.build.json'))['package_version'])") / $(grep -m1 -E '^version:' rules/RULESET.lock | awk '{print $2}')"
-            echo "- 변경 내역: CHANGELOG.md"
           } > notes.md
           cat notes.md
       - name: Create or update release

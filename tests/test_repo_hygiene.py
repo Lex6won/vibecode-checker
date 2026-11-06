@@ -285,3 +285,73 @@ def test_name_scan_exemption_stays_narrow() -> None:
     # 면제된 파일에서도 도메인·비밀번호는 여전히 잡힌다.
     hits = scan_text("admin" + "1234", check_names=False)
     assert [k for k, _ in hits] == ["기본 비밀번호"]
+
+
+# ---------------------------------------------------------------------------
+# 4) 실명·실제 주소·점검 대상 이름 — 원문을 저장소에 두지 않으려고 해시만 둔다
+# ---------------------------------------------------------------------------
+
+_SALT = "vibecode-hygiene-v1:"
+_FORBIDDEN_HASHES = frozenset({
+    "0bea9e6529bac9f7d21ecf95",
+    "25561d83804c2e36797c262b",
+    "2601a700a6b72ba7865d2b90",
+    "2b615542acb93ac4e5c4ed7c",
+    "2b659dd5b950aab8bdb90f63",
+    "31e958cf38ef8c9371fe04f7",
+    "3819240b91adcb20c5083a69",
+    "3b4327a35a2c2ad75a878ce2",
+    "3b497de8acb74758d3803593",
+    "48c0c8ab43ca8a250deb7402",
+    "72e92339e83567b3974d0822",
+    "7b38c40add72ace2fd97fae2",
+    "91935143e0dca0f37b83e718",
+    "91d78401e130891046935d26",
+    "93039b7e3935f3eef04025e2",
+    "96a0cad9c0ca5982d14e683d",
+    "a48ab7c76c1dc89b6255a451",
+    "c9230fb81455c118dbb9015b",
+    "ea41b8dd30a710b7f1a9f3f7",
+    "ee0a4d25fbac4de945d2ca00",
+})
+_HANGUL_LENGTHS = (3, 5)
+_ALLOWED_ROOT_DOCS = frozenset({"README.md", "SECURITY.md"})
+
+
+def _forbidden(term: str) -> bool:
+    import hashlib
+
+    return hashlib.sha256((_SALT + term).encode("utf-8")).hexdigest()[:24] in _FORBIDDEN_HASHES
+
+
+def _hits_forbidden(text: str) -> bool:
+    if any(_forbidden(token) for token in re.findall(r"[A-Za-z0-9_]+", text)):
+        return True
+    for run in re.findall(r"[가-힣]+", text):
+        for size in _HANGUL_LENGTHS:
+            if any(_forbidden(run[i:i + size]) for i in range(len(run) - size + 1)):
+                return True
+    return False
+
+
+def test_tracked_files_have_no_real_names_or_scan_targets(tracked_files: list[str]) -> None:
+    problems = []
+    for rel in tracked_files:
+        if rel in _NAME_SCAN_EXEMPT:
+            continue
+        path = REPO_ROOT / rel
+        text = _read_text(path) if path.is_file() else None
+        if _hits_forbidden(rel) or (text is not None and _hits_forbidden(text)):
+            problems.append(rel)
+    assert not problems, "실명·실제 주소·점검 대상 이름이 있습니다: " + ", ".join(sorted(problems))
+
+
+def test_no_development_documents_are_tracked(tracked_files: list[str]) -> None:
+    """공개 저장소에는 소스만 둔다. 룰 정의와 시험 자료의 .md 는 소스다."""
+    docs = [f for f in tracked_files if f.startswith("docs/") or ("/" not in f and f.endswith(".md") and f not in _ALLOWED_ROOT_DOCS)]
+    assert not docs, "개발 문서가 추적되고 있습니다: " + ", ".join(docs)
+
+
+def test_hygiene_guard_catches_a_forbidden_term() -> None:
+    assert _hits_forbidden("담당: " + "".join(["gg", "00", "18"]) + "@x")
+    assert not _hits_forbidden("정상 문장 hello_world 123")

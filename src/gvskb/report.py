@@ -1064,7 +1064,7 @@ def _upgrade_hint(rec: str | None, latest: str | None, current: str | None) -> s
 
     `_recommended_version` 은 권고(advisory) 중 하나라도 수정판을 모르면 None 을 준다 —
     '올리면 다 해결된다'는 거짓 안심을 막기 위한 보수적 선택이다. 그런데 보고서는 그 None 을
-    "안전한 상위 버전이 없습니다"로 **단정**했다(실측 2026-10-13 STARS: torch 2.7.0, 취약 15건,
+    "안전한 상위 버전이 없습니다"로 **단정**했다(실측 2026-10-13 실측 사례: torch 2.7.0, 취약 15건,
     최신 2.14.1 이 있는데도). 확정하지 못한 것과 없는 것은 다른 말이다.
     """
     if rec:
