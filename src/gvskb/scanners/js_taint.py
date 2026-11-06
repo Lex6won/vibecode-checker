@@ -127,9 +127,9 @@ _NUMERIC_MEMBER_RE = re.compile(
     r"[\w$]+(?:\s*\.\s*[\w$]+)*\s*\.\s*(?:id|[a-z]+_id|size(?:_bytes)?|bytes|count|cnt|len|length|idx|index|num|total|qty"
     r"|quantity|amount|seq|year|month|day|page|limit|offset|rank|width|height|ts|timestamp"
     # 서버가 매기는 날짜·시각·프로세스 번호: `s.ended_at`·`row.reg_date`·`job.createdAt`·`d.pid`
-    # (실측 2026-10-13 safe_check: XSS '확인됨' 차단 19건 중 7건이 이 값만 넣는 자리였다)
+    # (실측 2026-10-13 실측 사례: XSS '확인됨' 차단 19건 중 7건이 이 값만 넣는 자리였다)
     r"|pid|ppid|port|date|time|datetime|[a-z]+_(?:at|date|time|dt|ts)|[a-z]+(?:At|Date|Time|Dt)"
-    # camelCase 도 같은 뜻이다: `item.pageNumber`·`row.rowCount` (실측 2026-10-13 약관검색기)
+    # camelCase 도 같은 뜻이다: `item.pageNumber`·`row.rowCount` (실측 2026-10-13 약관 검색 프로젝트)
     r"|[a-z]+(?:Number|Num|No|Count|Cnt|Index|Idx|Size|Length|Len|Total|Qty|Seq|Width|Height))$",
 )
 # 이름이 숫자를 뜻하는 **단독 식별자** — `pageNumber`·`rowCount`·`i`. 출처를 못 찾았을 때
@@ -182,7 +182,7 @@ _RETURN_RE = re.compile(r"^\s*return\s+(.*)$")
 # 첫 그룹은 멤버 사슬의 **뿌리**다(`data.files.map(f => …)` → data). 바로 앞 이름(files)만
 # 잡으면 fetch 응답 변수의 출처가 순회 변수로 이어지지 않는다(적대적 검증 2026-09-18).
 # ES5 `rows.map(function(f, i){ … })` 도 같다 — 예전 정규식은 매개변수 자리에서 단어 `function`
-# 을 잡아 `f` 가 출처를 못 물려받았다(실측 2026-10-13 safe_check app.js: 추적 불가 23건, 한 줄
+# 을 잡아 `f` 가 출처를 못 물려받았다(실측 2026-10-13 실측 사례 app.js: 추적 불가 23건, 한 줄
 # `forEach(function(f){ h+=… })` 누적은 발견 자체가 사라짐).
 _CALLBACK_BIND_RE = re.compile(
     r"(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^\]]*\])*?"
@@ -729,7 +729,7 @@ class _Classifier:
         """지역 함수 이름 → ([(return 식, 줄 index)], 매개변수 이름). sink 인자가 ``rowHtml(x)`` 일 때 한 홉 본다.
 
         줄 index 를 함께 두는 이유: 반환식 안의 지역 변수(`const suffix = …; return `…${suffix}``)는
-        **그 함수의 범위**에서 찾아야 한다. 실측(2026-10-13 약관검색기 pdfUrl)에서 sink 줄의 범위로
+        **그 함수의 범위**에서 찾아야 한다. 실측(2026-10-13 약관 검색 프로젝트 pdfUrl)에서 sink 줄의 범위로
         찾다가 못 찾아 출처 미상이 됐다.
         """
         out: dict[str, tuple[list[tuple[str, int]], list[str]]] = {}
@@ -784,7 +784,7 @@ class _Classifier:
         """줄 idx 에서 시작한 식이 여러 줄이면 닫힐 때까지 이어 붙인다. (식, 소비한 줄 수).
 
         여러 줄 템플릿뿐 아니라 **화살표 본문이 다음 줄로 넘어간 선언**도 따라간다 — 실측
-        (2026-10-13 약관검색기 app.js:79) `const validities = (…).map((item) =>` 줄바꿈 뒤 템플릿.
+        (2026-10-13 약관 검색 프로젝트 app.js:79) `const validities = (…).map((item) =>` 줄바꿈 뒤 템플릿.
         예전엔 첫 줄만 보고 출처 미상으로 남겨 정화된 값이 '높음'으로 올라갔다.
         """
         first = head.find("`")
@@ -879,7 +879,7 @@ class _Classifier:
                 verdict = SinkVerdict(UNKNOWN, "템플릿 뒤에 해석하지 못한 식")
             return verdict
         # `arr.map(esc).join('')` · `arr.map(x => esc(x))` — 요소마다 정화 함수를 거친다.
-        # 실측(2026-10-13 약관검색기 app.js:85) `evidence.map(escapeHtml).join("<br>")`.
+        # 실측(2026-10-13 약관 검색 프로젝트 app.js:85) `evidence.map(escapeHtml).join("<br>")`.
         mm = _MAP_SANITIZER_RE.match(expr)
         if mm and "`" not in expr:
             fn = mm.group("fn")
@@ -902,7 +902,7 @@ class _Classifier:
                     return SinkVerdict(TAINTED, f"map(…) 본문 — {body.reason}", body.direct_source)
         # `rows.map(function(f, i){ … return X; }).join('')` · `rows.map(f => { … return X })` ·
         # `rows.map(f => X)` — HTML 이 되는 것은 콜백이 **돌려주는 값**이지 바깥 배열이 아니다.
-        # 실측(2026-10-13 safe_check app.js:1574): 모든 값이 esc() 를 거친 ES5 콜백이 배열 변수의
+        # 실측(2026-10-13 실측 사례 app.js:1574): 모든 값이 esc() 를 거친 ES5 콜백이 배열 변수의
         # 출처만으로 '확인된 XSS' 차단이 됐다. 템플릿 본문은 아래 기존 경로가 맡는다.
         cb = _map_callback_parts(expr)
         if cb is not None and "`" not in expr:
@@ -1194,7 +1194,7 @@ class _Classifier:
                 if line.count("`") % 2 == 0:
                     # 괄호 안 콜백 본문(`rows.forEach(function(f){ h+=…; })`)의 문장도 모은다 —
                     # 문장 분리기는 괄호 안을 보지 않아, 한 줄 누적이 통째로 빠져 sink 의 `h` 가
-                    # 빈 문자열 상수로 남고 **발견 자체가 지워졌다**(실측 2026-10-13 safe_check).
+                    # 빈 문자열 상수로 남고 **발견 자체가 지워졌다**(실측 2026-10-13 실측 사례).
                     inline_stmts = [st for body in _inline_callback_bodies(line) for st in _split_statements(body)]
                     for stmt in _split_statements(line)[1:] + inline_stmts:
                         a2 = _ASSIGN_RE.match(stmt)

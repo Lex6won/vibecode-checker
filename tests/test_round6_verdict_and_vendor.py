@@ -327,7 +327,7 @@ def test_unidentified_self_bundle_does_not_raise_alarm(tmp_path) -> None:
 
     report = scan_path(tmp_path)
     # 라이브러리 근거가 없는 내용 신호는 컴포넌트 후보조차 아니다 — 보고서에
-    # "외부 라이브러리"로 적히지 않고(실측: 약관검색기 data/*.js 535개), 생성 파일로 남는다.
+    # "외부 라이브러리"로 적히지 않고(실측: 약관 검색 프로젝트 data/*.js 535개), 생성 파일로 남는다.
     assert report.vendor_bundles == []
     assert [s.reason for s in report.skipped_files if s.path.endswith("app.js")] == [GENERATED_BUNDLE_SKIP_REASON]
 

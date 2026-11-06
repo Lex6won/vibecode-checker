@@ -125,7 +125,7 @@ def view(conn):
 
 
 def test_tool_parameter_sql_reaching_helper_with_strip_chain_is_confirmed() -> None:
-    """실측(safe_check soosiro_mcp_server.py:465): MCP 도구 `run_sql(sql)` 이 `_db_run_sql(sql)` 을 부르고
+    """실측(실측 사례 soosiro_mcp_server.py:465): MCP 도구 `run_sql(sql)` 이 `_db_run_sql(sql)` 을 부르고
     그 안에서 `conn.execute(sql.strip().rstrip(";"), params)` — 도구가 넘긴 SQL 전체가 실행된다."""
     code = '''
 def _db_run_sql(sql, params=None):

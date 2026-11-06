@@ -26,7 +26,7 @@ detection:
     - "np\\.(?:power|multiply|add|subtract|sum|prod)\\s*\\([^)]*dtype\\s*=\\s*np\\.(?:int|uint)(?:8|16|32|64)"
     # 2)·3) `astype(np.intN)`·`struct.pack` 단독 패턴은 뺐다(2026-10-13). 이미지 처리 코드는
     #    줄마다 `astype(np.uint8)` 를 쓰고(bool 마스크·clip 뒤 변환) 그것은 오버플로가 아니다 —
-    #    실측(STARS) 13건 전부 오탐. 외부 입력이 닿는 변환은 AST 엔진이 출처를 추적해 올린다.
+    #    실측(실측 사례) 13건 전부 오탐. 외부 입력이 닿는 변환은 AST 엔진이 출처를 추적해 올린다.
     # 4) request 입력을 int() 로 받아 numpy 고정 비트 연산에 같은 라인에서 사용
     - "np\\.(?:int|uint)(?:8|16|32|64)\\s*\\(\\s*int\\s*\\(\\s*request\\."
   category: kisa-secure-coding

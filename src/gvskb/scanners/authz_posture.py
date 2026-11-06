@@ -74,13 +74,13 @@ _PY_ROUTE = re.compile(
     r"^\s*@(?P<obj>[\w.]+)\.(?P<verb>route|get|post|put|patch|delete|api_route)\(\s*['\"](?P<path>[^'\"]+)['\"](?P<rest>[^\n]*)",
 )
 _PY_METHODS = re.compile(r"methods\s*=\s*[\[(]([^\])]*)[\])]")
-# FastAPI 의존성 주입 — 시그니처의 Depends( 또는 Annotated 별칭 타입(AdminUser·CurrentUser 등, 실측 trusted-registry).
+# FastAPI 의존성 주입 — 시그니처의 Depends( 또는 Annotated 별칭 타입(AdminUser·CurrentUser 등, 실측).
 _PY_SIG_GUARD = re.compile(r"Depends\(|:\s*(?:Annotated\[[^\]]*Depends|\w*(?:Admin|Current|Auth|Principal|Staff)\w*)\b")
 _PY_GLOBAL_HOOK = re.compile(r"^\s*@[\w.]+\.(?:before_request|before_app_request)\b|dependencies\s*=\s*\[\s*Depends\(|MIDDLEWARE\s*=", re.M)
 _PY_MIDDLEWARE_AUTH = re.compile(r"MIDDLEWARE\s*=\s*\[[^\]]*(?:Authentication|LoginRequired|auth)", re.I | re.S)
 
 # JS 라우트 등록 / 전역 미들웨어 / Next.js. 라우트 "등록"은 서버 프레임워크를 쓰는 파일에서만 — 프런트의
-# `api.delete('/admin/…')` 는 HTTP 호출이지 라우트가 아니다(실측 trusted-registry frontend).
+# `api.delete('/admin/…')` 는 HTTP 호출이지 라우트가 아니다(실측 frontend).
 _JS_SERVER_MARK = re.compile(
     r"require\(\s*['\"](?:express|koa|@koa/router|koa-router|fastify|hono|@hapi/hapi|restify|polka)['\"]\s*\)"
     r"|from\s+['\"](?:express|koa|@koa/router|koa-router|fastify|hono|@hapi/hapi|restify|polka)['\"]"

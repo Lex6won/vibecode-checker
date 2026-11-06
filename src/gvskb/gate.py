@@ -82,14 +82,60 @@ from __future__ import annotations
 
 from .schema import Decision, ScanReport
 
-#: 배포를 **막는** 사유. 이 다섯만 차단이다.
+#: 기관 표준(Python·JavaScript·TypeScript 웹서비스) 밖의 실행 형태. 패키지가 아니라 프로젝트 형태가 사유다.
+UNSUPPORTED_PLATFORM_ACTION = (
+    "이 형태는 기관 표준 밖이라 승인할 수 없습니다. 전용 런타임·자체 갱신·외부 CDN 연결에 기대므로 폐쇄망에서 동작하지 않고, "
+    "구성요소를 검증하기 어려워 위험할 수 있습니다. Python·JavaScript·TypeScript 웹서비스와 기본 패키지로 교체한 뒤 다시 점검하세요."
+)
+
+#: 배포를 **막는** 사유. 이 여섯만 차단이다.
 BLOCK_CRITERIA: dict[str, str] = {
+    "unsupported_platform": "기관 표준 밖의 실행 형태",
     "malicious": "악성 패키지",
     "registry_rejected": "기관 레지스트리 거부",
     "not_found": "레지스트리에 없는 이름(가짜 이름 의심)",
     "kev": "CISA KEV 등재 — 실제로 악용되고 있음",
     "critical": "CVSS CRITICAL 취약점",
 }
+
+#: 악성 차단의 세 종류. 막는 것은 같아도 **사람이 할 일이 다르다** — 패키지 이름이 악성으로 확정된 사람에게 할 말과,
+#: 버전을 몰라 막힌 정상 패키지 사용자에게 할 말을 하나로 쓰면 뒤쪽은 PC 가 감염된 줄 알게 된다.
+MAL_CONFIRMED_ACTION = (
+    "패키지를 제거하고, 설치한 적이 있는 PC 는 점검(비밀값 재발급 포함)한 뒤 보안담당자에게 알리고 대체 패키지를 쓰세요."
+)
+MAL_UNVERIFIED_ACTION = (
+    "① 공식 저장소에서 이 이름이 의도한 패키지인지 확인합니다(오타나 AI 가 지어낸 이름일 수 있습니다). "
+    "② 아니면 제거하고 올바른 패키지로 바꿉니다. "
+    "③ 맞으면 실제 쓸 버전을 고정(==·락파일)해 다시 점검합니다 — 지목된 버전은 쓰지 않습니다. "
+    "④ 이미 설치했다면 설치된 버전을 확인하고, 지목된 버전이면 PC 를 점검합니다. "
+    "판단이 어려우면 보안담당자에게 문의하세요. 정상 패키지로 확인되면 보안담당자가 안전 목록으로 지정할 수 있습니다."
+)
+MAL_OLD_FORMAT_ACTION = (
+    "위협정보에 영향 버전이 없는 구형식이라 패키지 전체를 막았습니다. 위협정보를 다시 받은 뒤"
+    "(인터넷망 `gvskb update-intel` · 폐쇄망 새 번들 반입) 다시 점검하세요."
+)
+_MAL_LABELS = {"unverified": "악성 권고 — 버전 미확인", "old_format": "악성 권고 — 구형식 위협정보"}
+_MAL_ACTIONS = {"confirmed": MAL_CONFIRMED_ACTION, "unverified": MAL_UNVERIFIED_ACTION, "old_format": MAL_OLD_FORMAT_ACTION}
+
+
+def malicious_kind(check: dict) -> str | None:
+    """악성 차단의 종류 — ``confirmed`` | ``unverified`` | ``old_format``. 악성이 아니면 None.
+
+    권고 행의 ``reason`` 은 '확정하지 못한 채 막았다'는 표시다. 하나라도 사유 없는 권고가 있으면 확정이다.
+    """
+    if not check.get("is_malicious_package"):
+        return None
+    rows = [a for a in check.get("advisories") or [] if isinstance(a, dict) and str(a.get("id") or "").startswith("MAL-")]
+    if not rows or not all(a.get("reason") for a in rows):
+        return "confirmed"
+    return "old_format" if any(a.get("reason") == "advisory_without_versions" for a in rows) else "unverified"
+
+
+def malicious_action(check: dict) -> str | None:
+    """이 차단에서 사람이 할 일. 악성이 아니면 None."""
+    kind = malicious_kind(check)
+    return _MAL_ACTIONS[kind] if kind else None
+
 
 #: 사람이 확인해야 하지만 배포를 막지는 않는 사유.
 CONDITIONAL_CRITERIA: dict[str, str] = {
@@ -98,6 +144,9 @@ CONDITIONAL_CRITERIA: dict[str, str] = {
     "unchecked": "판정 불가 — '안전'이라는 뜻이 아님",
     "suspicious_name": "인기 패키지와 이름이 거의 같음(타이포스쿼팅 의심)",
     "version_not_found": "요청한 버전이 저장소에 없음(오타·자리차지 패키지 의심)",
+    "malicious_possible": "특정 버전이 악성으로 보고된 패키지 — 버전을 고정하거나 정상 패키지인지 확인해야 판정됨",
+    "dependency_truncated": "패키지 수 상한으로 검사하지 못한 의존성이 있음",
+    "intel_old_format": "악성 권고에 영향 버전이 없는 구형식 위협정보 — 다시 받아야 함",
     "source": "소스 코드 발견",
     "license": "라이선스 검토 필요(GPL·AGPL 등 — 배포·네트워크 제공 형태에 따라 의무 발생)",
     # 35차(2026-10-15). 34차가 미고정 패키지를 "최신판 기준"으로 조회해 역대 취약점 차단
@@ -162,17 +211,37 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
         # 그 최신판이 설치된다) 근거를 사유에 적는다. 그래야 담당자가 "안전한 버전으로 고정"으로 풀 수 있다.
         assumed = check.get("version_resolution") == "latest-assumed"
         basis = f"(미고정 — 가정 최신판 {check.get('resolved_version') or '?'} 기준)" if assumed else ""
+        kind = malicious_kind(check)
         reasons.append({
             "package": check.get("name"),
             "version": check.get("version"),
             "resolved_version": check.get("resolved_version"),
             "version_resolution": check.get("version_resolution") or ("pinned" if check.get("version") else None),
             "criteria": hits,
-            "labels": [BLOCK_CRITERIA[h] + basis for h in hits],
+            "labels": [(_MAL_LABELS.get(kind, BLOCK_CRITERIA[h]) if h == "malicious" else BLOCK_CRITERIA[h]) + basis for h in hits],
+            "malicious_kind": kind,
+            "action": _MAL_ACTIONS.get(kind),
+            "versions": sorted({str(v) for a in check.get("advisories") or [] if isinstance(a, dict) for v in a.get("versions") or []})[:6] if kind == "unverified" else [],
             "recommended_version": check.get("recommended_version"),
             "latest_version": (check.get("registry_metadata") or {}).get("latest_version"),
         })
     return reasons
+
+
+def _platform_block_reasons(report: ScanReport) -> list[dict]:
+    """Electron·브라우저 확장·VS Code 확장 — 설정이 안전해도 승인하지 않는다."""
+    seen: dict[str, dict] = {}
+    for item in getattr(report, "unsupported_platforms", None) or []:
+        label = str(item.get("label") or item.get("kind") or "")
+        row = seen.setdefault(label, {
+            "package": label, "version": None, "resolved_version": None, "version_resolution": None,
+            "criteria": ["unsupported_platform"], "labels": [BLOCK_CRITERIA["unsupported_platform"]],
+            "malicious_kind": None, "action": UNSUPPORTED_PLATFORM_ACTION, "versions": [],
+            "recommended_version": None, "latest_version": None, "files": [],
+        })
+        if item.get("file") and item["file"] not in row["files"]:
+            row["files"].append(item["file"])
+    return list(seen.values())
 
 
 def _trust_signal_packages(report: ScanReport) -> list[dict]:
@@ -226,7 +295,7 @@ def _has_cooldown_hold(report: ScanReport) -> bool:
 def _license_review_packages(report: ScanReport) -> list[dict]:
     """라이선스 검토가 필요한 컴포넌트 — [{'name','version','license'}].
 
-    실측(2026-10-13 STARS): ultralytics AGPL-3.0 이 `license_verdict=review_required` 로
+    실측(2026-10-13 실측 사례): ultralytics AGPL-3.0 이 `license_verdict=review_required` 로
     표에는 ⚠ 로 찍히는데 **종합 판정 사유에는 없어**, 취약 패키지와 소스 발견만 해소하면
     '승인'이 났다. 배포 뒤 라이선스 문제는 보안 사고만큼 되돌리기 어렵다.
     """
@@ -245,6 +314,34 @@ def _license_review_packages(report: ScanReport) -> list[dict]:
             "license": (check.get("registry_metadata") or {}).get("license"),
         })
     return out
+
+
+def _malicious_possible_packages(report: ScanReport) -> list[dict]:
+    """악성 권고가 있으나 설치본 해당 여부를 판정하지 못한 컴포넌트 — [{'name','version','advisories','versions'}]."""
+    from .report import _dep_audits, _dep_merged_components
+
+    audits = _dep_audits(report)
+    if not audits:
+        return []
+    out: list[dict] = []
+    for comp in _dep_merged_components(audits):
+        check = comp.get("check") or {}
+        rows = check.get("malicious_possible") or []
+        if not rows or check.get("is_malicious_package"):
+            continue
+        out.append({
+            "name": check.get("name"), "version": check.get("version"),
+            "advisories": [r.get("id") for r in rows],
+            "versions": sorted({v for r in rows for v in r.get("versions") or []})[:10],
+        })
+    return out
+
+
+def _dependency_truncated(report: ScanReport) -> int:
+    """상한에 걸려 **아예 보지 않은** 패키지 수 — 보지 않은 것은 승인 근거가 아니다."""
+    from .report import _dep_audits
+
+    return sum(int(a.get("truncated_count") or 0) for a in _dep_audits(report))
 
 
 def _unpinned_packages(report: ScanReport) -> list[dict]:
@@ -321,6 +418,9 @@ def attach_gate(report: ScanReport) -> ScanReport:
     읽는 쪽이 ``summary.blocked``(소스 기준)가 아니라 이 값을 보게 하기 위한 것.
     """
     report.gate = gate_status(report)
+    # 서식 v1.2 8개 항목 결과표도 같은 시점(의존성 감사·게이트가 붙은 뒤)에 새긴다 — CLI·MCP 모든 경로가 여기를 지난다.
+    from .form_v12 import attach_form_v12
+    attach_form_v12(report)
     return report
 
 
@@ -357,7 +457,8 @@ def gate_status(report: ScanReport) -> dict:
     has_source_block = bool(block_count) or bool(report.summary.blocked)
     vuln, unchecked, not_found, _audit_flag = _dep_risk(report)
 
-    block_reasons = _dependency_block_reasons(report)
+    dependency_block_reasons = _dependency_block_reasons(report)
+    block_reasons = dependency_block_reasons + _platform_block_reasons(report)
     blocked = bool(block_reasons)
 
     conditional_criteria: list[str] = []
@@ -379,6 +480,12 @@ def gate_status(report: ScanReport) -> dict:
     unpinned = _unpinned_packages(report)
     if unpinned:
         conditional_criteria.append("unpinned")
+    malicious_possible = _malicious_possible_packages(report)
+    if malicious_possible:
+        conditional_criteria.append("malicious_possible")
+    dependency_truncated = _dependency_truncated(report)
+    if dependency_truncated:
+        conditional_criteria.append("dependency_truncated")
     trust_signals = _trust_signal_packages(report)
     if trust_signals:
         conditional_criteria.append("trust")
@@ -397,6 +504,10 @@ def gate_status(report: ScanReport) -> dict:
     intel_gap, intel = _intel_gap(report)
     if intel_gap == "stale":
         conditional_criteria.append("intel_stale")
+    intel_old_format = bool(
+        (getattr(report, "dependency_check", None) or {}).get("packages_parsed") and intel.get("mal_old_format"))
+    if intel_old_format:
+        conditional_criteria.append("intel_old_format")
     # 소스를 한 건도 보지 못했으면 '안전'이 아니라 '판정 불가'다.
     undetermined = (
         not blocked
@@ -438,7 +549,7 @@ def gate_status(report: ScanReport) -> dict:
         # 아래 둘은 **사실 보고**다. `blocked_source` 는 더 이상 배포를 막지
         # 않지만(소스는 보조), 자기 정책으로 막고 싶은 소비자를 위해 남긴다.
         "blocked_source": has_source_block,
-        "blocked_dependency": blocked,
+        "blocked_dependency": bool(dependency_block_reasons),
         "source_block_count": block_count,
         "dependency_vulnerable": vuln,
         "dependency_unchecked": unchecked,
@@ -450,6 +561,8 @@ def gate_status(report: ScanReport) -> dict:
         "intel_gap": intel_gap,
         "license_review": license_review,
         "unpinned": unpinned,
+        "malicious_possible": malicious_possible,
+        "dependency_truncated": dependency_truncated,
         # 41차 — 신뢰 신호가 붙은 패키지(조건부 사유 `trust` 의 근거). 포털은 키를 모르면 표시만 한다.
         "trust_signals": trust_signals,
         # 가정 최신판 기준으로 취약 판정된 미고정 컴포넌트 수 — `dependency_vulnerable` 에 포함돼 있다.
@@ -457,7 +570,9 @@ def gate_status(report: ScanReport) -> dict:
         "reason": _reason(verdict, block_reasons, conditional_criteria, exposure,
                           block_count, vuln, unchecked, coverage_gap,
                           license_review=len(license_review), unpinned=len(unpinned),
-                          trust=len(trust_signals), intel_gap=intel_gap, intel=intel),
+                          malicious_possible=len(malicious_possible),
+                          trust=len(trust_signals), intel_gap=intel_gap, intel=intel,
+                          dependency_truncated=dependency_truncated, intel_old_format=intel_old_format),
     }
 
 
@@ -542,9 +657,12 @@ def _reason(
     coverage_gap: str = "",
     license_review: int = 0,
     unpinned: int = 0,
+    malicious_possible: int = 0,
     trust: int = 0,
     intel_gap: str = "",
     intel: dict | None = None,
+    dependency_truncated: int = 0,
+    intel_old_format: bool = False,
 ) -> str:
     if verdict == "undetermined":
         if intel_gap == "missing":
@@ -578,6 +696,21 @@ def _reason(
             f"배포 불가 — {' · '.join(labels)}에 해당하는 패키지가 있습니다"
             f"({names}{more}). 사유 기록으로 넘길 수 없는 등급입니다."
         )
+        if any("unsupported_platform" in r["criteria"] for r in block_reasons):
+            head += f" {UNSUPPORTED_PLATFORM_ACTION}"
+        # 어떻게 해야 풀리는가 — 판정과 함께 간다. 포털·CLI 가 이 문장을 그대로 보여 준다.
+        for kind in ("confirmed", "unverified", "old_format"):
+            rows = [r for r in block_reasons if r.get("malicious_kind") == kind]
+            if not rows:
+                continue
+            who = ", ".join(str(r["package"]) for r in rows[:3])
+            if kind == "confirmed":
+                head += f" **{who}: 악성으로 확인됐습니다.** {MAL_CONFIRMED_ACTION}"
+            else:
+                listed = sorted({v for r in rows for v in r.get("versions") or []})
+                target = f" 지목된 버전: {', '.join(listed)}." if listed else ""
+                head += (f" **{who}: 악성으로 확정된 것은 아닙니다 — 설치될 버전과 정상 패키지 여부를 확인하지 못해 막았습니다.**"
+                         f"{target} {_MAL_ACTIONS[kind]}")
         if any(r.get("version_resolution") == "latest-assumed" for r in block_reasons):
             head += (
                 " 버전이 고정되지 않은 패키지는 **설치 시점에 들어올 최신판**을 기준으로 판정했습니다 — "
@@ -612,6 +745,12 @@ def _reason(
         parts.append(f"라이선스 검토 {license_review}종")
     if unpinned:
         parts.append(f"버전 미고정 {unpinned}종")
+    if malicious_possible:
+        parts.append(f"특정 버전 악성 권고 {malicious_possible}종")
+    if dependency_truncated:
+        parts.append(f"미검사 패키지 {dependency_truncated}종")
+    if intel_old_format:
+        parts.append("구형식 위협정보")
     if trust:
         parts.append(f"패키지 신뢰 신호 {trust}종")
     if intel_gap == "stale":
@@ -631,6 +770,12 @@ def _reason(
             if "필수 엔진 미가동" in coverage_gap and "상한" not in coverage_gap
             else " **검사되지 않은 실행 소스가 있습니다 — 그 파일은 판정 밖입니다.**"
         )
+    if malicious_possible:
+        tail += " 특정 버전이 악성으로 보고된 패키지는 **버전을 고정하거나 정상 패키지인지 확인해야** 해당 여부를 판정할 수 있습니다."
+    if dependency_truncated:
+        tail += f" **패키지 {dependency_truncated}종은 상한에 걸려 검사하지 못했습니다 — 그 패키지는 판정 밖입니다.**"
+    if intel_old_format:
+        tail += " **위협정보가 구형식입니다** — (인터넷망) `gvskb update-intel` · (폐쇄망) 새 위협정보 번들을 반입한 뒤 다시 검사하세요."
     if unpinned:
         tail += (
             " 버전 미고정 패키지는 **최신판 기준으로 조회했을 뿐** 설치본이 안전하다는 근거가 아닙니다 — "

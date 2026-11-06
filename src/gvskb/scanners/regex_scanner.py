@@ -36,7 +36,11 @@ _FLAG_NAMES = {
 }
 
 # Filename suffix → language identifier, for rule.languages filtering.
+#: 문서에서 보는 범주. 예제 코드까지 코드 룰로 보면 안내문마다 오탐이 난다.
+_MARKDOWN_CATEGORIES = frozenset({"privacy-public-sector", "secret-scanning"})
+
 _EXT_TO_LANG = {
+    ".md": "markdown",
     ".py": "python", ".pyw": "python",
     ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
     ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
@@ -772,6 +776,8 @@ def redact_evidence(text: str) -> str:
     """
     text = re.sub(r"\b(\d{6})-?([1-4])\d{6}\b", r"\1-\2******", text)
     text = re.sub(r"\b(01[016789])-?\d{3,4}-?(\d{4})\b", r"\1-****-\2", text)
+    # 이메일 — 앞 두 글자와 도메인만 남긴다. 보고서가 또 하나의 유출 경로가 되지 않게 한다.
+    text = re.sub(r"(?<![\w.+-])([A-Za-z0-9]{1,2})[A-Za-z0-9._%+-]*@((?:[A-Za-z][A-Za-z0-9-]*\.)+[A-Za-z]{2,})", r"\1***@\2", text)
     # 탐지 룰보다 **일부러 느슨하게** 잡는다. 여기서 못 가리면 토큰이 보고서·
     # 로그·오류 메시지에 그대로 찍히지만, 넓게 가려서 생기는 손해는 증거 문자열이
     # 조금 덜 읽히는 것뿐이다. 비대칭이 명백하므로 과잉 마스킹 쪽을 택한다.
@@ -990,6 +996,8 @@ def _rules_that_can_match(code: str, eff_lang: str | None, categories: set[str] 
     for rule in RULES:
         if categories and rule["category"] not in categories:
             continue
+        if eff_lang == "markdown" and rule.get("category") not in _MARKDOWN_CATEGORIES:
+            continue
         rule_langs = rule.get("languages") or set()
         if rule_langs and eff_lang and eff_lang not in rule_langs:
             continue
@@ -1050,6 +1058,8 @@ class RegexScanner(ScannerAdapter):
                     continue
                 # Language filter: a rule with a non-empty `languages` set only
                 # applies when input language matches (or input language is unknown).
+                if eff_lang == "markdown" and rule.get("category") not in _MARKDOWN_CATEGORIES:
+                    continue
                 rule_langs = rule.get("languages") or set()
                 if rule_langs and eff_lang and eff_lang not in rule_langs:
                     continue
@@ -1102,6 +1112,8 @@ class RegexScanner(ScannerAdapter):
             if not multi:
                 continue
             if categories and rule["category"] not in categories:
+                continue
+            if eff_lang == "markdown" and rule.get("category") not in _MARKDOWN_CATEGORIES:
                 continue
             rule_langs = rule.get("languages") or set()
             if rule_langs and eff_lang and eff_lang not in rule_langs:

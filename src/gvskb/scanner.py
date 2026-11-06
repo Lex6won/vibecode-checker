@@ -851,7 +851,7 @@ def _attenuate_xss_by_taint(
 
 # ── 근거 수준 × 판정 ─────────────────────────────────────────────────────────
 # 발견마다 근거 수준(confirmed · likely · pattern-only)을 적으면서도 **판정은 룰의
-# 기본값(block)을 그대로 썼다.** 실측(2026-10-13, safe_check 비교): 차단 71건 중
+# 기본값(block)을 그대로 썼다.** 실측(2026-10-13, 실측 사례 비교): 차단 71건 중
 # 정규식 한 줄로만 잡힌 15건(경로 조작 `tag=month.replace(…)`, XPath 의 서버 XML id,
 # 함수명에 `Llm` 이 든 줄의 innerHTML, `disable_warnings`)이 전부 오탐이었고, 매개변수만
 # 동적인 '유력' SQL 3건도 오탐이었다. 입력의 출처를 확인하지 못한 발견은 "확인 필요"로
@@ -1190,6 +1190,8 @@ def scan_file(path: str | Path, *, language: str | None = None, scenario: str | 
 
 DEFAULT_INCLUDE_EXTS: frozenset[str] = frozenset({
     ".py", ".pyw",
+    # 문서 — 개인정보·비밀값만 본다(regex_scanner). 인수인계 문서에 실명·연락처·키가 그대로 들어간다.
+    ".md",
     # 서버 템플릿·노트북 — 실행 코드와 비밀값이 실린다(전면 점검 2026-10-13 §3-1 미검사 목록).
     ".jsp", ".ejs", ".hbs", ".ipynb",
     # .mts/.cts 는 TypeScript 의 ESM/CJS 명시 확장자다. 실측(lexdiff)에서 이 두
@@ -1470,7 +1472,7 @@ VENDOR_BUNDLE_SKIP_REASON = (
 )
 
 # 내용은 미니파이드인데 **어떤 라이브러리인지 식별되지 않은** 파일. 실측(2026-10-13,
-# 약관검색기): 앱이 직접 만든 검색 데이터 535개(`data/catalog.js`·해시 이름의 gzip 조각)가
+# 약관 검색 프로젝트): 앱이 직접 만든 검색 데이터 535개(`data/catalog.js`·해시 이름의 gzip 조각)가
 # "벤더 번들(외부 라이브러리)"로 적혀, 보고서만 보면 외부 라이브러리 535개가 있는 것처럼
 # 읽혔다. 라이브러리라는 근거(이름 `.min.`·배너·버전)가 하나도 없으면 그렇게 부르지 않는다.
 GENERATED_BUNDLE_SKIP_REASON = (
@@ -1639,7 +1641,7 @@ def _identify_vendor_bundle_file(
 
 
 # 본문에 박아 넣은 이미지·글꼴(`data:image/png;base64,…`). 코드가 아니라 자산이다.
-# 실측(2026-10-13, 약관검색기): 로고 한 장이 27,893자 한 줄이라 **메인 HTML 전체가**
+# 실측(2026-10-13, 약관 검색 프로젝트): 로고 한 장이 27,893자 한 줄이라 **메인 HTML 전체가**
 # "빌드 산출물"로 빠졌다. 그 파일에 인라인 스크립트가 있었다면 아무도 보지 않았다.
 _DATA_URI_RE = re.compile(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
 
@@ -1652,11 +1654,11 @@ _SECRET_ONLY_MAX_BYTES = 2_000_000
 #: 파일 하나에서 비밀값 룰로 따로 보는 거대 줄의 수 — 데이터 파일이 수백 줄짜리 거대 줄로 돼 있을 때 상한.
 _GIANT_LINES_PER_FILE = 40
 #: 검사 한 번에 비밀값 룰로 훑는 미니파이드 산출물의 수 상한(경로 순, 결정적). 실측 2026-10-14
-#: 약관검색기: 한 줄짜리 데이터 JSON 536개 × 14ms = 7초. 이름이 비밀을 뜻하는 파일은 상한과 무관하게 본다.
+#: 약관 검색 프로젝트: 한 줄짜리 데이터 JSON 536개 × 14ms = 7초. 이름이 비밀을 뜻하는 파일은 상한과 무관하게 본다.
 _SECRET_SWEEP_MAX_FILES = 150
 _SECRET_ONLY_CATEGORIES = frozenset({"secret-scanning"})
 #: 비밀값 룰을 돌리기 전의 값싼 선별 — 이 낱말·접두어가 하나도 없는 번들은 볼 필요가 없다
-#: (실측 2026-10-14 약관검색기: 미니파이드 조각 536개 × 룰 패턴 96개 = 6.7초).
+#: (실측 2026-10-14 약관 검색 프로젝트: 미니파이드 조각 536개 × 룰 패턴 96개 = 6.7초).
 _SECRET_HINT_RE = re.compile(
     r"(?i)secret|passw|pwd|api[_-]?key|token|private[_-]?key|credential|BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE"
     r"|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20}|sk_(?:live|test)_|gh[pousr]_|github_pat_|glpat-|xox[baprs]-|npm_[A-Za-z0-9]{36}"
@@ -1669,7 +1671,7 @@ def _looks_minified(text: str) -> bool:
 
     `data:` URI 의 base64 본문은 길이에서 뺀다 — 자산이 길다고 코드가 압축된 것은 아니다.
     평균이 아니라 중앙값을 쓴다: 평범한 300줄 페이지에 1MB JSON 리터럴 한 줄이 박히면 평균은
-    치솟지만 파일은 소스다(전면 점검 §3-1, 파노라마뷰 DEMO 페이지가 통째로 빠졌다). 그 한 줄은
+    치솟지만 파일은 소스다(전면 점검 §3-1, 지도 뷰 프로젝트 DEMO 페이지가 통째로 빠졌다). 그 한 줄은
     `_mask_giant_lines` 가 따로 가린다.
     """
     if len(text) < _MINIFIED_MIN_BYTES:
@@ -1710,7 +1712,7 @@ def _secret_only_findings(text: str, rel: str, *, line_offset_map: dict[int, int
     if len(text) > _SECRET_ONLY_MAX_BYTES or not _SECRET_HINT_RE.search(text):
         return []
     # 정규식 엔진만 돌린다 — 비밀값 룰은 전부 정규식이고, JS 오염 추적·외부 연결 추출을 1MB 데이터
-    # 줄에 돌리면 파일당 수십 초가 든다(실측 2026-10-14 파노라마뷰: 0.2초 → 38초).
+    # 줄에 돌리면 파일당 수십 초가 든다(실측 2026-10-14 지도 뷰 프로젝트: 0.2초 → 38초).
     try:
         from .scanners.regex_scanner import RegexScanner
         found = RegexScanner().scan(text, filename=rel, scenario=scenario, profile=profile,
@@ -2092,6 +2094,8 @@ def scan_path(
     # 제외하거나 읽지 않는 자리를 **제외 규칙과 무관하게** 이름으로 찾아 파서로만 읽는다.
     # 2026-08 npm 웜·2026-10 PyPI 사고가 숨은 자리다. 어떤 설정도 실행하지 않는다.
     autoexec_entries: list[dict] = []
+    runtime_pins: list[dict] = []
+    unsupported_platforms: list[dict] = []
     if is_dir:
         from .scanners.autoexec_surface import collect_autoexec_surface
         try:
@@ -2109,6 +2113,7 @@ def scan_path(
             skipped.extend(surface.skipped)
             scanned.extend(surface.scanned)
             autoexec_entries = [e.as_dict() for e in surface.entries]
+            runtime_pins = surface.pins
         # 40차 — 생태계별(Electron·VS Code 확장·Chrome 확장·MCP 서버) 설정·구조 판정. 의존성이 있을 때만 켜진다.
         from .scanners.ecosystem_surface import collect_ecosystem_surface
         try:
@@ -2120,6 +2125,7 @@ def scan_path(
             all_findings.extend(eco.findings)
             skipped.extend(eco.skipped)
             autoexec_entries.extend(e.as_dict() for e in eco.entries)
+            unsupported_platforms = eco.platforms
         # 42차 — 인가 자세(P0-03): 관리자 경로의 서버측 보호 근거 부재 · 공개 번들 비밀/클라이언트 전용 관문.
         from .scanners.authz_posture import collect_authz_posture
         try:
@@ -2188,6 +2194,8 @@ def scan_path(
         vendor_bundles=vendor_bundles,
         posture_notes=_posture_notes(posture, skipped),
         autoexec_surface=autoexec_entries,
+        runtime_pins=runtime_pins,
+        unsupported_platforms=unsupported_platforms,
         # 발견이 있는 파일 중 복제본만 기록한다(무관한 중복 파일은 소음).
         duplicate_files=[
             {"hash": h[:12], "paths": sorted(paths)}
@@ -2327,15 +2335,14 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
             line = raw.strip()
             if not line or line.startswith("#") or line.startswith("-"):
                 continue
-            m = re.match(r"([A-Za-z0-9_.-]+)\s*(==|>=|<=|~=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
+            m = re.match(r"([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*(===|==|>=|<=|~=|!=|>|<)?\s*([A-Za-z0-9_.!*+-]+)?", line)
             if m:
                 version, op = m.group(3), m.group(2)
                 packages.append({
                     "name": m.group(1),
                     "version": version,
-                    # ``===`` 는 정규식상 ``==`` + 남은 ``=`` 로 잡히지 않으므로 다루지 않는다.
                     # 와일드카드(``2.*``)는 고정이 아니다.
-                    "version_exact": bool(version) and op == "==" and "*" not in version,
+                    "version_exact": bool(version) and op in ("==", "===") and "*" not in version,
                 })
     elif eco == "npm":
         try:
@@ -2346,14 +2353,22 @@ def parse_manifest_packages(manifest_text: str, ecosystem: str) -> list[dict]:
         for key in ("dependencies", "devDependencies", "optionalDependencies"):
             deps.update(data.get(key, {}) or {})
         for name, spec in deps.items():
-            raw_spec = str(spec) if spec else ""
+            raw_spec = str(spec).strip() if spec else ""
+            # 별칭은 실제로 설치되는 패키지로 본다 — `"x": "npm:axios@1.14.1"` 을 x 로 읽으면 악성 대조를 비껴간다.
+            alias = re.fullmatch(r"npm:((?:@[^/@\s]+/)?[^/@\s]+)(?:@(.+))?", raw_spec)
+            if alias:
+                name, raw_spec = alias.group(1), alias.group(2) or ""
+            raw_spec = re.sub(r"^(?:=\s*|v(?=\d))", "", raw_spec)   # `=1.2.3`·`v1.2.3` 도 고정 표기다
             version = raw_spec.lstrip("^~") if raw_spec else None
-            # npm 은 접두사가 없어야 고정이다. ``4.17.0`` 은 고정, ``^4.17.0``·``>=4``·
-            # ``*``·``latest``·git URL 은 아니다.
+            # npm 은 접두사가 없고 세 마디가 모두 있어야 고정이다. ``4.17.0`` 은 고정, ``4.17``(>=4.17.0 <4.18.0)·
+            # ``^4.17.0``·``>=4``·``*``·``latest``·git URL 은 아니다.
             exact = bool(version) and raw_spec == version and re.fullmatch(
-                r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
+                r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?", version,   # 4.17.0-beta.1 도 고정이다
             ) is not None
-            packages.append({"name": name, "version": version, "version_exact": exact})
+            packages.append({
+                "name": name, "version": version, "version_exact": exact,
+                **({"spec": raw_spec} if raw_spec[:1] in ("^", "~") else {}),
+            })
     return packages
 
 

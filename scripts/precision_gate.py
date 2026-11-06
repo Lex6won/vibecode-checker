@@ -4,12 +4,12 @@
 사람이 붙인 라벨(저장소 밖 JSON)을 읽어, 릴리스 전후 스냅샷을 비교하고 라벨과 어긋나면 실패한다.
 
     # 1) 스냅샷 (소스 룰만, 의존성 검사 없음)
-    python scripts/precision_gate.py snapshot --out before.json "C:/…/STARS" "C:/…/safe_check"
+    python scripts/precision_gate.py snapshot --out before.json "C:/…/실측 사례" "C:/…/실측 사례"
     # 2) 수정 뒤 다시 스냅샷하고 비교 + 라벨 대조
     python scripts/precision_gate.py compare before.json after.json --labels "C:/…/labels.json"
 
 라벨 파일 형식(목록):
-    {"tree": "STARS(손창미)_점검_20261013", "file": "stars_db.py", "line": 242,
+    {"tree": "sample-tree_점검_20261013", "file": "sample_db.py", "line": 242,
      "rule": "GOV-SQL-INJECTION-001", "verdict": "fp", "note": "바인딩만 쓰는 SQL"}
   verdict: tp = 반드시 발견돼야 한다(사라지면 미탐 후퇴) · fp = 발견되면 안 된다(오탐 재발)
            · fp-block = 발견은 남아도 되나 차단(block)이면 안 된다(정화·숫자 값 등)

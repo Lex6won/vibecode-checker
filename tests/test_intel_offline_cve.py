@@ -272,7 +272,7 @@ def test_offline_stale_vulns_clean_is_checked_stale(offline_env: Path) -> None:
 def test_offline_malicious_still_wins_over_vulnerable(offline_env: Path) -> None:
     """악성 > 취약 — 사다리 최상단은 바뀌지 않는다."""
     _write_cache(offline_env, "osv-malicious", [
-        {"id": "MAL-2026-1", "affected": [{"package": "flask", "ecosystem": "PyPI"}]},
+        {"id": "MAL-2026-1", "affected": [{"package": "flask", "ecosystem": "PyPI", "whole": True}]},
     ], ecosystems=["PyPI"])
     _write_cache(offline_env, "osv-vulns", [_vuln()], ecosystems=["PyPI"])
     r = asyncio.run(check_package_impl(name="flask", ecosystem="pypi", version="2.0.0"))

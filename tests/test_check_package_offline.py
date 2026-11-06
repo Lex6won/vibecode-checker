@@ -78,7 +78,7 @@ def test_offline_osv_cache_hit_flags_malicious(offline_with_cache: Path) -> None
                 "summary": "Test malicious package for unit test",
                 "modified": "2026-05-01T00:00:00Z",
                 "affected": [
-                    {"package": "evilpkg", "ecosystem": "PyPI"},
+                    {"package": "evilpkg", "ecosystem": "PyPI", "whole": True},
                 ],
             }
         ],
@@ -367,7 +367,7 @@ def test_tampered_cache_is_rejected_and_not_used(offline_with_cache: Path) -> No
     """sha256 불일치(변조·손상) 캐시는 무시되고 '판정 불가'로 강등돼야 한다."""
     _write_cache(
         offline_with_cache, "osv-malicious",
-        [{"id": "MAL-1", "affected": [{"package": "evilpkg", "ecosystem": "PyPI"}]}],
+        [{"id": "MAL-1", "affected": [{"package": "evilpkg", "ecosystem": "PyPI", "whole": True}]}],
         sha256="TAMPERED_HASH_0000",
     )
     result = asyncio.run(check_package_impl(name="evilpkg", ecosystem="pypi"))
@@ -390,7 +390,7 @@ def test_stale_cache_malicious_verdict_still_valid(offline_with_cache: Path) -> 
     """캐시가 오래됐어도 '악성 발견'(양성)은 유효한 신호다."""
     _write_cache(
         offline_with_cache, "osv-malicious",
-        [{"id": "MAL-2", "affected": [{"package": "evilpkg", "ecosystem": "PyPI"}]}],
+        [{"id": "MAL-2", "affected": [{"package": "evilpkg", "ecosystem": "PyPI", "whole": True}]}],
         fetched_at=_days_ago(90),
     )
     result = asyncio.run(check_package_impl(name="evilpkg", ecosystem="pypi"))

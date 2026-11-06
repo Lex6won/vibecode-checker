@@ -157,7 +157,7 @@ def test_scan_path_skips_minified_and_hashed_files(tmp_path: Path) -> None:
     # 이름 신호(`.min.`)는 버전을 못 읽어도 컴포넌트 후보로 남는다(판정 불가로 올린다).
     assert {(b["name"], b["detected_by"]) for b in report.vendor_bundles} == {("widget", "name")}
     # 내용만 미니파이드이고 라이브러리 근거(배너·버전)가 없으면 "외부 라이브러리"라 부르지
-    # 않는다 — 프로젝트가 생성한 데이터·번들로 적는다(실측: 약관검색기 data/*.js 535개).
+    # 않는다 — 프로젝트가 생성한 데이터·번들로 적는다(실측: 약관 검색 프로젝트 data/*.js 535개).
     generated = {s.path.replace("\\", "/") for s in report.skipped_files
                  if s.reason == GENERATED_BUNDLE_SKIP_REASON}
     assert generated == {"src/inline.js"}
