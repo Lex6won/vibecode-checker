@@ -294,14 +294,18 @@ _FORBIDDEN_HASHES = frozenset({
     "2b659dd5b950aab8bdb90f63",
     "31e958cf38ef8c9371fe04f7",
     "3819240b91adcb20c5083a69",
+    "38d9cb2c5d90f05e3ef22fb9",
     "3b4327a35a2c2ad75a878ce2",
     "3b497de8acb74758d3803593",
     "48c0c8ab43ca8a250deb7402",
+    "50c2f89c986ab5ffc5d6fbc5",
+    "63da71b22b4997d84e800b49",
     "72e92339e83567b3974d0822",
     "7b38c40add72ace2fd97fae2",
     "91935143e0dca0f37b83e718",
     "91d78401e130891046935d26",
     "93039b7e3935f3eef04025e2",
+    "95fa1c6cd78aa15f0fda15e7",
     "96a0cad9c0ca5982d14e683d",
     "a48ab7c76c1dc89b6255a451",
     "c9230fb81455c118dbb9015b",
@@ -318,14 +322,35 @@ def _forbidden(term: str) -> bool:
     return hashlib.sha256((_SALT + term).encode("utf-8")).hexdigest()[:24] in _FORBIDDEN_HASHES
 
 
-def _hits_forbidden(text: str) -> bool:
-    if any(_forbidden(token) for token in re.findall(r"[A-Za-z0-9_]+", text)):
-        return True
+def _candidate_terms(text: str) -> set[str]:
+    """금지 목록과 대조할 후보: 낱말(대소문자 무시), 한글·영문이 붙은 낱말, 호스트와 그 상위 주소, 한글 조각."""
+    terms: set[str] = set()
+    for token in re.findall(r"[A-Za-z0-9_]+", text):
+        terms.update((token, token.lower()))
+    terms.update(re.findall(r"[가-힣]+[A-Za-z0-9_]+", text))
+    for host in re.findall(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+){2,}", text):
+        labels = host.lower().split(".")
+        terms.update(".".join(labels[i:]) for i in range(len(labels) - 2))
     for run in re.findall(r"[가-힣]+", text):
         for size in _HANGUL_LENGTHS:
-            if any(_forbidden(run[i:i + size]) for i in range(len(run) - size + 1)):
-                return True
-    return False
+            terms.update(run[i:i + size] for i in range(len(run) - size + 1))
+    return terms
+
+
+# 개발 PC 의 실제 계정 폴더 — 낱말 자체는 흔해서 경로 형태일 때만 본다.
+_REAL_HOME_PATH = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+first\b", re.IGNORECASE)
+
+
+def _hits_forbidden(text: str) -> bool:
+    return any(_forbidden(term) for term in _candidate_terms(text)) or bool(_REAL_HOME_PATH.search(text))
+
+
+def test_candidate_terms_cover_case_mixed_words_and_parent_hosts() -> None:
+    terms = _candidate_terms("Abc 가나ABC host.sub.example.go.kr")
+    assert {"abc", "가나ABC", "host.sub.example.go.kr", "sub.example.go.kr", "example.go.kr"} <= terms
+    assert "go.kr" not in terms
+    assert _hits_forbidden("\\".join(("C:", "Users", "first", "x")))
+    assert not _hits_forbidden("\\".join(("C:", "Users", "User", "x")))
 
 
 def test_tracked_files_have_no_real_names_or_scan_targets(tracked_files: list[str]) -> None:
