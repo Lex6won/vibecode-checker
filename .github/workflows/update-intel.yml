@@ -261,6 +261,8 @@ jobs:
           res = json.loads(Path("verify-result.json").read_text(encoding="utf-8"))
           if not res.get("ok"):
               print("::error::번들 반입 재검증 실패:", res.get("error")); sys.exit(1)
+          if res.get("rejected_shrink"):
+              print("::error::직전 공식 번들보다 크게 줄어든 소스가 있어 게시하지 않습니다:", res.get("warning")); sys.exit(1)
           expected = sorted(p.stem for p in Path(__import__("os").environ["GVSKB_CACHE_DIR"]).glob("*.json") if not p.name.startswith("."))
           got = sorted(res.get("sources") or [])
           if expected != got:

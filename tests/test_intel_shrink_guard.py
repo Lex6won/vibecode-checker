@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from gvskb.intel import autopull, cache as cache_mod, signing
-from gvskb.intel.bundle import MANIFEST_NAME, _CACHES_PREFIX, export_bundle, import_bundle
+from gvskb.intel.bundle import MANIFEST_NAME, _CACHES_PREFIX, export_bundle, import_bundle, shrink_rejected
 from gvskb.intel.cache import (
     IntelCache,
     cleanup_stale_temp_files,
@@ -72,8 +72,8 @@ def test_empty_bundle_cannot_wipe_malicious_list(tmp_path: Path) -> None:
     _seed(cache_dir, 100)
     bundle = _bundle(tmp_path / "empty.zip", {"osv-malicious.json": _envelope("osv-malicious", [], ecosystems=["PyPI", "npm"])})
     res = import_bundle(bundle, cache_dir=cache_dir)
-    assert res["ok"] is False and res.get("shrink") is True
-    assert "비어" in res["error"]
+    assert res["ok"] is True and shrink_rejected(res) == ["osv-malicious"] and res["sources"] == []
+    assert "비어" in res["warning"]
     entry = IntelCache(cache_dir).load("osv-malicious")
     assert entry is not None and entry.item_count == 100  # 기존 판정 근거가 그대로 남는다
 
@@ -82,7 +82,7 @@ def test_large_drop_rejected_small_drop_accepted(tmp_path: Path) -> None:
     cache_dir = tmp_path / "cache"
     _seed(cache_dir, 100)
     drop = _bundle(tmp_path / "drop.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(79), ecosystems=["PyPI", "npm"])})
-    assert import_bundle(drop, cache_dir=cache_dir)["ok"] is False
+    assert shrink_rejected(import_bundle(drop, cache_dir=cache_dir)) == ["osv-malicious"]
     ok = _bundle(tmp_path / "ok.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(90), ecosystems=["PyPI", "npm"])})
     res = import_bundle(ok, cache_dir=cache_dir)
     assert res["ok"] is True and res["sources"] == ["osv-malicious"]
@@ -93,10 +93,10 @@ def test_shrink_override_by_flag_and_env(tmp_path: Path, monkeypatch: pytest.Mon
     cache_dir = tmp_path / "cache"
     _seed(cache_dir, 100)
     small = _bundle(tmp_path / "s.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(10), ecosystems=["PyPI", "npm"])})
-    assert import_bundle(small, cache_dir=cache_dir, allow_shrink=True)["ok"] is True
+    assert import_bundle(small, cache_dir=cache_dir, allow_shrink=True)["sources"] == ["osv-malicious"]
     _seed(cache_dir, 100)
     monkeypatch.setenv("GVSKB_INTEL_ALLOW_SHRINK", "1")
-    assert import_bundle(small, cache_dir=cache_dir)["ok"] is True
+    assert import_bundle(small, cache_dir=cache_dir)["sources"] == ["osv-malicious"]
 
 
 def test_lost_ecosystem_rejected(tmp_path: Path) -> None:
@@ -105,7 +105,7 @@ def test_lost_ecosystem_rejected(tmp_path: Path) -> None:
     _seed(cache_dir, 100, ecosystems=["PyPI", "npm"])
     pypi_only = _bundle(tmp_path / "p.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(150), ecosystems=["PyPI"])})
     res = import_bundle(pypi_only, cache_dir=cache_dir)
-    assert res["ok"] is False and "npm" in res["error"]
+    assert shrink_rejected(res) == ["osv-malicious"] and "npm" in res["warning"]
 
 
 def test_gaining_ecosystem_is_fine(tmp_path: Path) -> None:
@@ -124,17 +124,56 @@ def test_unguarded_rolling_source_may_shrink(tmp_path: Path) -> None:
     assert import_bundle(b, cache_dir=cache_dir)["ok"] is True
 
 
-def test_one_bad_file_rejects_whole_bundle(tmp_path: Path) -> None:
+def test_shrunk_source_is_skipped_but_others_still_update(tmp_path: Path) -> None:
+    """축소 거부는 그 소스만 — 예전처럼 번들 전체를 막으면 KEV·NVD 갱신까지 멈췄다(2차 적대적 검증)."""
     cache_dir = tmp_path / "cache"
     c = _seed(cache_dir, 100)
     c.save("cisa-kev", "u", [{"cveID": f"CVE-{i}"} for i in range(50)])
-    before_kev = IntelCache(cache_dir).load("cisa-kev").sha256
     b = _bundle(tmp_path / "mixed.zip", {
         "cisa-kev.json": _envelope("cisa-kev", [{"cveID": f"CVE-{i}"} for i in range(60)]),
         "osv-malicious.json": _envelope("osv-malicious", [], ecosystems=["PyPI", "npm"]),
     })
+    res = import_bundle(b, cache_dir=cache_dir)
+    assert res["ok"] is True and res["sources"] == ["cisa-kev"] and shrink_rejected(res) == ["osv-malicious"]
+    assert IntelCache(cache_dir).load("cisa-kev").item_count == 60
+    assert IntelCache(cache_dir).load("osv-malicious").item_count == 100
+
+
+def test_integrity_failure_still_rejects_whole_bundle(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    c = _seed(cache_dir, 100)
+    c.save("cisa-kev", "u", [{"cveID": f"CVE-{i}"} for i in range(50)])
+    before_kev = IntelCache(cache_dir).load("cisa-kev").sha256
+    bad = json.loads(_envelope("osv-malicious", _mal_items(120)))
+    bad["item_count"] = 7
+    b = _bundle(tmp_path / "bad.zip", {
+        "cisa-kev.json": _envelope("cisa-kev", [{"cveID": f"CVE-{i}"} for i in range(60)]),
+        "osv-malicious.json": json.dumps(bad).encode(),
+    })
     assert import_bundle(b, cache_dir=cache_dir)["ok"] is False
-    assert IntelCache(cache_dir).load("cisa-kev").sha256 == before_kev  # 부분 반입 없음
+    assert IntelCache(cache_dir).load("cisa-kev").sha256 == before_kev  # 무결성 실패는 부분 반입 없음
+
+
+def test_stale_baseline_does_not_block_shrink_forever(tmp_path: Path) -> None:
+    """의도한 축소 표시를 놓친 PC — 기준선이 낡으면(기본 2일) 줄어든 데이터를 받는다(정체 상한)."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds")
+    (cache_dir / "osv-malicious.json").write_bytes(_envelope("osv-malicious", _mal_items(100), fetched_at=old,
+                                                             ecosystems=["PyPI", "npm"]))
+    b = _bundle(tmp_path / "s.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(10), ecosystems=["PyPI", "npm"])})
+    res = import_bundle(b, cache_dir=cache_dir)
+    assert res["sources"] == ["osv-malicious"] and not shrink_rejected(res)
+
+
+def test_wider_coverage_wins_even_if_slightly_older(tmp_path: Path) -> None:
+    """직접 받은 PyPI 전용 캐시가 몇 시간 더 최신이어도, npm 까지 담은 번들은 받는다(npm 판정 공백 방지)."""
+    cache_dir = tmp_path / "cache"
+    _seed(cache_dir, 100, ecosystems=["PyPI"])
+    earlier = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(timespec="seconds")
+    b = _bundle(tmp_path / "f.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(500), fetched_at=earlier,
+                                                                       ecosystems=["PyPI", "npm"])})
+    assert import_bundle(b, cache_dir=cache_dir)["sources"] == ["osv-malicious"]
 
 
 # ── 기준선 신뢰(적대적 검증 HIGH-1) ──
@@ -184,7 +223,7 @@ def test_signed_baseline_still_guards_against_signed_truncation(tmp_path: Path, 
     cache_dir = tmp_path / "cache"
     assert import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)["ok"]
     res = import_bundle(_signed_bundle(tmp_path, signer, 10, "cut.zip"), cache_dir=cache_dir)
-    assert res["ok"] is False and res["shrink"] is True
+    assert shrink_rejected(res) == ["osv-malicious"]
 
 
 def test_signed_rebaseline_marker_allows_intended_shrink(tmp_path: Path, signer: bytes) -> None:
@@ -202,14 +241,45 @@ def test_unsigned_rebaseline_marker_is_ignored(tmp_path: Path) -> None:
     b = tmp_path / "u.zip"
     assert export_bundle(b, cache_dir=src, allow_shrink=True)["ok"]
     res = import_bundle(b, cache_dir=cache_dir)
-    assert res["ok"] is False and res["shrink"] is True
+    assert shrink_rejected(res) == ["osv-malicious"]
 
 
 def test_unsigned_bundle_cannot_shrink_signed_baseline(tmp_path: Path, signer: bytes) -> None:
     cache_dir = tmp_path / "cache"
     assert import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)["ok"]
     empty = _bundle(tmp_path / "e.zip", {"osv-malicious.json": _envelope("osv-malicious", [], ecosystems=["PyPI", "npm"])})
-    assert import_bundle(empty, cache_dir=cache_dir)["ok"] is False
+    assert shrink_rejected(import_bundle(empty, cache_dir=cache_dir)) == ["osv-malicious"]
+
+
+def test_forged_future_stamp_does_not_lock_out(tmp_path: Path, signer: bytes) -> None:
+    """스탬프에 서명 표시·거대 건수·미래 시각을 위조해도 미래 시각 기준선은 믿지 않는다."""
+    cache_dir = tmp_path / "cache"
+    assert import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)["ok"]
+    stamp_path = cache_dir / "osv-malicious.json.verified"
+    stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+    stamp["item_count"] = 10 ** 9
+    stamp["fetched_at"] = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(timespec="seconds")
+    stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
+    res = import_bundle(_signed_bundle(tmp_path, signer, 100, "next.zip"), cache_dir=cache_dir)
+    assert res["sources"] == ["osv-malicious"]
+
+
+def test_old_signed_bundle_cannot_roll_back_newer_cache(tmp_path: Path, signer: bytes,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """공개된 옛 서명 번들을 공유 폴더에 놓아도 더 최신 캐시(직접 수집·스탬프 유실)를 되돌리지 못한다."""
+    monkeypatch.setenv(signing.ENV_REQUIRE_SIGNATURE, "1")
+    old_src = tmp_path / "old-src"
+    old_src.mkdir()
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds")
+    (old_src / "osv-malicious.json").write_bytes(_envelope("osv-malicious", _mal_items(80), fetched_at=old_ts,
+                                                           ecosystems=["PyPI", "npm"]))
+    old_bundle = tmp_path / "old.zip"
+    assert export_bundle(old_bundle, cache_dir=old_src, sign_seed=signer, key_id="test-key")["ok"]
+    cache_dir = tmp_path / "cache"
+    _seed(cache_dir, 100)  # 직접 수집(서명 표시 없음)
+    res = import_bundle(old_bundle, cache_dir=cache_dir)
+    assert res["skipped_older"] == ["osv-malicious"]
+    assert IntelCache(cache_dir).load("osv-malicious").item_count == 100
 
 
 # ── 생태계별 건수 ──
@@ -222,7 +292,7 @@ def test_single_ecosystem_truncation_rejected(tmp_path: Path) -> None:
     assert import_bundle(unsigned_baseline, cache_dir=cache_dir)["ok"]
     cut = _bundle(tmp_path / "cut.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(9900), ecosystems=["PyPI", "npm"])})
     res = import_bundle(cut, cache_dir=cache_dir)
-    assert res["ok"] is False and "PyPI" in res["error"]
+    assert shrink_rejected(res) == ["osv-malicious"] and "PyPI" in res["warning"]
 
 
 def test_undeclared_side_ecosystem_drop_is_not_blocking(tmp_path: Path) -> None:
@@ -262,6 +332,7 @@ def test_osv_partial_download_fails_instead_of_claiming_coverage(tmp_path: Path,
             return Resp(pypi_zip)
 
     monkeypatch.setattr(osv, "_selected_ecosystems", lambda: ("PyPI", "npm"))
+    monkeypatch.setattr(osv, "_RETRY_DELAYS", (0.0, 0.0))
     cache = IntelCache(tmp_path / "cache")
     cache.save("osv-malicious", "u", _mal_items(100), ecosystems=["PyPI", "npm"])
     res = update_source("osv-malicious", cache=cache, client=Client())

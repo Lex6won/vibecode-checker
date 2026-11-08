@@ -171,13 +171,35 @@ def test_osv_adapter_dedupes_when_same_id_in_multiple_zips(
 def test_osv_adapter_network_failure_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """예전에는 빈 목록을 '성공'으로 돌려 빈 악성 캐시가 최신으로 저장됐다(0.6.4) — 실패로 올려 직전 캐시를 지킨다."""
     monkeypatch.delenv("GVSKB_OSV_INCLUDE_NPM", raising=False)
+    monkeypatch.setattr(osv, "_RETRY_DELAYS", (0.0, 0.0))
+    calls = {"n": 0}
 
     class FailingClient:
         def get(self, *a, **kw):
+            calls["n"] += 1
             raise RuntimeError("network down")
 
     with pytest.raises(RuntimeError, match="PyPI"):
         osv.fetch_osv_malicious(FailingClient())
+    assert calls["n"] == 3  # 처음 + 재시도 2회
+
+
+def test_osv_adapter_recovers_from_transient_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GVSKB_OSV_INCLUDE_NPM", raising=False)
+    monkeypatch.setattr(osv, "_RETRY_DELAYS", (0.0, 0.0))
+    good = FakeClient(get_content_by_url={f"{osv.GCS_BASE_URL}/PyPI/all.zip": _make_osv_zip([
+        {"id": "MAL-2026-0002", "affected": [{"package": {"name": "evil", "ecosystem": "PyPI"}}]}])})
+    calls = {"n": 0}
+
+    class FlakyClient:
+        def get(self, url, *a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("reset by peer")
+            return good.get(url)
+
+    _, items = osv.fetch_osv_malicious(FlakyClient())
+    assert items and calls["n"] == 2
 
 
 def test_osv_adapter_corrupt_zip_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -247,6 +269,7 @@ def test_update_sources_iterates_known_adapters(tmp_path: Path, monkeypatch) -> 
         def close(self): pass
 
     monkeypatch.setattr(update_mod, "_client_factory", lambda timeout=30.0: FakeClientFactory())
+    monkeypatch.setattr(osv, "_RETRY_DELAYS", (0.0, 0.0))  # 가짜 응답엔 OSV zip 이 없다 — 재시도 대기 생략
     cache = IntelCache(tmp_path)
     results = update_sources(cache=cache)
     ids = {r.source_id for r in results}

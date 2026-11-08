@@ -81,8 +81,13 @@ MANIFEST_ALLOW_SHRINK = "allow_shrink"
 # 축소·'더 오래됨' 검사의 기준선이 **서명 없는** 반입이나 직접 수집에서 왔다면, 서명된 번들은 그 기준선에
 # 묶이지 않고 덮어쓴다. 그러지 않으면 서명 없는 오염 번들 한 번(생태계를 부풀리거나 항목을 늘리거나 미래 시각)이
 # 이후 모든 공식 번들을 거부하게 만들어 오염이 고정된다. 서명 없는 번들은 어떤 기준선에도 묶인다.
-#: 기존 캐시의 수집 시각이 이보다 미래면(시계 오류) 믿지 않는다 — 더 오래된 번들 건너뛰기에 쓰지 않는다.
-_FUTURE_SKEW_SECONDS = 24 * 3600
+#: 기존 캐시의 수집 시각이 이보다 미래면(시계 오류·위조) 믿지 않는다 — 기준선으로 쓰지 않는다.
+#: 공식 번들 시각은 GitHub 실행기 시계라 정확하다. 길게 두면 미래 시각을 적은 번들이 그만큼 공식 번들을 가린다.
+_FUTURE_SKEW_SECONDS = 3600
+
+# 정체 상한(2026-11-08 2차 적대적 검증): 축소 거부는 **그 소스만** 건너뛰고, 기준선이 신선할 때(intel_max_age_days
+# 이내)만 적용한다. 그래야 '의도한 축소' 표시를 놓친 PC·스탬프를 위조당한 PC 도 최대 그 기간 뒤에는 새 서명
+# 데이터를 받는다 — 그 사이 캐시는 '낡음'으로 정직하게 표시된다. 번들 전체를 영구히 거부하면 KEV·NVD 까지 멈췄다.
 
 
 def _allow_shrink_env() -> bool:
@@ -176,16 +181,42 @@ def _shrink_problem(new: dict, old: dict | None) -> str:
     return ""
 
 
-def _is_older_than_cache(new: dict, old: dict | None) -> bool:
-    """새 파일이 기존 캐시보다 오래된 수집본인가 — 옛 번들이 최신 캐시를 덮어 새 악성 항목을 잃지 않게."""
+def _trusted_baseline_time(old: dict | None) -> datetime | None:
+    """기준선 수집 시각 — 읽을 수 없거나 허용 오차 넘게 미래면 None(믿지 않음)."""
     if old is None:
+        return None
+    old_ts = _parse_time(old.get("fetched_at"))
+    if old_ts is None or (old_ts - datetime.now(timezone.utc)).total_seconds() > _FUTURE_SKEW_SECONDS:
+        return None
+    return old_ts
+
+
+def _baseline_is_fresh(old: dict | None) -> bool:
+    """기준선이 신선한가(수집 후 intel_max_age_days 이내) — 낡은 기준선으로는 새 데이터를 막지 않는다."""
+    from .cache import intel_max_age_days
+
+    old_ts = _trusted_baseline_time(old)
+    if old_ts is None:
         return False
-    new_ts, old_ts = _parse_time(new["fetched_at"]), _parse_time(old.get("fetched_at"))
-    if new_ts is None or old_ts is None:
+    return (datetime.now(timezone.utc) - old_ts).days <= intel_max_age_days()
+
+
+def _covers_more(new: dict, old: dict | None) -> bool:
+    """새 파일이 기존보다 대조 생태계를 더 담는가 — 그렇다면 시각이 조금 이르더라도 받는다(예: 직접 받은
+    PyPI 전용 캐시 위에 PyPI+npm 공식 번들). 대조 범위가 넓은 쪽이 정탐에 유리하다."""
+    if old is None or new.get("ecosystems") is None or old.get("ecosystems") is None:
         return False
-    if (old_ts - datetime.now(timezone.utc)).total_seconds() > _FUTURE_SKEW_SECONDS:
-        return False  # 기존 시각이 미래 — 시계 오류로 보고 믿지 않는다
-    return new_ts < old_ts
+    return set(new["ecosystems"]) > set(old["ecosystems"])
+
+
+def _is_older_than_cache(new: dict, old: dict | None) -> bool:
+    """새 파일이 기존 캐시보다 오래된 수집본인가 — 옛 번들(서명됐더라도)이 최신 캐시를 덮어 새 악성 항목을
+    잃지 않게. 서명 여부와 무관하게 적용한다(공개된 옛 서명 번들로 되돌리기 차단)."""
+    old_ts = _trusted_baseline_time(old)
+    new_ts = _parse_time(new["fetched_at"])
+    if old_ts is None or new_ts is None:
+        return False
+    return new_ts < old_ts and not _covers_more(new, old)
 
 
 def _is_safe_member_name(fname: str) -> bool:
@@ -405,23 +436,20 @@ def import_bundle(
         shrink_ok = allow_shrink or _allow_shrink_env() or rebaseline
         to_write: list[tuple[str, str, dict]] = []
         skipped_older: list[str] = []
+        rejected: list[dict] = []
         for fname, digest, doc in verified:
             old = existing.guard_info(doc["source_id"])
-            # 서명 번들은 서명된 기준선에만 묶인다(위 '기준선 신뢰 규칙').
-            baseline_binds = old is not None and (not signed or bool(old.get("signed_key")))
-            if not baseline_binds:
-                to_write.append((fname, digest, doc))
-                continue
-            if not shrink_ok:
-                problem = _shrink_problem(doc, old)
-                if problem:
-                    return {"ok": False, "sources": [], "signed": signed, "shrink": True,
-                            "error": (f"{problem} — 수집 사고나 위조로 보고 기존 캐시를 지키기 위해 반입을 전체 중단합니다. "
-                                      f"의도한 축소라면 `gvskb intel-bundle import --allow-shrink` 또는 "
-                                      f"{ENV_ALLOW_SHRINK}=1 로 다시 실행하세요.")}
             if _is_older_than_cache(doc, old):
                 skipped_older.append(doc["source_id"])
                 continue
+            # 서명 번들은 서명된 기준선에만 묶인다(위 '기준선 신뢰 규칙'). 낡은 기준선은 막지 않는다('정체 상한').
+            baseline_binds = (old is not None and (not signed or bool(old.get("signed_key")))
+                              and _baseline_is_fresh(old))
+            if baseline_binds and not shrink_ok:
+                problem = _shrink_problem(doc, old)
+                if problem:
+                    rejected.append({"source": doc["source_id"], "reason": problem})
+                    continue
             to_write.append((fname, digest, doc))
 
         # 3단계: 전부 통과한 경우에만 기록. 임시파일을 **모두** 먼저 쓴 뒤 연달아 교체한다 —
@@ -489,7 +517,19 @@ def import_bundle(
         "key_id": key_id,
         "signature": sig_note,
         "allow_shrink": rebaseline,
+        # 축소로 받지 않은 소스 — 기존 캐시를 지켰다. 나머지 소스는 반입됐다.
+        "rejected_shrink": rejected,
+        "warning": (
+            "; ".join(r["reason"] for r in rejected)
+            + f" — 수집 사고나 위조로 보고 이 소스는 기존 캐시를 지켰습니다(나머지는 반입). 기존 캐시가 "
+              f"낡으면(기본 2일) 다음 서명 번들을 받습니다. 의도한 축소라면 `--allow-shrink` 또는 {ENV_ALLOW_SHRINK}=1."
+        ) if rejected else "",
     }
+
+
+def shrink_rejected(result: dict) -> list[str]:
+    """반입 결과에서 축소로 거부된 소스 이름들."""
+    return [r.get("source", "") for r in result.get("rejected_shrink") or []]
 
 
 def verify_bundle(zip_path: str | Path) -> dict:

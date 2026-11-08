@@ -75,6 +75,8 @@ class AutoPullResult:
     source: str = ""             # 실제로 사용한 소스(경로 또는 URL)
     sources_updated: list[str] | None = None
     error: str = ""
+    #: 반입은 됐지만 일부 소스를 축소로 거부한 경우의 안내(그 소스는 기존 캐시 유지).
+    warning: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +86,7 @@ class AutoPullResult:
             "source": self.source,
             "sources_updated": self.sources_updated or [],
             "error": self.error,
+            "warning": self.warning,
         }
 
 
@@ -210,7 +213,7 @@ def _pull_from_dir(d: Path, cache_dir: Path | None) -> AutoPullResult:
     res = import_bundle(bundle, cache_dir=cache_dir)
     if res.get("ok"):
         return AutoPullResult(attempted=True, ok=True, source=str(bundle),
-                              sources_updated=res.get("sources") or [])
+                              sources_updated=res.get("sources") or [], warning=str(res.get("warning") or ""))
     return AutoPullResult(attempted=True, ok=False, source=str(bundle),
                           error=str(res.get("error", "반입 실패")))
 
@@ -256,7 +259,7 @@ def _pull_from_url(url: str, cache_dir: Path | None, timeout: float) -> AutoPull
 
     if res.get("ok"):
         return AutoPullResult(attempted=True, ok=True, source=url,
-                              sources_updated=res.get("sources") or [])
+                              sources_updated=res.get("sources") or [], warning=str(res.get("warning") or ""))
     return AutoPullResult(attempted=True, ok=False, source=url,
                           error=str(res.get("error", "반입 실패")))
 
@@ -305,6 +308,8 @@ def maybe_auto_update(
         if result.ok:
             _write_state(cdir, last_result="ok", last_source=result.source)
             if verbose:
+                if result.warning:
+                    print(f"[gvskb] ⚠ {result.warning}", file=sys.stderr)
                 print(f"[gvskb] 인텔 캐시 자동 갱신 완료 ← {result.source}", file=sys.stderr)
             return result
     elif _is_offline():
@@ -319,6 +324,8 @@ def maybe_auto_update(
     result = _pull_from_url(bundle_url(), cache_dir, timeout)
     _write_state(cdir, last_result="ok" if result.ok else "fail", last_source=result.source)
     if verbose:
+        if result.warning:
+            print(f"[gvskb] ⚠ {result.warning}", file=sys.stderr)
         if result.ok:
             print(f"[gvskb] 인텔 캐시 자동 갱신 완료 ← {result.source}", file=sys.stderr)
         else:
