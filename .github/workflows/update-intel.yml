@@ -265,7 +265,9 @@ jobs:
           if not res.get("ok"):
               print("::error::번들 반입 재검증 실패:", res.get("error")); sys.exit(1)
           if res.get("rejected_shrink"):
-              print("::error::직전 공식 번들보다 크게 줄어든 소스가 있어 게시하지 않습니다:", res.get("warning")); sys.exit(1)
+              print("::error::직전 공식 번들보다 크게 줄어든 소스가 있어 게시하지 않습니다:", res.get("warning"),
+                    "— 수집 사고가 아니라 의도한 축소(수집 방식 변경·대량 철회)로 확인되면 Actions 에서 update-intel 을 "
+                    "수동 실행(channel=prod, allow_shrink=yes)하세요. 그 전까지 공식 번들은 갱신되지 않습니다."); sys.exit(1)
           expected = sorted(p.stem for p in Path(__import__("os").environ["GVSKB_CACHE_DIR"]).glob("*.json") if not p.name.startswith("."))
           got = sorted(res.get("sources") or [])
           if expected != got:

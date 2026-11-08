@@ -208,13 +208,37 @@ def test_unsigned_poison_cannot_lock_out_signed_bundles(tmp_path: Path, signer: 
     assert IntelCache(cache_dir).load("osv-malicious").item_count == 100
 
 
-def test_far_future_bundle_rejected_outright(tmp_path: Path) -> None:
-    """공식 번들 시각은 정확하다 — 1시간 넘게 미래인 수집본은 위조·시계 오류로 번들 전체를 거부한다."""
+def test_far_future_unsigned_bundle_rejected_outright(tmp_path: Path) -> None:
+    """서명 없는 번들의 1시간 넘게 미래인 수집본은 위조·시계 오류로 번들 전체를 거부한다."""
     future = (datetime.now(timezone.utc) + timedelta(hours=20)).isoformat(timespec="seconds")
     poison = _bundle(tmp_path / "p.zip", {"osv-malicious.json": _envelope(
         "osv-malicious", _mal_items(100), fetched_at=future, ecosystems=["PyPI", "npm"])})
     res = import_bundle(poison, cache_dir=tmp_path / "cache")
     assert res["ok"] is False and "미래" in res["error"]
+
+
+def test_slow_clock_pc_keeps_accepting_signed_bundles(tmp_path: Path, signer: bytes,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """시계가 13시간 느린 PC(NTP 없는 망분리 PC) — 서명 번들은 '미래'로 보여도 받고, 다음 날 번들도 받는다(4차 적대적 검증)."""
+    from gvskb.intel import bundle as bundle_mod
+
+    first = _signed_bundle(tmp_path, signer, 100)          # 실제 지금 수집
+    real_dt = bundle_mod.datetime
+
+    class SlowClock(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt.now(tz) - timedelta(hours=13)
+
+    monkeypatch.setattr(bundle_mod, "datetime", SlowClock)
+    monkeypatch.setattr(cache_mod, "_now_iso", lambda: (real_dt.now(timezone.utc) - timedelta(hours=13)).isoformat(timespec="seconds"))
+    cache_dir = tmp_path / "cache"
+    assert bundle_mod.verify_bundle(first)["ok"] is True
+    res1 = import_bundle(first, cache_dir=cache_dir)
+    assert res1["ok"] is True and res1["sources"] == ["osv-malicious"]
+    time.sleep(1.1)
+    res2 = import_bundle(_signed_bundle(tmp_path, signer, 100, "next.zip"), cache_dir=cache_dir)
+    assert res2["ok"] is True and res2["sources"] == ["osv-malicious"] and res2["skipped_older"] == []
 
 
 def test_near_future_unsigned_poison_cannot_shadow_signed_bundle(tmp_path: Path, signer: bytes) -> None:

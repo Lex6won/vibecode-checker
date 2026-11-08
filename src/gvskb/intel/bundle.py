@@ -194,13 +194,10 @@ def _trusted_baseline_time(old: dict | None) -> datetime | None:
     """
     if old is None:
         return None
-    old_ts = _parse_time(old.get("fetched_at"))
-    if old_ts is None or _is_future(old_ts):
-        return None
-    imported = _parse_time(old.get("imported_at"))
-    if imported is not None and not _is_future(imported):
-        old_ts = min(old_ts, imported)
-    return old_ts
+    candidates = [ts for ts in (_parse_time(old.get("fetched_at")), _parse_time(old.get("imported_at")))
+                  if ts is not None and not _is_future(ts)]
+    # 수집 시각이 미래로 보이면(시계가 느린 PC 에 들어온 서명 번들) 반입 시각만 쓴다 — 기준선을 버리면 되돌리기 방어가 빠진다.
+    return min(candidates) if candidates else None
 
 
 def _strict_shrink() -> bool:
@@ -439,9 +436,11 @@ def import_bundle(
                         "error": f"'{fname}' sha256 불일치 — 이동 중 변조·손상 가능. 반입을 전체 중단합니다."}
             info_doc, problem = _inspect_envelope(fname, data)
             del data
-            if info_doc is not None and _is_future(_parse_time(info_doc["fetched_at"])):
-                # 공식 번들 시각은 GitHub 실행기 시계다 — 1시간 넘게 미래인 수집본은 위조·시계 오류다.
-                info_doc, problem = None, f"'{fname}' 의 수집 시각({info_doc['fetched_at']})이 미래입니다"
+            if info_doc is not None and not signed and _is_future(_parse_time(info_doc["fetched_at"])):
+                # 서명 없는 번들만 — 1시간 넘게 미래인 수집본은 위조·시계 오류로 본다. 서명된 번들은 GitHub 실행기
+                # 시계를 믿는다: 시계가 느린 PC(NTP 없는 망분리 PC)가 정상 공식 번들을 '미래'로 보고 계속 거부하면
+                # 갱신이 멈춘다(4차 적대적 검증).
+                info_doc, problem = None, f"'{fname}' 의 수집 시각({info_doc['fetched_at']})이 미래입니다(서명 없는 번들)"
             if info_doc is None:
                 return {"ok": False, "sources": [], "signed": signed,
                         "error": f"{problem} — 체커가 읽을 수 없는 캐시가 들어 있어 반입을 전체 중단합니다."}
