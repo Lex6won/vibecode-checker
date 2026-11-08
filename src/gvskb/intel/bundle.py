@@ -181,32 +181,57 @@ def _shrink_problem(new: dict, old: dict | None) -> str:
     return ""
 
 
+def _is_future(ts: datetime | None) -> bool:
+    return ts is not None and (ts - datetime.now(timezone.utc)).total_seconds() > _FUTURE_SKEW_SECONDS
+
+
 def _trusted_baseline_time(old: dict | None) -> datetime | None:
-    """기준선 수집 시각 — 읽을 수 없거나 허용 오차 넘게 미래면 None(믿지 않음)."""
+    """기준선 시각 — 수집 시각과 **이 PC 에 들어온 시각** 중 이른 쪽. 읽을 수 없거나 허용 오차 넘게 미래면 None.
+
+    들어온 시각을 함께 보는 이유(3차 적대적 검증 HIGH-1): 서명 없는 번들이 수집 시각을 '조금 미래'로 적으면,
+    그 뒤 들어오는 공식 서명 번들이 '더 오래됨'으로 건너뛰어져 오염이 가려졌다. 들어온 시각은 반입하는 PC 가
+    기록하므로 번들이 꾸밀 수 없다.
+    """
     if old is None:
         return None
     old_ts = _parse_time(old.get("fetched_at"))
-    if old_ts is None or (old_ts - datetime.now(timezone.utc)).total_seconds() > _FUTURE_SKEW_SECONDS:
+    if old_ts is None or _is_future(old_ts):
         return None
+    imported = _parse_time(old.get("imported_at"))
+    if imported is not None and not _is_future(imported):
+        old_ts = min(old_ts, imported)
     return old_ts
 
 
-def _baseline_is_fresh(old: dict | None) -> bool:
-    """기준선이 신선한가(수집 후 intel_max_age_days 이내) — 낡은 기준선으로는 새 데이터를 막지 않는다."""
+def _strict_shrink() -> bool:
+    """배포 파이프라인의 게시 전 재검증용 — 기준선이 낡아도 축소 검사를 한다(GVSKB_INTEL_STRICT_SHRINK=1).
+
+    소비 PC 에서는 정체 상한 때문에 낡은 기준선으로는 막지 않지만, 게시하는 쪽까지 그러면 수집 사고가
+    며칠 이어져 직전 번들이 낡는 순간 잘린 목록이 그대로 게시됐다(3차 적대적 검증 MEDIUM-3).
+    """
+    return os.environ.get("GVSKB_INTEL_STRICT_SHRINK", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _age_is_fresh(ts: datetime | None) -> bool:
     from .cache import intel_max_age_days
 
-    old_ts = _trusted_baseline_time(old)
-    if old_ts is None:
+    if ts is None:
         return False
-    return (datetime.now(timezone.utc) - old_ts).days <= intel_max_age_days()
+    return (datetime.now(timezone.utc) - ts).days <= intel_max_age_days()
+
+
+def _baseline_is_fresh(old: dict | None) -> bool:
+    """기준선이 신선한가(캐시 신선도 기준과 같음) — 낡은 기준선으로는 새 데이터를 막지 않는다(정체 상한)."""
+    return _age_is_fresh(_trusted_baseline_time(old))
 
 
 def _covers_more(new: dict, old: dict | None) -> bool:
     """새 파일이 기존보다 대조 생태계를 더 담는가 — 그렇다면 시각이 조금 이르더라도 받는다(예: 직접 받은
-    PyPI 전용 캐시 위에 PyPI+npm 공식 번들). 대조 범위가 넓은 쪽이 정탐에 유리하다."""
+    PyPI 전용 캐시 위에 PyPI+npm 공식 번들). 대조 범위가 넓은 쪽이 정탐에 유리하다. 단 새 파일 자체가
+    신선할 때만 — 생태계가 많은 옛 번들로 되돌리는 길이 되지 않게(3차 적대적 검증 MEDIUM-2)."""
     if old is None or new.get("ecosystems") is None or old.get("ecosystems") is None:
         return False
-    return set(new["ecosystems"]) > set(old["ecosystems"])
+    return set(new["ecosystems"]) > set(old["ecosystems"]) and _age_is_fresh(_parse_time(new.get("fetched_at")))
 
 
 def _is_older_than_cache(new: dict, old: dict | None) -> bool:
@@ -414,6 +439,9 @@ def import_bundle(
                         "error": f"'{fname}' sha256 불일치 — 이동 중 변조·손상 가능. 반입을 전체 중단합니다."}
             info_doc, problem = _inspect_envelope(fname, data)
             del data
+            if info_doc is not None and _is_future(_parse_time(info_doc["fetched_at"])):
+                # 공식 번들 시각은 GitHub 실행기 시계다 — 1시간 넘게 미래인 수집본은 위조·시계 오류다.
+                info_doc, problem = None, f"'{fname}' 의 수집 시각({info_doc['fetched_at']})이 미래입니다"
             if info_doc is None:
                 return {"ok": False, "sources": [], "signed": signed,
                         "error": f"{problem} — 체커가 읽을 수 없는 캐시가 들어 있어 반입을 전체 중단합니다."}
@@ -437,19 +465,23 @@ def import_bundle(
         to_write: list[tuple[str, str, dict]] = []
         skipped_older: list[str] = []
         rejected: list[dict] = []
+        accepted_stale: list[str] = []
+        strict = _strict_shrink()
         for fname, digest, doc in verified:
             old = existing.guard_info(doc["source_id"])
             if _is_older_than_cache(doc, old):
                 skipped_older.append(doc["source_id"])
                 continue
-            # 서명 번들은 서명된 기준선에만 묶인다(위 '기준선 신뢰 규칙'). 낡은 기준선은 막지 않는다('정체 상한').
-            baseline_binds = (old is not None and (not signed or bool(old.get("signed_key")))
-                              and _baseline_is_fresh(old))
-            if baseline_binds and not shrink_ok:
+            # 서명 번들은 서명된 기준선에만 묶인다(위 '기준선 신뢰 규칙'). 낡은 기준선은 막지 않는다('정체 상한') —
+            # 단 게시 전 재검증(엄격 모드)은 낡아도 막는다.
+            trusted = old is not None and (not signed or bool(old.get("signed_key")))
+            if trusted and not shrink_ok:
                 problem = _shrink_problem(doc, old)
-                if problem:
+                if problem and (strict or _baseline_is_fresh(old)):
                     rejected.append({"source": doc["source_id"], "reason": problem})
                     continue
+                if problem:
+                    accepted_stale.append(f"{problem}(기존 캐시가 낡아 받아들임)")
             to_write.append((fname, digest, doc))
 
         # 3단계: 전부 통과한 경우에만 기록. 임시파일을 **모두** 먼저 쓴 뒤 연달아 교체한다 —
@@ -519,11 +551,15 @@ def import_bundle(
         "allow_shrink": rebaseline,
         # 축소로 받지 않은 소스 — 기존 캐시를 지켰다. 나머지 소스는 반입됐다.
         "rejected_shrink": rejected,
-        "warning": (
-            "; ".join(r["reason"] for r in rejected)
-            + f" — 수집 사고나 위조로 보고 이 소스는 기존 캐시를 지켰습니다(나머지는 반입). 기존 캐시가 "
-              f"낡으면(기본 2일) 다음 서명 번들을 받습니다. 의도한 축소라면 `--allow-shrink` 또는 {ENV_ALLOW_SHRINK}=1."
-        ) if rejected else "",
+        "accepted_shrink_stale": accepted_stale,
+        "warning": " / ".join(part for part in (
+            ("; ".join(r["reason"] for r in rejected)
+             + f" — 수집 사고나 위조로 보고 이 소스는 기존 캐시를 지켰습니다(나머지는 반입). 기존 캐시가 "
+               f"'낡음'이 되면 다음 번들을 받습니다. 의도한 축소라면 `--allow-shrink` 또는 {ENV_ALLOW_SHRINK}=1.")
+            if rejected else "",
+            ("; ".join(accepted_stale) + " — 목록이 크게 줄었습니다. 배포처의 수집 상태를 확인하세요.")
+            if accepted_stale else "",
+        ) if part),
     }
 
 

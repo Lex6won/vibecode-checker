@@ -296,8 +296,10 @@ def _write_stamp(
     # 0.6.4 — 서명 출처(signed_key)·생태계별 건수도 적는다. 반입 축소 검사의 기준선이다.
     target = _stamp_path(p)
     tmp = target.with_name(target.name + f".{os.getpid()}.tmp")
+    # imported_at — 이 PC 가 파일을 쓰거나 처음 검증한 시각. 번들이 적은 수집 시각과 달리 꾸밀 수 없어,
+    # 반입 가드가 기준선 시각을 min(수집, 반입)으로 잡는 데 쓴다.
     doc: dict = {"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded,
-                 "fetched_at": fetched_at, "item_count": item_count}
+                 "fetched_at": fetched_at, "item_count": item_count, "imported_at": _now_iso()}
     if signed_key:
         doc["signed_key"] = signed_key
     if eco_counts:
@@ -603,6 +605,7 @@ class IntelCache:
                 "ecosystems": ecosystems,
                 # 스탬프가 지금 파일과 맞을 때만 — 서명 번들에서 왔는지, 생태계별 몇 건이었는지.
                 "signed_key": stamp.get("signed_key") or None,
+                "imported_at": stamp.get("imported_at") or None,
                 "ecosystem_counts": eco_counts if isinstance(eco_counts, dict) else None}
 
     def peek(self, source_id: str) -> CacheEntry | None:

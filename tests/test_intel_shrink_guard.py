@@ -208,14 +208,70 @@ def test_unsigned_poison_cannot_lock_out_signed_bundles(tmp_path: Path, signer: 
     assert IntelCache(cache_dir).load("osv-malicious").item_count == 100
 
 
-def test_unsigned_future_dated_cannot_shadow_signed_bundle(tmp_path: Path, signer: bytes) -> None:
-    cache_dir = tmp_path / "cache"
+def test_far_future_bundle_rejected_outright(tmp_path: Path) -> None:
+    """공식 번들 시각은 정확하다 — 1시간 넘게 미래인 수집본은 위조·시계 오류로 번들 전체를 거부한다."""
     future = (datetime.now(timezone.utc) + timedelta(hours=20)).isoformat(timespec="seconds")
     poison = _bundle(tmp_path / "p.zip", {"osv-malicious.json": _envelope(
         "osv-malicious", _mal_items(100), fetched_at=future, ecosystems=["PyPI", "npm"])})
+    res = import_bundle(poison, cache_dir=tmp_path / "cache")
+    assert res["ok"] is False and "미래" in res["error"]
+
+
+def test_near_future_unsigned_poison_cannot_shadow_signed_bundle(tmp_path: Path, signer: bytes) -> None:
+    """허용 오차 안(59분) 미래 시각이라도 기준선 시각은 이 PC 에 들어온 시각으로 잘린다(3차 적대적 검증 HIGH-1)."""
+    cache_dir = tmp_path / "cache"
+    assert import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)["ok"]
+    near = (datetime.now(timezone.utc) + timedelta(minutes=59)).isoformat(timespec="seconds")
+    poison_items = _mal_items(100)[1:] + [{"id": "MAL-X", "affected": [{"package": "x", "ecosystem": "npm"}]}]
+    poison = _bundle(tmp_path / "p.zip", {"osv-malicious.json": _envelope(
+        "osv-malicious", poison_items, fetched_at=near, ecosystems=["PyPI", "npm"])})
     assert import_bundle(poison, cache_dir=cache_dir)["ok"]
-    res = import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)
-    assert res["ok"] is True and res["skipped_older"] == []
+    time.sleep(1.1)  # 다음 공식 번들은 오염 반입 뒤에 수집된다
+    res = import_bundle(_signed_bundle(tmp_path, signer, 100, "next.zip"), cache_dir=cache_dir)
+    assert res["sources"] == ["osv-malicious"] and res["skipped_older"] == []
+    ids = {i["id"] for i in IntelCache(cache_dir).load("osv-malicious").items}
+    assert "MAL-0" in ids and "MAL-X" not in ids
+
+
+def test_old_bundle_with_more_ecosystems_cannot_roll_back(tmp_path: Path, signer: bytes) -> None:
+    """생태계가 더 많아도 낡은 번들은 '대조 범위 우선' 예외를 받지 못한다(3차 적대적 검증 MEDIUM-2)."""
+    old_src = tmp_path / "old-src"
+    old_src.mkdir()
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds")
+    (old_src / "osv-malicious.json").write_bytes(_envelope("osv-malicious", _mal_items(500), fetched_at=old_ts,
+                                                           ecosystems=["PyPI", "npm"]))
+    old_bundle = tmp_path / "old.zip"
+    assert export_bundle(old_bundle, cache_dir=old_src, sign_seed=signer, key_id="test-key")["ok"]
+    cache_dir = tmp_path / "cache"
+    _seed(cache_dir, 100, ecosystems=["PyPI"])
+    res = import_bundle(old_bundle, cache_dir=cache_dir)
+    assert res["skipped_older"] == ["osv-malicious"]
+
+
+def test_strict_mode_blocks_shrink_even_on_stale_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """게시 전 재검증(GVSKB_INTEL_STRICT_SHRINK=1)은 직전 번들이 낡아도 잘린 목록을 막는다(3차 MEDIUM-3)."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    old = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat(timespec="seconds")
+    (cache_dir / "osv-malicious.json").write_bytes(_envelope("osv-malicious", _mal_items(100), fetched_at=old,
+                                                             ecosystems=["PyPI", "npm"]))
+    b = _bundle(tmp_path / "s.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(10), ecosystems=["PyPI", "npm"])})
+    loose = import_bundle(b, cache_dir=tmp_path / "copy-unused")  # 빈 캐시 — 비교 없음
+    assert loose["ok"]
+    monkeypatch.setenv("GVSKB_INTEL_STRICT_SHRINK", "1")
+    res = import_bundle(b, cache_dir=cache_dir)
+    assert shrink_rejected(res) == ["osv-malicious"]
+
+
+def test_stale_baseline_shrink_is_accepted_with_warning(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    old = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat(timespec="seconds")
+    (cache_dir / "osv-malicious.json").write_bytes(_envelope("osv-malicious", _mal_items(100), fetched_at=old,
+                                                             ecosystems=["PyPI", "npm"]))
+    b = _bundle(tmp_path / "s.zip", {"osv-malicious.json": _envelope("osv-malicious", _mal_items(10), ecosystems=["PyPI", "npm"])})
+    res = import_bundle(b, cache_dir=cache_dir)
+    assert res["sources"] == ["osv-malicious"] and res["accepted_shrink_stale"] and "크게 줄었습니다" in res["warning"]
 
 
 def test_signed_baseline_still_guards_against_signed_truncation(tmp_path: Path, signer: bytes) -> None:

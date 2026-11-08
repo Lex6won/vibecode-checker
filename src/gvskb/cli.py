@@ -1003,8 +1003,10 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
             print("        다음: `gvskb doctor --offline` 로 캐시 존재·신선도를 확인하세요.")
     else:
         print(f"[gvskb] ✖ {result.get('error', 'unknown error')}", file=sys.stderr)
-    # 일부 소스를 축소로 거부했으면 경고 종료 — 스크립트·예약 작업이 '전부 반영'으로 오해하지 않게.
-    return EXIT_OK if result.get("ok") and not result.get("rejected_shrink") else EXIT_FINDINGS_WARN
+    # 일부 소스를 축소로 거부한 것은 **반입 성공**(나머지는 반영, 거부한 소스는 기존 캐시 유지)으로 0 을 돌려준다 —
+    # 0 이 아니면 '전체 실패'로 다루는 호출자(포털 intel-sync.ps1: 번들을 rejected\ 로 옮김)가 있다. 사실은
+    # stderr 경고와 --json 의 rejected_shrink 로 알린다(게시 전 재검증은 그것을 읽어 멈춘다).
+    return EXIT_OK if result.get("ok") else EXIT_FINDINGS_WARN
 
 
 def _cmd_intel_sync(args: argparse.Namespace) -> int:
@@ -1038,8 +1040,9 @@ def _cmd_intel_sync(args: argparse.Namespace) -> int:
     if result.ok:
         from .audit import record_update_intel
         record_update_intel(list(result.sources_updated or []), tool="intel-sync")
-        # 일부 소스 축소 거부(기존 캐시 유지) — 예약 작업 로그에서 보이도록 경고 종료.
-        return EXIT_FINDINGS_WARN if result.warning else EXIT_OK
+        # 일부 소스 축소 거부(기존 캐시 유지)는 성공으로 본다 — 경고는 maybe_auto_update 가 stderr 로,
+        # --json 은 warning 필드로 남긴다.
+        return EXIT_OK
     # 건너뜀(이미 최신)은 성공으로 본다 — CI에서 불필요한 실패를 만들지 않는다.
     return EXIT_OK if result.skipped_reason else EXIT_FINDINGS_WARN
 

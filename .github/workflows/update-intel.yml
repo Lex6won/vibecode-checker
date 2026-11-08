@@ -240,6 +240,9 @@ jobs:
       - name: 번들 반입 재검증
         id: verify
         if: steps.bundle.outcome == 'success'
+        env:
+          # 게시하는 쪽은 직전 번들이 낡았어도 축소 검사를 한다 — 수집 사고가 며칠 이어져도 잘린 목록을 게시하지 않게.
+          GVSKB_INTEL_STRICT_SHRINK: "1"
         # 축소 허용은 export 가 서명 manifest 에 넣은 표시로 전달된다 — 여기서 따로 끄고 켜지 않는다.
         run: |
           sha256sum -c "$BUNDLE_NAME.sha256"
