@@ -437,10 +437,12 @@ def import_bundle(
             info_doc, problem = _inspect_envelope(fname, data)
             del data
             if info_doc is not None and not signed and _is_future(_parse_time(info_doc["fetched_at"])):
-                # 서명 없는 번들만 — 1시간 넘게 미래인 수집본은 위조·시계 오류로 본다. 서명된 번들은 GitHub 실행기
-                # 시계를 믿는다: 시계가 느린 PC(NTP 없는 망분리 PC)가 정상 공식 번들을 '미래'로 보고 계속 거부하면
-                # 갱신이 멈춘다(4차 적대적 검증).
-                info_doc, problem = None, f"'{fname}' 의 수집 시각({info_doc['fetched_at']})이 미래입니다(서명 없는 번들)"
+                # 서명 없는 번들의 '미래' 수집 시각은 믿지 않고 **이 PC 의 반입 시각으로 낮춰** 기록한다.
+                # - 거부하면: 시계가 느린 망분리 PC 가 기관이 직접 만든(서명 없는) 정상 번들을 매번 거부해 갱신이 멈춘다.
+                # - 그대로 두면: 미래 시각 캐시는 계속 '신선'으로 보이고(age 0), 다음 공식 번들을 '더 오래됨'으로 가린다.
+                # envelope sha256 은 items 만 덮으므로 시각을 고쳐도 무결성 검증은 그대로다. 서명 번들은 실행기 시계를 믿는다.
+                info_doc["reported_fetched_at"] = info_doc["fetched_at"]
+                info_doc["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             if info_doc is None:
                 return {"ok": False, "sources": [], "signed": signed,
                         "error": f"{problem} — 체커가 읽을 수 없는 캐시가 들어 있어 반입을 전체 중단합니다."}
@@ -508,6 +510,15 @@ def import_bundle(
                     _discard_staged()
                     return {"ok": False, "sources": [],
                             "error": f"'{fname}' 이 검증 이후 바뀌었습니다 — 반입을 전체 중단합니다."}
+                if doc.get("reported_fetched_at"):
+                    # 키 순서를 지킨다 — 수집 시각·항목 수는 파일 머리, 생태계는 꼬리에서 읽는다(peek·guard_info).
+                    envelope: dict = {}
+                    for key, value in json.loads(data.decode("utf-8")).items():
+                        envelope[key] = doc["fetched_at"] if key == "fetched_at" else value
+                        if key == "fetched_at":
+                            envelope["reported_fetched_at"] = doc["reported_fetched_at"]
+                    data = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+                    del envelope
                 tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
                 tmp.write_bytes(data)
                 del data
@@ -551,6 +562,8 @@ def import_bundle(
         # 축소로 받지 않은 소스 — 기존 캐시를 지켰다. 나머지 소스는 반입됐다.
         "rejected_shrink": rejected,
         "accepted_shrink_stale": accepted_stale,
+        # 서명 없는 번들의 미래 수집 시각을 반입 시각으로 낮춘 소스.
+        "clamped_future": [doc["source_id"] for _, _, doc in to_write if doc.get("reported_fetched_at")],
         "warning": " / ".join(part for part in (
             ("; ".join(r["reason"] for r in rejected)
              + f" — 수집 사고나 위조로 보고 이 소스는 기존 캐시를 지켰습니다(나머지는 반입). 기존 캐시가 "

@@ -288,6 +288,7 @@ def _write_stamp(
     item_count: int | None = None,
     signed_key: str | None = None,
     eco_counts: dict[str, int] | None = None,
+    imported_at: str | None = None,
 ) -> None:
     if st is None:
         return
@@ -299,7 +300,7 @@ def _write_stamp(
     # imported_at — 이 PC 가 파일을 쓰거나 처음 검증한 시각. 번들이 적은 수집 시각과 달리 꾸밀 수 없어,
     # 반입 가드가 기준선 시각을 min(수집, 반입)으로 잡는 데 쓴다.
     doc: dict = {"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded,
-                 "fetched_at": fetched_at, "item_count": item_count, "imported_at": _now_iso()}
+                 "fetched_at": fetched_at, "item_count": item_count, "imported_at": imported_at or _now_iso()}
     if signed_key:
         doc["signed_key"] = signed_key
     if eco_counts:
@@ -510,8 +511,21 @@ class IntelCache:
             stamp = None
         if stamp is None or "fetched_at" not in stamp:
             # 새 스탬프이거나 46차 형식(수집 시각 없음) — peek 가 쓸 수 있게 다시 적는다.
+            # 파일 시각만 바뀐 경우(백업 복원·복사) 내용 해시가 같으면 서명 출처·생태계별 건수·반입 시각을 이어받는다 —
+            # 잃으면 다음 서명 번들 한 번이 축소 검사 없이 들어온다(최종 적대적 검증 LOW-3).
+            carried: dict = {}
+            try:
+                previous = json.loads(_stamp_path(p).read_text(encoding="utf-8"))
+                if isinstance(previous, dict) and previous.get("sha256") == recorded:
+                    carried = previous
+            except (OSError, json.JSONDecodeError, ValueError):
+                carried = {}
+            eco = carried.get("ecosystem_counts")
             _write_stamp(p, st, recorded, fetched_at=str(data.get("fetched_at", "") or ""),
-                         item_count=_safe_int(data.get("item_count")))
+                         item_count=_safe_int(data.get("item_count")),
+                         signed_key=str(carried.get("signed_key") or "") or None,
+                         eco_counts=eco if isinstance(eco, dict) else None,
+                         imported_at=str(carried.get("imported_at") or "") or None)
         return CacheEntry(
             schema_version=data.get("schema_version", 0),
             source_id=data.get("source_id", source_id),

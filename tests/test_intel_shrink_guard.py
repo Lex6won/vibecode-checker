@@ -208,13 +208,37 @@ def test_unsigned_poison_cannot_lock_out_signed_bundles(tmp_path: Path, signer: 
     assert IntelCache(cache_dir).load("osv-malicious").item_count == 100
 
 
-def test_far_future_unsigned_bundle_rejected_outright(tmp_path: Path) -> None:
-    """서명 없는 번들의 1시간 넘게 미래인 수집본은 위조·시계 오류로 번들 전체를 거부한다."""
+def test_far_future_unsigned_file_is_clamped_to_import_time(tmp_path: Path, signer: bytes) -> None:
+    """서명 없는 번들의 미래 수집 시각은 반입 시각으로 낮춰 기록한다 — 거부하면 시계 느린 PC 가 기관 번들을 못 받고,
+    그대로 두면 캐시가 계속 '신선'으로 보이며 다음 공식 번들을 가린다(최종 적대적 검증)."""
     future = (datetime.now(timezone.utc) + timedelta(hours=20)).isoformat(timespec="seconds")
     poison = _bundle(tmp_path / "p.zip", {"osv-malicious.json": _envelope(
         "osv-malicious", _mal_items(100), fetched_at=future, ecosystems=["PyPI", "npm"])})
-    res = import_bundle(poison, cache_dir=tmp_path / "cache")
-    assert res["ok"] is False and "미래" in res["error"]
+    cache_dir = tmp_path / "cache"
+    res = import_bundle(poison, cache_dir=cache_dir)
+    assert res["ok"] is True and res["clamped_future"] == ["osv-malicious"]
+    cache_mod._LOAD_MEMO.clear()
+    entry = IntelCache(cache_dir).load("osv-malicious")
+    assert entry is not None and entry.fetched_at != future
+    info = IntelCache(cache_dir).guard_info("osv-malicious")
+    assert info["ecosystems"] == ["PyPI", "npm"]  # 키 순서 보존 — 꼬리에서 생태계를 계속 읽는다
+    time.sleep(1.1)
+    nxt = import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)
+    assert nxt["sources"] == ["osv-malicious"]
+
+
+def test_stamp_rewrite_keeps_signed_origin_when_content_same(tmp_path: Path, signer: bytes) -> None:
+    """백업 복원·복사로 파일 시각만 바뀌어도 내용이 같으면 서명 기준선을 잃지 않는다(최종 적대적 검증 LOW-3)."""
+    cache_dir = tmp_path / "cache"
+    assert import_bundle(_signed_bundle(tmp_path, signer, 100), cache_dir=cache_dir)["ok"]
+    p = cache_dir / "osv-malicious.json"
+    later = time.time() + 5
+    os.utime(p, (later, later))
+    cache_mod._LOAD_MEMO.clear()
+    assert IntelCache(cache_dir).load("osv-malicious") is not None  # 스탬프를 다시 쓴다
+    assert IntelCache(cache_dir).guard_info("osv-malicious")["signed_key"] == "test-key"
+    res = import_bundle(_signed_bundle(tmp_path, signer, 10, "cut.zip"), cache_dir=cache_dir)
+    assert shrink_rejected(res) == ["osv-malicious"]
 
 
 def test_slow_clock_pc_keeps_accepting_signed_bundles(tmp_path: Path, signer: bytes,
