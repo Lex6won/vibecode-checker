@@ -111,6 +111,120 @@ def _sha256(items: list[dict]) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def entry_items_sha256(items: list[dict]) -> str:
+    """envelope 의 ``sha256`` 계산식(로드 계층과 같은 값) — 번들 반입이 쓰기 전에 대조한다."""
+    return _sha256(items)
+
+
+def ecosystem_counts(items: list) -> dict[str, int] | None:
+    """OSV 계열 항목을 생태계별로 센다(항목 하나가 여러 생태계면 각각 1). 생태계 정보가 없으면 None.
+
+    악성 목록 형식(``affected[].ecosystem``)과 취약점 형식(``affected[].package.ecosystem``)을 모두 읽는다.
+    반입 축소 검사가 '전체 건수는 비슷한데 한 생태계만 잘린' 번들을 잡는 데 쓴다.
+    """
+    counts: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        seen: set[str] = set()
+        for aff in item.get("affected") or []:
+            if not isinstance(aff, dict):
+                continue
+            eco = aff.get("ecosystem")
+            if eco is None and isinstance(aff.get("package"), dict):
+                eco = aff["package"].get("ecosystem")
+            if isinstance(eco, str) and eco:
+                seen.add(eco)
+        for eco in seen:
+            counts[eco] = counts.get(eco, 0) + 1
+    return counts or None
+
+
+# ---------------------------------------------------------------------------
+# 윈도 동시 접근 — 검사 프로세스가 캐시를 읽는 동안 갱신이 같은 파일을 교체하면, 파이썬의 open 은
+# 삭제 공유를 주지 않으므로 os.replace 가 PermissionError 로 실패한다(2026-11-07 적대적 검증: 반입
+# 중단·임시파일 잔존). 교체는 짧게 재시도하고, 읽기는 잠깐 기다렸다 다시 읽는다.
+# ---------------------------------------------------------------------------
+_REPLACE_ATTEMPTS = 12
+_READ_ATTEMPTS = 6
+#: 이보다 오래된 `.이름.tmp-PID` 는 중단된 갱신이 남긴 찌꺼기로 보고 지운다.
+_STALE_TEMP_SECONDS = 3600
+#: 우리가 만드는 임시파일 이름만 — 캐시 본문(`*.json`)·스탬프·상태 파일은 절대 맞지 않는다.
+_TEMP_NAME_RE = re.compile(r"^(\.[A-Za-z0-9][A-Za-z0-9._-]*\.json\.tmp-\d+|[A-Za-z0-9][A-Za-z0-9._-]*\.json\.verified\.\d+\.tmp)$")
+
+
+def _backoff(attempt: int) -> None:
+    import time
+
+    time.sleep(min(0.05 * (2 ** attempt), 1.0))
+
+
+def replace_with_retry(src: Path, dest: Path) -> None:
+    """``os.replace`` + 재시도(최대 약 7초). 끝내 실패하면 임시파일을 지우고 예외를 다시 낸다."""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dest)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                try:
+                    src.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+            _backoff(attempt)
+
+
+def cleanup_stale_temp_files(cache_dir: Path) -> int:
+    """중단된 갱신이 남긴 임시파일(``.<이름>.tmp-<pid>``, ``*.verified.<pid>.tmp``)을 지운다."""
+    import time
+
+    removed = 0
+    try:
+        candidates = [p for p in cache_dir.iterdir() if _TEMP_NAME_RE.match(p.name)]
+    except OSError:
+        return 0
+    now = time.time()
+    for p in candidates:
+        try:
+            if now - p.stat().st_mtime > _STALE_TEMP_SECONDS:
+                p.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+class _TransientReadError(Exception):
+    """파일이 잠깐 잠겨 읽지 못함 — '손상'과 달리 메모하지 않는다(다음 호출이 다시 읽는다)."""
+
+
+def _read_text_with_retry(p: Path) -> str:
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise
+        except PermissionError as exc:
+            if attempt == _READ_ATTEMPTS - 1:
+                raise _TransientReadError(str(exc)) from exc
+            _backoff(attempt)
+    raise _TransientReadError("unreachable")  # pragma: no cover
+
+
+def _atomic_write_text(p: Path, text: str) -> None:
+    tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        replace_with_retry(tmp, p)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 # ---------------------------------------------------------------------------
 # 로드 메모 — 같은 파일을 프로세스 안에서 반복 파싱하지 않는다.
 #
@@ -172,22 +286,25 @@ def _write_stamp(
     *,
     fetched_at: str = "",
     item_count: int | None = None,
+    signed_key: str | None = None,
+    eco_counts: dict[str, int] | None = None,
 ) -> None:
     if st is None:
         return
     # 47차 — 수집 시각·항목 수도 스탬프에 적는다. `peek()` 가 수십 MB JSON 을 열지 않고
     # 신선도를 답할 수 있게 하기 위한 것(포털 /health · 하네스 doctor 가 매번 묻는다).
+    # 0.6.4 — 서명 출처(signed_key)·생태계별 건수도 적는다. 반입 축소 검사의 기준선이다.
     target = _stamp_path(p)
     tmp = target.with_name(target.name + f".{os.getpid()}.tmp")
+    doc: dict = {"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded,
+                 "fetched_at": fetched_at, "item_count": item_count}
+    if signed_key:
+        doc["signed_key"] = signed_key
+    if eco_counts:
+        doc["ecosystem_counts"] = eco_counts
     try:
         # 임시파일 + 교체 — 폴링 중인 다른 프로세스가 반쯤 쓰인 스탬프를 읽지 않게 한다(리뷰 M-2c).
-        tmp.write_text(
-            json.dumps({
-                "mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": recorded,
-                "fetched_at": fetched_at, "item_count": item_count,
-            }),
-            encoding="utf-8",
-        )
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
         os.replace(tmp, target)
     except OSError:
         # 스탬프는 편의 장치 — 못 써도 검증은 된다. 다만 **매 프로세스가 재해시**하게 되므로
@@ -197,6 +314,24 @@ def _write_stamp(
         except OSError:
             pass
         _warn_stamp_unwritable_once(target)
+
+
+def write_verified_stamp(
+    p: Path,
+    recorded: str,
+    *,
+    fetched_at: str = "",
+    item_count: int | None = None,
+    signed_key: str | None = None,
+    eco_counts: dict[str, int] | None = None,
+) -> None:
+    """방금 envelope 해시를 검증하고 쓴 파일에 스탬프를 남긴다(번들 반입용)."""
+    try:
+        st = p.stat()
+    except OSError:
+        return
+    _write_stamp(p, st, recorded, fetched_at=fetched_at, item_count=item_count,
+                 signed_key=signed_key, eco_counts=eco_counts)
 
 
 _STAMP_WARNED: set[str] = set()
@@ -217,6 +352,7 @@ def _warn_stamp_unwritable_once(target: Path) -> None:
 _HEADER_BYTES = 1024
 _HEADER_FETCHED_RE = re.compile(r'"fetched_at"\s*:\s*"([^"]*)"')
 _HEADER_COUNT_RE = re.compile(r'"item_count"\s*:\s*(\d+)')
+_TAIL_ECOSYSTEMS_RE = re.compile(r'"ecosystems"\s*:\s*(null|\[[^\]]*\])\s*\}\s*$')
 
 
 def _read_header(p: Path) -> tuple[str | None, int | None]:
@@ -285,15 +421,16 @@ class IntelCache:
         )
         indent = None if len(items) > _COMPACT_THRESHOLD_ITEMS else 2
         p = self.path_for(source_id)
-        p.write_text(
-            json.dumps(entry.to_dict(), ensure_ascii=False, indent=indent),
-            encoding="utf-8",
-        )
+        cleanup_stale_temp_files(self.cache_dir)
+        # 임시파일 + 교체 — 바로 쓰면 그 순간 읽는 검사가 반쯤 쓰인 JSON 을 '캐시 없음'으로 판정한다.
+        _atomic_write_text(p, json.dumps(entry.to_dict(), ensure_ascii=False, indent=indent))
         try:
             st = p.stat()
             _memo_put(str(p.resolve()), (st.st_mtime_ns, st.st_size), entry)
             # 방금 쓴 본문은 검증할 것이 없다 — 스탬프를 바로 남겨 다음 프로세스의 peek·load 가 빠르다.
-            _write_stamp(p, st, entry.sha256, fetched_at=entry.fetched_at, item_count=entry.item_count)
+            # 직접 수집본은 서명 출처가 없다(signed_key 미기록) — 다음 서명 번들이 기준선 검사 없이 덮어쓸 수 있다.
+            _write_stamp(p, st, entry.sha256, fetched_at=entry.fetched_at, item_count=entry.item_count,
+                         eco_counts=ecosystem_counts(items) if ecosystems else None)
         except OSError:
             pass
         return entry
@@ -312,7 +449,15 @@ class IntelCache:
             pass
         if sig is not None and key in _LOAD_MEMO and _LOAD_MEMO[key][0] == sig:
             return _LOAD_MEMO[key][1]
-        entry = self._load_uncached(source_id, p)
+        try:
+            entry = self._load_uncached(source_id, p)
+        except _TransientReadError as exc:
+            # 잠깐 잠긴 파일을 '없음'으로 메모하면 같은 프로세스가 끝까지 그 소스를 못 쓴다 — 메모하지 않는다.
+            print(f"[gvskb] ⚠ intel cache busy: {p.name} — 다른 프로세스가 쓰는 중이라 이번에는 읽지 못했습니다({exc}).",
+                  file=sys.stderr)
+            return None
+        except FileNotFoundError:
+            return None
         if sig is not None:
             _memo_put(key, sig, entry)
         return entry
@@ -323,8 +468,16 @@ class IntelCache:
         except OSError:
             st = None
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            data = json.loads(_read_text_with_retry(p))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        # 파일 이름과 내용의 출처가 다르면 쓰지 않는다 — 대소문자를 가리지 않는 파일시스템에서
+        # `OSV-MALICIOUS.json` 같은 이름으로 다른 소스를 덮어쓴 흔적이다(2026-11-08 적대적 검증).
+        if str(data.get("source_id", source_id)) != source_id:
+            print(f"[gvskb] ⚠ intel cache source mismatch: {p.name} 안의 source_id={data.get('source_id')!r} — 이 캐시는 무시합니다.",
+                  file=sys.stderr)
             return None
         items = data.get("items", [])
         # 무결성 재검증 — USB 반입 등 이동 경로에서 변조·손상된 캐시가 판정에
@@ -418,6 +571,39 @@ class IntelCache:
             info["item_count"] = head_count
             info["basis"] = "header"
         return info
+
+    def guard_info(self, source_id: str) -> dict | None:
+        """반입 축소 검사용 — 항목 수·수집 시각(머리 또는 스탬프)과 생태계(파일 꼬리). 본문은 파싱하지 않는다.
+
+        파일이 없으면 None. 생태계는 envelope 직렬화 순서상 items 뒤(파일 끝)에 있다.
+        """
+        info = self.peek_info(source_id)
+        if not info:
+            return None
+        ecosystems: list[str] | None = None
+        p = self.path_for(source_id)
+        try:
+            with p.open("rb") as fh:
+                size = fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, size - _HEADER_BYTES))
+                tail = fh.read().decode("utf-8", errors="replace")
+            m = _TAIL_ECOSYSTEMS_RE.search(tail)
+            if m and m.group(1) != "null":
+                parsed = json.loads(m.group(1))
+                if isinstance(parsed, list):
+                    ecosystems = [str(e) for e in parsed]
+        except (OSError, ValueError):
+            ecosystems = None
+        try:
+            stamp = _read_stamp(p, p.stat()) or {}
+        except OSError:
+            stamp = {}
+        eco_counts = stamp.get("ecosystem_counts")
+        return {"item_count": info.get("item_count"), "fetched_at": info.get("fetched_at"),
+                "ecosystems": ecosystems,
+                # 스탬프가 지금 파일과 맞을 때만 — 서명 번들에서 왔는지, 생태계별 몇 건이었는지.
+                "signed_key": stamp.get("signed_key") or None,
+                "ecosystem_counts": eco_counts if isinstance(eco_counts, dict) else None}
 
     def peek(self, source_id: str) -> CacheEntry | None:
         """``peek_info`` 를 CacheEntry 모양으로 — ``items`` 는 비어 있고 수집 시각을 모르면 None.

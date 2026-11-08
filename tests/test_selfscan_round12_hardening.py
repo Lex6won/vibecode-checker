@@ -39,9 +39,22 @@ def test_bundle_rejects_path_traversal_names(tmp_path: Path, bad: str):
 
 
 def test_bundle_accepts_plain_name_and_writes_inside_cache(tmp_path: Path):
+    from gvskb.intel.cache import entry_items_sha256
+
+    items = [{"id": "MAL-1"}]
+    envelope = json.dumps({"schema_version": 2, "source_id": "osv-malicious", "fetched_at": "2026-11-08T00:00:00+00:00",
+                           "url": "u", "sha256": entry_items_sha256(items), "item_count": 1, "items": items}).encode()
+    cache = tmp_path / "cache"
+    res = import_bundle(_bundle(tmp_path, "osv-malicious.json", envelope), cache_dir=cache)
+    assert res["ok"] is True and (cache / "osv-malicious.json").exists()
+
+
+def test_bundle_rejects_bare_items_without_envelope(tmp_path: Path):
+    """예전에는 해시·출처 없는 `{"items": []}` 도 그대로 써서 악성 목록이 비었다(2026-11-07 적대적 검증)."""
     cache = tmp_path / "cache"
     res = import_bundle(_bundle(tmp_path, "osv-malicious.json"), cache_dir=cache)
-    assert res["ok"] is True and (cache / "osv-malicious.json").exists()
+    assert res["ok"] is False
+    assert not (cache / "osv-malicious.json").exists()
 
 
 def test_safe_member_name_rules():

@@ -168,25 +168,25 @@ def test_osv_adapter_dedupes_when_same_id_in_multiple_zips(
     assert [i["id"] for i in items] == ["MAL-2026-DUP"]
 
 
-def test_osv_adapter_tolerates_network_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_osv_adapter_network_failure_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """예전에는 빈 목록을 '성공'으로 돌려 빈 악성 캐시가 최신으로 저장됐다(0.6.4) — 실패로 올려 직전 캐시를 지킨다."""
     monkeypatch.delenv("GVSKB_OSV_INCLUDE_NPM", raising=False)
 
     class FailingClient:
         def get(self, *a, **kw):
             raise RuntimeError("network down")
 
-    url, items = osv.fetch_osv_malicious(FailingClient())
-    assert items == []
-    assert url.startswith("https://")
+    with pytest.raises(RuntimeError, match="PyPI"):
+        osv.fetch_osv_malicious(FailingClient())
 
 
-def test_osv_adapter_tolerates_corrupt_zip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_osv_adapter_corrupt_zip_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GVSKB_OSV_INCLUDE_NPM", raising=False)
     client = FakeClient(get_content_by_url={
         f"{osv.GCS_BASE_URL}/PyPI/all.zip": b"not a zip",
     })
-    _, items = osv.fetch_osv_malicious(client)
-    assert items == []
+    with pytest.raises(RuntimeError, match="손상"):
+        osv.fetch_osv_malicious(client)
 
 
 # ---------------------------------------------------------------------------

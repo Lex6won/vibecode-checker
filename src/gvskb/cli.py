@@ -973,11 +973,12 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
             except ValueError as exc:
                 print(f"[gvskb] ✖ 서명 키 형식 오류: {exc}", file=sys.stderr)
                 return EXIT_USAGE
-        result = export_bundle(args.bundle, cache_dir=cache_dir, sign_seed=seed, key_id=args.key_id)
+        result = export_bundle(args.bundle, cache_dir=cache_dir, sign_seed=seed, key_id=args.key_id,
+                               allow_shrink=args.allow_shrink)
     elif action == "verify":
         result = verify_bundle(args.bundle)
     else:
-        result = import_bundle(args.bundle, cache_dir=cache_dir)
+        result = import_bundle(args.bundle, cache_dir=cache_dir, allow_shrink=args.allow_shrink)
         if result.get("ok"):
             from .audit import record_update_intel
             record_update_intel(list(result.get("sources", [])), tool="intel-bundle-import")
@@ -988,7 +989,9 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
         verb = {"export": "내보냈습니다", "verify": "검증했습니다(쓰지 않음)",
                 "import": "반입했습니다(무결성 검증 통과)"}[action]
         print(f"[gvskb] 번들 {verb}: {result.get('bundle') or result.get('cache_dir') or args.bundle}")
-        print(f"        sources: {', '.join(result.get('sources', []))}")
+        print(f"        sources: {', '.join(result.get('sources', [])) or '(없음)'}")
+        if result.get("skipped_older"):
+            print(f"        건너뜀(기존 캐시가 더 최신): {', '.join(result['skipped_older'])}")
         if result.get("signed"):
             print(f"        서명: {'붙임' if action == 'export' else '확인됨'} (key_id={result.get('key_id')})")
         else:
@@ -1422,6 +1425,9 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("--key-id", default=None, help="서명 키 식별자(export·keygen). 미지정 시 공개키 지문으로 생성")
     bundle.add_argument("--out", default=None, help="keygen: 비밀키 파일 경로")
     bundle.add_argument("--force", action="store_true", help="keygen: 기존 키 파일 덮어쓰기")
+    bundle.add_argument("--allow-shrink", action="store_true",
+                        help="import: 악성·KEV·취약점 목록이 기존 캐시보다 크게 줄어도 받는다(의도한 축소일 때만). "
+                             "export: 서명 번들에 '의도한 축소' 표시를 넣어 받는 PC 가 축소 검사를 건너뛰게 한다")
     bundle.add_argument("--json", action="store_true", help="JSON 출력")
     bundle.set_defaults(func=_cmd_intel_bundle)
 

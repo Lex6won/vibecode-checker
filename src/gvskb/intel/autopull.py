@@ -115,6 +115,19 @@ def bundle_url() -> str:
     return os.environ.get("GVSKB_INTEL_URL", "").strip() or DEFAULT_BUNDLE_URL
 
 
+#: 공식 릴리스 경로. 이 아래 번들은 배포 파이프라인이 **항상** 서명한다(운영 키 gvskb-intel-2026a).
+OFFICIAL_RELEASE_PREFIX = "https://github.com/Lex6won/vibecode-checker/releases/download/"
+
+
+def is_official_url(url: str) -> bool:
+    """공식 배포 주소인가 — 그렇다면 서명이 없는 번들은 정책 설정과 무관하게 거부한다.
+
+    서명 필수 여부를 환경변수(GVSKB_INTEL_REQUIRE_SIGNATURE)에만 맡기면, 그 값을 빠뜨린 PC·예약 작업이
+    서명 없는 빈 번들을 그대로 받아 악성 판정이 사라졌다(2026-11-07 적대적 검증).
+    """
+    return url.strip().lower().startswith(OFFICIAL_RELEASE_PREFIX.lower())
+
+
 def _is_offline() -> bool:
     return os.environ.get("GVSKB_MODE", "").lower() == "offline"
 
@@ -231,7 +244,7 @@ def _pull_from_url(url: str, cache_dir: Path | None, timeout: float) -> AutoPull
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
-        res = import_bundle(tmp, cache_dir=cache_dir)
+        res = import_bundle(tmp, cache_dir=cache_dir, require_signature=is_official_url(url))
     except OSError as exc:
         return AutoPullResult(attempted=True, ok=False, source=url,
                               error=f"임시 파일 처리 실패: {exc!s}")
