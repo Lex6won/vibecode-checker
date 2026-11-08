@@ -75,6 +75,8 @@ class AutoPullResult:
     source: str = ""             # 실제로 사용한 소스(경로 또는 URL)
     sources_updated: list[str] | None = None
     error: str = ""
+    #: 반입은 됐지만 일부 소스를 축소로 거부한 경우의 안내(그 소스는 기존 캐시 유지).
+    warning: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +86,7 @@ class AutoPullResult:
             "source": self.source,
             "sources_updated": self.sources_updated or [],
             "error": self.error,
+            "warning": self.warning,
         }
 
 
@@ -113,6 +116,19 @@ def bundle_dir() -> Path | None:
 def bundle_url() -> str:
     """번들을 받을 주소. GVSKB_INTEL_URL 미설정 시 공개 GitHub 릴리스."""
     return os.environ.get("GVSKB_INTEL_URL", "").strip() or DEFAULT_BUNDLE_URL
+
+
+#: 공식 릴리스 경로. 이 아래 번들은 배포 파이프라인이 **항상** 서명한다(운영 키 gvskb-intel-2026a).
+OFFICIAL_RELEASE_PREFIX = "https://github.com/Lex6won/vibecode-checker/releases/download/"
+
+
+def is_official_url(url: str) -> bool:
+    """공식 배포 주소인가 — 그렇다면 서명이 없는 번들은 정책 설정과 무관하게 거부한다.
+
+    서명 필수 여부를 환경변수(GVSKB_INTEL_REQUIRE_SIGNATURE)에만 맡기면, 그 값을 빠뜨린 PC·예약 작업이
+    서명 없는 빈 번들을 그대로 받아 악성 판정이 사라졌다(2026-11-07 적대적 검증).
+    """
+    return url.strip().lower().startswith(OFFICIAL_RELEASE_PREFIX.lower())
 
 
 def _is_offline() -> bool:
@@ -197,7 +213,7 @@ def _pull_from_dir(d: Path, cache_dir: Path | None) -> AutoPullResult:
     res = import_bundle(bundle, cache_dir=cache_dir)
     if res.get("ok"):
         return AutoPullResult(attempted=True, ok=True, source=str(bundle),
-                              sources_updated=res.get("sources") or [])
+                              sources_updated=res.get("sources") or [], warning=str(res.get("warning") or ""))
     return AutoPullResult(attempted=True, ok=False, source=str(bundle),
                           error=str(res.get("error", "반입 실패")))
 
@@ -231,7 +247,7 @@ def _pull_from_url(url: str, cache_dir: Path | None, timeout: float) -> AutoPull
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
-        res = import_bundle(tmp, cache_dir=cache_dir)
+        res = import_bundle(tmp, cache_dir=cache_dir, require_signature=is_official_url(url))
     except OSError as exc:
         return AutoPullResult(attempted=True, ok=False, source=url,
                               error=f"임시 파일 처리 실패: {exc!s}")
@@ -243,7 +259,7 @@ def _pull_from_url(url: str, cache_dir: Path | None, timeout: float) -> AutoPull
 
     if res.get("ok"):
         return AutoPullResult(attempted=True, ok=True, source=url,
-                              sources_updated=res.get("sources") or [])
+                              sources_updated=res.get("sources") or [], warning=str(res.get("warning") or ""))
     return AutoPullResult(attempted=True, ok=False, source=url,
                           error=str(res.get("error", "반입 실패")))
 
@@ -292,6 +308,8 @@ def maybe_auto_update(
         if result.ok:
             _write_state(cdir, last_result="ok", last_source=result.source)
             if verbose:
+                if result.warning:
+                    print(f"[gvskb] ⚠ {result.warning}", file=sys.stderr)
                 print(f"[gvskb] 인텔 캐시 자동 갱신 완료 ← {result.source}", file=sys.stderr)
             return result
     elif _is_offline():
@@ -306,6 +324,8 @@ def maybe_auto_update(
     result = _pull_from_url(bundle_url(), cache_dir, timeout)
     _write_state(cdir, last_result="ok" if result.ok else "fail", last_source=result.source)
     if verbose:
+        if result.warning:
+            print(f"[gvskb] ⚠ {result.warning}", file=sys.stderr)
         if result.ok:
             print(f"[gvskb] 인텔 캐시 자동 갱신 완료 ← {result.source}", file=sys.stderr)
         else:

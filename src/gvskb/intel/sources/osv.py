@@ -181,8 +181,9 @@ def _iter_entries(zip_bytes: bytes) -> Iterable[dict]:
     """Yield raw advisory dicts from an OSV ecosystem zip dump."""
     try:
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile:
-        return
+    except zipfile.BadZipFile as exc:
+        # 예전에는 조용히 0건을 돌려줬다 — 그러면 빈 악성 목록이 '최신 캐시'로 저장돼 아무것도 잡지 못했다.
+        raise RuntimeError("OSV 데이터 zip 이 손상됐습니다") from exc
     with zf:
         for info in zf.infolist():
             filename = info.filename.rsplit("/", 1)[-1]
@@ -203,6 +204,38 @@ def _iter_entries(zip_bytes: bytes) -> Iterable[dict]:
 _SHARED: "weakref.WeakKeyDictionary[object, dict]" = weakref.WeakKeyDictionary()
 
 
+#: 생태계 zip 재시도 간격(초). 일시적 네트워크 오류 한 번으로 하루치 갱신을 잃지 않게 한다.
+_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+
+
+def _download_with_retry(client: HttpFetcher, eco: str) -> bytes:
+    """생태계 zip 을 받는다 — 실패하면 몇 번 다시 시도하고, 끝내 실패하면 예외.
+
+    예전에는 실패한 생태계를 건너뛰었다 — 그러면 envelope 에는 그 생태계가 '대조함'으로 적히는데 항목은
+    비어, 그 생태계 패키지가 전부 '깨끗함'이 됐다(2026-11-08 적대적 검증). 예외로 올려 보내면 update_source 가
+    직전 캐시를 그대로 지키고 warn 으로 알린다.
+    """
+    import time
+
+    url = _zip_url(eco)
+    last: Exception | None = None
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        if attempt:
+            time.sleep(_RETRY_DELAYS[attempt - 1])
+        try:
+            resp = client.get(url)
+            resp.raise_for_status()
+            content = getattr(resp, "content", None)
+            if content is None:
+                content = resp.read() if hasattr(resp, "read") else b""
+            if not content:
+                raise RuntimeError("빈 응답")
+            return content
+        except Exception as exc:  # noqa: BLE001 — 어떤 실패든 재시도 후 실패로 올린다
+            last = exc
+    raise RuntimeError(f"OSV {eco} 데이터를 받지 못했습니다: {last!s}") from last
+
+
 def _collect(client: HttpFetcher) -> dict:
     """Download selected ecosystem zip(s) once and split MAL / non-MAL entries."""
     ecosystems = _selected_ecosystems()
@@ -216,15 +249,7 @@ def _collect(client: HttpFetcher) -> dict:
     mal: dict[str, dict] = {}
     vulns: dict[str, dict] = {}
     for eco in ecosystems:
-        url = _zip_url(eco)
-        try:
-            resp = client.get(url)
-            resp.raise_for_status()
-            content = getattr(resp, "content", None)
-            if content is None:
-                content = resp.read() if hasattr(resp, "read") else b""
-        except Exception:
-            continue
+        content = _download_with_retry(client, eco)
         for data in _iter_entries(content):
             vid = str(data.get("id", ""))
             if not vid:
@@ -256,8 +281,9 @@ def fetch_osv_malicious(client: HttpFetcher) -> tuple[str, list[dict]]:
     """Download OSV ecosystem zip(s) and return all MAL-prefix advisories.
 
     The first ecosystem URL is reported back so the cache envelope records a
-    meaningful origin. Network or parsing failures for individual ecosystems
-    are swallowed — partial results beat a failed refresh.
+    meaningful origin. A failed ecosystem download fails the whole fetch, so
+    the previous cache is kept — a partial list would be recorded as covering
+    every selected ecosystem and turn the missing one into "clean".
     """
     primary_url = _zip_url(_selected_ecosystems()[0])
     return primary_url, _collect(client)["mal"]

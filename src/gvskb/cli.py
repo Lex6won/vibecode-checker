@@ -973,11 +973,12 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
             except ValueError as exc:
                 print(f"[gvskb] ✖ 서명 키 형식 오류: {exc}", file=sys.stderr)
                 return EXIT_USAGE
-        result = export_bundle(args.bundle, cache_dir=cache_dir, sign_seed=seed, key_id=args.key_id)
+        result = export_bundle(args.bundle, cache_dir=cache_dir, sign_seed=seed, key_id=args.key_id,
+                               allow_shrink=args.allow_shrink)
     elif action == "verify":
         result = verify_bundle(args.bundle)
     else:
-        result = import_bundle(args.bundle, cache_dir=cache_dir)
+        result = import_bundle(args.bundle, cache_dir=cache_dir, allow_shrink=args.allow_shrink)
         if result.get("ok"):
             from .audit import record_update_intel
             record_update_intel(list(result.get("sources", [])), tool="intel-bundle-import")
@@ -988,7 +989,11 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
         verb = {"export": "내보냈습니다", "verify": "검증했습니다(쓰지 않음)",
                 "import": "반입했습니다(무결성 검증 통과)"}[action]
         print(f"[gvskb] 번들 {verb}: {result.get('bundle') or result.get('cache_dir') or args.bundle}")
-        print(f"        sources: {', '.join(result.get('sources', []))}")
+        print(f"        sources: {', '.join(result.get('sources', [])) or '(없음)'}")
+        if result.get("skipped_older"):
+            print(f"        건너뜀(기존 캐시가 더 최신): {', '.join(result['skipped_older'])}")
+        if result.get("warning"):
+            print(f"[gvskb] ⚠ {result['warning']}", file=sys.stderr)
         if result.get("signed"):
             print(f"        서명: {'붙임' if action == 'export' else '확인됨'} (key_id={result.get('key_id')})")
         else:
@@ -998,6 +1003,9 @@ def _cmd_intel_bundle(args: argparse.Namespace) -> int:
             print("        다음: `gvskb doctor --offline` 로 캐시 존재·신선도를 확인하세요.")
     else:
         print(f"[gvskb] ✖ {result.get('error', 'unknown error')}", file=sys.stderr)
+    # 일부 소스를 축소로 거부한 것은 **반입 성공**(나머지는 반영, 거부한 소스는 기존 캐시 유지)으로 0 을 돌려준다 —
+    # 0 이 아니면 '전체 실패'로 다루는 호출자(포털 intel-sync.ps1: 번들을 rejected\ 로 옮김)가 있다. 사실은
+    # stderr 경고와 --json 의 rejected_shrink 로 알린다(게시 전 재검증은 그것을 읽어 멈춘다).
     return EXIT_OK if result.get("ok") else EXIT_FINDINGS_WARN
 
 
@@ -1032,6 +1040,8 @@ def _cmd_intel_sync(args: argparse.Namespace) -> int:
     if result.ok:
         from .audit import record_update_intel
         record_update_intel(list(result.sources_updated or []), tool="intel-sync")
+        # 일부 소스 축소 거부(기존 캐시 유지)는 성공으로 본다 — 경고는 maybe_auto_update 가 stderr 로,
+        # --json 은 warning 필드로 남긴다.
         return EXIT_OK
     # 건너뜀(이미 최신)은 성공으로 본다 — CI에서 불필요한 실패를 만들지 않는다.
     return EXIT_OK if result.skipped_reason else EXIT_FINDINGS_WARN
@@ -1422,6 +1432,9 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("--key-id", default=None, help="서명 키 식별자(export·keygen). 미지정 시 공개키 지문으로 생성")
     bundle.add_argument("--out", default=None, help="keygen: 비밀키 파일 경로")
     bundle.add_argument("--force", action="store_true", help="keygen: 기존 키 파일 덮어쓰기")
+    bundle.add_argument("--allow-shrink", action="store_true",
+                        help="import: 악성·KEV·취약점 목록이 기존 캐시보다 크게 줄어도 받는다(의도한 축소일 때만). "
+                             "export: 서명 번들에 '의도한 축소' 표시를 넣어 받는 PC 가 축소 검사를 건너뛰게 한다")
     bundle.add_argument("--json", action="store_true", help="JSON 출력")
     bundle.set_defaults(func=_cmd_intel_bundle)
 

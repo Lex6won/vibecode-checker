@@ -24,3 +24,11 @@ def _deterministic_intel_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: 
     """
     monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path_factory.mktemp("intel-cache")))
     monkeypatch.setenv("GVSKB_AUTO_UPDATE", "off")
+
+
+@pytest.fixture(autouse=True)
+def _no_osv_retry_wait(monkeypatch: pytest.MonkeyPatch):
+    """0.6.4 — OSV 다운로드 재시도 대기(2·5초)를 시험에서는 생략한다. 재시도 횟수는 그대로 시험된다."""
+    from gvskb.intel.sources import osv
+
+    monkeypatch.setattr(osv, "_RETRY_DELAYS", (0.0, 0.0))

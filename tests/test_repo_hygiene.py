@@ -164,7 +164,9 @@ def _git(*args: str) -> str:
 def tracked_files() -> list[str]:
     if not (REPO_ROOT / ".git").exists():  # pragma: no cover - sdist 배포본
         pytest.skip("git 체크아웃이 아닙니다 — 저장소 위생 검사 대상 아님")
-    return [line for line in _git("ls-files").splitlines() if line.strip()]
+    # core.quotepath=false — 기본값이면 한글 파일명이 "\355\225..." 처럼 따옴표·8진수로 나와 경로가 맞지 않고,
+    # 읽기에 실패한 파일은 조용히 건너뛰어 한글 이름 문서가 검사를 비껴갔다(2026-11-07 재현: 메모.md).
+    return [line for line in _git("-c", "core.quotepath=false", "ls-files").splitlines() if line.strip()]
 
 
 def _read_text(path: Path) -> str | None:
@@ -178,6 +180,12 @@ def _read_text(path: Path) -> str | None:
     if b"\x00" in raw[:4096]:
         return None
     return raw.decode("utf-8", errors="replace")
+
+
+def test_tracked_file_list_is_readable(tracked_files: list[str]) -> None:
+    """파일 목록이 따옴표로 감싼 경로(8진수 이스케이프)로 나오면 아래 검사가 그 파일을 못 읽고 건너뛴다."""
+    quoted = [rel for rel in tracked_files if rel.startswith('"')]
+    assert not quoted, f"git 경로가 이스케이프되어 검사를 비껴갑니다: {quoted[:5]}"
 
 
 def test_tracked_files_have_no_institution_identifiers(tracked_files: list[str]) -> None:

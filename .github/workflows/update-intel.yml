@@ -47,6 +47,12 @@ on:
         default: "test"
         type: choice
         options: ["test", "prod"]
+      allow_shrink:
+        description: "의도한 축소 — 악성·KEV·취약점 목록이 20% 넘게 줄어도 게시(수집 방식 변경·대량 철회 확인 후에만)"
+        required: false
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
 
 # 최소 권한 원칙 — 기본은 읽기. 릴리스 갱신에 필요한 쓰기는 잡 단위로만 준다.
 # 룰 PR 은 INTEL_PR_TOKEN(PAT) 으로 만들므로 GITHUB_TOKEN 에 pull-requests 권한은 필요 없다.
@@ -209,13 +215,21 @@ jobs:
         env:
           GVSKB_INTEL_SIGNING_KEY: ${{ secrets.GVSKB_INTEL_SIGNING_KEY }}
           GVSKB_INTEL_KEY_ID: ${{ vars.GVSKB_INTEL_KEY_ID }}
+          # 스케줄 실행에는 inputs 가 비어 있다 → 항상 no.
+          ALLOW_SHRINK: ${{ inputs.allow_shrink == 'yes' && '--allow-shrink' || '' }}
         run: |
           if [ -n "$GVSKB_INTEL_SIGNING_KEY" ]; then
             if [ -z "$GVSKB_INTEL_KEY_ID" ]; then
               echo "::error::Secrets GVSKB_INTEL_SIGNING_KEY 는 있는데 Variables GVSKB_INTEL_KEY_ID 가 없습니다 — key_id 가 신뢰 목록(signing.py)과 어긋나면 모든 PC 가 번들을 거부합니다. 변수를 등록하세요."
               exit 1
             fi
-            gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"               --sign-key-env GVSKB_INTEL_SIGNING_KEY --key-id "$GVSKB_INTEL_KEY_ID"
+            if [ -n "$ALLOW_SHRINK" ]; then echo "::warning::의도한 축소 표시를 넣어 게시합니다(수동 실행 입력 allow_shrink=yes)."; fi
+            gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"               --sign-key-env GVSKB_INTEL_SIGNING_KEY --key-id "$GVSKB_INTEL_KEY_ID" $ALLOW_SHRINK
+          elif [ "$GITHUB_REPOSITORY" = "Lex6won/vibecode-checker" ]; then
+            # 공식 저장소의 번들은 체커가 서명을 필수로 요구한다(autopull.is_official_url) — 서명 없이
+            # 게시하면 모든 PC 가 거부해 위협정보가 낡는다. 게시하지 않고 여기서 멈춘다.
+            echo "::error::서명 키(secrets.GVSKB_INTEL_SIGNING_KEY)가 없습니다 — 공식 번들은 서명 없이 게시하지 않습니다."
+            exit 1
           else
             echo "::warning::서명 키(secrets.GVSKB_INTEL_SIGNING_KEY)가 없어 번들을 서명 없이 게시합니다 — 폐쇄망 자동 반입 전에 'gvskb intel-bundle keygen' 으로 키를 만들어 등록하세요(src/gvskb/intel/signing.py 절차)."
             gvskb intel-bundle export "$BUNDLE_NAME" --cache-dir "$GVSKB_CACHE_DIR"
@@ -226,12 +240,23 @@ jobs:
       - name: 번들 반입 재검증
         id: verify
         if: steps.bundle.outcome == 'success'
+        env:
+          # 게시하는 쪽은 직전 번들이 낡았어도 축소 검사를 한다 — 수집 사고가 며칠 이어져도 잘린 목록을 게시하지 않게.
+          GVSKB_INTEL_STRICT_SHRINK: "1"
+        # 축소 허용은 export 가 서명 manifest 에 넣은 표시로 전달된다 — 여기서 따로 끄고 켜지 않는다.
         run: |
           sha256sum -c "$BUNDLE_NAME.sha256"
           # 서명이 있으면 체커에 박힌 신뢰 키로 검증된다 — 공개키를 소스에 추가하지 않은 채 Secrets 만
           # 등록하면 여기서 막힌다(의도된 순서: 공개키 배포 → 비밀키 등록).
           gvskb intel-bundle verify "$BUNDLE_NAME" --json
+          # 소비자와 같은 조건으로 — 직전 공식 번들을 먼저 깔고 새 번들을 얹는다. 그래야 PC 들이 거부할
+          # 축소(악성·KEV·취약점 목록이 비거나 20% 넘게 줄어듦)를 게시 **전에** 여기서 잡는다.
+          if [ "${{ steps.restore.outputs.state }}" = "restored" ]; then
+            gvskb intel-bundle import "prev/$BUNDLE_NAME" --cache-dir "$RUNNER_TEMP/verify-cache" --json > /dev/null
+          fi
+          set +e
           gvskb intel-bundle import "$BUNDLE_NAME" --cache-dir "$RUNNER_TEMP/verify-cache" --json > verify-result.json
+          set -e
           cat verify-result.json
           python - <<'PY'
           import json, sys
@@ -239,6 +264,10 @@ jobs:
           res = json.loads(Path("verify-result.json").read_text(encoding="utf-8"))
           if not res.get("ok"):
               print("::error::번들 반입 재검증 실패:", res.get("error")); sys.exit(1)
+          if res.get("rejected_shrink"):
+              print("::error::직전 공식 번들보다 크게 줄어든 소스가 있어 게시하지 않습니다:", res.get("warning"),
+                    "— 수집 사고가 아니라 의도한 축소(수집 방식 변경·대량 철회)로 확인되면 Actions 에서 update-intel 을 "
+                    "수동 실행(channel=prod, allow_shrink=yes)하세요. 그 전까지 공식 번들은 갱신되지 않습니다."); sys.exit(1)
           expected = sorted(p.stem for p in Path(__import__("os").environ["GVSKB_CACHE_DIR"]).glob("*.json") if not p.name.startswith("."))
           got = sorted(res.get("sources") or [])
           if expected != got:
