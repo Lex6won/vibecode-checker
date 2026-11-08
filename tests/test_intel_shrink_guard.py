@@ -227,6 +227,32 @@ def test_far_future_unsigned_file_is_clamped_to_import_time(tmp_path: Path, sign
     assert nxt["sources"] == ["osv-malicious"]
 
 
+def test_clamp_survives_odd_header_and_stale_reported_value(tmp_path: Path) -> None:
+    future = (datetime.now(timezone.utc) + timedelta(hours=20)).isoformat(timespec="seconds")
+    doc = json.loads(_envelope("osv-malicious", _mal_items(5), fetched_at=future, ecosystems=["PyPI", "npm"]))
+    doc = {"schema_version": 2, "source_id": "osv-malicious", "fetched_at": future,
+           "reported_fetched_at": "2036-11-05T00:00:00+00:00", "url": "x\ud800",
+           **{k: doc[k] for k in ("sha256", "item_count", "items", "ecosystems")}}
+    b = _bundle(tmp_path / "odd.zip", {"osv-malicious.json": json.dumps(doc).encode("utf-8")})
+    cache_dir = tmp_path / "cache"
+    res = import_bundle(b, cache_dir=cache_dir)
+    assert res["ok"] is True and res["clamped_future"] == ["osv-malicious"]
+    written = json.loads((cache_dir / "osv-malicious.json").read_text(encoding="utf-8"))
+    assert written["reported_fetched_at"] == future
+
+
+def test_duplicate_fetched_at_key_rejected(tmp_path: Path) -> None:
+    """머리에는 2099년, 실제 해석값은 지금 — peek 가 영원히 '신선'으로 보게 만드는 파일."""
+    items = _mal_items(3)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    raw = ('{"schema_version": 2, "source_id": "osv-malicious", "fetched_at": "2099-01-01T00:00:00+00:00", '
+           f'"fetched_at": "{now}", "url": "u", "sha256": "{entry_items_sha256(items)}", "item_count": 3, '
+           f'"items": {json.dumps(items)}, "ecosystems": ["PyPI", "npm"]}}')
+    b = _bundle(tmp_path / "dup.zip", {"osv-malicious.json": raw.encode("utf-8")})
+    res = import_bundle(b, cache_dir=tmp_path / "cache")
+    assert res["ok"] is False and "두 번" in res["error"]
+
+
 def test_stamp_rewrite_keeps_signed_origin_when_content_same(tmp_path: Path, signer: bytes) -> None:
     """백업 복원·복사로 파일 시각만 바뀌어도 내용이 같으면 서명 기준선을 잃지 않는다(최종 적대적 검증 LOW-3)."""
     cache_dir = tmp_path / "cache"

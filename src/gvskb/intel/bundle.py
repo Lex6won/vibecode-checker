@@ -120,8 +120,17 @@ def _inspect_envelope(fname: str, data: bytes) -> tuple[dict | None, str]:
         return None, f"'{fname}' 의 source_id({doc.get('source_id')!r})가 파일명과 다릅니다"
     items = doc["items"]
     recorded = str(doc.get("sha256", "") or "")
-    if not recorded or entry_items_sha256(items) != recorded:
+    try:
+        actual = entry_items_sha256(items)
+    except (UnicodeEncodeError, TypeError, ValueError):
+        return None, f"'{fname}' 의 항목에 처리할 수 없는 문자가 있습니다"
+    if not recorded or actual != recorded:
         return None, f"'{fname}' 의 내용 해시(envelope sha256)가 맞지 않습니다"
+    # 머리(앞 1KB)의 수집 시각은 peek·상태 표시가 읽는다 — 키를 두 번 넣어 머리와 실제 값을 다르게 만든 파일은 거부한다.
+    head = data[:1024].decode("utf-8", errors="replace")
+    head_match = re.search(r'"fetched_at"\s*:\s*"([^"]*)"', head)
+    if head_match and head_match.group(1) != str(doc.get("fetched_at", "") or ""):
+        return None, f"'{fname}' 의 수집 시각이 두 번 적혀 있고 서로 다릅니다"
     try:
         count = int(doc.get("item_count"))
     except (TypeError, ValueError):
@@ -514,10 +523,13 @@ def import_bundle(
                     # 키 순서를 지킨다 — 수집 시각·항목 수는 파일 머리, 생태계는 꼬리에서 읽는다(peek·guard_info).
                     envelope: dict = {}
                     for key, value in json.loads(data.decode("utf-8")).items():
+                        if key == "reported_fetched_at":
+                            continue  # 원본에 있던 값이 방금 적은 원래 시각을 덮지 않게
                         envelope[key] = doc["fetched_at"] if key == "fetched_at" else value
                         if key == "fetched_at":
                             envelope["reported_fetched_at"] = doc["reported_fetched_at"]
-                    data = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+                    # ensure_ascii — 머리 값(url 등)의 짝 없는 서로게이트가 인코딩 예외로 반입을 죽이지 않게.
+                    data = json.dumps(envelope, ensure_ascii=True).encode("utf-8")
                     del envelope
                 tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
                 tmp.write_bytes(data)
