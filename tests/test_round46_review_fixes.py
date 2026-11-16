@@ -291,7 +291,9 @@ def test_import_writes_atomically_leaving_no_temp_files(tmp_path: Path) -> None:
     assert export_bundle(bundle, cache_dir=src)["ok"]
     dst = tmp_path / "dst"
     assert import_bundle(bundle, cache_dir=dst)["ok"]
-    names = sorted(p.name for p in dst.iterdir())
+    names = sorted(p.name for p in dst.iterdir() if p.name != ".index")
+    # A14 — 이름 색인 폴더에도 쓰다 만 임시 폴더·파일이 남지 않는다.
+    assert [q for q in (dst / ".index").rglob("*") if q.name.startswith(".") or q.name.endswith(".tmp")] == []
     # 반입이 envelope 해시를 검증한 뒤 검증 스탬프(<이름>.verified)도 남긴다 — 첫 검사가 다시 해시하지 않게.
     assert names == sorted([f"{sid}.json" for sid in ESSENTIAL] + [f"{sid}.json.verified" for sid in ESSENTIAL])
     assert not [n for n in names if ".tmp" in n]

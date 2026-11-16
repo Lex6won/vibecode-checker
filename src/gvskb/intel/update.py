@@ -83,6 +83,13 @@ def update_source(
             items = adapter.merge(prev.items, items)
         ecosystems = adapter.ecosystems() if adapter.ecosystems else None
         entry: CacheEntry = cache.save(source_id, url, items, ecosystems=ecosystems)
+        # A14 — 이름 색인(악성·취약점 권고만). 실패해도 갱신 결과와 무관하다.
+        from .name_index import INDEXED_SOURCES, build as _build_name_index
+        if source_id in INDEXED_SOURCES:
+            try:
+                _build_name_index(cache, source_id, entry)
+            except Exception:  # noqa: BLE001 — 색인은 편의 장치다
+                pass
         return IntelUpdateResult(
             source_id=source_id,
             status="ok",

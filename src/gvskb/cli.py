@@ -542,6 +542,28 @@ def _single_check_mode(requested: str | None) -> str | None:
     return mode
 
 
+def _check_package_headline(result: dict) -> str:
+    """단건 검사의 사람용 한 줄 — '검사하지 못함(판정 불가)'과 '검사했지만 사람이 볼 것(확인 필요)'을 가른다.
+
+    예전에는 둘 다 「판정 불가 … update-intel 후 재검사」였다. 로컬 위협정보로 깨끗하게 대조된 패키지도 그렇게
+    나와, 이미 최신인 위협정보를 다시 받으라는 엉뚱한 조치로 읽혔다(2026-11-09 재검토). 종료 코드는 바꾸지 않는다.
+    """
+    verdict = result.get("verdict")
+    if not result.get("checked", False):
+        if verdict == "not_found":
+            return "[gvskb] ✖ 공식 저장소에 없는 패키지입니다 — 설치하지 말고 이름을 확인하세요."
+        return ("[gvskb] ⚠ 판정 불가 — 검사를 끝내지 못했습니다. '안전'이 아닙니다. 사유는 결과의 note 를 보세요"
+                "(위협정보가 없거나 이 생태계를 담지 않았거나 버전 적용을 해석하지 못한 경우 등).")
+    if verdict == "checked_stale":
+        return ("[gvskb] ⚠ 확인 필요 — 위협정보가 기준일보다 오래돼 '이상 없음'을 확정하지 못했습니다. "
+                "최신 위협정보를 받은 뒤(`gvskb update-intel`, 폐쇄망은 번들 반입) 다시 검사하세요.")
+    if verdict == "checked_clean" and result.get("check_mode") in ("local", "offline") and result.get("exists") is None:
+        return ("[gvskb] ⚠ 확인 필요 — 위협정보 대조에서 악성·알려진 취약점은 나오지 않았습니다. 다만 공식 저장소 "
+                "실재·발행일(쿨다운)은 확인하지 못했습니다. 처음 쓰는 패키지면 `--deps online` 으로 한 번 확인하세요"
+                "(폐쇄망은 레지스트리 정보 번들 반입).")
+    return f"[gvskb] ⚠ 확인 필요({verdict}) — 사람이 볼 사유가 있습니다. 결과의 note 를 확인하세요."
+
+
 def _cmd_check_package(args: argparse.Namespace) -> int:
     from .tools.check_package import check_package_impl
 
@@ -564,11 +586,7 @@ def _cmd_check_package(args: argparse.Namespace) -> int:
     # 판정 불가(캐시 없는 오프라인·API 실패)는 '안전'이 아니다 — CI 게이트가
     # "검사 못 함"을 통과(0)로 처리하지 않도록 warn 코드로 실패시킨다.
     if not result.get("checked", False) or result.get("requires_review"):
-        print(
-            "[gvskb] ⚠ 판정 불가 — 검사가 수행되지 않았거나 추가 검토가 필요합니다. "
-            "'안전'이 아닙니다 (온라인 환경 또는 `gvskb update-intel` 후 재검사).",
-            file=sys.stderr,
-        )
+        print(_check_package_headline(result), file=sys.stderr)
         return EXIT_FINDINGS_WARN
     return EXIT_OK
 
@@ -909,6 +927,79 @@ def _cmd_update_intel(args: argparse.Namespace) -> int:
     if any(r["status"] == "warn" for r in out):
         return EXIT_FINDINGS_WARN
     return EXIT_OK
+
+
+def _cmd_registry_meta(args: argparse.Namespace) -> int:
+    """A13 — 폐쇄망 패키지 레지스트리 정보 번들: collect(외부망) · import/verify(서버) · status."""
+    from .tools import registry_meta as rm
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    if args.action == "status":
+        result = rm.status(cache_dir)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif result["state"] == "absent":
+            print("레지스트리 정보 번들: 받은 적 없음 — 로컬 검사는 실재·발행일을 확인하지 못합니다.")
+        else:
+            print(f"레지스트리 정보 번들: {result['item_count']}건 · 마지막 반입 {result['imported_at']} · "
+                  f"가장 오래된 수집 {result['oldest_collected_at']} · 기준일({result['max_age_days']}일) 초과 {result['stale_count']}건")
+        return EXIT_OK
+    if not args.file:
+        print(f"[gvskb] ✖ registry-meta {args.action}: 파일 경로를 주세요.", file=sys.stderr)
+        return EXIT_USAGE
+    if args.action == "collect":
+        if not args.out:
+            print("[gvskb] ✖ collect 에는 --out <번들.zip> 이 필요합니다.", file=sys.stderr)
+            return EXIT_USAGE
+        seed = None
+        if args.sign_key_env:
+            from .intel.signing import load_seed_hex
+
+            raw = os.environ.get(args.sign_key_env, "")
+            if not raw.strip():
+                print(f"[gvskb] ✖ 서명 키 환경변수 {args.sign_key_env} 가 비어 있습니다.", file=sys.stderr)
+                return EXIT_USAGE
+            try:
+                seed = load_seed_hex(raw)
+            except ValueError as exc:
+                print(f"[gvskb] ✖ 서명 키 형식 오류: {exc}", file=sys.stderr)
+                return EXIT_USAGE
+        try:
+            entries = rm.request_from_bytes(Path(args.file).read_bytes())
+        except (OSError, rm.RegistryMetaError) as exc:
+            print(f"[gvskb] ✖ 요청 파일: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
+        def progress(done: int, total: int) -> None:
+            if done == total or done % 200 == 0:
+                print(f"[gvskb] 수집 {done}/{total}", file=sys.stderr)
+
+        rows, failed = asyncio.run(rm.collect(entries, concurrency=args.concurrency, progress=progress))
+        result = rm.export_bundle(rows, args.out, sign_seed=seed, key_id=args.key_id, failed=failed)
+        result["failed"] = failed[:50]
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"[gvskb] 번들 저장: {result['bundle']} — 수집 {result['item_count']}건 · 실패 {result['failed_count']}건 · "
+                  f"서명 {'있음(' + str(result['key_id']) + ')' if result['signed'] else '없음'}")
+            for f in failed[:10]:
+                print(f"    실패: {f['ecosystem']} {f['name']} {f['version'] or ''} — {f['error']}")
+        return EXIT_OK if not failed else EXIT_FINDINGS_WARN
+    result = rm.import_bundle(args.file, cache_dir=cache_dir, verify_only=(args.action == "verify"))
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif result.get("ok"):
+        verb = "검증 통과" if args.action == "verify" else "반입 완료"
+        print(f"[gvskb] 레지스트리 정보 번들 {verb} — {result['item_count']}건"
+              + (f" (새로 {result.get('added', 0)} · 갱신 {result.get('replaced', 0)} · 더 최근 정보 유지 {result.get('kept_newer', 0)})"
+                 if args.action == "import" else "")
+              + f" · 서명 {'확인(' + str(result['key_id']) + ')' if result['signed'] else '없음'}"
+              + (f" · 형식 오류로 버린 행 {result['rejected_rows']}" if result.get("rejected_rows") else ""))
+        if result.get("warning"):
+            print(f"[gvskb] ⚠ {result['warning']}", file=sys.stderr)
+    else:
+        print(f"[gvskb] ✖ {result.get('error')}", file=sys.stderr)
+    return EXIT_OK if result.get("ok") else EXIT_FINDINGS_BLOCK
 
 
 def _cmd_intel_bundle(args: argparse.Namespace) -> int:
@@ -1437,6 +1528,23 @@ def build_parser() -> argparse.ArgumentParser:
                              "export: 서명 번들에 '의도한 축소' 표시를 넣어 받는 PC 가 축소 검사를 건너뛰게 한다")
     bundle.add_argument("--json", action="store_true", help="JSON 출력")
     bundle.set_defaults(func=_cmd_intel_bundle)
+
+    rmeta = sub.add_parser(
+        "registry-meta",
+        help="폐쇄망 패키지 레지스트리 정보 번들 — collect(외부망: 요청 파일→서명 번들) · import/verify(서버) · status",
+    )
+    rmeta.add_argument("action", choices=["collect", "import", "verify", "status"],
+                       help="collect=요청 파일의 패키지를 공식 저장소에서 조회해 번들로, import=번들 검증 후 서버 캐시에 합침, "
+                            "verify=쓰지 않고 검증만, status=받은 정보 요약")
+    rmeta.add_argument("file", nargs="?", default=None, help="collect: 요청 파일(.json) · import/verify: 번들(.zip)")
+    rmeta.add_argument("--out", default=None, help="collect: 만들 번들 zip 경로")
+    rmeta.add_argument("--sign-key-env", metavar="환경변수", default=None,
+                       help="collect: 서명 비밀키(64 hex)를 담은 **환경변수 이름**(값이 아님). 공개키는 서버의 GVSKB_INTEL_TRUSTED_KEYS 에 등록")
+    rmeta.add_argument("--key-id", default=None, help="collect: 서명 키 식별자")
+    rmeta.add_argument("--concurrency", type=int, default=8, help="collect: 동시 조회 수(기본 8)")
+    rmeta.add_argument("--cache-dir", help="캐시 디렉토리 오버라이드 (기본: GVSKB_CACHE_DIR 또는 ~/.gvskb/cache)")
+    rmeta.add_argument("--json", action="store_true", help="JSON 출력")
+    rmeta.set_defaults(func=_cmd_registry_meta)
 
     sync = sub.add_parser(
         "intel-sync",
