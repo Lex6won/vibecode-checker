@@ -878,6 +878,10 @@ class PackageCheckResult(BaseModel):
     # 실재·메타데이터 (VCPS C4/C1/C2/LIC)
     exists: bool | None = Field(default=None, description="registry_metadata.exists 의 요약 복사본")
     registry_metadata: PackageRegistryMetadata | None = None
+    registry_meta_state: str | None = Field(
+        default=None,
+        description="로컬 검사의 레지스트리 정보 번들(A13) 상태 — hit·missing·stale. None=번들을 받은 적 없음 또는 온라인 검사",
+    )
     cooldown: CooldownCheck | None = None
     license_verdict: Literal["allowed", "review_required", "unknown"] | None = Field(
         default=None, description="VCPS 라이선스 허용목록 대조 결과. None=미확인",

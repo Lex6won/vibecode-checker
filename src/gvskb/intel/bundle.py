@@ -560,10 +560,16 @@ def import_bundle(
             write_verified_stamp(dest, doc["sha256"], fetched_at=doc["fetched_at"], item_count=doc["item_count"],
                                  signed_key=key_id if signed else None, eco_counts=doc.get("eco_counts"))
 
+    # A14 — 받은 큰 소스(악성·취약점 권고)의 이름 색인을 만든다. 패키지 1건 검사가 수십 MB 를 다시 읽지 않게 한다.
+    # 실패해도 반입 결과와 무관하다 — 검사는 색인이 맞지 않으면 전체 캐시를 읽는다.
+    from .name_index import build_all as _build_name_index
+    indexed = _build_name_index(IntelCache(target), written)
+
     return {
         "ok": True,
         "cache_dir": str(target),
         "sources": written,
+        "name_index": indexed,
         "skipped_older": skipped_older,
         "file_count": len(written),
         "created_at": manifest.get("created_at", ""),

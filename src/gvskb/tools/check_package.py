@@ -20,8 +20,10 @@ from typing import Literal
 import httpx
 
 from ..intel.cache import CacheEntry, IntelCache
+from ..intel.name_index import load_for_package
 from ..schema import CooldownCheck, PackageCheckResult, PackageRegistryMetadata
 from ..vcps import cooldown_days_for, env_grade_supported, license_verdict, normalize_env_grade
+from .installed_packages import _normalize as _norm_name
 from .package_metadata import fetch_registry_metadata
 from .trust_signals import ai_lure_signal, summarize as summarize_trust
 
@@ -123,8 +125,7 @@ def _basic_heuristics(name: str, ecosystem: str = "pypi") -> dict:
 
 def _mal_name_key(name: str, ecosystem_label: str) -> tuple[str, str]:
     """악성 권고 색인 키. PyPI 이름은 PEP 503 으로 맞춘다(`Foo_Bar` 와 `foo-bar` 는 같은 패키지)."""
-    from .installed_packages import _normalize as _norm_name
-
+    # 모듈 머리에서 가져온다 — 함수 안 import 는 23만 번 불리며 1.5초를 썼다(A14 실측).
     eco = ecosystem_label.lower()
     return eco, (_norm_name(name) if eco == "pypi" else name.lower())
 
@@ -365,11 +366,12 @@ def _local_mal_possible(
     온라인에서는 실시간 답이 1차 근거라 여기서 차단으로 올리지 않는다. 실시간 답에 있던 권고(철회 포함)는 뺀다.
     """
     cache = IntelCache()
-    entry = cache.load("osv-malicious")
+    entry = load_for_package(cache, "osv-malicious", name)
     if entry is None:
         return []
     hits, possible = _classify_mal_advisories(
-        entry, name, ecosystem_label, version, version_exact, vulns_entry=cache.load("osv-vulns"), spec=spec,
+        entry, name, ecosystem_label, version, version_exact, vulns_entry=load_for_package(cache, "osv-vulns", name),
+        spec=spec,
     )
     return [{**row, "reason": row.get("reason") or "local_feed_only"}
             for row in [*hits, *possible] if str(row.get("id")) not in seen]
@@ -968,8 +970,6 @@ def _offline_vuln_hits(
     버전이 None 이면 이름 매칭 advisory 전부를 돌려준다 — 온라인의 버전 미지정
     조회(전체 이력 반환)와 같은 의미이며, 호출자가 severity 를 medium 으로 캡핑한다.
     """
-    from .installed_packages import _normalize as _norm_name
-
     is_pypi = ecosystem_label.lower() == "pypi"
     want = _norm_name(name) if is_pypi else name.lower()
     matched: list[dict] = []
@@ -1014,9 +1014,10 @@ def _offline_cache_check(
     환경은 취약 버전을 영영 '판정 불가'로만 받았다.
     """
     cache = IntelCache()
-    osv_entry = cache.load("osv-malicious")
+    # A14 — 악성·취약점 권고는 이 이름의 항목만 색인에서 읽는다(없거나 어긋나면 전체 캐시). 판정 함수는 그대로다.
+    osv_entry = load_for_package(cache, "osv-malicious", name)
     kev_entry = cache.load("cisa-kev")
-    vulns_entry = cache.load("osv-vulns")
+    vulns_entry = load_for_package(cache, "osv-vulns", name)
     how = "로컬 위협정보" if local_mode else "오프라인"           # 사람에게 보이는 말
     how_adj = "로컬 캐시 검사라" if local_mode else "오프라인 검사라"
 
@@ -1909,6 +1910,131 @@ _ONLINE_DISCLAIMER = (
 )
 
 
+def _apply_registry_meta(
+    result: dict, name: str, ecosystem: str, version: str | None, version_exact: bool, env_grade: str | None,
+) -> dict:
+    """로컬 결과에 레지스트리 정보 번들(A13)을 더한다 — 온라인 판정 사다리와 같은 기준을 쓴다.
+
+    - 번들을 받은 적 없으면 그대로(기존 문구).
+    - 위협정보 판정이 악성이면 그대로. 그다음은 저장소에 **없는** 이름(not_found, 차단급)이 이긴다.
+    - 취약(vulnerable)·판정 불가(unknown)·낡음(checked_stale) 은 판정을 지우지 않는다 — 쿨다운·버전 없음 같은
+      구체 사유가 있으면 그 사유로 바꿔 사람이 볼 이유를 분명히 할 뿐 검토 표시는 유지한다.
+    - '이상 없음'(checked_clean)은 실재·발행일이 확인되고 다른 신호가 없을 때만 검토 표시를 내린다.
+    - 버전이 고정되지 않았으면 미존재 판정만 쓴다(최신판 정보로 설치될 버전을 대신하지 않는다).
+    """
+    from .registry_meta import lookup as registry_lookup
+
+    meta, info = registry_lookup(ecosystem, name, version if version_exact else None)
+    state = info.get("state")
+    if state == "absent":
+        return result
+    result["registry_meta_state"] = state
+    verdict = result.get("verdict")
+    notes: list[str] = [result["note"]] if result.get("note") else []
+
+    if meta is None:
+        if verdict not in ("malicious",):
+            if state == "stale":
+                notes.append(
+                    f"레지스트리 정보 번들의 이 패키지 정보가 {info.get('collected_age_days')}일 전 수집분이라 "
+                    f"기준({info.get('max_age_days')}일)을 넘었습니다 — 외부망에서 다시 수집해 반입하세요."
+                )
+            else:
+                notes.append(
+                    "레지스트리 정보 번들에 이 패키지(버전)가 아직 없습니다 — 공식 저장소 실재·발행일·라이선스는 "
+                    "다음 반입 때 확인됩니다(확인 필요)."
+                )
+            result["note"] = " ".join(notes)
+        return result
+
+    meta_dump = meta.model_dump(mode="json")
+    if meta.exists:
+        lure = ai_lure_signal(name, meta.package_age_days)
+        if lure and not any(s.get("key") == lure.get("key") for s in meta.trust_signals):
+            meta.trust_signals.append(lure)
+            meta_dump = meta.model_dump(mode="json")
+    result["registry_metadata"] = meta_dump
+    result["exists"] = meta.exists
+    collected = str(info.get("collected_at") or "")[:10]
+
+    if verdict == "malicious":
+        return result
+
+    if meta.exists is False:
+        squat = (result.get("heuristics") or {}).get("typosquat_warning")
+        result.update(
+            checked=False, verdict="not_found", verdict_severity="high", requires_review=True,
+            note=(
+                f"'{name}'은(는) 공식 저장소({ECOSYSTEM_MAP.get(ecosystem.lower(), ecosystem)})에 존재하지 않습니다"
+                f"(레지스트리 정보 번들, 수집 {collected}). AI 가 지어낸 이름(슬롭스쿼팅)일 가능성이 높습니다 — "
+                "설치하지 말고 공식 문서에서 정확한 패키지명을 확인하세요." + (f" 참고: {squat}" if squat else "")
+            ),
+        )
+        return result
+
+    pinned = bool(version) and version_exact
+    cooldown = _evaluate_cooldown(meta if pinned else None, env_grade)
+    lic = license_verdict(meta.license) if meta.license else None
+    result["license_verdict"] = lic
+    if pinned:
+        result["cooldown"] = cooldown.model_dump(mode="json")
+
+    meta_notes: list[str] = []
+    if meta.install_scripts == "present":
+        meta_notes.append(
+            f"설치 스크립트({', '.join(meta.install_script_names)})가 있습니다 — "
+            "보안 점검보다 먼저 실행되므로 `--ignore-scripts` 설치를 권장합니다(VCPS C2)."
+        )
+    if meta.deprecated:
+        meta_notes.append("npm에서 deprecated 로 표시된 패키지입니다 — 유지보수 중단 신호.")
+    if meta.trust_signals:
+        meta_notes.append(f"신뢰 신호: {summarize_trust(meta.trust_signals)} — 변경 내역·관리자를 사람이 확인하세요(VCPS T1).")
+    if lic == "review_required":
+        meta_notes.append(
+            f"라이선스({meta.license})는 배포·네트워크 제공·수정 여부에 따라 소스 공개 등 의무가 달라집니다 — 계약·법무 확인이 필요합니다."
+        )
+
+    squat_d = _squat_distance(result.get("heuristics") or {})
+    if pinned and verdict in ("checked_clean", "checked_stale", "unknown"):
+        if cooldown.ok is False:
+            result.update(verdict="cooldown_hold", verdict_severity="medium", requires_review=True)
+            meta_notes.insert(0,
+                f"버전 발행 후 {cooldown.version_age_days}일밖에 지나지 않았습니다(기준 {cooldown.cooldown_days}일, "
+                f"등급 {cooldown.env_grade}). 오염된 신규 버전은 대부분 수 시간~수 일 내 발각·삭제됩니다 — 기다렸다 설치하세요(VCPS C1).")
+        elif meta.version_exists is False:
+            result.update(verdict="version_not_found", verdict_severity="high", requires_review=True)
+            meta_notes.insert(0,
+                f"'{name}' 은(는) 저장소에 있지만 버전 {version} 은 존재하지 않습니다(최신 {meta.latest_version}, "
+                f"수집 {collected}). 버전 오타이거나 자리차지 패키지일 수 있습니다.")
+        elif squat_d == 1:
+            result.update(verdict="suspicious_name", verdict_severity="high", requires_review=True)
+
+    if result.get("verdict") == "checked_clean" and pinned:
+        requires_review = (
+            cooldown.ok is not True
+            or meta.version_exists is not True
+            or squat_d in (1, 2)
+            or meta.install_scripts == "present"
+            or lic == "review_required"
+            or bool(meta.deprecated)
+            or bool(meta.trust_signals)
+        )
+        result["requires_review"] = requires_review
+        how = "로컬 위협정보" if result.get("check_mode") == "local" else "오프라인 위협정보"
+        base_note = (
+            f"{how} 대조: 악성 등록 없음 · 알려진 취약점(OSV) 없음. 레지스트리 정보 번들(수집 {collected})로 "
+            "공식 저장소 실재·발행일을 확인했습니다."
+        )
+        kev_note = " 단, CISA KEV 목록에 이 이름과 일치하는 항목이 있습니다 — 우선 확인하세요." if result.get("kev_signals") else ""
+        result["note"] = " ".join([base_note + kev_note, *meta_notes])
+        return result
+
+    if not pinned and verdict == "checked_clean":
+        meta_notes.append("버전이 고정되지 않아 발행일(쿨다운)은 판정하지 않았습니다 — 버전을 고정(==)하세요.")
+    result["note"] = " ".join([*notes, *meta_notes]) or None
+    return result
+
+
 async def check_package_impl(
     name: str,
     ecosystem: Literal["pypi", "npm"] = "pypi",
@@ -1960,7 +2086,8 @@ async def check_package_impl(
             result["version"] = version
         # 오프라인은 발행일을 알 수 없어 쿨다운 판정 불가(ok=None) — '통과' 아님.
         result["cooldown"] = _evaluate_cooldown(None, env_grade).model_dump(mode="json")
-        return result
+        # A13 — 폐쇄망 레지스트리 정보 번들을 받았으면 실재·발행일·라이선스를 더한다(악성·취약 판정은 그대로).
+        return _apply_registry_meta(result, name, ecosystem, version, version_exact, env_grade)
 
     # ① 실재 확인 + 메타데이터(발행일·라이선스·설치스크립트) — VCPS C4/C1/C2/LIC.
     meta = await fetch_registry_metadata(name, ecosystem, version=version, timeout=timeout)

@@ -10,6 +10,9 @@ import yaml
 from .schema import Rule
 
 _FRONTMATTER_RE = re.compile(r"^---\n(?P<meta>.*?)\n---\n(?P<body>.*)$", re.DOTALL)
+# libyaml(C) 파서가 있으면 쓴다 — 룰 366개를 읽는 데 순수 파이썬 파서는 0.6초(검사마다 시작 비용, A14 실측).
+# 생성자는 같은 SafeConstructor 라 결과가 같다(시험이 전 룰을 두 파서로 읽어 대조한다).
+_SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
 class RuleLoadError(RuntimeError):
@@ -25,7 +28,7 @@ def load_rule(path: Path) -> Rule:
     match = _FRONTMATTER_RE.match(text)
     if not match:
         raise ValueError(f"frontmatter not found: {path}")
-    meta = yaml.safe_load(match.group("meta")) or {}
+    meta = yaml.load(match.group("meta"), Loader=_SAFE_LOADER) or {}
     body = match.group("body").strip()
     return Rule(body=body, **meta)
 
