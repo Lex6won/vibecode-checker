@@ -210,7 +210,8 @@ def test_no_bundle_keeps_previous_behavior(env: Path, monkeypatch: pytest.Monkey
     before = _check("cleanlib")
     monkeypatch.setattr(cp, "_apply_registry_meta", lambda result, *a, **k: result)
     plain = _check("cleanlib")
-    before.pop("checked_at"); plain.pop("checked_at")
+    before.pop("checked_at")
+    plain.pop("checked_at")
     assert before == plain and before["verdict"] == "checked_clean" and before["requires_review"] is True
     assert "registry_meta_state" not in before or before["registry_meta_state"] is None
 
