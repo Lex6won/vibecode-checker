@@ -23,6 +23,7 @@ from ..intel.cache import CacheEntry, IntelCache
 from ..intel.name_index import load_for_package
 from ..schema import CooldownCheck, PackageCheckResult, PackageRegistryMetadata
 from ..vcps import cooldown_days_for, env_grade_supported, license_verdict, normalize_env_grade
+from .advisory_plan import prioritize as _prioritize_advisories, summarize as _summarize_advisories, upgrade_plan as _upgrade_plan
 from .installed_packages import _normalize as _norm_name
 from .package_metadata import fetch_registry_metadata
 from .trust_signals import ai_lure_signal, summarize as summarize_trust
@@ -1153,6 +1154,8 @@ def _offline_cache_check(
         for sid in _attach_knvd_evidence(rows, vuln_hits, cache):
             if sid not in cache_sources_used:
                 cache_sources_used.append(sid)
+        # K3 — 실제 악용(KEV) → 로그인 없이 원격 → 높음 순으로 정렬한다(판정은 그대로).
+        rows = _prioritize_advisories(rows, {str(h.get("cveID")) for h in kev_hits})
         max_cve = _max_cve_from_vulns(vuln_hits)
         in_kev = bool(kev_hits)
         notes: list[str] = []
@@ -1191,6 +1194,8 @@ def _offline_cache_check(
             verdict="vulnerable",
             requires_review=True,
             recommended_version=_recommended_version(rows, version),
+            advisory_summary=_summarize_advisories(rows),
+            upgrade_plan=_upgrade_plan(rows, version, _advisory_target, _highest_version),
             note=" ".join(notes),
         ).model_dump(mode="json")
 
@@ -2319,6 +2324,7 @@ async def check_package_impl(
     online_cache_sources = ["cisa-kev"] if kev_cache["state"] in ("ok", "stale") else []
     if vulns:
         online_cache_sources.extend(_attach_knvd_evidence(advisory_rows, vulns, _intel))
+    advisory_rows = _prioritize_advisories(advisory_rows, {str(h.get("cveID")) for h in kev_hits})
 
     if has_malicious:
         from ..gate import MAL_CONFIRMED_ACTION
@@ -2345,6 +2351,8 @@ async def check_package_impl(
         version_resolution=version_resolution,
         advisories=advisory_rows,
         recommended_version=_recommended_version(advisory_rows, resolved_version),
+        advisory_summary=_summarize_advisories(advisory_rows) if advisory_rows else None,
+        upgrade_plan=_upgrade_plan(advisory_rows, resolved_version, _advisory_target, _highest_version),
         source="OSV.dev v1/query + " + (meta.source or "registry metadata"),
         # 온라인 경로도 KEV 대조에 로컬 캐시를 쓴다 — 어떤 캐시를 썼고 얼마나
         # 낡았는지 결과가 스스로 밝혀야 보고서가 집계해 배너로 알릴 수 있다.

@@ -223,6 +223,7 @@ def _dependency_block_reasons(report: ScanReport) -> list[dict]:
             "action": _MAL_ACTIONS.get(kind),
             "versions": sorted({str(v) for a in check.get("advisories") or [] if isinstance(a, dict) for v in a.get("versions") or []})[:6] if kind == "unverified" else [],
             "recommended_version": check.get("recommended_version"),
+            "upgrade_plan": check.get("upgrade_plan"),
             "latest_version": (check.get("registry_metadata") or {}).get("latest_version"),
         })
     return reasons

@@ -647,6 +647,7 @@ def _compile_rule(rule: Rule) -> dict | None:
         "excludes": excludes,
         "validators": validators,
         "dedup_group": detection.dedup_group,
+        "string_arguments": detection.string_arguments,
         "confidence": detection.confidence,
         "languages": {lang.lower() for lang in rule.languages},
         "why": detection.why_it_matters or rule.body[:200].strip(),

@@ -19,7 +19,10 @@ verified_at: 2026-05-31
 review_due: 2026-11-30
 detection:
   patterns:
-    - 'open\s*\(\s*(?:request\.|flask\.request\.|input\s*\()'
+    - '(?:(?<![\w.])|\b(?:io|codecs|builtins)\.)open\s*\(\s*(?:request\.|flask\.request\.|input\s*\()'
+    # 고정 접두 경로 + 요청 값 — open('/srv/files/' + request.args.get('name')) · f-string (실측 2026-11-21)
+    - "(?:(?<![\\w.])|\\b(?:io|codecs|builtins)\\.)open\\s*\\(\\s*(?:\"[^\"\\n]*\"|'[^'\\n]*')\\s*\\+\\s*(?:flask\\.)?request\\."
+    - "(?:(?<![\\w.])|\\b(?:io|codecs|builtins)\\.)open\\s*\\(\\s*[fF](?:\"[^\"\\n]*|'[^'\\n]*)\\{\\s*(?:flask\\.)?request\\."
     - "(?:os\\.path\\.join|open|Path)\\s*\\([^)]*\\.\\.[/\\\\]"
     - "send_file\\s*\\([^)]*request\\."
     - "(?:os\\.path\\.join|Path\\s*\\()[^)]*request\\.[a-zA-Z_]+\\s*\\)"
@@ -60,12 +63,15 @@ examples:
   positive:
     - "data = open(request.args[\"path\"]).read()"
     - "return send_file(request.args.get(\"name\"))"
+    - "data = open('/srv/files/' + request.args.get('name')).read()"
+    - "data = open(f'/srv/files/{request.args[\"name\"]}').read()"
     # 조립 조각이 변수·f-string이면 여전히 잡아야 한다(반대 방향 고정)
     - "with open(os.path.join(UPLOAD_DIR, filename)) as f:"
     - "with open(os.path.join(BASE_DIR, \"sub\", user_name)) as f:"
     - "with open(os.path.join(BASE_DIR, f\"{report_id}.json\")) as f:"
     - "return send_file(os.path.join(EXPORT_DIR, requested))"
   negative:
+    - "js_xhr.open(request.method, request.url, False)"
     - "data = open(SAFE_REPORT_PATH, \"rb\").read()"
     - "return send_file(ALLOWED_FILES[key])"
     # 실측 오탐(semi_fable5) — 조각이 전부 리터럴인 고정 경로는 동적이지 않다

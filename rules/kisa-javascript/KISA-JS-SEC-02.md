@@ -22,8 +22,8 @@ verified_at: 2026-06-03
 review_due: 2026-12-03
 detection:
   patterns:
-    - "(?:router|app)\\.delete\\s*\\(\\s*['\"][^'\"]+['\"]\\s*,(?![\\s\\S]{0,800}?(?:req\\.session\\.role|req\\.user\\.role|isAdmin|hasPermission|canDelete|authorize|ac\\.can|checkRole|requireRole|requireAuth|ensureAdmin))[\\s\\S]{0,800}?(?:delete\\w+FromDB|\\.destroy\\s*\\(|\\.remove\\s*\\(|\\.delete\\s*\\(|DELETE\\s+FROM)"
-    - "(?:router|app)\\.(?:put|patch)\\s*\\(\\s*['\"][^'\"]*(?:admin|user|role|content)[^'\"]*['\"]\\s*,(?![\\s\\S]{0,800}?(?:req\\.session\\.role|req\\.user\\.role|isAdmin|hasPermission|authorize|requireRole|checkRole|requireAuth|ensureAdmin))[\\s\\S]{0,800}?(?:update\\w+FromDB|\\.update\\s*\\(|UPDATE\\s+\\w+\\s+SET)"
+    - "(?:router|app)\\.delete\\s*\\(\\s*['\"][^'\"]+['\"]\\s*,(?![\\s\\S]{0,800}?(?:req\\.session\\.role|req\\.user\\.role|isAdmin|hasPermission|canDelete|authorize|ac\\.can|checkRole|require(?:Role|Auth|Admin|Login|User)\\w*|ensure(?:Admin|Auth|Logged)\\w*|authenticate|isAuthenticated|passport\\.|verify(?:Token|Jwt|Session)|checkAuth|withAuth|adminOnly))[\\s\\S]{0,800}?(?:delete\\w+FromDB|\\.destroy\\s*\\(|\\.remove\\s*\\(|\\.delete\\s*\\(|DELETE\\s+FROM)"
+    - "(?:router|app)\\.(?:put|patch)\\s*\\(\\s*['\"][^'\"]*(?:admin|user|role|content)[^'\"]*['\"]\\s*,(?![\\s\\S]{0,800}?(?:req\\.session\\.role|req\\.user\\.role|isAdmin|hasPermission|authorize|checkRole|require(?:Role|Auth|Admin|Login|User)\\w*|ensure(?:Admin|Auth|Logged)\\w*|authenticate|isAuthenticated|passport\\.|verify(?:Token|Jwt|Session)|checkAuth|withAuth|adminOnly))[\\s\\S]{0,800}?(?:update\\w+FromDB|\\.update\\s*\\(|UPDATE\\s+\\w+\\s+SET)"
   category: kisa-secure-coding
   why_it_matters: >-
     `router.delete(...)` 핸들러가 로그인 여부만 보고 `req.body.contentId`로 바로
@@ -58,6 +58,8 @@ examples:
     - "router.put('/admin/role', (req, res) => { db.query('UPDATE user SET role=? WHERE id=?', [req.body.role, req.body.id]); res.send('ok'); });"
   negative:
     - "router.delete('/content', (req, res) => { const role = req.session.role; if (role !== 'admin') return res.status(403).send('no'); deleteContentFromDB(req.body.contentId); });"
+    - "app.delete('/admin/users/:id', requireAdmin, async (req, res) => { await db.users.destroy({ where: { id: req.params.id } }); res.status(204).end(); });"
+    - "router.delete('/posts/:id', passport.authenticate('jwt'), async (req, res) => { await Post.destroy({ where: { id: req.params.id } }); res.end(); });"
     - "app.delete('/users/:id', requireRole('admin'), async (req, res) => { await User.destroy({ where: { id: req.params.id } }); });"
     - "router.get('/content/:id', (req, res) => { res.json(getContent(req.params.id)); });"
 ---

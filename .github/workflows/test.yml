@@ -46,6 +46,9 @@ jobs:
       # 46차 — TS 말뭉치(선택 엔진 ts-structure 포함 채점).
       - name: TS corpus (k_ts_2026)
         run: GVSKB_MODE=offline PYTHONPATH=src python scripts/run_holdout.py --corpus k_ts_2026
+      # 로그인 없이 원격에서 닿는 취약점 — 취약 80 · 안전한 쌍둥이 42 · 추적 깊이 대조 57. 쌍둥이 오탐이 생기면 실패한다.
+      - name: Remote unauthenticated corpus (l_remote_unauth_2026)
+        run: GVSKB_MODE=offline PYTHONPATH=src python scripts/run_holdout.py --corpus l_remote_unauth_2026
 
   # ── 패키징 스모크 테스트 ─────────────────────────────────────────────
   # 실측 사고: 먼저 설치된 구버전이 site-packages 에 **물리 디렉터리**로 남아

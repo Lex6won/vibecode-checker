@@ -81,6 +81,15 @@ class RuleDetection(BaseModel):
             "우연히 같은 줄에 걸린 것을 임의로 지우지 않기 위해서다."
         ),
     )
+    string_arguments: bool = Field(
+        default=False,
+        description=(
+            "패턴이 **문자열 인자**(옵션 키·값)를 포함하는 설정형 룰. Python 문자열 감쇄(문자열 안의 코드 모양 → 낮음)는 "
+            "문자열 내용을 지운 줄에서 패턴이 다시 맞는지로 판정하므로, `options={\"verify_signature\": False}` 처럼 "
+            "문자열 키가 패턴의 일부면 진짜 코드도 '낮음'으로 떨어졌다(실측 2026-11-21). 이 값이 참이면 매치가 "
+            "문자열 밖(코드)에서 시작할 때 감쇄하지 않는다 — 매치 전체가 문자열 안이면 그대로 감쇄한다."
+        ),
+    )
     flags: list[Literal["IGNORECASE", "MULTILINE", "DOTALL"]] = Field(default_factory=list)
     confidence: Literal["confirmed", "likely", "pattern-only"] | None = Field(
         default=None,
@@ -925,6 +934,18 @@ class PackageCheckResult(BaseModel):
             "나열된 취약점을 모두 넘어서는 최소 상한 — '이 버전 이상으로 올리세요'. "
             "advisory 중 하나라도 고쳐진 버전을 모르면 **None** 이다(올리면 다 해결된다는 "
             "잘못된 안심을 주지 않는다). 버전 비교가 불가능한 표기도 None."
+        ),
+    )
+    advisory_summary: dict | None = Field(
+        default=None,
+        description="권고 요약 — {total, kev, remote_unauthenticated, critical_high}. advisories 는 급한 순서(실제 악용 → 로그인 없이 원격 → 높음)로 정렬돼 있다",
+    )
+    upgrade_plan: dict | None = Field(
+        default=None,
+        description=(
+            "올릴 버전 계획 — {version, issues, resolves, unfixed, unfixed_ids, urgent_unfixed_ids, complete}. 같은 취약점의 권고"
+            "(GHSA·PYSEC 별칭)는 한 건으로 센다. complete 가 참일 때만 recommended_version 과 같고 '올리면 전부 해소'다. "
+            "거짓이면 version 으로 resolves 건이 해소되고 unfixed 건은 수정판 정보가 없다"
         ),
     )
     kev_signals: list[dict] = Field(default_factory=list)

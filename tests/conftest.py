@@ -24,6 +24,10 @@ def _deterministic_intel_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: 
     """
     monkeypatch.setenv("GVSKB_CACHE_DIR", str(tmp_path_factory.mktemp("intel-cache")))
     monkeypatch.setenv("GVSKB_AUTO_UPDATE", "off")
+    # 서명 정책·신뢰 키도 PC 설정을 물려받지 않는다 — 운영 PC 는 시스템 환경변수로 서명 필수를 켜 두는데(2026-11-16),
+    # 그 값이 들어오면 서명 없는 시험 번들을 쓰는 시험 18건이 실패했다(2026-11-21). 필요한 시험은 스스로 켠다.
+    monkeypatch.delenv("GVSKB_INTEL_REQUIRE_SIGNATURE", raising=False)
+    monkeypatch.delenv("GVSKB_INTEL_TRUSTED_KEYS", raising=False)
 
 
 @pytest.fixture(autouse=True)

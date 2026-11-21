@@ -1059,7 +1059,20 @@ def _vulnerable_upgrades(report: ScanReport) -> list[tuple[str, str, str | None,
     return out
 
 
-def _upgrade_hint(rec: str | None, latest: str | None, current: str | None) -> str:
+def _plan_hint(plan: dict | None) -> str | None:
+    """권고 버전을 확정하지 못했을 때 — 수정판을 아는 만큼의 목표 버전과 남는 건수."""
+    if not plan or not plan.get("version") or plan.get("complete") or not plan.get("unfixed"):
+        return None
+    urgent = len(plan.get("urgent_unfixed_ids") or [])
+    return (
+        f"**{plan['version']} 이상**으로 올리면 취약점 {plan.get('issues')}건 중 {plan.get('resolves')}건이 해소됩니다. "
+        f"나머지 {plan.get('unfixed')}건은 수정판 정보가 없습니다"
+        + (f"(그중 실제 악용·로그인 없는 원격 {urgent}건)" if urgent else "")
+        + " — 권고 원문을 확인하고, 올린 뒤 다시 검사하세요"
+    )
+
+
+def _upgrade_hint(rec: str | None, latest: str | None, current: str | None, plan: dict | None = None) -> str:
     """권고 버전이 없을 때 **왜 없는지**를 구분해 적는다.
 
     `_recommended_version` 은 권고(advisory) 중 하나라도 수정판을 모르면 None 을 준다 —
@@ -1069,6 +1082,9 @@ def _upgrade_hint(rec: str | None, latest: str | None, current: str | None) -> s
     """
     if rec:
         return f"**{rec} 이상**으로 올린 뒤 다시 검사하세요"
+    partial = _plan_hint(plan)
+    if partial:
+        return partial
     if latest and latest != (current or ""):
         return (
             "수정 버전을 확정하지 못했습니다(권고 일부에 수정판 정보 없음) — "
@@ -1104,7 +1120,7 @@ def _remedy_lines(report: ScanReport) -> list[str]:
             fix = ("취약점이 없는 버전을 골라 **고정(==)** 한 뒤 다시 검사하세요 — "
                    "미고정이면 설치 시점에 최신판이 들어옵니다")
         else:
-            fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"))
+            fix = _upgrade_hint(r.get("recommended_version"), r.get("latest_version"), r.get("version"), r.get("upgrade_plan"))
         if r.get("action"):   # 악성 차단은 '올리면 된다'가 아니다 — 종류별로 할 일을 적는다
             fix = r["action"]
         out.append(f"`{pkg}` ({' · '.join(r['labels'])}) → {fix}")
@@ -3702,6 +3718,9 @@ def _pkg_upgrade_hint(check: dict) -> str:
     if rec:
         tail = f" (검사 시점 최신 {latest})" if latest and latest != rec else ""
         return f"**{rec} 이상**으로 올리면 위 취약점이 해소됩니다{tail}."
+    partial = _plan_hint(check.get("upgrade_plan"))
+    if partial:
+        return partial + "."
     if latest:
         return (
             f"고쳐진 버전을 확인하지 못한 취약점이 있어 목표 버전을 특정하지 못했습니다 "

@@ -91,13 +91,13 @@ cases:
   - {id: I-13, file: i_guide_types/c_ratelimit.py, line: 5, kind: known_gap, category: rate-limit, expect_detected: false, expected_rule_ids: [], sink: "if check_password(request.form[\"id\"]", guide_item: "요청 제한 우회"}
   - {id: I-14, file: i_guide_types/c_ssrf.py, line: 6, kind: known_gap, category: ssrf, expect_detected: false, expected_rule_ids: [], sink: "requests.get(url, timeout=5)", guide_item: "SSRF"}
   - {id: I-15, file: i_guide_types/c_ssti.py, line: 5, kind: known_gap, category: injection, expect_detected: false, expected_rule_ids: [], sink: "render_template_string(tpl)", guide_item: "템플릿 인젝션"}
-  - {id: I-16, file: i_guide_types/c_upload.py, line: 6, kind: known_gap, category: upload, expect_detected: false, expected_rule_ids: [], sink: "f.save(\"/var/www/html/uploads/\"", guide_item: "파일 업로드"}
+  - {id: I-16, file: i_guide_types/c_upload.py, line: 6, kind: vulnerability, category: upload, expect_detected: true, expected_rule_ids: [GOV-UPLOAD-FILENAME-001], sink: "f.save(\"/var/www/html/uploads/\"", guide_item: "파일 업로드"}
   - {id: I-17, file: i_guide_types/s01_auth_bypass.py, line: 19, kind: known_gap, category: authn, expect_detected: false, expected_rule_ids: [], sink: "if request.form.get(\"bypass\") == \"1\"", guide_item: "인증 우회"}
   - {id: I-18, file: i_guide_types/s04_privesc.py, line: 8, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "setattr(user, k, v)", guide_item: "권한 상승"}
   - {id: I-18b, file: i_guide_types/s04_privesc.py, line: 13, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [KISA-PY-INPUT-05], sink: "subprocess.run([\"sudo\", \"-u\", \"root\", \"sh\", \"-c\", cmd])", guide_item: "명령 주입 (sh -c)"}
   - {id: I-19, file: i_guide_types/s05_idor.py, line: 4, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "doc_id = request.args.get(\"id\")", guide_item: "IDOR/BOLA"}
-  - {id: I-20, file: i_guide_types/s15_cors.js, line: 5, kind: known_gap, category: misconfig, expect_detected: false, expected_rule_ids: [], sink: "cors({ origin: true, credentials: true })", guide_item: "CORS 설정 오류"}
-  - {id: I-21, file: i_guide_types/s15_cors.py, line: 5, kind: known_gap, category: misconfig, expect_detected: false, expected_rule_ids: [], sink: "resources={r\"/api/*\": {\"origins\": \"*\"}}", guide_item: "CORS 설정 오류"}
+  - {id: I-20, file: i_guide_types/s15_cors.js, line: 5, kind: vulnerability, category: misconfig, expect_detected: true, expected_rule_ids: [GOV-CORS-CREDENTIALS-001], sink: "cors({ origin: true, credentials: true })", guide_item: "CORS 설정 오류"}
+  - {id: I-21, file: i_guide_types/s15_cors.py, line: 5, kind: vulnerability, category: misconfig, expect_detected: true, expected_rule_ids: [GOV-CORS-CREDENTIALS-001], sink: "resources={r\"/api/*\": {\"origins\": \"*\"}}", guide_item: "CORS 설정 오류"}
   - {id: I-22, file: i_guide_types/s23_logic.py, line: 7, kind: known_gap, category: business-logic, expect_detected: false, expected_rule_ids: [], sink: "total = price * qty", guide_item: "비즈니스 로직"}
 
 # 의존성 트랙 (gvskb scan 은 .txt 미스캔 → check-package 경로로 별도 측정)
