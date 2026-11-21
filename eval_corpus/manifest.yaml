@@ -86,11 +86,11 @@ cases:
   - {id: I-08, file: i_guide_types/b01_tenant.py, line: 5, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "org = request.args.get(\"org_id\")", guide_item: "테넌트 격리"}
   - {id: I-09, file: i_guide_types/c_csrf.py, line: 3, kind: known_gap, category: misconfig, expect_detected: false, expected_rule_ids: [], sink: "app.config[\"WTF_CSRF_ENABLED\"] = False", guide_item: "CSRF"}
   - {id: I-10, file: i_guide_types/c_logging.py, line: 6, kind: known_gap, category: logging, expect_detected: false, expected_rule_ids: [], sink: "logging.info(\"login attempt pw=%s\", pw)", guide_item: "민감정보 로깅"}
-  - {id: I-11, file: i_guide_types/c_path.py, line: 5, kind: known_gap, category: path-traversal, expect_detected: false, expected_rule_ids: [], sink: "send_file(\"/data/upload/\" + fn)", guide_item: "경로 탐색"}
+  - {id: I-11, file: i_guide_types/c_path.py, line: 5, kind: vulnerability, category: path-traversal, expect_detected: true, expected_rule_ids: [KISA-PY-INPUT-03], sink: "send_file(\"/data/upload/\" + fn)", guide_item: "경로 탐색"}
   - {id: I-12, file: i_guide_types/c_race.py, line: 10, kind: known_gap, category: race, expect_detected: false, expected_rule_ids: [], sink: "if balance(acc) >= amt:", guide_item: "경쟁 조건"}
   - {id: I-13, file: i_guide_types/c_ratelimit.py, line: 5, kind: known_gap, category: rate-limit, expect_detected: false, expected_rule_ids: [], sink: "if check_password(request.form[\"id\"]", guide_item: "요청 제한 우회"}
-  - {id: I-14, file: i_guide_types/c_ssrf.py, line: 6, kind: known_gap, category: ssrf, expect_detected: false, expected_rule_ids: [], sink: "requests.get(url, timeout=5)", guide_item: "SSRF"}
-  - {id: I-15, file: i_guide_types/c_ssti.py, line: 5, kind: known_gap, category: injection, expect_detected: false, expected_rule_ids: [], sink: "render_template_string(tpl)", guide_item: "템플릿 인젝션"}
+  - {id: I-14, file: i_guide_types/c_ssrf.py, line: 6, kind: vulnerability, category: ssrf, expect_detected: true, expected_rule_ids: [KISA-PY-INPUT-12], sink: "requests.get(url, timeout=5)", guide_item: "SSRF"}
+  - {id: I-15, file: i_guide_types/c_ssti.py, line: 5, kind: vulnerability, category: injection, expect_detected: true, expected_rule_ids: [KISA-PY-INPUT-04], sink: "render_template_string(tpl)", guide_item: "템플릿 인젝션"}
   - {id: I-16, file: i_guide_types/c_upload.py, line: 6, kind: vulnerability, category: upload, expect_detected: true, expected_rule_ids: [GOV-UPLOAD-FILENAME-001], sink: "f.save(\"/var/www/html/uploads/\"", guide_item: "파일 업로드"}
   - {id: I-17, file: i_guide_types/s01_auth_bypass.py, line: 19, kind: known_gap, category: authn, expect_detected: false, expected_rule_ids: [], sink: "if request.form.get(\"bypass\") == \"1\"", guide_item: "인증 우회"}
   - {id: I-18, file: i_guide_types/s04_privesc.py, line: 8, kind: known_gap, category: authz, expect_detected: false, expected_rule_ids: [], sink: "setattr(user, k, v)", guide_item: "권한 상승"}
