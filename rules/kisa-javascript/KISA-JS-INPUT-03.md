@@ -24,6 +24,9 @@ detection:
     - "path\\.join\\s*\\([^)]*req\\.(?:params|query|body)\\."
     - "res\\.sendFile\\s*\\(\\s*(?:req\\.|request\\.)"
     - "res\\.download\\s*\\(\\s*(?:req\\.|request\\.)"
+    # 고정 접두 경로 + 요청 값 — fs.readFile('/srv/files/' + req.query.p) · sendFile(`/srv/${req.params.f}`) (실측 2026-11-21)
+    - "(?:fs\\.(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream|unlink|unlinkSync)|res\\.(?:sendFile|download))\\s*\\(\\s*(?:\"[^\"\\n]*\"|'[^'\\n]*')\\s*\\+\\s*(?:req\\.|request\\.)"
+    - "(?:fs\\.(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream|unlink|unlinkSync)|res\\.(?:sendFile|download))\\s*\\(\\s*`[^`\\n]*\\$\\{\\s*(?:req|request)\\."
   category: kisa-secure-coding
   why_it_matters: >-
     Express의 req.params.filename 등을 fs/path 함수에 직접 넘기면 `../../etc/
@@ -49,6 +52,8 @@ examples:
     - "fs.readFile(req.query.path, (err, data) => send(data));"
     - "res.sendFile(req.params.filename);"
     - "const target = path.join(BASE_DIR, req.query.file);"
+    - "fs.readFile('/srv/app/files/' + req.query.p, 'utf8', cb);"
+    - "res.sendFile(`/srv/files/${req.params.name}`);"
   negative:
     - "fs.readFile(SAFE_REPORT_PATH, (err, data) => send(data));"
     - "res.sendFile(path.resolve(ALLOWED_DIR, allowlist[key]));"

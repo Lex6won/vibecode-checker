@@ -1,0 +1,153 @@
+# l_remote_unauth_2026 — 로그인 없이 원격에서 닿는 취약점 채점표 (합성, 페이로드 없음, .example·go.kr 예시 도메인)
+#
+# 드라이버: scripts/run_holdout.py --corpus l_remote_unauth_2026 (j·k 말뭉치와 같은 규칙)
+# py·js·ts = 취약 표본(파일 하나에 유형 하나), n_py·n_js·n_ts = 같은 기능의 안전한 쌍둥이(발견 0이어야 한다),
+# hops = 같은 취약점을 「한 줄 직접 / 변수 경유 / 함수 경유」로 쓴 추적 깊이 대조.
+# kind: known_gap = 지금은 못 잡는다고 확인된 항목. rule 은 **앞으로 그 자리를 잡아야 할 룰**이다(없는 ID 는 만들 예정).
+# 잡히기 시작하면 드라이버가 알린다 — 그때 이 표에서 known_gap 을 지우고 줄 번호를 적는다.
+
+cases:
+  - {id: L-P01, root: py, file: P01_ssrf_requests.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "SSRF — 변수 경유(requests)"}
+  - {id: L-P02, root: py, file: P02_ssrf_fastapi_httpx.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "SSRF — FastAPI 인자 → httpx"}
+  - {id: L-P03, root: py, file: P03_ssti.py, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, kind: known_gap, note: "템플릿 인젝션 — 변수 경유"}
+  - {id: L-P04, root: py, file: P04_cmd_injection.py, line: 9, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "명령 삽입"}
+  - {id: L-P05, root: py, file: P05_pickle_loads.py, line: 8, rule: KISA-PY-CODE-03, min_confidence: likely, note: "pickle 역직렬화"}
+  - {id: L-P06, root: py, file: P06_yaml_load.py, line: 8, rule: KISA-PY-CODE-03, min_confidence: likely, note: "yaml.load"}
+  - {id: L-P07, root: py, file: P07_path_traversal.py, line: 11, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, note: "경로 조작 send_file"}
+  - {id: L-P08, root: py, file: P08_file_upload.py, line: 11, rule: GOV-UPLOAD-FILENAME-001, min_confidence: pattern-only, note: "업로드 원본 파일명 저장"}
+  - {id: L-P09, root: py, file: P09_jwt_no_verify.py, line: 9, rule: GOV-AUTH-JWT-VERIFY-001, min_confidence: confirmed, note: "JWT 서명 검증 끔"}
+  - {id: L-P10, root: py, file: P10_jwt_alg_none.py, line: 10, rule: GOV-AUTH-JWT-VERIFY-001, min_confidence: confirmed, note: "JWT none 허용"}
+  - {id: L-P11, root: py, file: P11_weak_secret_key.py, line: 4, rule: GOV-SECRET-WEAK-KEY-001, min_confidence: pattern-only, note: "짧은 고정 비밀키"}
+  - {id: L-P12, root: py, file: P12_debug_public_bind.py, line: 5, rule: GOV-FLASK-DEBUG-001, min_confidence: pattern-only, note: "디버그 + 전체 바인드"}
+  - {id: L-P13, root: py, file: P13_admin_route_no_auth_flask.py, line: 4, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, note: "관리 경로 무인증(Flask)"}
+  - {id: L-P14, root: py, file: P14_admin_route_no_auth_fastapi.py, line: 5, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, note: "관리 경로 무인증(FastAPI)"}
+  - {id: L-P15, root: py, file: P15_django_insecure_settings.py, line: 1, rule: KISA-PY-ERR-01, min_confidence: pattern-only, note: "Django DEBUG"}
+  - {id: L-P16, root: py, file: P16_django_csrf_exempt.py, line: 4, rule: KISA-PY-INPUT-11, min_confidence: pattern-only, note: "csrf_exempt"}
+  - {id: L-P17, root: py, file: P17_cors_wildcard_credentials.py, line: 5, rule: GOV-CORS-CREDENTIALS-001, min_confidence: pattern-only, note: "CORS 전체 허용 + 자격증명"}
+  - {id: L-P18, root: py, file: P18_sql_injection.py, line: 10, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "SQL 삽입"}
+  - {id: L-P19, root: py, file: P19_eval_request.py, line: 6, rule: KISA-PY-INPUT-02, min_confidence: likely, note: "eval(요청 값)"}
+  - {id: L-P20, root: py, file: P20_open_redirect.py, line: 6, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, note: "열린 리다이렉트"}
+  - {id: L-P21, root: py, file: P21_xxe_lxml.py, line: 8, rule: KISA-PY-INPUT-08, min_confidence: pattern-only, note: "XXE"}
+  - {id: L-P22, root: py, file: P22_default_credentials.py, line: 6, rule: GOV-AUTH-DEFAULT-CREDENTIALS-001, min_confidence: pattern-only, note: "기본 계정 비교"}
+  - {id: L-P23, root: py, file: P23_login_bypass_param.py, rule: GOV-AUTH-BYPASS-PARAM-001, min_confidence: pattern-only, kind: known_gap, note: "요청 값으로 로그인 우회"}
+  - {id: L-P24, root: py, file: P24_tls_verify_off.py, line: 4, rule: KISA-PY-SEC-11, min_confidence: pattern-only, note: "TLS 검증 끔"}
+  - {id: L-P25, root: py, file: P25_gradio_public_no_auth.py, line: 7, rule: GOV-AI-PUBLIC-SHARE-001, min_confidence: pattern-only, note: "Gradio 공개 공유·무인증"}
+  - {id: L-P26, root: py, file: P26_llm_output_exec.py, line: 9, rule: KISA-PY-INPUT-05, min_confidence: likely, note: "LLM 출력 → 셸"}
+  - {id: L-P27, root: py, file: P27_llm_output_sql.py, rule: GOV-LLM-OUTPUT-HANDLING-001, min_confidence: pattern-only, kind: known_gap, note: "LLM 출력 → SQL"}
+  - {id: L-P28, root: py, file: P28_nosql_where.py, line: 11, rule: GOV-NOSQL-INJECTION-001, min_confidence: pattern-only, note: "NoSQL $where·본문 객체"}
+  - {id: L-P29, root: py, file: P29_upload_tar_extract.py, line: 9, rule: GOV-ARCHIVE-EXTRACT-001, min_confidence: pattern-only, note: "올린 tar 전체 풀기"}
+  - {id: L-P30, root: py, file: P30_mcp_tool_shell.py, line: 9, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "MCP 도구 → 셸"}
+  - {id: L-P31, root: py, file: P31_jinja_autoescape_off.py, line: 3, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, note: "Jinja autoescape 끔"}
+  - {id: L-P32, root: py, file: P32_password_reset_no_auth.py, rule: GOV-AUTHZ-STATE-CHANGE-001, min_confidence: pattern-only, kind: known_gap, note: "무인증 비밀번호 재설정"}
+  - {id: L-P33, root: py, file: P33_idor.py, rule: GOV-AUTHZ-OBJECT-001, min_confidence: pattern-only, kind: known_gap, note: "IDOR"}
+  - {id: L-P34, root: py, file: P34_weak_password_hash.py, line: 4, rule: KISA-PY-SEC-04, min_confidence: likely, note: "약한 비밀번호 해시"}
+  - {id: L-P35, root: py, file: P35_tarfile_extract.py, line: 4, rule: GOV-ARCHIVE-EXTRACT-001, min_confidence: pattern-only, note: "tar 전체 풀기"}
+  - {id: L-J01, root: js, file: J01_ssrf_axios.js, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, note: "SSRF axios"}
+  - {id: L-J02, root: js, file: J02_ssrf_fetch.js, line: 6, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, note: "SSRF fetch"}
+  - {id: L-J03, root: js, file: J03_cmd_injection.js, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "명령 삽입"}
+  - {id: L-J04, root: js, file: J04_path_traversal.js, line: 9, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, note: "경로 조작"}
+  - {id: L-J05, root: js, file: J05_file_upload.js, line: 10, rule: GOV-UPLOAD-FILENAME-001, min_confidence: pattern-only, note: "업로드 원본 파일명 저장"}
+  - {id: L-J06, root: js, file: J06_jwt_decode_as_auth.js, rule: GOV-AUTH-JWT-DECODE-001, min_confidence: pattern-only, kind: known_gap, note: "jwt.decode 를 인증에 사용"}
+  - {id: L-J07, root: js, file: J07_jwt_alg_none.js, line: 4, rule: GOV-AUTH-JWT-VERIFY-001, min_confidence: confirmed, note: "JWT none 허용"}
+  - {id: L-J08, root: js, file: J08_jwt_hardcoded_secret.js, line: 4, rule: GOV-SECRET-WEAK-KEY-001, min_confidence: pattern-only, note: "고정 비밀키 'secret'"}
+  - {id: L-J09, root: js, file: J09_admin_route_no_auth.js, line: 4, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, note: "관리 경로 무인증(Express)"}
+  - {id: L-J10, root: js, file: J10_cors_reflect_credentials.js, line: 7, rule: GOV-CORS-CREDENTIALS-001, min_confidence: pattern-only, note: "CORS 반사 + 자격증명"}
+  - {id: L-J11, root: js, file: J11_sql_injection.js, line: 6, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "SQL 삽입"}
+  - {id: L-J12, root: js, file: J12_nosql_operator_injection.js, line: 6, rule: GOV-NOSQL-INJECTION-001, min_confidence: pattern-only, note: "NoSQL 연산자 주입"}
+  - {id: L-J13, root: js, file: J13_eval_request.js, line: 8, rule: KISA-JS-INPUT-02, min_confidence: pattern-only, note: "eval·Function·vm"}
+  - {id: L-J14, root: js, file: J14_unsafe_deserialize.js, line: 5, rule: KISA-JS-CODE-03, min_confidence: pattern-only, note: "역직렬화"}
+  - {id: L-J15, root: js, file: J15_prototype_pollution.js, rule: GOV-JS-PROTOTYPE-POLLUTION-001, min_confidence: pattern-only, kind: known_gap, note: "프로토타입 오염"}
+  - {id: L-J16, root: js, file: J16_open_redirect.js, line: 6, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, note: "열린 리다이렉트"}
+  - {id: L-J17, root: js, file: J17_ssti_ejs.js, line: 8, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "요청 값 템플릿 렌더(응답 반사로 잡힘)"}
+  - {id: L-J18, root: js, file: J18_reflected_xss.js, line: 6, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "반사형 XSS"}
+  - {id: L-J19, root: js, file: J19_tls_reject_off.js, line: 3, rule: KISA-JS-SEC-11, min_confidence: pattern-only, note: "TLS 검증 끔"}
+  - {id: L-J20, root: js, file: J20_session_weak.js, line: 7, rule: GOV-SECRET-APIKEY-001, min_confidence: pattern-only, note: "세션 비밀값 하드코딩"}
+  - {id: L-J21, root: js, file: J21_default_credentials.js, line: 6, rule: GOV-AUTH-DEFAULT-CREDENTIALS-001, min_confidence: pattern-only, note: "기본 계정 비교"}
+  - {id: L-J22, root: js, file: J22_llm_output_exec.js, rule: GOV-LLM-OUTPUT-HANDLING-001, min_confidence: pattern-only, kind: known_gap, note: "LLM 출력 → 셸"}
+  - {id: L-J23, root: js, file: J23_xxe_libxml.js, line: 8, rule: KISA-JS-INPUT-08, min_confidence: pattern-only, note: "XXE"}
+  - {id: L-J24, root: js, file: J24_debug_public_bind.js, line: 5, rule: GOV-DEBUG-ENV-EXPOSE-001, min_confidence: pattern-only, note: "환경변수 응답"}
+  - {id: L-J25, root: js, file: J25_idor.js, rule: GOV-AUTHZ-OBJECT-001, min_confidence: pattern-only, kind: known_gap, note: "IDOR"}
+  - {id: L-T01, root: ts, file: T01_next_route_no_auth.ts, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, kind: known_gap, note: "Next 라우트 핸들러 무인증"}
+  - {id: L-T02, root: ts, file: T02_server_action_no_auth.ts, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, kind: known_gap, note: "서버 액션 무인증"}
+  - {id: L-T03, root: ts, file: T03_nest_admin_no_guard.ts, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, kind: known_gap, note: "Nest 가드 없음·@Public"}
+  - {id: L-T04, root: ts, file: T04_trpc_public_mutation.ts, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, kind: known_gap, note: "tRPC 공개 변경"}
+  - {id: L-T05, root: ts, file: T05_supabase_service_role_client.ts, line: 5, rule: GOV-AUTHZ-CLIENT-GATE-001, min_confidence: likely, note: "service_role 브라우저 노출"}
+  - {id: L-T06, root: ts, file: T06_ssrf_route_handler.ts, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "SSRF — searchParams → fetch"}
+  - {id: L-T07, root: ts, file: T07_cmd_injection_cast.ts, line: 6, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "명령 삽입(as 캐스트)"}
+  - {id: L-T08, root: ts, file: T08_prisma_raw_unsafe.ts, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, kind: known_gap, note: "Prisma $queryRawUnsafe"}
+  - {id: L-T09, root: ts, file: T09_jwt_decode_as_auth.ts, rule: GOV-AUTH-JWT-DECODE-001, min_confidence: pattern-only, kind: known_gap, note: "jwt.decode 를 인증에 사용"}
+  - {id: L-T10, root: ts, file: T10_path_traversal_catchall.ts, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "경로 조작 — catch-all params"}
+  - {id: L-T11, root: ts, file: T11_dangerous_html_llm.tsx, line: 6, rule: KISA-JS-INPUT-04, min_confidence: pattern-only, note: "dangerouslySetInnerHTML"}
+  - {id: L-T12, root: ts, file: T12_public_env_secret.tsx, line: 5, rule: GOV-AUTHZ-CLIENT-GATE-001, min_confidence: likely, note: "NEXT_PUBLIC 비밀키"}
+  - {id: L-T13, root: ts, file: T13_eval_any_cast.ts, line: 5, rule: KISA-JS-INPUT-02, min_confidence: likely, requires_engine: ts-structure, note: "(eval as any)(code)"}
+  - {id: L-T14, root: ts, file: T14_open_redirect_next.ts, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "열린 리다이렉트 — searchParams"}
+  - {id: L-T15, root: ts, file: T15_ai_tool_shell.ts, rule: GOV-AGENT-EXCESSIVE-AUTHORITY-001, min_confidence: pattern-only, kind: known_gap, note: "AI 도구에 셸"}
+  - {id: L-T16, root: ts, file: T16_express_admin_no_auth.ts, line: 4, rule: GOV-AUTHZ-ADMIN-POSTURE-001, min_confidence: likely, note: "관리 경로 무인증(Express TS)"}
+  - {id: L-T17, root: ts, file: T17_cors_wildcard_next.ts, line: 5, rule: GOV-CORS-CREDENTIALS-001, min_confidence: pattern-only, note: "CORS 반사 + 자격증명"}
+  - {id: L-T18, root: ts, file: T18_middleware_header_trust.ts, rule: GOV-AUTH-BYPASS-PARAM-001, min_confidence: pattern-only, kind: known_gap, note: "미들웨어 헤더 신뢰"}
+  - {id: L-T19, root: ts, file: T19_rls_open_policy.sql, line: 1, rule: GOV-DB-RLS-OFF-001, min_confidence: pattern-only, note: "RLS 해제·전체 허용 정책"}
+  - {id: L-T20, root: ts, file: T20_webhook_no_signature.ts, rule: GOV-WEBHOOK-SIGNATURE-001, min_confidence: pattern-only, kind: known_gap, note: "웹훅 서명 미검증"}
+  # ---- 추적 깊이 대조
+  - {id: L-H-js_cmd-1, root: hops, file: js_cmd__1inline.js, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-js_cmd-2, root: hops, file: js_cmd__2var.js, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-js_cmd-3, root: hops, file: js_cmd__3func.js, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_path-1, root: hops, file: js_path__1inline.js, line: 8, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-js_path-2, root: hops, file: js_path__2var.js, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-js_path-3, root: hops, file: js_path__3func.js, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_redirect-1, root: hops, file: js_redirect__1inline.js, line: 8, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-js_redirect-2, root: hops, file: js_redirect__2var.js, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-js_redirect-3, root: hops, file: js_redirect__3func.js, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_sql-1, root: hops, file: js_sql__1inline.js, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-js_sql-2, root: hops, file: js_sql__2var.js, line: 9, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "변수 경유"}
+  - {id: L-H-js_sql-3, root: hops, file: js_sql__3func.js, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "함수 경유"}
+  - {id: L-H-js_ssrf-1, root: hops, file: js_ssrf__1inline.js, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-js_ssrf-2, root: hops, file: js_ssrf__2var.js, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-js_ssrf-3, root: hops, file: js_ssrf__3func.js, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_xss-1, root: hops, file: js_xss__1inline.js, line: 8, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-js_xss-2, root: hops, file: js_xss__2var.js, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-js_xss-3, root: hops, file: js_xss__3func.js, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_cmd-1, root: hops, file: py_cmd__1inline.py, line: 7, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "한 줄 직접"}
+  - {id: L-H-py_cmd-2, root: hops, file: py_cmd__2var.py, line: 8, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "변수 경유"}
+  - {id: L-H-py_cmd-3, root: hops, file: py_cmd__3func.py, line: 6, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "함수 경유"}
+  - {id: L-H-py_open-1, root: hops, file: py_open__1inline.py, line: 7, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-py_open-2, root: hops, file: py_open__2var.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-py_open-3, root: hops, file: py_open__3func.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_path-1, root: hops, file: py_path__1inline.py, line: 7, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-py_path-2, root: hops, file: py_path__2var.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-py_path-3, root: hops, file: py_path__3func.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_redirect-1, root: hops, file: py_redirect__1inline.py, line: 7, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-py_redirect-2, root: hops, file: py_redirect__2var.py, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-py_redirect-3, root: hops, file: py_redirect__3func.py, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_sql-1, root: hops, file: py_sql__1inline.py, line: 7, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "한 줄 직접"}
+  - {id: L-H-py_sql-2, root: hops, file: py_sql__2var.py, line: 8, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "변수 경유"}
+  - {id: L-H-py_sql-3, root: hops, file: py_sql__3func.py, line: 6, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "함수 경유"}
+  - {id: L-H-py_ssrf-1, root: hops, file: py_ssrf__1inline.py, line: 7, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-py_ssrf-2, root: hops, file: py_ssrf__2var.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-py_ssrf-3, root: hops, file: py_ssrf__3func.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_ssti-1, root: hops, file: py_ssti__1inline.py, line: 7, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-py_ssti-2, root: hops, file: py_ssti__2var.py, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-py_ssti-3, root: hops, file: py_ssti__3func.py, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_cmd-1, root: hops, file: ts_cmd__1inline.ts, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-ts_cmd-2, root: hops, file: ts_cmd__2var.ts, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-ts_cmd-3, root: hops, file: ts_cmd__3func.ts, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_path-1, root: hops, file: ts_path__1inline.ts, line: 8, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-ts_path-2, root: hops, file: ts_path__2var.ts, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-ts_path-3, root: hops, file: ts_path__3func.ts, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_redirect-1, root: hops, file: ts_redirect__1inline.ts, line: 8, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-ts_redirect-2, root: hops, file: ts_redirect__2var.ts, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-ts_redirect-3, root: hops, file: ts_redirect__3func.ts, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_sql-1, root: hops, file: ts_sql__1inline.ts, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-ts_sql-2, root: hops, file: ts_sql__2var.ts, line: 9, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "변수 경유"}
+  - {id: L-H-ts_sql-3, root: hops, file: ts_sql__3func.ts, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "함수 경유"}
+  - {id: L-H-ts_ssrf-1, root: hops, file: ts_ssrf__1inline.ts, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-ts_ssrf-2, root: hops, file: ts_ssrf__2var.ts, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-ts_ssrf-3, root: hops, file: ts_ssrf__3func.ts, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_xss-1, root: hops, file: ts_xss__1inline.ts, line: 8, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "한 줄 직접"}
+  - {id: L-H-ts_xss-2, root: hops, file: ts_xss__2var.ts, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
+  - {id: L-H-ts_xss-3, root: hops, file: ts_xss__3func.ts, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+
+negative_roots:
+  - n_py
+  - n_js
+  - n_ts
+negative_rule_prefixes: [KISA-, GOV-, MOIS-, NIS-, OWASP-]

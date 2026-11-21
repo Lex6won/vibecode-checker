@@ -445,6 +445,41 @@ def _python_lines_with_strings_blanked(code: str) -> dict[int, str] | None:
     return {ln: "".join(buf) for ln, buf in out.items()}
 
 
+def _match_starts_in_code(
+    patterns: list, original_lines: list[str], blanked_line: str, line_no: int, code: str = "", multi_patterns: list | None = None,
+) -> bool:
+    """원래 줄에서의 매치가 **문자열 밖**에서 시작하는가 — 설정형 룰(`string_arguments`) 전용.
+
+    `jwt.decode(t, options={"verify_signature": False})` 는 코드(`jwt.decode`)에서 시작해 문자열 키를 지난다 → 참.
+    `scan_code("jwt.decode(t, verify=False)")` 는 매치 전체가 문자열 안이다 → 거짓(감쇄 유지).
+    문자열 내용은 지운 줄에서 공백이므로, 매치의 첫 비공백 글자가 지운 줄에서도 그대로면 코드다.
+    여러 줄에 걸친 패턴(`allow_origins=["*"], … allow_credentials=True`)은 파일 전체에서 찾아 이 줄에서 시작하는 매치만 본다.
+    """
+    if not (0 < line_no <= len(original_lines)):
+        return False
+    original = original_lines[line_no - 1]
+
+    def in_code(column: int, end_column: int) -> bool:
+        while column < end_column and column < len(original) and original[column].isspace():
+            column += 1
+        return column < len(blanked_line) and column < len(original) and column < end_column and blanked_line[column] == original[column]
+
+    for pattern in patterns:
+        for m in pattern.finditer(original):
+            if in_code(m.start(), m.end()):
+                return True
+    if multi_patterns and code:
+        line_start = sum(len(text) for text in code.splitlines(keepends=True)[: line_no - 1])
+        line_end = line_start + len(original)
+        for pattern in multi_patterns:
+            for m in pattern.finditer(code):
+                if m.start() > line_end:
+                    break
+                if line_start <= m.start() <= line_end and in_code(m.start() - line_start, min(m.end(), line_end) - line_start):
+                    return True
+    return False
+
+
 def attenuate_string_literal_findings(
     findings: list[Finding], code: str, filename: str,
 ) -> list[Finding]:
@@ -470,6 +505,7 @@ def attenuate_string_literal_findings(
     blanked = _python_lines_with_strings_blanked(code)
     if blanked is None:
         return findings
+    original_lines = code.splitlines()
     adjusted: list[Finding] = []
     for finding in findings:
         line_no = finding.location.line or 0
@@ -485,6 +521,10 @@ def attenuate_string_literal_findings(
         patterns = (rule or {}).get("patterns") or []
         if not patterns or any(p.search(blanked[line_no]) for p in patterns):
             adjusted.append(finding)      # 문자열 밖에도 매치가 있다 — 진짜 코드
+            continue
+        if (rule or {}).get("string_arguments") and _match_starts_in_code(
+                patterns, original_lines, blanked[line_no], line_no, code, (rule or {}).get("multi_patterns")):
+            adjusted.append(finding)      # 설정형 룰 — 코드에서 시작해 문자열 인자를 포함한 매치
             continue
         adjusted.append(attenuate(finding, step="string_literal", reason=_STRING_LITERAL_REASON, severity=Severity.low))
     return adjusted

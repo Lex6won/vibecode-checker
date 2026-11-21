@@ -25,6 +25,10 @@ detection:
     # res.send/res.write/res.end 에 req.query/params/body 를 같은 라인에서 결합.
     # res.json 은 자동 escape 되므로 제외한다.
     - 'res\.(?:send|write|end)\s*\([^)]*req\.(?:query|params|body)'
+  # 줄에 나오는 요청 값이 **전부** 널리 쓰는 이스케이프 함수로 바로 감싸여 있으면 취소한다
+  # (escape-html·lodash·he·validator·DOMPurify·sanitize-html·xss). 하나라도 맨 값이면 그대로 잡는다.
+  exclude_patterns:
+    - '^(?:(?!req\.(?:query|params|body)).|(?:escapeHtml|escapeHTML|escape_html|_\.escape|he\.(?:encode|escape)|validator\.escape|encodeURIComponent|DOMPurify\.sanitize|sanitizeHtml|xss)\s*\(\s*(?:String\s*\(\s*)?req\.(?:query|params|body))*$'
   category: kisa-secure-coding
   why_it_matters: >-
     Express에서 `res.send("<div>"+req.query.name+"</div>")`처럼 요청 값을 응답
@@ -49,8 +53,11 @@ examples:
   positive:
     - "app.get('/h', (req,res)=>{ res.send('<div>'+req.query.name+'</div>'); });"
     - "res.write(req.params.id);"
+    - "res.send('<p>' + escapeHtml(req.query.a) + req.query.b + '</p>');"
   negative:
     - "res.json({ name: String(req.query.name || '') });"
+    - "res.send(`<h1>Hello ${escapeHtml(String(req.query.name))}</h1>`);"
+    - "res.send('<p>' + _.escape(req.body.comment) + '</p>');"
     - "res.send('<div>static safe</div>');"
 ---
 

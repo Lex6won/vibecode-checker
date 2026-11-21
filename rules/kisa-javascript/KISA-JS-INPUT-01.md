@@ -27,6 +27,8 @@ detection:
     # 문자열 안의 "+09:00" 같은 리터럴이나 정적 SET 문도 결합으로 오인했다.
     # 따라서 `+` 뒤에 [A-Za-z_$](식별자 시작)을 요구해 숫자·따옴표 오매칭을 제거.
     - '\.query\s*\(\s*["''][^"'']*["'']\s*\+\s*[A-Za-z_$]'
+    # 위 패턴은 SQL 문자열 안에 다른 종류의 따옴표가 있으면("… WHERE n='" + x) 끊겼다 — 가장 흔한 형태다(실측 2026-11-21).
+    - "\\.query\\s*\\(\\s*(?:\"[^\"\\n]*\"|'[^'\\n]*')\\s*\\+\\s*[A-Za-z_$]"
     - "\\.(?:query|execute)\\s*\\(\\s*`[^`]*\\$\\{"
     - 'connection\.query\s*\([^,)]*\+\s*[A-Za-z_$]'
   category: kisa-secure-coding
@@ -55,6 +57,7 @@ examples:
     - 'db.query("SELECT * FROM users WHERE n=" + name)'
     - 'db.query(`SELECT * FROM users WHERE id=${userId}`)'
     - "connection.query('SELECT ' + column)"
+    - "db.query(\"SELECT * FROM t WHERE n='\" + req.query.n + \"'\")"
   negative:
     - 'pool.query(''SET time_zone = "+09:00"'')'
     - 'db.query("SELECT * FROM users WHERE id = ?", [id])'

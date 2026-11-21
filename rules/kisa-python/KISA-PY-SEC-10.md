@@ -28,9 +28,7 @@ detection:
     # 2) 해시값 단순 비교로 서명 검증 대체 (== 비교 — timing attack + 서명체계 미사용)
     - "hashlib\\.(?:sha256|sha384|sha512|md5|sha1)\\s*\\([^)]*\\)\\.(?:hexdigest|digest)\\s*\\(\\s*\\)\\s*=="
     - "==\\s*hashlib\\.(?:sha256|sha384|sha512|md5|sha1)\\s*\\("
-    # 3) 서명/검증 API의 verify 비활성화 (PyJWT 등)
-    - "jwt\\.decode\\s*\\([^)]*verify\\s*=\\s*False"
-    - "jwt\\.decode\\s*\\([^)]*options\\s*=\\s*\\{[^}]*['\"]verify_signature['\"]\\s*:\\s*False"
+    # 3) JWT 서명 검증 끄기는 전용 룰 GOV-AUTH-JWT-VERIFY-001 이 맡는다(2026-11-21 분리 — 인증 우회 등급).
     # 4) PKCS1 / RSA 서명 객체를 만들지 않고 raw 데이터 신뢰
     - "PKCS1_v1_5\\.new\\s*\\([^)]*\\)\\.verify\\s*\\([^)]*,\\s*None\\s*\\)"
   # 2)의 `==` 비교는 "외부에서 받은 해시를 서명 대신 == 로 믿는" 자리를 겨냥한다.
@@ -95,8 +93,6 @@ examples:
     - "origin_python_code = decrypt_with_symmetric_key(secret_key, encrypted_code)\neval(origin_python_code)"
     - "exec(decrypt_with_symmetric_key(key, payload))"
     - "if hashlib.sha256(data).hexdigest() == client_hash: trust(data)"
-    - "payload = jwt.decode(token, verify=False)"
-    - "jwt.decode(token, options={'verify_signature': False})"
   negative:
     - "if verify_digit_signature(code, sig, pub_key):\n    eval(code)"
     - "payload = jwt.decode(token, public_key, algorithms=['RS256'])"

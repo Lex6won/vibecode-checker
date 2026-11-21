@@ -97,7 +97,7 @@ _NEXT_MIDDLEWARE = re.compile(r"middleware\.(?:ts|js|mjs)$")
 # 공개 번들 비밀 · 클라이언트 전용 관문
 _PUBLIC_ENV_SECRET = re.compile(
     r"(?:process\.env|import\.meta\.env)\.(?P<name>(?:NEXT_PUBLIC|VITE|REACT_APP|EXPO_PUBLIC|PUBLIC|NUXT_PUBLIC|GATSBY)_\w*"
-    r"(?:PIN|PASS(?:WORD|WD|CODE)?|SECRET|TOKEN|API_?KEY|ADMIN_?(?:KEY|CODE|PW))\w*)",
+    r"(?:PIN|PASS(?:WORD|WD|CODE)?|SECRET|TOKEN|API_?KEY|ADMIN_?(?:KEY|CODE|PW)|SERVICE_?ROLE|PRIVATE_?KEY)\w*)",
 )
 _STORAGE_GATE = re.compile(
     r"(?:sessionStorage|localStorage)\.getItem\(\s*(?P<key>[\w.]+|['\"][^'\"]*(?:admin|auth|login|role|token)[^'\"]*['\"])\s*\)"
