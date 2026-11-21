@@ -7,9 +7,9 @@
 # 잡히기 시작하면 드라이버가 알린다 — 그때 이 표에서 known_gap 을 지우고 줄 번호를 적는다.
 
 cases:
-  - {id: L-P01, root: py, file: P01_ssrf_requests.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "SSRF — 변수 경유(requests)"}
-  - {id: L-P02, root: py, file: P02_ssrf_fastapi_httpx.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "SSRF — FastAPI 인자 → httpx"}
-  - {id: L-P03, root: py, file: P03_ssti.py, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, kind: known_gap, note: "템플릿 인젝션 — 변수 경유"}
+  - {id: L-P01, root: py, file: P01_ssrf_requests.py, line: 9, rule: KISA-PY-INPUT-12, min_confidence: likely, note: "SSRF — 변수 경유(requests)"}
+  - {id: L-P02, root: py, file: P02_ssrf_fastapi_httpx.py, line: 9, rule: KISA-PY-INPUT-12, min_confidence: likely, note: "SSRF — FastAPI 인자 → httpx"}
+  - {id: L-P03, root: py, file: P03_ssti.py, line: 7, rule: KISA-PY-INPUT-04, min_confidence: likely, note: "템플릿 인젝션 — 변수 경유"}
   - {id: L-P04, root: py, file: P04_cmd_injection.py, line: 9, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "명령 삽입"}
   - {id: L-P05, root: py, file: P05_pickle_loads.py, line: 8, rule: KISA-PY-CODE-03, min_confidence: likely, note: "pickle 역직렬화"}
   - {id: L-P06, root: py, file: P06_yaml_load.py, line: 8, rule: KISA-PY-CODE-03, min_confidence: likely, note: "yaml.load"}
@@ -110,23 +110,23 @@ cases:
   - {id: L-H-py_cmd-2, root: hops, file: py_cmd__2var.py, line: 8, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "변수 경유"}
   - {id: L-H-py_cmd-3, root: hops, file: py_cmd__3func.py, line: 6, rule: KISA-PY-INPUT-05, min_confidence: confirmed, note: "함수 경유"}
   - {id: L-H-py_open-1, root: hops, file: py_open__1inline.py, line: 7, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-py_open-2, root: hops, file: py_open__2var.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-py_open-3, root: hops, file: py_open__3func.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_open-2, root: hops, file: py_open__2var.py, line: 8, rule: KISA-PY-INPUT-03, min_confidence: likely, note: "변수 경유"}
+  - {id: L-H-py_open-3, root: hops, file: py_open__3func.py, line: 6, rule: KISA-PY-INPUT-03, min_confidence: likely, note: "함수 경유"}
   - {id: L-H-py_path-1, root: hops, file: py_path__1inline.py, line: 7, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-py_path-2, root: hops, file: py_path__2var.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-py_path-3, root: hops, file: py_path__3func.py, rule: KISA-PY-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_path-2, root: hops, file: py_path__2var.py, line: 8, rule: KISA-PY-INPUT-03, min_confidence: likely, note: "변수 경유"}
+  - {id: L-H-py_path-3, root: hops, file: py_path__3func.py, line: 6, rule: KISA-PY-INPUT-03, min_confidence: likely, note: "함수 경유"}
   - {id: L-H-py_redirect-1, root: hops, file: py_redirect__1inline.py, line: 7, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-py_redirect-2, root: hops, file: py_redirect__2var.py, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-py_redirect-3, root: hops, file: py_redirect__3func.py, rule: KISA-PY-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_redirect-2, root: hops, file: py_redirect__2var.py, line: 8, rule: KISA-PY-INPUT-07, min_confidence: likely, note: "변수 경유"}
+  - {id: L-H-py_redirect-3, root: hops, file: py_redirect__3func.py, line: 6, rule: KISA-PY-INPUT-07, min_confidence: likely, note: "함수 경유"}
   - {id: L-H-py_sql-1, root: hops, file: py_sql__1inline.py, line: 7, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "한 줄 직접"}
   - {id: L-H-py_sql-2, root: hops, file: py_sql__2var.py, line: 8, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "변수 경유"}
   - {id: L-H-py_sql-3, root: hops, file: py_sql__3func.py, line: 6, rule: GOV-SQL-INJECTION-001, min_confidence: confirmed, note: "함수 경유"}
   - {id: L-H-py_ssrf-1, root: hops, file: py_ssrf__1inline.py, line: 7, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-py_ssrf-2, root: hops, file: py_ssrf__2var.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-py_ssrf-3, root: hops, file: py_ssrf__3func.py, rule: KISA-PY-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_ssrf-2, root: hops, file: py_ssrf__2var.py, line: 8, rule: KISA-PY-INPUT-12, min_confidence: likely, note: "변수 경유"}
+  - {id: L-H-py_ssrf-3, root: hops, file: py_ssrf__3func.py, line: 6, rule: KISA-PY-INPUT-12, min_confidence: likely, note: "함수 경유"}
   - {id: L-H-py_ssti-1, root: hops, file: py_ssti__1inline.py, line: 7, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-py_ssti-2, root: hops, file: py_ssti__2var.py, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-py_ssti-3, root: hops, file: py_ssti__3func.py, rule: KISA-PY-INPUT-04, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-py_ssti-2, root: hops, file: py_ssti__2var.py, line: 8, rule: KISA-PY-INPUT-04, min_confidence: likely, note: "변수 경유"}
+  - {id: L-H-py_ssti-3, root: hops, file: py_ssti__3func.py, line: 6, rule: KISA-PY-INPUT-04, min_confidence: likely, note: "함수 경유"}
   - {id: L-H-ts_cmd-1, root: hops, file: ts_cmd__1inline.ts, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "한 줄 직접"}
   - {id: L-H-ts_cmd-2, root: hops, file: ts_cmd__2var.ts, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
   - {id: L-H-ts_cmd-3, root: hops, file: ts_cmd__3func.ts, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}

@@ -217,7 +217,7 @@ def _python_docstring_lines(code: str) -> set[int]:
     """Return line numbers occupied by Python module/class/function docstrings."""
     try:
         tree = ast.parse(code)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return set()
 
     lines: set[int] = set()

@@ -103,7 +103,7 @@ def test_manifest_points_at_existing_files() -> None:
 
 
 def test_corpus_scores_clean_and_twins_stay_quiet() -> None:
-    """기대한 탐지는 전부 나오고, 안전한 쌍둥이 42개에서는 발견이 없다. 공백이 잡히기 시작하면 정답표를 고치라는 신호다."""
+    """기대한 탐지는 전부 나오고, 안전한 쌍둥이에서는 발견이 없다. 공백이 잡히기 시작하면 정답표를 고치라는 신호다."""
     sys.path.insert(0, str(REPO / "scripts"))
     import run_holdout
 

@@ -1173,6 +1173,10 @@ _CONFIDENCE_BY_RULE: dict[str, str] = {
 }
 
 
+#: 웹 요청 값 추적(py_web_flows)이 낸 발견의 엔진 이름.
+WEB_FLOW_ENGINE = "python-flow"
+
+
 class PythonAstScanner(ScannerAdapter):
     """Precise AST-based detection for Python sources."""
 
@@ -1192,7 +1196,7 @@ class PythonAstScanner(ScannerAdapter):
             return []
         try:
             tree = ast.parse(code)
-        except (SyntaxError, ValueError):
+        except (SyntaxError, ValueError, RecursionError):
             # Malformed input or null bytes — let the regex scanner still try.
             return []
 
@@ -1236,7 +1240,35 @@ class PythonAstScanner(ScannerAdapter):
                 evidence=evidence, engine=self.name,
                 confidence=confidence,
             ))
-        return findings
+        return findings + self._web_flow_findings(tree, visitor, filename, categories)
+
+    def _web_flow_findings(self, tree: ast.AST, visitor: "_Visitor", filename: str,
+                           categories: set[str] | None) -> list[Finding]:
+        """웹 요청 값이 변수·함수를 거쳐 닿는 흐름(py_web_flows) — **검토 수준**의 발견.
+
+        엔진 이름을 따로 둔다(``python-flow``). 같은 룰·같은 줄을 다른 엔진이 이미 보고했으면 그쪽이 남으므로
+        (중복 제거의 엔진 순위에 없다) 기존 발견의 근거·결정을 바꾸지 않는다. 결정은 룰의 기본값과 무관하게 검토다 —
+        이 분석이 말할 수 있는 것은 "검사를 찾지 못했다"까지다.
+        """
+        from ..policy import attenuate
+        from ..schema import Decision
+        from .py_web_flows import scan_web_flows      # 늦은 import — 그 모듈이 이 모듈의 도우미를 쓴다
+
+        out: list[Finding] = []
+        for rule_id, line_no, evidence, confidence in scan_web_flows(tree, visitor.source_lines, visitor.aliases):
+            rule = lookup_rule(rule_id)
+            if rule is None or (categories and rule["category"] not in categories):
+                continue
+            finding = build_finding(rule, filename=filename, line_no=line_no, evidence=evidence,
+                                    engine=WEB_FLOW_ENGINE, confidence=confidence)
+            if finding.decision == Decision.block:
+                finding = attenuate(
+                    finding, step="web_flow", decision=Decision.warn,
+                    reason="웹 요청 값이 변수·함수를 거쳐 이 자리에 닿고, 이 파일에서 그 값을 검사한 흔적을 찾지 못했습니다. "
+                           "다른 파일·프레임워크 설정에서 검사한다면 수용 예외로 기록하고, 아니라면 조치하세요",
+                )
+            out.append(finding)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -1324,7 +1356,7 @@ def python_ast_parsed(code: str, filename: str, language: str | None) -> bool:
         return False
     try:
         ast.parse(code)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return False
     return True
 
@@ -1335,4 +1367,6 @@ def supported_rule_ids() -> Iterable[str]:
         "KISA-PY-INPUT-02", "KISA-PY-INPUT-05", "KISA-PY-SEC-04", "KISA-PY-CODE-03",
         "KISA-PY-TIME-02",
         "GOV-SQL-INJECTION-001", "GOV-SQL-DDL-DYNAMIC-001", "GOV-LLM-PROMPT-INJECTION-001",
+        # 웹 요청 값이 변수·함수를 거쳐 닿는 흐름(py_web_flows) — 한 줄짜리는 정규식 룰이 그대로 맡는다.
+        "KISA-PY-INPUT-03", "KISA-PY-INPUT-04", "KISA-PY-INPUT-07", "KISA-PY-INPUT-12",
     )

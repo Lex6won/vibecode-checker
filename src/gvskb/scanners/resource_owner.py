@@ -59,7 +59,7 @@ def _handoff_lines(code: str) -> set[int]:
     """자원을 만들고 **그대로 반환**하는 대입문의 줄 번호."""
     try:
         tree = ast.parse(code)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return set()
 
     lines: set[int] = set()
