@@ -134,6 +134,8 @@ _FS_METHODS = ("readFile", "readFileSync", "createReadStream", "createWriteStrea
 _PATH_SINKS = frozenset(f"{mod}.{m}" for mod in ("fs", "fs.promises", "fs-extra", "graceful-fs") for m in _FS_METHODS)
 _EXEC_SINKS = frozenset({"child_process.exec", "child_process.execSync"})
 _SPAWN_SINKS = frozenset({"child_process.spawn", "child_process.spawnSync"})
+_EXEC_FILE_SINKS = frozenset({"child_process.execFile", "child_process.execFileSync"})
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh"})
 
 
 class _OutOfBudget(Exception):
@@ -368,7 +370,8 @@ class _Context:
         self.request_used_next: set[str] = set()
         self.hits: list[tuple[str, int]] = []
         self.units: list = []
-        self.uses: list[tuple[bool, list]] = []            # `app.use(…)` — (경로 인자가 있는가, 나머지 인자)
+        self.uses: list[tuple[bool, list, str]] = []       # `app.use(…)` — (경로 인자가 있는가, 나머지 인자, 종류)
+        self.use_handlers: set[int] = set()                # 처리 함수로 본 `use` 인자(라우터 없는 Koa)
         self.dropped = False                               # 모르는 `app.use(…)` 가 있다 — 파일 전체를 버린다
         self._struct: dict[int, tuple | None] = {}
         self._full: dict[int, str | None] = {}
@@ -823,6 +826,8 @@ class _Context:
         for call in self.calls:
             self.spend()
             self._param_hook(call)
+            if self._route_object(call):
+                continue
             owner = self._route_owner(call)
             if owner is None:
                 continue
@@ -830,7 +835,7 @@ class _Context:
             args = _args(call)
             if method == "use":
                 with_path = bool(args) and self._is_path_arg(args[0])
-                self.uses.append((with_path, args[1:] if with_path else args))
+                self.uses.append((with_path, args[1:] if with_path else args, kind))
                 continue
             route = None
             if has_path:
@@ -847,6 +852,7 @@ class _Context:
                 else frozenset()
             self._register(fn, kind, constrained)
             self.handlers[fn.id] = self.handlers.get(fn.id, True) and reportable
+        self._koa_use_handler()
         # 형 표기로 인정하는 요청 객체 — `function convert(req: Request, res: Response)`(express 에서 가져온 형)
         for fn_id, notes in self.param_types.items():
             for idx, note in notes.items():
@@ -883,10 +889,62 @@ class _Context:
                 self.resps.setdefault(k, v)
         self._aliases()
         # 파일 단위 침묵 — 모르는 `app.use(…)`
-        for with_path, rest in self.uses:
+        for with_path, rest, _kind in self.uses:
             for a in rest:
+                if a.id in self.use_handlers:
+                    continue
                 if not self._mount_ok(a, with_path) and not self.middleware_ok(a):
                     self.dropped = True
+
+    def _koa_use_handler(self) -> None:
+        """라우터 없는 Koa — `app.use(async (ctx) => …)` 가 곧 처리 함수다.
+
+        요청 값을 읽는 `use` 함수가 **하나뿐이고** 다른 라우트도 없을 때만 처리 함수로 본다. 둘 이상이면 앞의 것이 뒤의 것을
+        검사하는 미들웨어일 수 있으므로 지금처럼 파일 전체를 버린다(4-7).
+        """
+        found = []
+        for _with_path, rest, kind in self.uses:
+            if kind != "koa":
+                continue
+            for a in rest:
+                fn = self._function_value(a)
+                if fn is not None and len(self.params.get(fn.id, [])) < 4 and self._reads_first_param(fn):
+                    found.append((a, fn))
+        if len(found) != 1 or self.handlers:
+            return
+        a, fn = found[0]
+        self._register(fn, "koa", frozenset())
+        self.handlers[fn.id] = True
+        self.use_handlers.add(a.id)
+
+    def _route_object(self, call) -> bool:
+        """Fastify `fastify.route({ method, url, handler })`. 처리 함수 말고 다른 열쇠(schema·preHandler 등)가 있으면
+        무엇을 거르는지 모르므로 그 처리 함수는 보고하지 않는다."""
+        f = _callee(call)
+        if f is None or f.type != "member_expression":
+            return False
+        prop = _field(f, "property")
+        obj = _unwrap(_field(f, "object"))
+        if prop is None or self.text(prop) != "route" or obj is None or obj.type != "identifier":
+            return False
+        b = self.reads.get(obj.id)
+        args = _args(call)
+        if b is None or self.fw.get(b.id) != "fastify" or len(args) != 1 or _unwrap(args[0]).type != "object":
+            return False
+        opts = _unwrap(args[0])
+        handler = self._prop_value(opts, "handler")
+        fn = self._function_value(handler) if handler is not None else None
+        if fn is None:
+            return True
+        keys = set()
+        for c in _named(opts):
+            key = _field(c, "key") if c.type == "pair" else (c if c.type == "shorthand_property_identifier" else None)
+            keys.add(self.text(key) if key is not None and key.type in ("property_identifier", "shorthand_property_identifier")
+                     else "?")
+        reportable = keys <= {"method", "url", "path", "handler"}
+        self._register(fn, "fastify", frozenset())
+        self.handlers[fn.id] = self.handlers.get(fn.id, True) and reportable
+        return True
 
     def _aliases(self) -> None:
         """한 번만 대입된 이름이 요청 필드나 그 그릇을 그대로 가리키면 그 열쇠로 본다.
@@ -910,6 +968,8 @@ class _Context:
                             and _unwrap(_field(v, "right")) is not None \
                             and _unwrap(_field(v, "right")).type in ("object", "array", "string"):
                         v = _unwrap(_field(v, "left"))          # `req.body || {}`
+                    elif v.type == "await_expression" and _named(v):
+                        v = _unwrap(_named(v)[0])                   # `const { url } = await c.req.json()`
                     elif v.type == "object" and len(_named(v)) == 1 and _named(v)[0].type == "spread_element":
                         v = _unwrap(_named(_named(v)[0])[0]) if _named(_named(v)[0]) else None    # `{ ...req.body }`
                     elif v.type == "call_expression" and self.full_name(_callee(v)) == "Object.assign" \
@@ -999,8 +1059,8 @@ class _Context:
         if _GUARD_NAME.search(raw):
             return True
         full = self.full_name(f) or ""
-        if full in ("express.json", "express.urlencoded", "express.static", "express.raw", "express.text"):
-            return True
+        if full in ("express.json", "express.urlencoded", "express.static", "express.raw", "express.text")                 or full.startswith("restify.plugins."):
+            return True                                    # 본문·질의 해석기 — 값을 거르지 않는다
         for b in self.bindings_of_import(f):
             if self.imports[b].split(".")[0] in _NEUTRAL_MODULES or self.imports[b] in _NEUTRAL_MODULES:
                 return True
@@ -1122,7 +1182,8 @@ class _Context:
                         return None
                     path.append(self.text(prop))
                 else:
-                    sv = _str_value(_field(cur, "index"), self.src)
+                    idx = _unwrap(_field(cur, "index"))
+                    sv = self.text(idx) if idx is not None and idx.type == "number" else _str_value(idx, self.src)
                     if sv is None:
                         return None                        # `req.query[k]` — 그릇을 모르는 열쇠로 들여다봤다
                     path.append(sv)
@@ -1166,6 +1227,8 @@ class _Context:
                         return ("req", f"{REQ}[{field}.{arg.lower() if field == 'headers' else arg}]")
                     if field in ("query", "params") and not args:
                         return ("req", f"{REQ}[{field}]")
+                    if m in ("json", "parseBody", "formData") and not args:
+                        return ("req", f"{REQ}[body]")             # `await c.req.json()`
                 if info is not None and info.kind == "koa" and oname == "cookies" and m == "get" and arg is not None:
                     return ("req", f"{REQ}[cookies.{arg}]")
             return None
@@ -1223,9 +1286,8 @@ class _Context:
                     target = args[1] if len(args) >= 2 and _unwrap(args[0]).type == "number" else args[0]
                     return RULE_REDIRECT, [target], True
                 if m in ("sendFile", "download") and rk in ("express", "fastify"):
-                    if m == "sendFile" and len(args) >= 2 and _unwrap(args[1]).type == "object" \
-                            and self._prop_value(_unwrap(args[1]), "root") is not None:
-                        return None                        # `res.sendFile(p, { root })` — 뿌리 폴더 밖으로 못 나간다
+                    if m == "sendFile" and len(args) >= 2 and not self._options_without_root(args[1]):
+                        return None                        # `res.sendFile(p, { root })` — 뿌리 폴더 밖으로 못 나간다(모르면 침묵)
                     return RULE_PATH, [args[0]], False
                 return None
         full = self.full_name(f)
@@ -1248,6 +1310,10 @@ class _Context:
             return RULE_PATH, [args[0]], False
         if full in _EXEC_SINKS:
             return RULE_CMD, [args[0]], False
+        if full in _SPAWN_SINKS | _EXEC_FILE_SINKS:
+            shell_arg = self._shell_dash_c(args)
+            if shell_arg is not None:
+                return RULE_CMD, [shell_arg], False        # `spawn('sh', ['-c', 'ls ' + dir])` — 셸이 명령 문자열을 읽는다
         if full in _SPAWN_SINKS:
             opts = next((_unwrap(a) for a in args[1:3] if _unwrap(a).type == "object"), None)
             shell = self._prop_value(opts, "shell") if opts is not None else None
@@ -1257,6 +1323,45 @@ class _Context:
                 if len(args) > 1 and _unwrap(args[1]).type != "object":
                     targets.append(args[1])
                 return RULE_CMD, targets, False
+        return None
+
+    def _options_without_root(self, node) -> bool:
+        """`res.sendFile(p, 옵션)` 의 옵션이 **뿌리(root)가 없다고 확실히 아는** 것인가 — 콜백 함수, 펼침 없이 root 가 없는
+        객체 리터럴, 그런 객체를 한 번만 담은 이름. 모르는 값(다른 변수·펼친 객체 안의 root 등)은 False(침묵)."""
+        n = _unwrap(node)
+        for _ in range(4):
+            if n is None:
+                return False
+            if n.type in _FUNC_TYPES:
+                return True                                # `res.sendFile(p, (err) => …)` — 콜백
+            if n.type == "object":
+                if any(c.type == "spread_element" for c in _named(n)):
+                    return False                           # `{ ...BASE_OPTS, maxAge }` — 펼친 쪽에 root 가 있을 수 있다
+                return self._prop_value(n, "root") is None
+            if n.type != "identifier":
+                return False
+            b = self.reads.get(n.id)
+            if b is None:
+                return False
+            if b.id in self.funcs:
+                return True
+            if b.init is None or b.writes or b.init[1] != ():
+                return False
+            n = _unwrap(b.init[0])
+        return False
+
+    def _shell_dash_c(self, args):
+        """첫 인자가 셸이고 인자 배열의 `-c`(cmd 는 `/c`) 다음 원소면 그 원소 — 명령 문자열이다."""
+        shell = _str_value(args[0], self.src) if args else None
+        if shell is None or shell.replace("\\", "/").rsplit("/", 1)[-1].lower() not in _SHELLS:
+            return None
+        arr = _unwrap(args[1]) if len(args) > 1 else None
+        if arr is None or arr.type != "array":
+            return None
+        elems = _named(arr)
+        for i, e in enumerate(elems[:-1]):
+            if (_str_value(e, self.src) or "").lower() in ("-c", "/c", "-command"):
+                return elems[i + 1]
         return None
 
     def local_callee(self, call):
@@ -1475,12 +1580,38 @@ class _Unit:
                         # 요청 객체의 메서드를 부른 것(`c.text(…)`·`ctx.throw(…)`)은 요청 값을 쓴 것이 아니다
                     elif uf is not None and uf.type != "identifier":
                         stack.append(f)
+                    if skip_sinks:
+                        kept = self._looked_at_args(n)
+                        if kept is not None:
+                            stack.extend(kept)
+                            continue
                     stack.append(_field(n, "arguments"))
                     continue
                 if t == "member_expression":
                     stack.append(_field(n, "object"))
                     continue
             stack.extend(n.named_children)
+
+    def _looked_at_args(self, call) -> list | None:
+        """같은 파일 함수 호출에서 그 함수가 **들여다보는** 인자만(매개변수를 다른 데 쓰거나 돌려주는 것).
+
+        매개변수를 위험한 자리에만 넣는 함수의 결과는 그 값을 들여다본 결과가 아니다 —
+        `const html = await grab(req.query.src)` 의 `html` 은 `grab` 안 `fetch(u)` 의 응답이다. 모르면 None(전부 본다).
+        """
+        cx = self.cx
+        local = cx.local_callee(call)
+        if local is None:
+            return None
+        bid, slots = local
+        summary = cx.summaries.get(bid)
+        if summary is None:
+            return None
+        kept = []
+        for i, a in enumerate(_args(call)):
+            param = slots[i] if i < len(slots) else None
+            if a.type == "spread_element" or param is None or param.id in summary[0] or param.id in summary[1]:
+                kept.append(a)
+        return kept
 
     def mentions(self, node) -> set[str]:
         """이 식 어디에든 나오는 따라가는 값. 위험한 자리에 넣은 것은 뺀다. 함수 값의 본문은 보지 않는다 —
@@ -1842,7 +1973,10 @@ class _Unit:
         if value is None:
             return
         items, _ = _pattern_items(name, cx.src)
-        base = self.key_of(value)
+        bare = _unwrap(value)
+        while bare is not None and bare.type == "await_expression" and _named(bare):
+            bare = _unwrap(_named(bare)[0])
+        base = self.key_of(bare)
         for ident, path, rest in items:
             b = cx.decl.get(ident.id)
             if b is None or b.id in cx.aliases:

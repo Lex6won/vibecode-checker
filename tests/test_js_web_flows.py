@@ -354,6 +354,57 @@ VULNERABLE = [
           res.send(r.data);
         });
     """),
+    ("라우터 없는 Koa 처리 함수", SSRF, KOA, "app.js", """
+        app.use(async (ctx) => {
+          const { url } = ctx.query;
+          ctx.body = (await axios.get(url)).data;
+        });
+    """),
+    ("Fastify route 객체", REDIRECT, FASTIFY, "app.js", """
+        fastify.route({
+          method: 'GET',
+          url: '/go',
+          handler: async (request, reply) => {
+            const dest = request.query.next;
+            return reply.redirect(dest);
+          },
+        });
+    """),
+    ("헬퍼의 반환값을 받아 쓴다", SSRF, EXPRESS, "app.js", """
+        async function grab(u) {
+          const r = await axios.get(u);
+          return r.data;
+        }
+        app.get('/embed', async (req, res) => {
+          const html = await grab(req.query.src);
+          res.send(html);
+        });
+    """),
+    ("숫자 첨자 경로 매개변수", PATH, EXPRESS, "app.js", """
+        app.get('/files/*', (req, res) => {
+          const rel = req.params[0];
+          fs.stat('/srv/data/' + rel, (err, st) => res.json(st));
+        });
+    """),
+    ("Hono JSON 본문 구조분해", CMD, HONO, "app.ts", """
+        app.post('/x', async (c) => {
+          const { host } = await c.req.json();
+          exec('ping ' + host);
+          return c.json({ ok: true });
+        });
+    """),
+    ("셸에 -c 로 넘긴 명령", CMD, EXPRESS, "app.js", """
+        app.get('/sh', (req, res) => {
+          const dir = req.query.dir;
+          spawn('sh', ['-c', 'ls -la ' + dir]).stdout.pipe(res);
+        });
+    """),
+    ("sendFile 콜백만 넘긴 것", PATH, EXPRESS, "app.js", """
+        app.get('/dl', (req, res) => {
+          const file = req.query.file;
+          res.sendFile('/srv/' + file, (err) => err && res.end());
+        });
+    """),
     # ── 설계상 침묵(놓치는 것을 알고 둔다) ──
     ("모르는 함수에 넘겼다", SSRF, EXPRESS, "app.js", """
         app.get('/a', async (req, res) => {
@@ -596,6 +647,41 @@ SAFE = [
         router.get('/f/:file', (req, res) => {
           const f = req.params.file;
           res.send(fs.readFileSync('/srv/' + f));
+        });
+    """),
+    ("Koa 에서 요청 값을 읽는 use 가 둘", KOA, """
+        app.use(async (ctx, next) => {
+          if (!isAllowed(ctx.query.target)) ctx.throw(400);
+          await next();
+        });
+        app.use(async (ctx) => {
+          const target = ctx.query.target;
+          ctx.body = (await axios.get(target)).data;
+        });
+    """),
+    ("Fastify route 객체의 스키마", FASTIFY, """
+        fastify.route({
+          method: 'GET', url: '/go', schema: { querystring: S },
+          handler: async (request, reply) => reply.redirect(request.query.next),
+        });
+    """),
+    ("sendFile 의 모르는 옵션 변수", EXPRESS, """
+        app.get('/dl', (req, res) => {
+          const file = req.query.file;
+          res.sendFile(file, loadOptions());
+        });
+    """),
+    ("sendFile 의 펼친 옵션", EXPRESS, """
+        const BASE = { root: '/srv/public' };
+        app.get('/dl', (req, res) => {
+          const file = req.query.file;
+          res.sendFile(file, { ...BASE, maxAge: 60 });
+        });
+    """),
+    ("셸이 아닌 프로그램의 -c 인자", EXPRESS, """
+        app.get('/z', (req, res) => {
+          const v = req.query.v;
+          spawn('python3', ['-c', 'print(1)', v]).stdout.pipe(res);
         });
     """),
     ("표지가 없는 파일", "const axios = require('axios');\n", """
