@@ -840,6 +840,106 @@ def test_unknown_module_named_like_a_sink_is_not_a_sink() -> None:
     """, header="const express = require('express');\nconst app = express();\n") == set()
 
 
+MIDDLEWARE_FIELD_CASES = [
+    # (라벨, 미들웨어 본문, 보고하는가) — 처리 함수는 늘 `req.query.file` 을 경로에 쓴다
+    ("URL 원문을 파싱해 검사 → 쿼리 전체가 쓰였다",
+     "const f = new URL(req.originalUrl, 'http://x').searchParams.get('file');\n"
+     "  if (f && !/^[\\w-]+$/.test(f)) return res.sendStatus(400);", False),
+    ("req.url 쿼리스트링 검사", "if (!ok(req.url.split('?')[1])) return res.sendStatus(400);", False),
+    ("_parsedUrl", "if (bad(req._parsedUrl.query)) return res.sendStatus(400);", False),
+    ("쿼리 그릇 통째로", "if (Object.keys(req.query).length > 3) return res.sendStatus(400);", False),
+    ("계산식 열쇠", "const k = 'file';\n  if (!ok(req.query[k])) return res.sendStatus(400);", False),
+    ("요청 객체를 통째로 넘김", "if (!validate(req)) return res.sendStatus(400);", False),
+    ("열쇠를 모르는 헤더 읽기는 헤더만", "if (!ok(req.get(HEADER))) return res.sendStatus(401);", True),
+    ("인증 헤더만 읽음 → 다른 열쇠는 그대로", "if (!verify(req.headers.authorization)) return res.sendStatus(401);", True),
+    ("API 키 헤더", "if (req.get('x-api-key') !== KEY) return res.sendStatus(401);", True),
+    ("세션 쿠키", "if (!req.cookies.sid) return res.sendStatus(401);", True),
+    ("경로만 검사 → 쿼리 흐름은 그대로", "if (decodeURIComponent(req.path).includes('..')) return res.sendStatus(400);", True),
+    ("기록만", "console.log(req.method, req.originalUrl, req.query);", True),
+    ("권한 게이트", "if (req.user.role !== 'admin') return res.sendStatus(403);", True),
+]
+
+
+@pytest.mark.parametrize("label,body,reported", MIDDLEWARE_FIELD_CASES, ids=[c[0] for c in MIDDLEWARE_FIELD_CASES])
+def test_middleware_uses_are_counted_per_field(label: str, body: str, reported: bool) -> None:
+    """함수 미들웨어의 쓰임은 파일 전체의 필드별 열쇠로 센다 — 같은 열쇠(또는 그 그릇·URL 원문)를 썼으면 침묵, 다른 열쇠면 보고."""
+    code = (
+        "app.use((req, res, next) => {\n  " + body + "\n  next();\n});\n"
+        "app.get('/f', (req, res) => {\n  const file = req.query.file;\n  res.send(fs.readFileSync('/srv/' + file));\n});\n"
+    )
+    assert (PATH in _flows(code)) == reported, label
+
+
+def test_path_read_silences_only_path_parameters() -> None:
+    mw = "app.use((req, res, next) => {\n  if (req.path.includes('..')) return res.sendStatus(400);\n  next();\n});\n"
+    by_param = mw + "app.get('/f/*', (req, res) => {\n  res.send(fs.readFileSync('/srv/' + req.params[0]));\n});\n"
+    assert _flows(by_param) == set()
+
+
+def test_koa_raw_querystring_and_path_reads() -> None:
+    koa_fs = KOA + "const fs = require('fs');\n"
+    qs = "app.use(async (ctx, next) => {\n  if (!ok(new URLSearchParams(ctx.querystring).get('f'))) ctx.throw(400);\n  await next();\n});\n"
+    route = "router.get('/x', async (ctx) => {\n  ctx.body = fs.readFileSync('/srv/' + ctx.query.f);\n});\n"
+    assert _flows(qs + route, header=koa_fs) == set()
+    raw = "app.use(async (ctx, next) => {\n  if (!ok(ctx.req.url)) ctx.throw(400);\n  await next();\n});\n"
+    assert _flows(raw + route, header=koa_fs) == set()
+    timing = "app.use(async (ctx, next) => {\n  const t = Date.now();\n  await next();\n  ctx.set('X-Time', String(Date.now() - t));\n});\n"
+    assert _flows(timing + route, header=koa_fs) == {PATH}
+
+
+def test_fastify_hook_and_route_prehandler_are_counted_per_field() -> None:
+    route = "fastify.get('/f', async (request, reply) => fs.readFileSync('/srv/' + request.query.f));\n"
+    hook = "fastify.addHook('onRequest', async (request, reply) => {\n  if (!ok(request.url)) return reply.code(400).send();\n});\n"
+    assert _flows(hook + route, header=FASTIFY) == set()
+    log_hook = "fastify.addHook('onRequest', async (request) => {\n  request.log.info({ url: request.url }, 'in');\n});\n"
+    assert _flows(log_hook + route, header=FASTIFY) == {PATH}
+    pre = ("fastify.get('/g', { preHandler: async (request) => { if (!request.headers.authorization) throw new Error('x'); } },\n"
+           "  async (request, reply) => fs.readFileSync('/srv/' + request.query.f));\n")
+    assert _flows(pre, header=FASTIFY) == {PATH}
+
+
+def test_hono_middleware_uses_are_counted_per_field() -> None:
+    hono_fs = HONO + "import fs from 'fs';\n"
+    route = "app.get('/x', (c) => c.text(fs.readFileSync('/srv/' + c.req.query('f'), 'utf8')));\n"
+    url_mw = "app.use('*', async (c, next) => {\n  if (!ok(new URL(c.req.url).searchParams.get('f'))) return c.text('bad', 400);\n  await next();\n});\n"
+    assert _flows(url_mw + route, header=hono_fs, filename="a.ts") == set()
+    auth_mw = "app.use('*', async (c, next) => {\n  if (!c.req.header('authorization')) return c.text('no', 401);\n  await next();\n});\n"
+    assert _flows(auth_mw + route, header=hono_fs, filename="a.ts") == {PATH}
+
+
+def test_root_assigned_later_from_the_request_is_reported() -> None:
+    code = """
+        app.get('/doc', (req, res) => {
+          const opts = { root: '/srv/docs' };
+          if (req.query.d) opts.root = req.query.d;
+          res.sendFile(req.query.f, opts);
+        });
+    """
+    assert _flows(code) == {PATH}
+    constant = code.replace("opts.root = req.query.d", "opts.root = '/srv/other'")
+    assert _flows(constant) == set()
+
+
+def test_harmless_response_methods_and_async_wrapper() -> None:
+    attach = """
+        app.get('/dl', (req, res) => {
+          const file = req.query.file;
+          res.attachment(file);
+          res.set('X-File', file);
+          res.send(fs.readFileSync('/srv/' + file));
+        });
+    """
+    assert _flows(attach) == {PATH}
+    wrapped = "const asyncHandler = require('express-async-handler');\n" + textwrap.dedent("""
+        app.get('/r', asyncHandler(async (req, res) => {
+          res.send(fs.readFileSync('/srv/' + req.query.name));
+        }));
+    """)
+    assert _flows(wrapped) == {PATH}
+    unknown = wrapped.replace("require('express-async-handler')", "require('./my-wrapper')")
+    assert _flows(unknown) == set()                       # 모르는 래퍼 — 침묵
+
+
 def test_locally_declared_fetch_is_not_global_fetch() -> None:
     assert _flows("""
         function fetch(x) { return x; }

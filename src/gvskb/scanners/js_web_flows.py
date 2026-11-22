@@ -104,6 +104,24 @@ _NEUTRAL_MODULES = frozenset({
     "hono/compress", "hono/etag", "hono/pretty-json", "hono/timing", "hono/request-id",
 })
 _UPLOAD_METHODS = frozenset({"single", "array", "fields", "none", "any"})
+_FASTIFY_HOOK_KEYS = frozenset({"preHandler", "onRequest", "preValidation", "preParsing"})
+#: URL 원문을 읽는 필드 — 쿼리 전체를 읽은 것으로 본다(쓰임 전용 열쇠 `REQ[query]`, 출처는 아니다).
+_URL_FIELDS = {
+    "express": frozenset({"url", "originalUrl", "_parsedUrl"}),
+    "fastify": frozenset({"url", "originalUrl"}),
+    "koa": frozenset({"url", "originalUrl", "querystring", "search", "href"}),
+}
+#: 경로를 읽는 필드 — 경로 매개변수 전체를 읽은 것으로 본다(쓰임 전용 열쇠 `REQ[params]`).
+_PATH_FIELDS = {
+    "express": frozenset({"path"}),
+    "fastify": frozenset({"routerPath", "routeOptions"}),
+    "koa": frozenset({"path"}),
+}
+#: 응답 객체에 값을 싣지만 해가 없다고 아는 메서드 — 내려받기 이름·헤더·형식.
+_RES_HARMLESS = frozenset({"json", "attachment", "set", "setHeader", "type"})
+#: import 로 확인하면 투명하게 보는 비동기 래퍼 모듈 — `asyncHandler(async (req, res) => …)`.
+_ASYNC_WRAPPER_MODULES = frozenset({"express-async-handler", "express-async-wrap", "@awaitjs/express",
+                                    "express-promise-wrap", "async-handler"})
 _MOUNT_METHODS = frozenset({"routes", "allowedMethods", "middleware"})
 
 # ── 흐름 ─────────────────────────────────────────────────────────────────────
@@ -162,6 +180,14 @@ def _str_value(node, src: bytes) -> str | None:
     if n.type == "string" or (n.type == "template_string" and not any(c.type == "template_substitution" for c in n.children)):
         return "".join(_text(c, src) for c in n.named_children if c.type in ("string_fragment", "escape_sequence"))
     return None
+
+
+def _walk_nodes(node):
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        yield n
+        stack.extend(n.children)
 
 
 def _callee(call):
@@ -346,6 +372,7 @@ class _Context:
         self.budget = _BUDGET
         self.parents: dict[int, object] = {}
         self.calls: list = []                              # 파일의 모든 호출 노드
+        self.assigns: list = []                            # 파일의 모든 대입 식
         self.bindings: list[_Binding] = []
         self.reads: dict[int, _Binding] = {}               # 읽는 자리의 이름 노드 → 선언
         self.write_refs: dict[int, _Binding] = {}          # 대입하는 자리의 이름 노드 → 선언
@@ -371,8 +398,8 @@ class _Context:
         self.hits: list[tuple[str, int]] = []
         self.units: list = []
         self.uses: list[tuple[bool, list, str]] = []       # `app.use(…)` — (경로 인자가 있는가, 나머지 인자, 종류)
-        self.use_handlers: set[int] = set()                # 처리 함수로 본 `use` 인자(라우터 없는 Koa)
-        self.root_gated: dict[int, object] = {}            # sendFile·download 호출 → 뿌리(root) 옵션 값
+        self.root_gated: dict[int, list] = {}              # sendFile·download 호출 → 뿌리(root) 옵션 값들
+        self.member_writes: dict[int, list] = {}           # 선언 → 나중에 `x.root = 값` 으로 대입한 값들
         self.dropped = False                               # 모르는 `app.use(…)` 가 있다 — 파일 전체를 버린다
         self._struct: dict[int, tuple | None] = {}
         self._full: dict[int, str | None] = {}
@@ -400,6 +427,8 @@ class _Context:
             self.spend()
             if n.type == "call_expression":
                 calls.append(n)
+            elif n.type == "assignment_expression":
+                self.assigns.append(n)
             for c in n.children:
                 parents[c.id] = n
                 stack.append(c)
@@ -609,6 +638,16 @@ class _Context:
         for b in self.bindings:
             if any(w != b.func for w in b.writes):
                 self.opaque.add(b.id)                      # 다른 함수(클로저)에서 다시 대입 — 언제 무엇인지 모른다
+        for n in self.assigns:
+            left = _unwrap(_field(n, "left"))
+            if left is None or left.type not in ("member_expression", "subscript_expression"):
+                continue
+            obj = _unwrap(_field(left, "object"))
+            prop = _field(left, "property") if left.type == "member_expression" else _field(left, "index")
+            name = (self.text(prop) if prop is not None and prop.type == "property_identifier"
+                    else _str_value(prop, self.src))
+            if name == "root" and obj is not None and obj.type == "identifier" and obj.id in self.reads:
+                self.member_writes.setdefault(self.reads[obj.id].id, []).append(_field(n, "right"))
 
     def _arguments_used(self, lex: _Lex) -> None:
         """`arguments` 를 쓰는 함수의 매개변수는 풀 수 없다(화살표 함수는 바깥 함수의 것을 쓴다)."""
@@ -753,11 +792,50 @@ class _Context:
             return None
         if n.type in _FUNC_TYPES:
             return n
+        if n.type == "call_expression" and len(_args(n)) == 1 and self._is_async_wrapper(_callee(n)):
+            inner = _unwrap(_args(n)[0])                   # `asyncHandler(async (req, res) => …)` — 투명한 래퍼
+            return inner if inner is not None and inner.type in _FUNC_TYPES else None
         if n.type == "identifier":
             b = self.reads.get(n.id)
             if b is not None:
                 return self.funcs.get(b.id)
         return None
+
+    def _is_async_wrapper(self, callee) -> bool:
+        """잘 알려진 비동기 래퍼(import 로 확인) 또는 같은 파일의 `(fn) => (req, res, next) => …fn(req, res, next)…` 모양."""
+        if callee is None:
+            return False
+        for bid in self.bindings_of_import(callee):
+            if self.imports[bid].split(".")[0] in _ASYNC_WRAPPER_MODULES or self.imports[bid] in _ASYNC_WRAPPER_MODULES:
+                return True
+        if callee.type != "identifier":
+            return False
+        b = self.reads.get(callee.id)
+        outer = self.funcs.get(b.id) if b is not None else None
+        outer_slots = self.params.get(outer.id, []) if outer is not None else []
+        if outer is None or len(outer_slots) != 1 or outer_slots[0] is None:
+            return False
+        body = _unwrap(_field(outer, "body"))
+        if body is not None and body.type == "statement_block":
+            stmts = _named(body)
+            body = _unwrap(_named(stmts[0])[0]) if len(stmts) == 1 and stmts[0].type == "return_statement" \
+                and _named(stmts[0]) else None
+        if body is None or body.type not in _FUNC_TYPES:
+            return False
+        inner_slots = [x for x in self.params.get(body.id, []) if x is not None]
+        if not inner_slots:
+            return False
+        fn_param = outer_slots[0]
+        passes = False
+        for n in _walk_nodes(body):
+            if n.type == "identifier" and self.reads.get(n.id) is inner_slots[0]:
+                parent = self.parent(n)
+                call = self.parent(parent) if parent is not None and parent.type == "arguments" else None
+                callee_n = _callee(call) if call is not None and call.type == "call_expression" else None
+                if callee_n is None or callee_n.type != "identifier" or self.reads.get(callee_n.id) is not fn_param:
+                    return False                           # 요청 객체를 넘기는 것 말고 다른 데 쓴다 — 모르는 래퍼
+                passes = True
+        return passes
 
     def _route_owner(self, call) -> tuple[str, bool, str] | None:
         """`<fw>.get(경로, …, 함수)` 면 (종류, 경로 인자가 있는가, 메서드)."""
@@ -840,7 +918,7 @@ class _Context:
         for call in self.calls:
             self.spend()
             self._param_hook(call)
-            if self._route_object(call):
+            if self._route_object(call) or self._hook(call):
                 continue
             owner = self._route_owner(call)
             if owner is None:
@@ -849,7 +927,10 @@ class _Context:
             args = _args(call)
             if method == "use":
                 with_path = bool(args) and self._is_path_arg(args[0])
-                self.uses.append((with_path, args[1:] if with_path else args, kind))
+                rest = args[1:] if with_path else args
+                self.uses.append((with_path, rest, kind))
+                for a in rest:
+                    self._register_middlewares(a, kind)
                 continue
             route = None
             if has_path:
@@ -861,12 +942,13 @@ class _Context:
             fn = self._function_value(args[-1])
             if fn is None:
                 continue
+            for m in args[:-1]:
+                self._register_middlewares(m, kind)
             reportable = all(self.middleware_ok(m, kind) for m in args[:-1])
             constrained = frozenset(re.findall(r":(\w+)\(", _str_value(route, self.src) or "")) if route is not None \
                 else frozenset()
             self._register(fn, kind, constrained)
             self.handlers[fn.id] = self.handlers.get(fn.id, True) and reportable
-        self._koa_use_handler()
         # 형 표기로 인정하는 요청 객체 — `function convert(req: Request, res: Response)`(express 에서 가져온 형)
         for fn_id, notes in self.param_types.items():
             for idx, note in notes.items():
@@ -905,31 +987,45 @@ class _Context:
         # 파일 단위 침묵 — 모르는 `app.use(…)`
         for with_path, rest, _kind in self.uses:
             for a in rest:
-                if a.id in self.use_handlers:
-                    continue
                 if not self._mount_ok(a, with_path) and not self.middleware_ok(a, _kind):
                     self.dropped = True
 
-    def _koa_use_handler(self) -> None:
-        """라우터 없는 Koa — `app.use(async (ctx) => …)` 가 곧 처리 함수다.
+    def _register_middlewares(self, node, kind: str) -> None:
+        """함수 미들웨어(인라인·같은 파일 함수·그 배열·Koa use)의 첫 매개변수도 요청 객체로 본다.
 
-        요청 값을 읽는 `use` 함수가 **하나뿐이고** 다른 라우트도 없을 때만 처리 함수로 본다. 둘 이상이면 앞의 것이 뒤의 것을
-        검사하는 미들웨어일 수 있으므로 지금처럼 파일 전체를 버린다(4-7).
+        미들웨어가 무엇을 검사하는지는 판단하지 않는다 — 그 안에서 요청 필드를 쓴 것이 파일 전체의 그 필드 쓰임으로 잡혀,
+        같은 필드(열쇠)의 흐름만 침묵시킨다(원칙 4). `req.url`·`req.path` 같은 원문을 쓰면 쿼리·경로 매개변수 전체가 쓰인 것이다.
         """
-        found = []
-        for _with_path, rest, kind in self.uses:
-            if kind != "koa":
-                continue
-            for a in rest:
-                fn = self._function_value(a)
-                if fn is not None and len(self.params.get(fn.id, [])) < 4 and self._reads_first_param(fn, "koa"):
-                    found.append((a, fn))
-        if len(found) != 1 or self.handlers:
+        n = _unwrap(node)
+        if n is None:
             return
-        a, fn = found[0]
-        self._register(fn, "koa", frozenset())
-        self.handlers[fn.id] = True
-        self.use_handlers.add(a.id)
+        if n.type == "array":
+            for e in _named(n):
+                self._register_middlewares(e, kind)
+            return
+        fn = self._function_value(n)
+        if fn is None or len(self.params.get(fn.id, [])) >= 4:
+            return                                         # 오류 처리기(err, req, res, next) — 첫 매개변수가 요청이 아니다
+        self._register(fn, kind, frozenset())
+        self.handlers.setdefault(fn.id, True)
+
+    def _hook(self, call) -> bool:
+        """Fastify `fastify.addHook('onRequest' | 'preHandler' | …, fn)` — 훅 함수도 요청 출처로 등록한다."""
+        f = _callee(call)
+        if f is None or f.type != "member_expression":
+            return False
+        prop = _field(f, "property")
+        obj = _unwrap(_field(f, "object"))
+        if prop is None or self.text(prop) != "addHook" or obj is None:
+            return False
+        kind = self.fw.get(self.reads[obj.id].id) if obj.type == "identifier" and obj.id in self.reads \
+            else self._fw_kind_of_value(obj)
+        if kind != "fastify":
+            return False
+        args = _args(call)
+        if len(args) >= 2:
+            self._register_middlewares(args[1], "fastify")
+        return True
 
     def _route_object(self, call) -> bool:
         """Fastify `fastify.route({ method, url, handler })`. 처리 함수 말고 다른 열쇠(schema·preHandler 등)가 있으면
@@ -1038,6 +1134,40 @@ class _Context:
             self.resps.setdefault(res.id, kind)
 
     @staticmethod
+    def _raw_use(kind: str, path) -> str | None:
+        """URL 원문(`req.url`·`ctx.querystring`·`c.req.url`)·경로(`req.path`·`ctx.path`)를 읽는 자리면 그 쓰임 열쇠."""
+        path = list(path)
+        raw = False                                        # 프레임워크 밑의 원래 요청 객체(`ctx.req`·`request.raw`·`c.req.raw`)
+        if kind == "hono":
+            if path[:1] != ["req"]:
+                return None
+            path = path[1:]
+            if path[:1] == ["raw"]:
+                path, raw = path[1:], True
+            if path[:1] == ["url"]:
+                return f"{REQ}[query]"
+            if path[:1] == ["path"]:
+                return f"{REQ}[params]"
+            return REQ if raw and path else None
+        if kind == "koa" and path[:1] == ["request"]:
+            path = path[1:]
+        if (kind == "fastify" and path[:1] == ["raw"]) or (kind == "koa" and path[:1] == ["req"]):
+            path, raw = path[1:], True
+        if not path:
+            return REQ if raw else None
+        if path[0] in _URL_FIELDS.get(kind, ()) or raw and path[0] in ("url", "originalUrl"):
+            return f"{REQ}[query]"
+        if path[0] in _PATH_FIELDS.get(kind, ()):
+            return f"{REQ}[params]"
+        if path[0] == "rawBody":
+            return f"{REQ}[body]"                          # 본문 원문
+        if path[0] in ("hostname", "host"):
+            return f"{REQ}[headers.host]"
+        if raw:
+            return REQ                                     # 원래 요청 객체의 다른 자리 — 무엇을 읽는지 모른다
+        return None
+
+    @staticmethod
     def _field_key(kind: str, path, constrained: frozenset[str] = frozenset()) -> str | None:
         """요청 객체에서 읽는 경로 → 열쇠. 요청 필드가 아니면(`req.user`·`req.ip`) None."""
         path = list(path)
@@ -1105,58 +1235,20 @@ class _Context:
         b = self.reads.get(n.id) if n is not None and n.type == "identifier" else None
         return [b.id] if b is not None and b.id in self.imports else []
 
-    def _reads_first_param(self, fn, kind: str = "express") -> bool:
-        """이 (미들웨어) 함수가 첫 매개변수의 **출처 필드**를 읽는가 — `req.query`·`ctx.request.body`·`req.get('x')`·`c.req.*`,
-        또는 요청 객체를 통째로 다른 데 넘겼다. `req.method`·`ctx.url`·`ctx.set(…)`·`ctx.state` 는 출처가 아니다."""
-        slots = self.params.get(fn.id, [])
-        pats = self.param_patterns.get(fn.id, {}).get(0)
-        if pats:
-            return any(path is None or self._field_key(kind, path) is not None or kind == "hono" for _, path in pats)
-        first = slots[0] if slots else None
-        if first is None:
-            return False
-        stack = [fn]
-        while stack:
-            n = stack.pop()
-            self.spend()
-            if n.type == "identifier" and self.reads.get(n.id) is first and self._source_read(n, kind):
-                return True
-            stack.extend(n.children)
-        return False
-
-    def _source_read(self, ident, kind: str) -> bool:
-        """요청 객체 이름이 쓰인 이 자리가 출처를 읽는가(모르면 읽는다고 본다)."""
-        path: list[str] = []
-        cur = ident
-        while True:
-            p = self.parent(cur)
-            if p is None:
-                return True
-            if p.type in _WRAPPERS:
-                cur = p
-                continue
-            if p.type == "member_expression" and _field(p, "object").id == cur.id:
-                prop = _field(p, "property")
-                path.append(self.text(prop) if prop is not None else "?")
-                cur = p
-                continue
-            if p.type == "subscript_expression" and _field(p, "object").id == cur.id:
-                path.append(_str_value(_field(p, "index"), self.src) or "?")
-                cur = p
-                continue
-            break
-        if not path:
-            return True                                    # 요청 객체를 통째로 넘기거나 담았다
-        if kind == "hono":
-            return path[0] == "req"
-        call = self.parent(cur)
-        if call is not None and call.type == "call_expression" and _callee(call) is not None \
-                and _callee(call).id == cur.id:
-            method, base = path[-1], path[:-1]
-            if not base:
-                return method in ("get", "header")         # `req.get('x')` 는 읽기, `ctx.set(…)`·`ctx.throw(…)` 는 아니다
-            return self._field_key(kind, base) is not None or base == ["cookies"]
-        return self._field_key(kind, path) is not None
+    def _fastify_route_options_ok(self, opts, kind: str) -> bool:
+        """Fastify 라우트 옵션 — 훅 함수(preHandler 등)만 있으면 등록해 필드별로 세고, 그 밖의 열쇠(schema 등)는 모른다."""
+        ok = True
+        for c in _named(opts):
+            key = _field(c, "key") if c.type == "pair" else None
+            name = self.text(key) if key is not None and key.type == "property_identifier" else "?"
+            if name in _FASTIFY_HOOK_KEYS:
+                self._register_middlewares(_field(c, "value"), kind)
+                v = _unwrap(_field(c, "value"))
+                fns = _named(v) if v is not None and v.type == "array" else [v]
+                ok = ok and all(self._function_value(x) is not None for x in fns)
+            elif name != "config":
+                ok = False
+        return ok
 
     def middleware_ok(self, node, kind: str = "express") -> bool:
         """인증으로 아는 이름이거나 입력과 무관하다고 아는 미들웨어인가 — 아니면 검증 미들웨어일 수 있다."""
@@ -1168,14 +1260,15 @@ class _Context:
         if n.type == "array":
             return all(self.middleware_ok(e, kind) for e in _named(n))
         if n.type in _FUNC_TYPES:
-            return len(self.params.get(n.id, [])) >= 4 or not self._reads_first_param(n, kind)
+            return True                                    # 첫 매개변수를 요청 출처로 등록했다 — 쓰임은 필드별로 센다
+        if n.type == "object" and kind == "fastify":
+            return self._fastify_route_options_ok(n, kind)
         if n.type == "call_expression":
             return self._callee_ok(n)
         if n.type == "identifier":
             b = self.reads.get(n.id)
             if b is not None and b.id in self.funcs:
-                fn = self.funcs[b.id]
-                return len(self.params.get(fn.id, [])) >= 4 or not self._reads_first_param(fn, kind)
+                return True                                # 같은 파일 함수 미들웨어 — 필드별로 센다
             if b is not None and b.init is not None and not b.writes and b.init[1] == ():
                 init = _unwrap(b.init[0])
                 if init is not None and init.type == "call_expression":
@@ -1249,6 +1342,9 @@ class _Context:
                 if len(path) > 2 and path[-1] == "length":
                     return None                            # `req.query.url.length` — 필드의 길이를 본 것이다
                 info = self.reqs[b.id]
+                use = self._raw_use(info.kind, path)
+                if use is not None:
+                    return ("use", use)
                 key = self._field_key(info.kind, path, info.constrained)
                 return ("req", key) if key is not None else ("skip",)
             return ("bind", b, tuple(path))
@@ -1266,6 +1362,10 @@ class _Context:
                 info = self.reqs.get(b.id) if b is not None else None
                 if info is not None and m in ("get", "header") and info.kind in ("express", "koa") and arg is not None:
                     return ("req", f"{REQ}[headers.{arg.lower()}]")      # `req.get('x-url')`
+                if info is not None and m in ("get", "header") and info.kind in ("express", "koa"):
+                    return ("use", f"{REQ}[headers]")              # `req.get(name)` — 열쇠를 모른다
+                if info is not None and m == "param" and info.kind == "express":
+                    return ("use", REQ)                            # `req.param(x)` — 경로·본문·질의 어디서든 읽는다
             if obj is not None and obj.type == "member_expression":
                 base = _unwrap(_field(obj, "object"))
                 oprop = _field(obj, "property")
@@ -1280,6 +1380,8 @@ class _Context:
                         return ("req", f"{REQ}[{field}]")
                     if m in ("json", "parseBody", "formData") and not args:
                         return ("req", f"{REQ}[body]")             # `await c.req.json()`
+                    if field is not None:
+                        return ("use", f"{REQ}[{field}]")          # `c.req.query(k)` — 열쇠를 모른다
                 if info is not None and info.kind == "koa" and oname == "cookies" and m == "get" and arg is not None:
                     return ("req", f"{REQ}[cookies.{arg}]")
             return None
@@ -1342,7 +1444,7 @@ class _Context:
                         return None                        # 옵션을 모른다 — 모르면 침묵
                     if state == "root":
                         self.root_gated[call.id] = root    # 뿌리 값이 요청 값일 때만 보고한다(_record_call)
-                        return RULE_PATH, [args[0], root], False
+                        return RULE_PATH, [args[0], *root], False
                     return RULE_PATH, [args[0]], False
                 return None
         full = self.full_name(f)
@@ -1379,6 +1481,23 @@ class _Context:
                     targets.append(args[1])
                 return RULE_CMD, targets, False
         return None
+
+    def _later_roots(self, node) -> list:
+        """옵션을 담은 이름에 나중에 대입한 뿌리 값들 — `opts.root = req.query.d`."""
+        n = _unwrap(node)
+        out: list = []
+        for _ in range(4):
+            if n is None or n.type != "identifier":
+                return out
+            b = self.reads.get(n.id)
+            if b is None:
+                return out
+            for call_or_assign in self.member_writes.get(b.id, ()):
+                out.append(call_or_assign)
+            if b.init is None or b.writes or b.init[1] != ():
+                return out
+            n = _unwrap(b.init[0])
+        return out
 
     def _object_of(self, node):
         """옵션 자리의 값이 객체 리터럴이면 그 객체(한 번만 담은 이름을 따라간다). 콜백이면 "fn", 모르면 None."""
@@ -1423,6 +1542,7 @@ class _Context:
                 return "none", None
             if opts is None:
                 return "unknown", None
+            cands = [rest[0]]
         root = None
         root_index = -1
         kids = _named(opts)
@@ -1432,6 +1552,9 @@ class _Context:
                 root, root_index = (_field(c, "value") if c.type == "pair" else c), i
         if any(c.type == "spread_element" for c in kids[root_index + 1:]):
             return "unknown", None                         # `{ root: X, ...OPTS }`·`{ ...BASE_OPTS }` — 펼친 쪽이 root 를 정할 수 있다
+        later = self._later_roots(cands[0])
+        if later:
+            return "root", ([root] if root is not None else []) + later     # `opts.root = req.query.d` — 어느 값이든 될 수 있다
         if root is None:
             return "none", None
         v = _unwrap(root)
@@ -1439,7 +1562,7 @@ class _Context:
         if v is not None and (v.type in ("undefined", "null") or lit in ("", "/")
                               or v.type == "identifier" and self.text(v) == "undefined" and v.id not in self.reads):
             return "none", None                            # 뿌리가 없는 것과 같다
-        return "root", root
+        return "root", [root]
 
     def _shell_dash_c(self, args):
         """첫 인자가 셸이고 인자 배열의 `-c`(cmd 는 `/c`) 다음 원소면 그 원소 — 명령 문자열이다."""
@@ -1522,8 +1645,8 @@ class _Unit:
         tag = s[0]
         if tag == "req":
             return s[1]
-        if tag == "reqobj":
-            return REQ if census else None
+        if tag in ("reqobj", "use"):
+            return (REQ if tag == "reqobj" else s[1]) if census else None   # 쓰임으로만 센다 — 출처는 아니다
         if tag == "skip":
             return None
         b, path = s[1], s[2]
@@ -1870,7 +1993,14 @@ class _Unit:
                 return v is not None and v.id == cur.id    # 다른 이름에 담기(흐름으로 따라간다)
             if t in ("assignment_expression", "augmented_assignment_expression"):
                 right, left = _field(p, "right"), _unwrap(_field(p, "left"))
-                return right is not None and right.id == cur.id and left is not None and left.type == "identifier"
+                if right is None or right.id != cur.id or left is None:
+                    return False
+                if left.type == "member_expression" and t == "assignment_expression":
+                    prop = _field(left, "property")
+                    obj = _unwrap(_field(left, "object"))
+                    return prop is not None and cx.text(prop) == "root" and obj is not None and obj.type == "identifier" \
+                        and obj.id in cx.reads and cx.reads[obj.id].id in cx.member_writes   # `opts.root = v` — 뿌리로 따라간다
+                return left.type == "identifier"
             if t == "for_in_statement":
                 right = _field(p, "right")
                 return right is not None and right.id == cur.id
@@ -2010,8 +2140,8 @@ class _Unit:
         f = _callee(call)
         if f is not None and f.type == "member_expression":
             prop = _field(f, "property")
-            if prop is not None and cx.text(prop) == "json" and cx.resp_kind(_field(f, "object")) is not None:
-                return True                                # `res.json({ … })` — 응답에 그대로 싣기
+            if prop is not None and cx.text(prop) in _RES_HARMLESS and cx.resp_kind(_field(f, "object")) is not None:
+                return True                                # `res.json({ … })`·`ctx.attachment(name)`·`res.set(h, v)` — 응답에 싣기
         kids = self.children(call)
         if kids is not None and any(k is not None and k.id == cur.id for k in kids):
             return None
@@ -2161,8 +2291,8 @@ class _Unit:
         found = cx.sink(call)
         if found is not None:
             rule, targets, address = found
-            root = cx.root_gated.get(call.id)
-            if root is not None and not self.reach(root):
+            roots = cx.root_gated.get(call.id)
+            if roots is not None and not any(self.reach(r) for r in roots):
                 return                                     # 뿌리 폴더가 상수·모르는 값 — 그 밖으로 못 나간다
             keys: set[str] = set()
             for tg in targets:

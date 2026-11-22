@@ -27,9 +27,8 @@ SILENT_BY_DESIGN: dict[str, str] = {
     "B-V-18": "허용 목록 검사가 위험한 자리보다 뒤에 있다 — 쓰임의 순서는 보지 않는다(그 값이 다른 데 쓰였으면 침묵)",
 }
 #: 놓치는 취약 사례(라벨 → 까닭).
-KNOWN_MISSES: dict[str, str] = {
-    "B-V-06": "Koa 에서 요청 값을 읽는 use 와 라우터를 함께 쓴 파일 — use 가 라우트를 검사하는 미들웨어일 수 있어 파일 전체를 버린다(4-7)",
-}
+KNOWN_MISSES: dict[str, str] = {}
+# B-V-06(Koa use 와 라우터를 함께 쓴 파일)은 3회차 수정(함수 미들웨어의 쓰임을 필드별로 센다)으로 이제 잡힌다.
 #: 보고가 남는 안전 사례. 비어 있어야 한다.
 KNOWN_REPORTS: dict[str, str] = {}
 
