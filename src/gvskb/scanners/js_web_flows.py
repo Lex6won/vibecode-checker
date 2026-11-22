@@ -132,6 +132,13 @@ _EXISTENCE_CALLS = frozenset(
 )
 #: express-validator — 결과를 묻는 호출(요청을 통째로 읽는 것이 아니다)과 필드를 검사하는 체인의 시작.
 _VALIDATOR_RESULTS = frozenset({"express-validator.validationResult", "express-validator.matchedData"})
+#: 값을 검사하지 않는 체인 메서드 — 정제·수식어. 이것만 있는 체인은 필드를 쓴 것이 아니다. 모르는 메서드는 검사로 본다.
+_VALIDATOR_NEUTRAL = frozenset({
+    "trim", "ltrim", "rtrim", "escape", "unescape", "toInt", "toFloat", "toBoolean", "toDate", "normalizeEmail", "blacklist",
+    "whitelist", "stripLow", "toLowerCase", "toUpperCase", "customSanitizer", "default", "replace", "optional", "bail",
+    "withMessage", "not",
+})
+_VALIDATOR_LOCATIONS = {"query": "query", "body": "body", "params": "params", "headers": "headers", "cookies": "cookies"}
 _VALIDATOR_FIELDS = {"query": ("query",), "body": ("body",), "param": ("params",), "header": ("headers",),
                      "cookie": ("cookies",), "check": ("query", "body", "params", "headers", "cookies")}
 #: 사용자 값을 넣는 컬렉션에서 그 값으로 찾거나 넣는 메서드.
@@ -145,7 +152,8 @@ _MOUNT_METHODS = frozenset({"routes", "allowedMethods", "middleware"})
 #: 값을 그대로 옮기는 것으로 아는 호출(전체 이름) — 묶음을 유지하고 쓰임으로 치지 않는다.
 _PASS_ALL_ARGS = frozenset({"path.join", "path.resolve", "path.normalize", "path.posix.join", "path.posix.resolve",
                             "path.win32.join", "path.win32.resolve", "Object.assign"})
-_PASS_FIRST_ARG = frozenset({"String", "decodeURIComponent", "decodeURI", "JSON.stringify"})
+_PASS_FIRST_ARG = frozenset({"String", "decodeURIComponent", "decodeURI", "JSON.stringify", "fs.realpathSync",
+                             "fs.realpathSync.native", "fs.promises.realpath", "fs-extra.realpathSync"})
 _PASS_METHODS_NOARG = frozenset({"toString", "trim"})
 _LOG_METHODS = frozenset({"log", "info", "debug", "warn", "error", "trace", "fatal"})
 _LOG_OWNER_RE = re.compile(r"(?i)(?:log|logger|debug)$")
@@ -244,26 +252,6 @@ def _extend(key: str, path) -> str | None:
 
 def _is_statement(t: str) -> bool:
     return t.endswith(("_statement", "_declaration")) or t in ("statement_block", "program", "switch_case", "switch_default")
-
-
-class _Groups:
-    """서로 이어진 값들의 묶음 — 값에서 나온 값, 값을 들여다본 결과."""
-
-    def __init__(self) -> None:
-        self.parent: dict[str, str] = {}
-
-    def find(self, x: str) -> str:
-        root = x
-        while self.parent.get(root, root) != root:
-            root = self.parent[root]
-        while self.parent.get(x, x) != root:
-            self.parent[x], x = root, self.parent[x]
-        return root
-
-    def link(self, a: str, b: str) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[ra] = rb
 
 
 class _Binding:
@@ -414,8 +402,8 @@ class _Context:
         self.funcs: dict[int, object] = {}                 # 같은 파일 함수 선언 → 함수 노드
         self.func_of_node: dict[int, int] = {}             # 함수 노드 → 그 선언
         self.summaries: dict[int, tuple[frozenset, frozenset, frozenset]] = {}
-        self.param_sources: dict[int, dict[int, tuple[bool, int]]] = {}
-        self.collected: dict[int, dict[int, tuple[bool, int]]] = {}
+        self.param_sources: dict[int, dict[int, tuple[bool, int, tuple[str, ...]]]] = {}
+        self.collected: dict[int, dict[int, tuple[bool, int, tuple[str, ...]]]] = {}
         self.request_used: set[str] = set()
         self.request_used_next: set[str] = set()
         self.hits: list[tuple[str, int, tuple[str, ...]]] = []
@@ -1032,11 +1020,14 @@ class _Context:
     def _validator_keys(self, node) -> set[str] | None:
         """express-validator 체인이면 그것이 검사하는 필드 열쇠들(`query('page').isInt()` → `REQ[query.page]`). 아니면 None."""
         n = _unwrap(node)
+        methods: list[str] = []
         for _ in range(64):                                # `.optional().isInt().withMessage(…)` 체인을 거슬러 올라간다
             if n is None or n.type != "call_expression":
                 return None
             f = _callee(n)
             if f is not None and f.type == "member_expression":
+                mp = _field(f, "property")
+                methods.append(self.text(mp) if mp is not None else "?")
                 n = _unwrap(_field(f, "object"))
                 continue
             break
@@ -1048,6 +1039,8 @@ class _Context:
         args = _args(n)
         keys: set[str] = set()
         if fn in _VALIDATOR_FIELDS:
+            if not any(m not in _VALIDATOR_NEUTRAL for m in methods):
+                return set()                               # 정제만 하는 체인(`body('*').trim()`) — 값을 검사하지 않는다
             names: list[str | None] = []
             first = _unwrap(args[0]) if args else None
             if first is not None and first.type == "array":
@@ -1071,7 +1064,10 @@ class _Context:
                 key = _field(c, "key") if c.type == "pair" else None
                 name = (self.text(key) if key is not None and key.type == "property_identifier"
                         else _str_value(key, self.src) if key is not None else None)
-                for loc in _VALIDATOR_FIELDS["check"]:
+                locs, checks = self._schema_field(_unwrap(_field(c, "value")) if c.type == "pair" else None)
+                if not checks:
+                    continue                               # 정제만 있는 필드
+                for loc in locs:
                     keys.add(f"{REQ}[{loc}.{name}]" if name else f"{REQ}[{loc}]")
             return keys
         if fn == "oneOf":
@@ -1081,6 +1077,26 @@ class _Context:
                     keys |= self._validator_keys(e) or set()
             return keys
         return None
+
+    def _schema_field(self, spec) -> tuple[tuple[str, ...], bool]:
+        """checkSchema 의 필드 하나 → (위치들, 검사 메서드가 있는가). `in: ['body']` 를 지킨다. 모르면 전부·있다."""
+        every = _VALIDATOR_FIELDS["check"]
+        if spec is None or spec.type != "object":
+            return every, True
+        locs: tuple[str, ...] = every
+        checks = False
+        for c in _named(spec):
+            key = _field(c, "key") if c.type == "pair" else None
+            name = (self.text(key) if key is not None and key.type == "property_identifier"
+                    else _str_value(key, self.src) if key is not None else "?")
+            if name == "in":
+                v = _unwrap(_field(c, "value"))
+                vals = [_str_value(e, self.src) for e in (_named(v) if v is not None and v.type == "array" else [v])]
+                mapped = tuple(_VALIDATOR_LOCATIONS.get(x or "", "?") for x in vals)
+                locs = every if "?" in mapped else mapped
+            elif name not in _VALIDATOR_NEUTRAL and name not in ("errorMessage",):
+                checks = True
+        return locs, checks
 
     def _validator_uses(self, node) -> None:
         """라우트 인자의 express-validator 체인 — 그 필드 열쇠를 파일에서 쓰인 것으로 센다."""
@@ -1730,12 +1746,20 @@ class _Unit:
         self.depth: dict[str, int] = {}        # 그 값이 같은 파일 함수를 몇 단계 거쳐 왔는가
         self.ever: set[str] = set()            # 한 번이라도 요청 값이었던 선언
         self.views: set[str] = set()           # 요청 값을 들여다본 결과를 담은 선언
-        self.groups = _Groups()
+        #: 선언 → **지금** 그 값에 실린 처음 값들(요청 필드, 또는 호출부에서 넘어온 매개변수). 흐름을 따라 가지마다 바뀐다.
+        #: 묶음끼리 합치지 않는다 — 검사한 필드와 검사하지 않은 필드가 한 변수로 합쳐져도 처음 값마다 따로 판정한다.
+        #: 파생 값을 다른 데 쓰면 그 시점에 실린 처음 값 모두를 쓴 것이다(`if (!realpath(p).startsWith(BASE))`).
+        self.fl: dict[str, frozenset] = {}                 # 실린 처음 값들
+        self.fll: dict[str, frozenset] = {}                # 그중 주소의 앞머리(호스트 자리)에 오는 것
+        self.vl: dict[str, frozenset] = {}                 # 들여다본 결과(값은 싣지 않는다)가 본 처음 값들
+        self.all_leaves: dict[str, set[str]] = {}          # 시점을 모를 때 쓰는 합집합
+        self.at_stmt: dict[int, tuple] = {}                # 문장 → 그 문장을 시작할 때의 (fl, vl)
+        self.param_fields: dict[str, tuple[str, ...]] = {}  # 호출부에서 넘어온 매개변수 → 그 요청 필드(근거 문구용)
         self.seen: set[str] = set()
         self.sinks: list = []
         self.calls: list = []
         self.returns: list = []
-        self.only_inside: list[tuple[str, set[int]]] = []
+        self.only_inside: list[tuple[frozenset, set[int]]] = []   # (값이 비어 있지 않은 채 닿는 분기의 처음 값들, 그 분기)
         self.nested = 0
 
     # ── 식이 어떤 값인가 ────────────────────────────────────────────────────
@@ -1902,6 +1926,10 @@ class _Unit:
                     if skip_sinks:
                         if (cx.full_name(uf) or "") in _EXISTENCE_CALLS:
                             continue                       # `const ok = fs.existsSync(p)` — 있는지만 본 결과
+                        gp = _field(uf, "property") if uf is not None and uf.type == "member_expression" else None
+                        cargs = _args(n)
+                        if gp is not None and cx.text(gp) == "get" and cargs and self._user_collection(uf, cargs[0]):
+                            continue                       # `const hit = cache.get(url)` — 캐시에 저장한 값이다
                         kept = self._looked_at_args(n)
                         if kept is not None:
                             stack.extend(kept)
@@ -1995,21 +2023,25 @@ class _Unit:
             inner = _named(n)
             return self.destination(inner[0], slash_is_open=slash_is_open) if inner else set()
         text = ""
+        collected: set[str] = set()
         parts = self._ordered_parts(n)
         for i, part in enumerate(parts):
             if isinstance(part, str):
                 text += part
                 continue
-            if text and not _OPEN_AUTHORITY_RE.match(text) and not (slash_is_open and text == "/"):
-                return set()                               # `'https://api.example/items/' + x`·`'?page=' + x`
+            if text and not _OPEN_AUTHORITY_RE.match(text) and not (slash_is_open and text == "/" and not collected):
+                break                                      # `'https://api.example/items/' + x`·`'?page=' + x`
             found = self.reach(part, lead_only=True)
             if not found and not text and not self.reach(part):
                 nxt = parts[i + 1] if i + 1 < len(parts) else None
                 if isinstance(nxt, str) and nxt.startswith("://"):
                     text = "x"                             # `${scheme}://${host}/…` — 앞 조각은 스킴이다
                     continue
-            return found
-        return set()
+            if not found:
+                break                                      # 요청 값이 아닌 조각(고정 값) — 그 뒤는 그 조각이 정한다
+            collected |= found
+            text += "x"                                    # 호스트가 아직 끝나지 않았으면 다음 조각도 호스트 자리다
+        return collected
 
     # ── 쓰임이 해롭지 않은가 ─────────────────────────────────────────────────
 
@@ -2072,7 +2104,7 @@ class _Unit:
                     n = stack.pop()
                     ids.add(n.id)
                     stack.extend(n.children)
-                self.only_inside.append((key, ids))
+                self.only_inside.append((self._leaves_at(key, p), ids))
             return True
         return True
 
@@ -2105,6 +2137,8 @@ class _Unit:
                 if left.type == "member_expression" and t == "assignment_expression":
                     prop = _field(left, "property")
                     obj = _unwrap(_field(left, "object"))
+                    if prop is not None and cx.text(prop) == "body" and cur.type == "object" and cx.resp_kind(obj) == "koa":
+                        return True                        # `ctx.body = { … }` — 객체는 JSON 으로 나간다
                     return prop is not None and cx.text(prop) == "root" and obj is not None and obj.type == "identifier" \
                         and obj.id in cx.reads and cx.reads[obj.id].id in cx.member_writes   # `opts.root = v` — 뿌리로 따라간다
                 return left.type == "identifier"
@@ -2254,12 +2288,45 @@ class _Unit:
             prop = _field(f, "property")
             if prop is not None and cx.text(prop) in _RES_HARMLESS and cx.resp_kind(_field(f, "object")) is not None:
                 return True                                # `res.json({ … })`·`ctx.attachment(name)`·`res.set(h, v)` — 응답에 싣기
+            if prop is not None and cx.text(prop) == "send" and cur.type == "object" \
+                    and cx.resp_kind(_field(f, "object")) is not None:
+                return True                                # `res.send({ … })` — 객체는 JSON 으로 나간다
             if prop is not None and cx.text(prop) in _COLLECTION_METHODS and self._user_collection(f, cur):
-                return True                                # 사용자 값을 넣는 캐시 — `cache.has(url)` 는 허용 목록 검사가 아니다
+                if cx.text(prop) != "has":
+                    return True                            # 사용자 값을 넣는 캐시에 넣기·꺼내기
+                return self._cache_hit_shape(call)         # `if (c.has(v)) return c.get(v)` 만 캐시 — `if (!c.has(v)) return 403` 은 검사
         kids = self.children(call)
         if kids is not None and any(k is not None and k.id == cur.id for k in kids):
             return None
         return False
+
+    def _cache_hit_shape(self, call) -> bool:
+        """`X.has(v)` 가 캐시 모양인가 — 조회가 **참일 때만** 뒤로 이어지는 모양(`if (!X.has(v)) return 403`)은 허용 목록
+        검사다. 참이면 저장값을 돌려주고 끝내거나(`if (X.has(v)) return X.get(v)`) 어느 쪽이든 이어지면 캐시다.
+        조건문이 아닌 자리는 판단할 수 없어 False(쓰인 것)."""
+        cx = self.cx
+        cur = call
+        p = cx.parent(cur)
+        while p is not None and p.type in _WRAPPERS:
+            cur, p = p, cx.parent(p)
+        negated = False
+        while p is not None and p.type == "unary_expression" and cx.text(_field(p, "operator")) == "!":
+            negated = not negated
+            cur, p = p, cx.parent(p)
+            while p is not None and p.type in _WRAPPERS:
+                cur, p = p, cx.parent(p)
+        if p is None or p.type != "if_statement":
+            return False                                   # 삼항·`&&`·다른 자리 — 모른다
+        cond = _field(p, "condition")
+        if cond is None or cond.id != cur.id:
+            return False
+        # 조회가 거짓일 때 빠져나가는 가지 — 있으면 그 뒤는 조회가 참일 때만 닿는다(허용 목록 검사)
+        if negated:
+            exiting = _field(p, "consequence")
+        else:
+            alt = _field(p, "alternative")
+            exiting = _named(alt)[0] if alt is not None and _named(alt) else None
+        return not (exiting is not None and self._terminates(exiting))
 
     def _user_collection(self, member, cur) -> bool:
         """`X.has(v)`·`X.get(v)`·`X.set(v, …)` 의 X 에 **그 값(같은 묶음)** 을 넣는 코드(`X.set(v, …)`·`X.add(v)`)가 파일에 있는가."""
@@ -2270,10 +2337,10 @@ class _Unit:
         key = self.key_of(cur, census=True)
         if key is None:
             return False
-        find = self.groups.find
+        mine = self._leaves_at(key, cur) | {key}
         for arg in cx.collection_inserts.get(cx.reads[obj.id].id, ()):
             k = self.key_of(arg, census=True)
-            if k is not None and (k == key or find(k) == find(key)):
+            if k is not None and (k == key or (self._leaves_at(k, arg) | {k}) & mine):
                 return True
         return False
 
@@ -2287,23 +2354,25 @@ class _Unit:
             return
         found = self.reach(value)
         if found:
-            leads = bool(self.destination(value))
+            lead_keys = self.destination(value)
+            leads = bool(lead_keys)
             d = min(self._depth_of(k) for k in found)
             for b in bindings:
                 k = b.key
                 self.taint[k] = self.taint[k] if keep and k in self.taint else leads
                 self.depth[k] = min(d, self.depth.get(k, d)) if keep else d
                 self.ever.add(k)
-                for key in found:
-                    self.groups.link(k, key)
+                carried = self._expand(found)
+                self._set_leaves(k, carried, keep=keep)
+                if not keep:                               # 이어 붙인 값(`url += x`)은 앞머리가 아니다
+                    self.fll = {**self.fll, k: self._expand(lead_keys, lead=True)}
             return
         seen = self.mentions(value)
         for b in bindings:
             k = b.key
             if seen:
                 self.views.add(k)
-                for key in seen:
-                    self.groups.link(k, key)
+                self._set_leaves(k, self._expand(seen, use=True), keep=keep, view=True)
             if not keep:
                 self.taint.pop(k, None)
 
@@ -2339,14 +2408,14 @@ class _Unit:
                     self.taint[k] = True
                     self.depth[k] = 0
                     self.ever.add(k)
-                    self.groups.link(k, fk)
+                    self._set_leaves(k, frozenset({fk}))
+                    self.fll = {**self.fll, k: frozenset({fk})}
                     self.seen.add(fk)
                     continue
             seen = self.mentions(value)
             if seen:
                 self.views.add(k)
-                for key in seen:
-                    self.groups.link(k, key)
+                self._set_leaves(k, self._expand(seen, use=True), view=True)
             self.taint.pop(k, None)
 
     def _bind_assignment(self, node) -> None:
@@ -2368,27 +2437,68 @@ class _Unit:
                     continue
                 if seen:
                     self.views.add(b.key)
-                    for key in seen:
-                        self.groups.link(b.key, key)
+                    self._set_leaves(b.key, self._expand(seen, use=True), view=True)
                 self.taint.pop(b.key, None)
 
     # ── 한 단위 걷기(분기마다 지금의 값을 따로 본다) ─────────────────────────
 
     def _snapshot(self):
-        return dict(self.taint), dict(self.depth)
+        return dict(self.taint), dict(self.depth), self.fl, self.fll, self.vl
 
     def _restore(self, state) -> None:
         self.taint, self.depth = dict(state[0]), dict(state[1])
+        self.fl, self.fll, self.vl = state[2], state[3], state[4]
 
     def _merge(self, states) -> None:
-        """갈라졌던 경로를 합친다 — 어느 경로로든 요청 값이면 요청 값."""
+        """갈라졌던 경로를 합친다 — 어느 경로로든 요청 값이면 요청 값, 실린 처음 값은 합친다."""
         taint: dict[str, bool] = {}
         depth: dict[str, int] = {}
-        for t, d in states:
+        maps: list[dict[str, frozenset]] = [{}, {}, {}]
+        for t, d, *ls in states:
             for k, lead in t.items():
                 taint[k] = taint.get(k, False) or lead
                 depth[k] = min(depth.get(k, d.get(k, 0)), d.get(k, 0))
+            for out, src in zip(maps, ls):
+                for k, v in src.items():
+                    out[k] = out.get(k, frozenset()) | v
         self.taint, self.depth = taint, depth
+        self.fl, self.fll, self.vl = maps
+
+    def _set_leaves(self, k: str, leaves: frozenset, *, keep: bool = False, view: bool = False) -> None:
+        """선언에 실린 처음 값을 바꾼다(새 사전으로 — 문장마다 적어 둔 시점 상태가 바뀌지 않게)."""
+        name = "vl" if view else "fl"
+        cur = getattr(self, name)
+        new = (cur.get(k, frozenset()) | leaves) if keep else leaves
+        setattr(self, name, {**cur, k: new})
+        self.all_leaves.setdefault(k, set()).update(leaves)
+
+    def _expand(self, keys, *, lead: bool = False, use: bool = False, state=None) -> frozenset:
+        """열쇠들 → 지금 실린 처음 값들. 요청 필드는 그 자체, 선언은 상태에서(없으면 그 선언이 처음 값)."""
+        fl, fll, vl = state if state is not None else (self.fl, self.fll, self.vl)
+        out: set[str] = set()
+        for k in keys:
+            if k.startswith(REQ):
+                out.add(k)
+                continue
+            got = (fll if lead else fl).get(k)
+            if got is None and use:
+                got = vl.get(k)
+            out.update(got if got is not None else (k,))
+        return frozenset(out)
+
+    def _leaves_at(self, key: str, node) -> frozenset:
+        """`node` 자리(그 문장을 시작할 때)에서 이 열쇠에 실린 처음 값들 — 들여다본 결과면 본 처음 값들."""
+        if key.startswith(REQ):
+            return frozenset({key})
+        cx = self.cx
+        n = node
+        while n is not None:
+            st = self.at_stmt.get(n.id)
+            if st is not None:
+                got = st[0].get(key) or st[1].get(key)
+                return frozenset(got) if got is not None else frozenset(self.all_leaves.get(key, {key}))
+            n = cx.parent(n)
+        return frozenset(self.all_leaves.get(key, {key}))   # 시점을 모른다 — 모든 시점의 합집합(더 많이 침묵한다)
 
     def _process(self, roots) -> tuple[list, list]:
         """이 문장에서 계산하는 식 — 위험한 자리와 같은 파일 함수 호출을 적는다. 돌려주는 값: (안쪽 함수들, 대입 식들)."""
@@ -2428,7 +2538,7 @@ class _Unit:
             for tg in targets:
                 keys |= self.destination(tg, slash_is_open=rule == RULE_REDIRECT) if address else self.reach(tg)
             if keys:
-                self.sinks.append((rule, call, keys))
+                self.sinks.append((rule, call, self._expand(keys, lead=address)))
             return
         local = cx.local_callee(call)
         if local is None:
@@ -2442,12 +2552,23 @@ class _Unit:
             keys = self.reach(a)
             if keys:
                 depth = min(self._depth_of(k) for k in keys) + 1
-                self.calls.append((bid, slots[i].id, keys, bool(self.destination(a)), depth, call))
+                self.calls.append((bid, slots[i].id, self._expand(keys), bool(self.destination(a)), depth, call))
 
     def _statement(self, st):
         """문장 하나 — 하위 블록·안쪽 함수는 ("block", 문장들)·("fn", 함수)로 요청한다(재귀 없이)."""
         cx = self.cx
         cx.spend()
+        prev = self.at_stmt.get(st.id)
+        if prev is None:
+            self.at_stmt[st.id] = (self.fl, self.vl)
+        else:                                              # 반복문 본문을 두 번 돈다 — 두 시점을 합친다
+            merged = []
+            for old, new in zip(prev, (self.fl, self.vl)):
+                both = dict(old)
+                for k, v in new.items():
+                    both[k] = both.get(k, frozenset()) | v
+                merged.append(both)
+            self.at_stmt[st.id] = tuple(merged)
         t = st.type
         if t in _FUNC_DECL_TYPES:
             if not self.module:
@@ -2487,7 +2608,7 @@ class _Unit:
         if t == "return_statement" and not self.nested and roots:
             keys = self.reach(roots[0])
             if keys:
-                self.returns.append((keys, bool(self.destination(roots[0]))))
+                self.returns.append((self._expand(keys), self._expand(self.destination(roots[0]), lead=True)))
         if t in ("lexical_declaration", "variable_declaration"):
             for d in roots:
                 self._bind_declarator(d)
@@ -2621,14 +2742,16 @@ class _Unit:
                     self.ever.add(b.key)
             return
         bid = cx.func_of_node.get(self.fn.id)
-        for pid, (lead, depth) in cx.param_sources.get(bid, {}).items() if bid is not None else ():
+        for pid, (lead, depth, fields) in cx.param_sources.get(bid, {}).items() if bid is not None else ():
             k = cx.bindings[pid].key
             self.taint[k] = lead
             self.depth[k] = depth
             self.ever.add(k)
+            self.param_fields[k] = fields
 
-    def _used_groups(self) -> set[str]:
-        """다른 데 쓰인 값들의 묶음 — 해롭지 않다고 아는 쓰임이 아니면 전부 센다(안쪽 함수 포함)."""
+    def _used_keys(self) -> set[str]:
+        """다른 데 쓰인 처음 값들 — 해롭지 않다고 아는 쓰임이 아니면, 그 자리(문장 시점)에서 그 값에 실린 처음 값 모두를 센다.
+        풀 수 없는 선언에 실렸던 처음 값도 넣는다."""
         used: set[str] = set()
         if self.module:
             targets = _named(self.fn)
@@ -2638,50 +2761,49 @@ class _Unit:
             for occ, key in self.occurrences(target, skip_functions=self.module):
                 is_view = key in self.views and key not in self.ever
                 if not self.is_harmless(occ, view=is_view, key=key):
-                    used.add(self.groups.find(key))
+                    used.add(key)
+                    used.update(self._leaves_at(key, occ))
+        for k in self.ever | self.views | set(self.all_leaves):
+            if k.startswith("B") and k[1:].isdigit() and int(k[1:]) in self.cx.opaque:
+                used.add(k)
+                used.update(self.all_leaves.get(k, ()))
         return used
 
-    def _unused_keys(self, keys: set[str], used: set[str], at=None) -> set[str]:
-        """위험한 자리에 닿는 값 가운데 **다른 데 쓰인 적 없는** 것들 — 값 묶음마다 따로 본다.
+    def _silenced(self, leaf: str, closed: set[str]) -> bool:
+        """처음 값 하나가 이 단위(또는 요청 필드라면 파일 전체)에서 다른 데 쓰였는가."""
+        if leaf in closed:
+            return True
+        if not leaf.startswith(REQ):
+            return leaf.startswith("B") and leaf[1:].isdigit() and int(leaf[1:]) in self.cx.opaque
+        request_used = self.cx.request_used
+        if leaf in request_used or any(a in closed or a in request_used for a in _ancestors(leaf)):
+            return True
+        return any(leaf in _ancestors(k) for k in (closed | request_used) if k.startswith(REQ + "["))
 
-        검사한 필드와 검사하지 않은 필드가 한 인자에 합쳐져도(`join(BASE, req.params.dept, req.query.file)`) 검사하지 않은
-        쪽이 남으면 보고한다. 한 묶음 안의 값(값에서 나온 값·들여다본 결과)은 함께 쓰인 것으로 본다.
+    def _unused_leaves(self, leaves, used: set[str], at=None) -> set[str]:
+        """위험한 자리에 닿는 값을 처음 값(요청 필드)까지 거슬러, **다른 데 쓰인 적 없는** 처음 값들 — 하나씩 따로 본다.
+
+        검사한 필드와 검사하지 않은 필드가 한 변수로 합쳐져도(`const p = join(BASE, dept, file)`) 검사하지 않은 쪽이 남으면
+        보고한다. 합친 변수 자체를 검사했으면(`if (!realpath(p).startsWith(BASE))`) 기여한 값 모두를 본 것이다.
+        ``at``(위험한 자리)이 '값이 있으면 끝내는' 분기 밖이면 그 값은 비어 있다 — 쓰인 것으로 본다.
         """
-        return {k for k in keys if self._is_unused({k}, used, at)}
+        closed = set(used)
+        for found, inside in self.only_inside:
+            if at is None or at.id not in inside:
+                closed |= found
+        return {leaf for leaf in leaves if not self._silenced(leaf, closed)}
 
-    def _field_names(self, keys: set[str]) -> tuple[str, ...]:
-        """근거 문구에 적을 요청 필드 — 선언 열쇠면 같은 묶음의 요청 필드, 없으면 이름."""
-        find = self.groups.find
+    def _field_names(self, leaves: set[str]) -> tuple[str, ...]:
+        """근거 문구에 적을 요청 필드 — 매개변수면 호출부에서 넘어온 요청 필드, 그것도 없으면 이름."""
         out: set[str] = set()
-        for k in keys:
+        for k in leaves:
             if k.startswith(REQ + "["):
                 out.add(k[len(REQ) + 1:-1])
-                continue
-            fields = {m[len(REQ) + 1:-1] for m in self.seen if m.startswith(REQ + "[") and find(m) == find(k)}
-            if fields:
-                out |= fields
+            elif k in self.param_fields and self.param_fields[k]:
+                out.update(self.param_fields[k])
             elif k.startswith("B") and k[1:].isdigit():
                 out.add(self.cx.bindings[int(k[1:])].name)
         return tuple(sorted(out))
-
-    def _is_unused(self, keys: set[str], used: set[str], at=None) -> bool:
-        """이 값들이(그릇을 포함해) 어디에도 쓰이지 않았는가 — 이 단위와, 요청 필드라면 파일 전체에서."""
-        cx = self.cx
-        find = self.groups.find
-        known = self.seen | self.ever | self.views
-        for key in keys:
-            family = {key} | {k for k in known if find(k) == find(key)}
-            family |= {k for k in known if any(a in family for a in _ancestors(k))}
-            for member in family:
-                if member.startswith("B") and int(member[1:]) in cx.opaque:
-                    return False
-                for k in (member, *_ancestors(member)):
-                    if find(k) in used or k in cx.request_used:
-                        return False
-            for other, inside in self.only_inside:
-                if find(other) == find(key) and (at is None or at.id not in inside):
-                    return False
-        return True
 
     def analyse(self) -> None:
         cx = self.cx
@@ -2696,7 +2818,7 @@ class _Unit:
                 fns, assigns = self._process([body])
                 keys = self.reach(body)
                 if keys:
-                    self.returns.append((keys, bool(self.destination(body))))
+                    self.returns.append((self._expand(keys), self._expand(self.destination(body), lead=True)))
                 for a in sorted(assigns, key=lambda a: a.start_byte):
                     self._bind_assignment(a)
                 stack = [self._nested(f) for f in reversed(fns)]
@@ -2710,30 +2832,33 @@ class _Unit:
                         stack.append(self._nested(payload))
                     elif kind == "block":
                         self._run(payload)
-        used = self._used_groups()
-        for key in self.seen:                              # 이 단위가 들여다본 요청 필드는 파일 전체에 알린다
-            if key.startswith(REQ) and self.groups.find(key) in used:
+        used = self._used_keys()
+        for key in used:                                   # 이 단위가 들여다본 요청 필드는 파일 전체에 알린다
+            if key.startswith(REQ):
                 cx.request_used_next.add(key)
         if self.probe:
             bid = cx.func_of_node[self.fn.id]
-            find = self.groups.find
             slots = [b for b in cx.params.get(self.fn.id, []) if b is not None]
+            returned = set().union(*(lv for lv, _ in self.returns)) if self.returns else set()
+            leading = set().union(*(ll for _, ll in self.returns)) if self.returns else set()
             cx.summaries[bid] = (
-                frozenset(b.id for b in slots if find(b.key) in used or b.id in cx.opaque),
-                frozenset(b.id for b in slots for keys, _ in self.returns if any(find(k) == find(b.key) for k in keys)),
-                frozenset(b.id for b in slots for keys, lead in self.returns if lead and any(find(k) == find(b.key) for k in keys)),
+                frozenset(b.id for b in slots if b.key in used or b.id in cx.opaque),
+                frozenset(b.id for b in slots if b.key in returned),
+                frozenset(b.id for b in slots if b.key in leading),
             )
             return
-        for rule, call, keys in self.sinks:
-            fresh = self._unused_keys(keys, used, call)
+        for rule, call, leaves in self.sinks:
+            fresh = self._unused_leaves(leaves, used, call)
             if fresh and cx.reportable_at(call):
                 cx.hits.append((rule, call.start_point[0] + 1, self._field_names(fresh)))
         for callee, param, keys, leads, depth, call in self.calls:
-            if depth > _MAX_HOPS or not self._unused_keys(keys, used) or not cx.reportable_at(call):
+            fresh = self._unused_leaves(keys, used) if depth <= _MAX_HOPS else set()
+            if not fresh or not cx.reportable_at(call):
                 continue
             mine = cx.collected.setdefault(callee, {})
             old = mine.get(param)
-            mine[param] = (leads or (old[0] if old else False), min(depth, old[1]) if old else depth)
+            fields = tuple(sorted(set(self._field_names(fresh)) | set(old[2] if old else ())))
+            mine[param] = (leads or (old[0] if old else False), min(depth, old[1]) if old else depth, fields)
 
 
 def has_framework_marker(code: str) -> bool:
@@ -2777,9 +2902,10 @@ def scan_js_flows(root, src: bytes, filename: str, *, strict: bool = False) -> l
             merged = {k: dict(v) for k, v in cx.param_sources.items()}
             for name, params in cx.collected.items():
                 mine = merged.setdefault(name, {})
-                for pid, (lead, depth) in params.items():
+                for pid, (lead, depth, fields) in params.items():
                     old = mine.get(pid)
-                    mine[pid] = (lead or (old[0] if old else False), min(depth, old[1]) if old else depth)
+                    mine[pid] = (lead or (old[0] if old else False), min(depth, old[1]) if old else depth,
+                                 tuple(sorted(set(fields) | set(old[2] if old else ()))))
             stable = merged == cx.param_sources and cx.request_used_next <= cx.request_used
             cx.param_sources = merged
             cx.request_used |= cx.request_used_next

@@ -1076,6 +1076,128 @@ def test_well_known_auth_middlewares_and_fastify_send_file() -> None:
     assert _flows(fastify_static, header=FASTIFY) == set()  # @fastify/static 의 root 안으로 묶인다
 
 
+COMBINED_VARIABLE_CASES = [
+    # (라벨, 처리 함수 본문, 보고할 룰 또는 None) — 여러 필드를 합친 중간 변수(5회차). 처음 값마다 따로 판정한다.
+    ("경로: 검사한 type + 검사 안 한 file 을 합친 변수",
+     "const { type, file } = req.query;\n  if (!TYPES.has(type)) return res.sendStatus(400);\n"
+     "  const filePath = path.join('/data', type, file);\n  res.send(fs.readFileSync(filePath));", PATH),
+    ("주소: 검사한 provider + 검사 안 한 region(호스트 앞자리)",
+     "const { provider, region } = req.query;\n  if (!TYPES.has(provider)) return res.sendStatus(400);\n"
+     "  const url = `https://${region}.${provider}.example.go.kr/search`;\n  axios.get(url).then((r) => res.json(r.data));", SSRF),
+    ("주소: 검사한 region 이 앞, 검사 안 한 provider 가 호스트 뒷자리",
+     "const { provider, region } = req.query;\n  if (!TYPES.has(region)) return res.sendStatus(400);\n"
+     "  const url = `https://${region}.${provider}.example.go.kr/search`;\n  axios.get(url).then((r) => res.json(r.data));", SSRF),
+    ("명령: 검사한 dept + 검사 안 한 user",
+     "const { dept, user } = req.query;\n  if (!TYPES.has(dept)) return res.sendStatus(400);\n"
+     "  const cmd = `du -sh /home/${dept}/${user}`;\n  exec(cmd);\n  res.end();", CMD),
+    ("리다이렉트: 검사 안 한 returnPath 가 앞, 검사한 lang 이 뒤",
+     "const { lang, returnPath } = req.query;\n  if (!TYPES.has(lang)) return res.sendStatus(400);\n"
+     "  const target = `${returnPath}?lang=${lang}`;\n  res.redirect(target);", REDIRECT),
+    ("검사 뒤 다른 필드로 바꿔 넣음(`alt || file`)",
+     "let file = req.query.file;\n  if (!/^[\\\\w-]+\\\\.hwpx$/.test(file)) return res.sendStatus(400);\n"
+     "  file = req.query.alt || file;\n  res.send(fs.readFileSync(path.join('/srv/forms', file)));", PATH),
+    ("두 갈래로 합친 변수 — 한쪽만 검사",
+     "let p;\n  if (req.query.mode === 'a') p = req.query.a; else p = req.query.b;\n  if (!TYPES.has(req.query.a)) return res.sendStatus(400);\n"
+     "  res.send(fs.readFileSync('/srv/' + p));", PATH),
+    # ── 침묵해야 하는 쪽 ──
+    ("합친 변수 자체를 검사(realpath 접두)",
+     "const { type, file } = req.query;\n  const p = path.join('/data', type, file);\n"
+     "  if (!fs.realpathSync(p).startsWith('/data/')) return res.sendStatus(403);\n  res.send(fs.readFileSync(p));", None),
+    ("합친 변수를 허용 목록과 비교",
+     "const p = req.query.dir + '/' + req.query.name;\n  if (!TYPES.has(p)) return res.sendStatus(403);\n  res.send(fs.readFileSync(p));", None),
+    ("합친 두 필드를 각각 검사",
+     "const { type, file } = req.query;\n  if (!TYPES.has(type) || !/^[\\\\w-]+$/.test(file)) return res.sendStatus(400);\n"
+     "  res.send(fs.readFileSync(path.join('/data', type, file)));", None),
+    ("주소: 검사한 앞머리 + 검사 안 한 경로 뒤쪽",
+     "const { host, page } = req.query;\n  if (!TYPES.has(host)) return res.sendStatus(400);\n"
+     "  const url = `https://${host}/list/${page}`;\n  axios.get(url).then((r) => res.json(r.data));", None),
+    ("리다이렉트: 검사한 앞머리 + 검사 안 한 질의",
+     "const { returnPath, lang } = req.query;\n  if (!TYPES.has(returnPath)) return res.sendStatus(400);\n"
+     "  res.redirect(`${returnPath}?lang=${lang}`);", None),
+    ("검사한 뒤 다시 대입해도 같은 값",
+     "let file = req.query.file;\n  if (!/^[\\\\w-]+$/.test(file)) return res.sendStatus(400);\n"
+     "  file = file.trim();\n  res.send(fs.readFileSync('/srv/' + file));", None),
+    ("두 갈래로 합친 변수를 검사",
+     "let p;\n  if (req.query.mode === 'a') p = req.query.a; else p = req.query.b;\n  if (!TYPES.has(p)) return res.sendStatus(400);\n"
+     "  res.send(fs.readFileSync('/srv/' + p));", None),
+]
+
+
+@pytest.mark.parametrize("label,body,rule", COMBINED_VARIABLE_CASES, ids=[c[0] for c in COMBINED_VARIABLE_CASES])
+def test_combined_variable_is_judged_per_original_value(label: str, body: str, rule: str | None) -> None:
+    code = "const TYPES = new Set(['a', 'b']);\napp.get('/x', (req, res) => {\n  " + body + "\n});\n"
+    assert _flows(code) == ({rule} if rule else set()), label
+
+
+@pytest.mark.parametrize("label,body,reported", [
+    ("부정 조건으로 빠져나가는 조회 — 허용 목록(넣는 코드가 뒤에 있어도)",
+     "if (!seen.has(host)) return res.sendStatus(403);\n  seen.add(host);", False),
+    ("긍정 조건에서 저장값을 돌려주는 캐시",
+     "if (seen.has(host)) return res.json(seen.get(host));\n  seen.set(host, 1);", True),
+    ("조회 결과를 담아 돌려주는 캐시",
+     "const hit = seen.get(host);\n  if (hit) return res.json(hit);\n  seen.set(host, 1);", True),
+    ("어느 쪽이든 이어지는 조회(기록만)",
+     "if (seen.has(host)) console.log('again', host);\n  seen.add(host);", True),
+    ("else 가 빠져나가는 조회 — 허용 목록",
+     "if (seen.has(host)) { res.set('X-Known', '1'); } else { return res.sendStatus(403); }\n  seen.add(host);", False),
+    ("삼항의 조회 — 모른다",
+     "const ok = seen.has(host) ? 1 : 0;\n  seen.add(host);\n  if (!ok) console.log('x');", False),
+])
+def test_collection_lookup_polarity(label: str, body: str, reported: bool) -> None:
+    code = ("const seen = new Map();\napp.get('/f', async (req, res) => {\n  const host = req.query.host;\n  " + body
+            + "\n  const r = await axios.get(`https://${host}/feed`);\n  res.send(r.data);\n});\n")
+    assert (SSRF in _flows(code)) == reported, label
+
+
+def test_object_responses_paths_and_validator_refinements() -> None:
+    send_obj = """
+        app.get('/f', (req, res) => {
+          const name = req.query.name;
+          if (!name) return res.status(400).send({ error: 'name required', got: name });
+          res.send(fs.readFileSync('/srv/' + name));
+        });
+    """
+    assert _flows(send_obj) == {PATH}
+    koa_body = KOA + "const fs = require('fs');\n"
+    koa = "router.get('/f', async (ctx) => {\n  const n = ctx.query.n;\n  ctx.body = { n };\n  ctx.body = fs.readFileSync('/srv/' + n);\n});\n"
+    assert _flows(koa, header=koa_body) == {PATH}
+    real = """
+        app.get('/f', async (req, res) => {
+          const p = await fs.promises.realpath(path.join('/srv', req.query.f));
+          res.send(fs.readFileSync(p));
+        });
+    """
+    assert _flows(real) == {PATH}
+    ev = "const { body, checkSchema, validationResult } = require('express-validator');\n"
+    sanit = ev + textwrap.dedent("""
+        app.post('/s', body('*').trim().escape(), (req, res) => {
+          res.send(fs.readFileSync('/srv/' + req.body.file));
+        });
+    """)
+    assert _flows(sanit) == {PATH}                         # 정제만 하는 체인은 검사가 아니다
+    schema_body = ev + textwrap.dedent("""
+        app.get('/s', checkSchema({ file: { in: ['body'], matches: { options: [/^\\w+$/] } } }), (req, res) => {
+          if (!validationResult(req).isEmpty()) return res.sendStatus(400);
+          res.send(fs.readFileSync('/srv/' + req.query.file));
+        });
+    """)
+    assert _flows(schema_body) == {PATH}                   # in: ['body'] — 질의의 file 은 검사하지 않았다
+    schema_query = schema_body.replace("in: ['body']", "in: ['query']")
+    assert _flows(schema_query) == set()
+
+
+def test_helper_flow_names_the_request_field() -> None:
+    hits = _hits("""
+        function readDoc(name) {
+          return fs.readFileSync('/srv/docs/' + name);
+        }
+        app.get('/d', (req, res) => {
+          res.send(readDoc(req.query.file));
+        });
+    """)
+    assert len(hits) == 1 and hits[0][2].endswith("검사 흔적이 없는 요청 값: query.file")
+
+
 def test_locally_declared_fetch_is_not_global_fetch() -> None:
     assert _flows("""
         function fetch(x) { return x; }
