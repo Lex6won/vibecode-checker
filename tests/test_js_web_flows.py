@@ -405,6 +405,45 @@ VULNERABLE = [
           res.sendFile('/srv/' + file, (err) => err && res.end());
         });
     """),
+    ("요청 값을 읽지 않는 기록 미들웨어 뒤", PATH, EXPRESS, "app.js", """
+        app.use((req, res, next) => {
+          console.log(req.method, req.url);
+          res.set('X-Served-By', 'app');
+          next();
+        });
+        app.get('/f', (req, res) => {
+          const file = req.query.file;
+          res.send(fs.readFileSync('/srv/' + file));
+        });
+    """),
+    ("root 가 빈 문자열인 sendFile", PATH, EXPRESS, "app.js", """
+        app.get('/dl', (req, res) => {
+          const file = req.query.file;
+          res.sendFile(file, { root: '' });
+        });
+    """),
+    ("root 자체가 요청 값", PATH, EXPRESS, "app.js", """
+        app.get('/dl', (req, res) => {
+          const dir = req.query.dir;
+          res.sendFile('index.html', { root: dir });
+        });
+    """),
+    ("앱을 담지 않은 체인", PATH, "const express = require('express');\nconst fs = require('fs');\n", "app.js", """
+        express()
+          .get('/raw', (req, res) => {
+            const p = req.query.p;
+            fs.createReadStream(p).pipe(res);
+          })
+          .listen(3000);
+    """),
+    ("koa-body 를 거친 본문", PATH, "const Koa = require('koa');\nconst Router = require('@koa/router');\n"
+     "const { koaBody } = require('koa-body');\nconst fs = require('fs');\nconst app = new Koa();\nconst router = new Router();\n"
+     "app.use(koaBody());\napp.use(router.routes());\n", "app.js", """
+        router.post('/save', koaBody(), async (ctx) => {
+          const { filename } = ctx.request.body;
+          await fs.promises.writeFile(`/srv/notes/${filename}`, 'x');
+        });
+    """),
     # ── 설계상 침묵(놓치는 것을 알고 둔다) ──
     ("모르는 함수에 넘겼다", SSRF, EXPRESS, "app.js", """
         app.get('/a', async (req, res) => {
@@ -676,6 +715,22 @@ SAFE = [
         app.get('/dl', (req, res) => {
           const file = req.query.file;
           res.sendFile(file, { ...BASE, maxAge: 60 });
+        });
+    """),
+    ("download 의 셋째 자리 root 옵션", EXPRESS, """
+        app.get('/dl', (req, res) => {
+          const file = req.query.file;
+          res.download(file, 'report.pdf', { root: '/srv/reports' });
+        });
+    """),
+    ("요청 값을 읽는 express 검증 use", EXPRESS, """
+        app.use((req, res, next) => {
+          if (!isSafe(req.query.file)) return res.status(400).end();
+          next();
+        });
+        app.get('/f', (req, res) => {
+          const file = req.query.file;
+          res.send(fs.readFileSync('/srv/' + file));
         });
     """),
     ("셸이 아닌 프로그램의 -c 인자", EXPRESS, """

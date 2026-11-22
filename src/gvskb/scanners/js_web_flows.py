@@ -95,11 +95,11 @@ _RES_CHAIN = frozenset({"status", "set", "header", "type", "cookie", "clearCooki
 # ── 4-7 핸들러·파일 단위 침묵 ───────────────────────────────────────────────
 _NEUTRAL_NAMES = frozenset({
     "cors", "helmet", "morgan", "cookieParser", "compression", "rateLimit", "rateLimiter", "slowDown", "session",
-    "expressSession", "bodyParser", "json", "urlencoded", "static", "raw", "text", "csrf", "csurf", "serveStatic",
+    "expressSession", "bodyParser", "json", "urlencoded", "static", "raw", "text", "csrf", "csurf", "serveStatic", "koaBody",
 })
 _NEUTRAL_MODULES = frozenset({
     "cors", "helmet", "morgan", "cookie-parser", "compression", "express-rate-limit", "express-session", "body-parser",
-    "csurf", "express-slow-down", "serve-static", "serve-favicon", "koa-bodyparser", "@koa/bodyparser", "@koa/cors",
+    "csurf", "express-slow-down", "serve-static", "serve-favicon", "koa-bodyparser", "@koa/bodyparser", "@koa/cors", "koa-body",
     "koa-helmet", "koa-logger", "koa-static", "koa-compress", "hono/logger", "hono/cors", "hono/secure-headers",
     "hono/compress", "hono/etag", "hono/pretty-json", "hono/timing", "hono/request-id",
 })
@@ -372,6 +372,7 @@ class _Context:
         self.units: list = []
         self.uses: list[tuple[bool, list, str]] = []       # `app.use(…)` — (경로 인자가 있는가, 나머지 인자, 종류)
         self.use_handlers: set[int] = set()                # 처리 함수로 본 `use` 인자(라우터 없는 Koa)
+        self.root_gated: dict[int, object] = {}            # sendFile·download 호출 → 뿌리(root) 옵션 값
         self.dropped = False                               # 모르는 `app.use(…)` 가 있다 — 파일 전체를 버린다
         self._struct: dict[int, tuple | None] = {}
         self._full: dict[int, str | None] = {}
@@ -776,6 +777,9 @@ class _Context:
                 b = self.reads.get(obj.id)
                 kind = self.fw.get(b.id) if b is not None else None
                 return (kind, has_path, method) if kind is not None else None
+            created = self._fw_kind_of_value(obj)
+            if created is not None:
+                return created, has_path, method           # `polka().get(…)`·`express().get(…)` — 담지 않고 바로 붙였다
             if obj.type != "call_expression":
                 return None
             of = _callee(obj)
@@ -789,6 +793,16 @@ class _Context:
                 return None
             obj = _unwrap(_field(of, "object"))
         return None
+
+    def _fw_kind_of_value(self, v) -> str | None:
+        """`express()`·`express.Router()`·`polka()`·`new Koa()`·`require('express')()` 이면 프레임워크 종류."""
+        if v is None or v.type not in ("call_expression", "new_expression"):
+            return None
+        callee = _unwrap(_field(v, "function" if v.type == "call_expression" else "constructor"))
+        if callee is None:
+            return None
+        name = self.module_of(callee) if callee.type == "call_expression" else self.full_name(callee)
+        return (_FW_CALLS if v.type == "call_expression" else _FW_NEW).get(name or "")
 
     def _param_hook(self, call) -> None:
         """`router.param('file', check)` — 그 경로 매개변수는 다른 함수가 먼저 들여다본다(쓰인 것이다)."""
@@ -847,7 +861,7 @@ class _Context:
             fn = self._function_value(args[-1])
             if fn is None:
                 continue
-            reportable = all(self.middleware_ok(m) for m in args[:-1])
+            reportable = all(self.middleware_ok(m, kind) for m in args[:-1])
             constrained = frozenset(re.findall(r":(\w+)\(", _str_value(route, self.src) or "")) if route is not None \
                 else frozenset()
             self._register(fn, kind, constrained)
@@ -893,7 +907,7 @@ class _Context:
             for a in rest:
                 if a.id in self.use_handlers:
                     continue
-                if not self._mount_ok(a, with_path) and not self.middleware_ok(a):
+                if not self._mount_ok(a, with_path) and not self.middleware_ok(a, _kind):
                     self.dropped = True
 
     def _koa_use_handler(self) -> None:
@@ -908,7 +922,7 @@ class _Context:
                 continue
             for a in rest:
                 fn = self._function_value(a)
-                if fn is not None and len(self.params.get(fn.id, [])) < 4 and self._reads_first_param(fn):
+                if fn is not None and len(self.params.get(fn.id, [])) < 4 and self._reads_first_param(fn, "koa"):
                     found.append((a, fn))
         if len(found) != 1 or self.handlers:
             return
@@ -1091,10 +1105,13 @@ class _Context:
         b = self.reads.get(n.id) if n is not None and n.type == "identifier" else None
         return [b.id] if b is not None and b.id in self.imports else []
 
-    def _reads_first_param(self, fn) -> bool:
+    def _reads_first_param(self, fn, kind: str = "express") -> bool:
+        """이 (미들웨어) 함수가 첫 매개변수의 **출처 필드**를 읽는가 — `req.query`·`ctx.request.body`·`req.get('x')`·`c.req.*`,
+        또는 요청 객체를 통째로 다른 데 넘겼다. `req.method`·`ctx.url`·`ctx.set(…)`·`ctx.state` 는 출처가 아니다."""
         slots = self.params.get(fn.id, [])
-        if self.param_patterns.get(fn.id, {}).get(0):
-            return True
+        pats = self.param_patterns.get(fn.id, {}).get(0)
+        if pats:
+            return any(path is None or self._field_key(kind, path) is not None or kind == "hono" for _, path in pats)
         first = slots[0] if slots else None
         if first is None:
             return False
@@ -1102,12 +1119,46 @@ class _Context:
         while stack:
             n = stack.pop()
             self.spend()
-            if n.type == "identifier" and self.reads.get(n.id) is first:
+            if n.type == "identifier" and self.reads.get(n.id) is first and self._source_read(n, kind):
                 return True
             stack.extend(n.children)
         return False
 
-    def middleware_ok(self, node) -> bool:
+    def _source_read(self, ident, kind: str) -> bool:
+        """요청 객체 이름이 쓰인 이 자리가 출처를 읽는가(모르면 읽는다고 본다)."""
+        path: list[str] = []
+        cur = ident
+        while True:
+            p = self.parent(cur)
+            if p is None:
+                return True
+            if p.type in _WRAPPERS:
+                cur = p
+                continue
+            if p.type == "member_expression" and _field(p, "object").id == cur.id:
+                prop = _field(p, "property")
+                path.append(self.text(prop) if prop is not None else "?")
+                cur = p
+                continue
+            if p.type == "subscript_expression" and _field(p, "object").id == cur.id:
+                path.append(_str_value(_field(p, "index"), self.src) or "?")
+                cur = p
+                continue
+            break
+        if not path:
+            return True                                    # 요청 객체를 통째로 넘기거나 담았다
+        if kind == "hono":
+            return path[0] == "req"
+        call = self.parent(cur)
+        if call is not None and call.type == "call_expression" and _callee(call) is not None \
+                and _callee(call).id == cur.id:
+            method, base = path[-1], path[:-1]
+            if not base:
+                return method in ("get", "header")         # `req.get('x')` 는 읽기, `ctx.set(…)`·`ctx.throw(…)` 는 아니다
+            return self._field_key(kind, base) is not None or base == ["cookies"]
+        return self._field_key(kind, path) is not None
+
+    def middleware_ok(self, node, kind: str = "express") -> bool:
         """인증으로 아는 이름이거나 입력과 무관하다고 아는 미들웨어인가 — 아니면 검증 미들웨어일 수 있다."""
         from .authz_posture import _GUARD_NAME
 
@@ -1115,16 +1166,16 @@ class _Context:
         if n is None:
             return False
         if n.type == "array":
-            return all(self.middleware_ok(e) for e in _named(n))
+            return all(self.middleware_ok(e, kind) for e in _named(n))
         if n.type in _FUNC_TYPES:
-            return len(self.params.get(n.id, [])) >= 4 or not self._reads_first_param(n)
+            return len(self.params.get(n.id, [])) >= 4 or not self._reads_first_param(n, kind)
         if n.type == "call_expression":
             return self._callee_ok(n)
         if n.type == "identifier":
             b = self.reads.get(n.id)
             if b is not None and b.id in self.funcs:
                 fn = self.funcs[b.id]
-                return len(self.params.get(fn.id, [])) >= 4 or not self._reads_first_param(fn)
+                return len(self.params.get(fn.id, [])) >= 4 or not self._reads_first_param(fn, kind)
             if b is not None and b.init is not None and not b.writes and b.init[1] == ():
                 init = _unwrap(b.init[0])
                 if init is not None and init.type == "call_expression":
@@ -1286,8 +1337,12 @@ class _Context:
                     target = args[1] if len(args) >= 2 and _unwrap(args[0]).type == "number" else args[0]
                     return RULE_REDIRECT, [target], True
                 if m in ("sendFile", "download") and rk in ("express", "fastify"):
-                    if m == "sendFile" and len(args) >= 2 and not self._options_without_root(args[1]):
-                        return None                        # `res.sendFile(p, { root })` — 뿌리 폴더 밖으로 못 나간다(모르면 침묵)
+                    state, root = self._root_option(m, args)
+                    if state == "unknown":
+                        return None                        # 옵션을 모른다 — 모르면 침묵
+                    if state == "root":
+                        self.root_gated[call.id] = root    # 뿌리 값이 요청 값일 때만 보고한다(_record_call)
+                        return RULE_PATH, [args[0], root], False
                     return RULE_PATH, [args[0]], False
                 return None
         full = self.full_name(f)
@@ -1325,30 +1380,66 @@ class _Context:
                 return RULE_CMD, targets, False
         return None
 
-    def _options_without_root(self, node) -> bool:
-        """`res.sendFile(p, 옵션)` 의 옵션이 **뿌리(root)가 없다고 확실히 아는** 것인가 — 콜백 함수, 펼침 없이 root 가 없는
-        객체 리터럴, 그런 객체를 한 번만 담은 이름. 모르는 값(다른 변수·펼친 객체 안의 root 등)은 False(침묵)."""
+    def _object_of(self, node):
+        """옵션 자리의 값이 객체 리터럴이면 그 객체(한 번만 담은 이름을 따라간다). 콜백이면 "fn", 모르면 None."""
         n = _unwrap(node)
         for _ in range(4):
             if n is None:
-                return False
+                return None
             if n.type in _FUNC_TYPES:
-                return True                                # `res.sendFile(p, (err) => …)` — 콜백
+                return "fn"
             if n.type == "object":
-                if any(c.type == "spread_element" for c in _named(n)):
-                    return False                           # `{ ...BASE_OPTS, maxAge }` — 펼친 쪽에 root 가 있을 수 있다
-                return self._prop_value(n, "root") is None
+                return n
             if n.type != "identifier":
-                return False
+                return None
             b = self.reads.get(n.id)
             if b is None:
-                return False
+                return None
             if b.id in self.funcs:
-                return True
+                return "fn"
             if b.init is None or b.writes or b.init[1] != ():
-                return False
+                return None
             n = _unwrap(b.init[0])
-        return False
+        return None
+
+    def _root_option(self, method: str, args) -> tuple[str, object]:
+        """`res.sendFile(p, [옵션], [fn])`·`res.download(p, [이름], [옵션], [fn])` 의 뿌리(root) 옵션.
+
+        ("none", None) — 뿌리가 없다고 확실히 안다(옵션 없음·콜백·root 없는 객체·root 가 undefined·null·''·'/').
+        ("root", 값 노드) — 뿌리가 있다. 그 값이 요청 값이면 경로를 사용자가 정하는 것이라 보고하고, 아니면 침묵한다.
+        ("unknown", None) — 옵션을 모른다(다른 변수·펼친 객체가 root 를 덮을 수 있다) → 침묵.
+        """
+        rest = args[1:]
+        if method == "download":                           # 둘째 자리는 내려받을 이름일 수 있다 — 객체일 때만 옵션이다
+            cands = [a for a in rest[:2] if self._object_of(a) not in (None, "fn")]
+            if not cands:
+                return "none", None
+            opts = self._object_of(cands[0])
+        else:
+            if not rest:
+                return "none", None
+            opts = self._object_of(rest[0])
+            if opts == "fn":
+                return "none", None
+            if opts is None:
+                return "unknown", None
+        root = None
+        root_index = -1
+        kids = _named(opts)
+        for i, c in enumerate(kids):
+            key = _field(c, "key") if c.type == "pair" else (c if c.type == "shorthand_property_identifier" else None)
+            if key is not None and (self.text(key) if key.type != "string" else _str_value(key, self.src)) == "root":
+                root, root_index = (_field(c, "value") if c.type == "pair" else c), i
+        if any(c.type == "spread_element" for c in kids[root_index + 1:]):
+            return "unknown", None                         # `{ root: X, ...OPTS }`·`{ ...BASE_OPTS }` — 펼친 쪽이 root 를 정할 수 있다
+        if root is None:
+            return "none", None
+        v = _unwrap(root)
+        lit = _str_value(v, self.src)
+        if v is not None and (v.type in ("undefined", "null") or lit in ("", "/")
+                              or v.type == "identifier" and self.text(v) == "undefined" and v.id not in self.reads):
+            return "none", None                            # 뿌리가 없는 것과 같다
+        return "root", root
 
     def _shell_dash_c(self, args):
         """첫 인자가 셸이고 인자 배열의 `-c`(cmd 는 `/c`) 다음 원소면 그 원소 — 명령 문자열이다."""
@@ -2070,6 +2161,9 @@ class _Unit:
         found = cx.sink(call)
         if found is not None:
             rule, targets, address = found
+            root = cx.root_gated.get(call.id)
+            if root is not None and not self.reach(root):
+                return                                     # 뿌리 폴더가 상수·모르는 값 — 그 밖으로 못 나간다
             keys: set[str] = set()
             for tg in targets:
                 keys |= self.destination(tg, slash_is_open=rule == RULE_REDIRECT) if address else self.reach(tg)

@@ -28,8 +28,8 @@ SILENT_BY_DESIGN: dict[str, str] = {
     "D04": "미끼 — startsWith('/') 를 거쳤다",
     "D05": "미끼 — 앞뒤를 묶지 않은 정규식으로 검사했다",
     "XV02": "고정 기준 주소 뒤에 붙은 값(`https://api.x` + 경로 → `@` 로 호스트를 바꿀 수 있다) — 앞머리 조건의 사각지대",
-    "XV04": "sendFile 의 root 옵션 자체가 사용자 값 — root 가 있으면 침묵한다",
 }
+# XV04(sendFile 의 root 옵션 자체가 사용자 값)는 2회차 수정(root 값이 요청 값이면 보고)으로 이제 잡힌다.
 #: 놓치는 취약 사례(라벨 → 까닭). 범위 밖으로 둔 것.
 KNOWN_MISSES: dict[str, str] = {
     "V37": "util.promisify(exec) 로 만든 별칭은 명령 싱크로 풀지 않는다",
