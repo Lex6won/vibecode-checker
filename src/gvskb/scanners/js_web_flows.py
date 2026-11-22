@@ -102,6 +102,8 @@ _NEUTRAL_MODULES = frozenset({
     "csurf", "express-slow-down", "serve-static", "serve-favicon", "koa-bodyparser", "@koa/bodyparser", "@koa/cors", "koa-body",
     "koa-helmet", "koa-logger", "koa-static", "koa-compress", "hono/logger", "hono/cors", "hono/secure-headers",
     "hono/compress", "hono/etag", "hono/pretty-json", "hono/timing", "hono/request-id",
+    # 인증 헤더(토큰)만 읽는 잘 알려진 인증 미들웨어
+    "express-jwt", "hono/bearer-auth", "hono/jwt", "hono/basic-auth",
 })
 _UPLOAD_METHODS = frozenset({"single", "array", "fields", "none", "any"})
 _FASTIFY_HOOK_KEYS = frozenset({"preHandler", "onRequest", "preValidation", "preParsing"})
@@ -123,6 +125,17 @@ _PATH_FIELDS = {
 }
 #: 응답 객체에 값을 싣지만 해가 없다고 아는 메서드 — 내려받기 이름·헤더·형식.
 _RES_HARMLESS = frozenset({"json", "attachment", "set", "setHeader", "type"})
+#: 있는지만 보는 호출 — 해가 없는 쓰임이고, 그 결과는 값을 들여다본 결과가 아니다.
+_EXISTENCE_CALLS = frozenset(
+    {f"{mod}.{m}" for mod in ("fs", "fs-extra", "graceful-fs") for m in ("existsSync", "exists", "access", "accessSync")}
+    | {"fs.promises.access", "fs-extra.pathExists", "fs-extra.pathExistsSync"},
+)
+#: express-validator — 결과를 묻는 호출(요청을 통째로 읽는 것이 아니다)과 필드를 검사하는 체인의 시작.
+_VALIDATOR_RESULTS = frozenset({"express-validator.validationResult", "express-validator.matchedData"})
+_VALIDATOR_FIELDS = {"query": ("query",), "body": ("body",), "param": ("params",), "header": ("headers",),
+                     "cookie": ("cookies",), "check": ("query", "body", "params", "headers", "cookies")}
+#: 사용자 값을 넣는 컬렉션에서 그 값으로 찾거나 넣는 메서드.
+_COLLECTION_METHODS = frozenset({"has", "get", "set", "add", "delete"})
 #: import 로 확인하면 투명하게 보는 비동기 래퍼 모듈 — `asyncHandler(async (req, res) => …)`.
 _ASYNC_WRAPPER_MODULES = frozenset({"express-async-handler", "express-async-wrap", "@awaitjs/express",
                                     "express-promise-wrap", "async-handler"})
@@ -405,11 +418,12 @@ class _Context:
         self.collected: dict[int, dict[int, tuple[bool, int]]] = {}
         self.request_used: set[str] = set()
         self.request_used_next: set[str] = set()
-        self.hits: list[tuple[str, int]] = []
+        self.hits: list[tuple[str, int, tuple[str, ...]]] = []
         self.units: list = []
         self.uses: list[tuple[bool, list, str]] = []       # `app.use(…)` — (경로 인자가 있는가, 나머지 인자, 종류)
         self.root_gated: dict[int, list] = {}              # sendFile·download 호출 → 뿌리(root) 옵션 값들
         self.member_writes: dict[int, list] = {}           # 선언 → 나중에 `x.root = 값` 으로 대입한 값들
+        self.collection_inserts: dict[int, list] = {}      # 선언 → `x.set(v, …)`·`x.add(v)` 로 넣은 값들
         self.dropped = False                               # 모르는 `app.use(…)` 가 있다 — 파일 전체를 버린다
         self._struct: dict[int, tuple | None] = {}
         self._full: dict[int, str | None] = {}
@@ -648,6 +662,14 @@ class _Context:
         for b in self.bindings:
             if any(w != b.func for w in b.writes):
                 self.opaque.add(b.id)                      # 다른 함수(클로저)에서 다시 대입 — 언제 무엇인지 모른다
+        for call in self.calls:                            # `X.set(v, …)`·`X.add(v)` — 컬렉션에 넣은 값
+            f = _callee(call)
+            prop = _field(f, "property") if f is not None and f.type == "member_expression" else None
+            obj = _unwrap(_field(f, "object")) if prop is not None else None
+            args = _args(call)
+            if prop is not None and self.text(prop) in ("set", "add") and args and obj is not None \
+                    and obj.type == "identifier" and obj.id in self.reads:
+                self.collection_inserts.setdefault(self.reads[obj.id].id, []).append(args[0])
         for n in self.assigns:
             left = _unwrap(_field(n, "left"))
             if left is None or left.type not in ("member_expression", "subscript_expression"):
@@ -788,10 +810,15 @@ class _Context:
                 self.funcs[b.id] = v
                 continue
             if not path and v is not None and v.type in ("call_expression", "new_expression"):
-                callee = _unwrap(_field(v, "function" if v.type == "call_expression" else "constructor"))
-                name = self.module_of(callee) if callee is not None and callee.type == "call_expression" \
-                    else self.full_name(callee)
-                kind = (_FW_CALLS if v.type == "call_expression" else _FW_NEW).get(name or "")
+                for _ in range(16):                        # `express().use(json()).use(cors())` — 라우트 메서드 체인은 앱을 돌려준다
+                    if v.type != "call_expression":
+                        break
+                    vf = _callee(v)
+                    vp = _field(vf, "property") if vf is not None and vf.type == "member_expression" else None
+                    if vp is None or self.text(vp) not in _ROUTE_METHODS:
+                        break
+                    v = _unwrap(_field(vf, "object"))
+                kind = self._fw_kind_of_value(v)
                 if kind is not None:
                     self.fw[b.id] = kind
         self.func_of_node = {fn.id: bid for bid, fn in self.funcs.items()}
@@ -941,6 +968,7 @@ class _Context:
                 self.uses.append((with_path, rest, kind))
                 for a in rest:
                     self._register_middlewares(a, kind)
+                    self._validator_uses(a)
                 continue
             route = None
             if has_path:
@@ -954,6 +982,7 @@ class _Context:
                 continue
             for m in args[:-1]:
                 self._register_middlewares(m, kind)
+                self._validator_uses(m)
             reportable = all(self.middleware_ok(m, kind) for m in args[:-1])
             constrained = frozenset(re.findall(r":(\w+)\(", _str_value(route, self.src) or "")) if route is not None \
                 else frozenset()
@@ -999,6 +1028,67 @@ class _Context:
             for a in rest:
                 if not self._mount_ok(a, with_path) and not self.middleware_ok(a, _kind):
                     self.dropped = True
+
+    def _validator_keys(self, node) -> set[str] | None:
+        """express-validator 체인이면 그것이 검사하는 필드 열쇠들(`query('page').isInt()` → `REQ[query.page]`). 아니면 None."""
+        n = _unwrap(node)
+        for _ in range(64):                                # `.optional().isInt().withMessage(…)` 체인을 거슬러 올라간다
+            if n is None or n.type != "call_expression":
+                return None
+            f = _callee(n)
+            if f is not None and f.type == "member_expression":
+                n = _unwrap(_field(f, "object"))
+                continue
+            break
+        f = _callee(n)
+        full = self.full_name(f) or ""
+        if not full.startswith("express-validator") or not self._is_imported(f):
+            return None
+        fn = full.rsplit(".", 1)[-1]
+        args = _args(n)
+        keys: set[str] = set()
+        if fn in _VALIDATOR_FIELDS:
+            names: list[str | None] = []
+            first = _unwrap(args[0]) if args else None
+            if first is not None and first.type == "array":
+                names = [_str_value(e, self.src) for e in _named(first)]
+            elif first is not None:
+                names = [_str_value(first, self.src)]
+            else:
+                names = [None]
+            for loc in _VALIDATOR_FIELDS[fn]:
+                for name in names:
+                    if name is None or "*" in name:
+                        keys.add(f"{REQ}[{loc}]")         # 열쇠를 모른다 — 그 그릇 전체
+                    else:
+                        keys.add(f"{REQ}[{loc}.{name.lower() if loc == 'headers' else name}]")
+            return keys
+        if fn == "checkSchema":
+            obj = _unwrap(args[0]) if args else None
+            if obj is None or obj.type != "object":
+                return {REQ}
+            for c in _named(obj):
+                key = _field(c, "key") if c.type == "pair" else None
+                name = (self.text(key) if key is not None and key.type == "property_identifier"
+                        else _str_value(key, self.src) if key is not None else None)
+                for loc in _VALIDATOR_FIELDS["check"]:
+                    keys.add(f"{REQ}[{loc}.{name}]" if name else f"{REQ}[{loc}]")
+            return keys
+        if fn == "oneOf":
+            for a in args:
+                a = _unwrap(a)
+                for e in (_named(a) if a is not None and a.type == "array" else [a]):
+                    keys |= self._validator_keys(e) or set()
+            return keys
+        return None
+
+    def _validator_uses(self, node) -> None:
+        """라우트 인자의 express-validator 체인 — 그 필드 열쇠를 파일에서 쓰인 것으로 센다."""
+        n = _unwrap(node)
+        for e in (_named(n) if n is not None and n.type == "array" else [n]):
+            keys = self._validator_keys(e)
+            if keys:
+                self.request_used |= keys
 
     def _register_middlewares(self, node, kind: str) -> None:
         """함수 미들웨어(인라인·같은 파일 함수·그 배열·Koa use)의 첫 매개변수도 요청 객체로 본다.
@@ -1220,6 +1310,9 @@ class _Context:
         for b in self.bindings_of_import(f):
             if self.imports[b].split(".")[0] in _NEUTRAL_MODULES or self.imports[b] in _NEUTRAL_MODULES:
                 return True
+        inline = self.module_of(f) if f.type in ("call_expression", "member_expression") else None
+        if inline is not None and (inline in _NEUTRAL_MODULES or inline.split(".")[0] in _NEUTRAL_MODULES):
+            return True                                    # `require('cors')()` — 가져오면서 바로 부른 중립 미들웨어
         if f.type == "member_expression":
             prop = self.text(_field(f, "property")) if _field(f, "property") is not None else ""
             if prop in _UPLOAD_METHODS:
@@ -1276,7 +1369,7 @@ class _Context:
         if n.type == "object" and kind == "fastify":
             return self._fastify_route_options_ok(n, kind)
         if n.type == "call_expression":
-            return self._callee_ok(n)
+            return self._validator_keys(n) is not None or self._callee_ok(n)
         if n.type == "identifier":
             b = self.reads.get(n.id)
             if b is not None and b.id in self.funcs:
@@ -1450,7 +1543,7 @@ class _Context:
                 if m == "redirect":
                     target = args[1] if len(args) >= 2 and _unwrap(args[0]).type == "number" else args[0]
                     return RULE_REDIRECT, [target], True
-                if m in ("sendFile", "download") and rk in ("express", "fastify"):
+                if m in ("sendFile", "download") and rk == "express":     # Fastify 는 @fastify/static 의 root 안으로 묶인다
                     state, root = self._root_option(m, args)
                     if state == "unknown":
                         return None                        # 옵션을 모른다 — 모르면 침묵
@@ -1807,6 +1900,8 @@ class _Unit:
                     elif uf is not None and uf.type != "identifier":
                         stack.append(f)
                     if skip_sinks:
+                        if (cx.full_name(uf) or "") in _EXISTENCE_CALLS:
+                            continue                       # `const ok = fs.existsSync(p)` — 있는지만 본 결과
                         kept = self._looked_at_args(n)
                         if kept is not None:
                             stack.extend(kept)
@@ -2150,13 +2245,36 @@ class _Unit:
                 return None                                # 반환값에 남는다
             return True
         f = _callee(call)
+        full = cx.full_name(f) or ""
+        if full in _EXISTENCE_CALLS and cx._is_imported(f):
+            return True                                    # `fs.existsSync(p)` — 있는지만 본다(`../../etc/passwd` 도 있다)
+        if full in _VALIDATOR_RESULTS:
+            return True                                    # `validationResult(req)` — 검증 결과를 묻는다(필드 쓰임은 체인이 센다)
         if f is not None and f.type == "member_expression":
             prop = _field(f, "property")
             if prop is not None and cx.text(prop) in _RES_HARMLESS and cx.resp_kind(_field(f, "object")) is not None:
                 return True                                # `res.json({ … })`·`ctx.attachment(name)`·`res.set(h, v)` — 응답에 싣기
+            if prop is not None and cx.text(prop) in _COLLECTION_METHODS and self._user_collection(f, cur):
+                return True                                # 사용자 값을 넣는 캐시 — `cache.has(url)` 는 허용 목록 검사가 아니다
         kids = self.children(call)
         if kids is not None and any(k is not None and k.id == cur.id for k in kids):
             return None
+        return False
+
+    def _user_collection(self, member, cur) -> bool:
+        """`X.has(v)`·`X.get(v)`·`X.set(v, …)` 의 X 에 **그 값(같은 묶음)** 을 넣는 코드(`X.set(v, …)`·`X.add(v)`)가 파일에 있는가."""
+        cx = self.cx
+        obj = _unwrap(_field(member, "object"))
+        if obj is None or obj.type != "identifier" or obj.id not in cx.reads:
+            return False
+        key = self.key_of(cur, census=True)
+        if key is None:
+            return False
+        find = self.groups.find
+        for arg in cx.collection_inserts.get(cx.reads[obj.id].id, ()):
+            k = self.key_of(arg, census=True)
+            if k is not None and (k == key or find(k) == find(key)):
+                return True
         return False
 
     # ── 대입 ─────────────────────────────────────────────────────────────────
@@ -2523,6 +2641,29 @@ class _Unit:
                     used.add(self.groups.find(key))
         return used
 
+    def _unused_keys(self, keys: set[str], used: set[str], at=None) -> set[str]:
+        """위험한 자리에 닿는 값 가운데 **다른 데 쓰인 적 없는** 것들 — 값 묶음마다 따로 본다.
+
+        검사한 필드와 검사하지 않은 필드가 한 인자에 합쳐져도(`join(BASE, req.params.dept, req.query.file)`) 검사하지 않은
+        쪽이 남으면 보고한다. 한 묶음 안의 값(값에서 나온 값·들여다본 결과)은 함께 쓰인 것으로 본다.
+        """
+        return {k for k in keys if self._is_unused({k}, used, at)}
+
+    def _field_names(self, keys: set[str]) -> tuple[str, ...]:
+        """근거 문구에 적을 요청 필드 — 선언 열쇠면 같은 묶음의 요청 필드, 없으면 이름."""
+        find = self.groups.find
+        out: set[str] = set()
+        for k in keys:
+            if k.startswith(REQ + "["):
+                out.add(k[len(REQ) + 1:-1])
+                continue
+            fields = {m[len(REQ) + 1:-1] for m in self.seen if m.startswith(REQ + "[") and find(m) == find(k)}
+            if fields:
+                out |= fields
+            elif k.startswith("B") and k[1:].isdigit():
+                out.add(self.cx.bindings[int(k[1:])].name)
+        return tuple(sorted(out))
+
     def _is_unused(self, keys: set[str], used: set[str], at=None) -> bool:
         """이 값들이(그릇을 포함해) 어디에도 쓰이지 않았는가 — 이 단위와, 요청 필드라면 파일 전체에서."""
         cx = self.cx
@@ -2584,10 +2725,11 @@ class _Unit:
             )
             return
         for rule, call, keys in self.sinks:
-            if self._is_unused(keys, used, call) and cx.reportable_at(call):
-                cx.hits.append((rule, call.start_point[0] + 1))
+            fresh = self._unused_keys(keys, used, call)
+            if fresh and cx.reportable_at(call):
+                cx.hits.append((rule, call.start_point[0] + 1, self._field_names(fresh)))
         for callee, param, keys, leads, depth, call in self.calls:
-            if depth > _MAX_HOPS or not self._is_unused(keys, used) or not cx.reportable_at(call):
+            if depth > _MAX_HOPS or not self._unused_keys(keys, used) or not cx.reportable_at(call):
                 continue
             mine = cx.collected.setdefault(callee, {})
             old = mine.get(param)
@@ -2654,8 +2796,12 @@ def scan_js_flows(root, src: bytes, filename: str, *, strict: bool = False) -> l
             raise
         return []
     lines = src.split(b"\n")
-    out = set()
-    for rule, line in cx.hits:
+    merged: dict[tuple[str, int], set[str]] = {}
+    for rule, line, fields in cx.hits:
+        merged.setdefault((rule, line), set()).update(fields)
+    out = []
+    for (rule, line), fields in merged.items():
         raw = lines[line - 1].decode("utf-8", "replace").strip() if 1 <= line <= len(lines) else ""
-        out.add((rule, line, redact_evidence(raw[:200]), CONFIDENCE))
+        note = f" — 검사 흔적이 없는 요청 값: {', '.join(sorted(fields))}" if fields else ""
+        out.append((rule, line, redact_evidence(raw[:200] + note), CONFIDENCE))
     return sorted(out, key=lambda h: (h[1], h[0]))

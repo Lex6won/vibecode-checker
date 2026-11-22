@@ -962,6 +962,120 @@ def test_harmless_response_methods_and_async_wrapper() -> None:
     assert _flows(unknown) == set()                       # 모르는 래퍼 — 침묵
 
 
+MULTI_FIELD_CASES = [
+    # (라벨, 처리 함수 본문, 보고할 룰 또는 None) — 값 묶음마다 따로 판정한다(4회차)
+    ("검사한 경로 매개변수 + 검사 안 한 질의 → 보고",
+     "if (!/^[a-z]+$/.test(req.params.dept)) return res.sendStatus(400);\n"
+     "  res.sendFile(path.join(__dirname, 'docs', req.params.dept, req.query.file));", PATH),
+    ("변수에 담아 검사한 쪽 + 담기만 한 쪽 → 보고",
+     "const dept = req.params.dept;\n  const file = req.query.file;\n"
+     "  if (!['hr', 'it'].includes(dept)) return res.sendStatus(400);\n"
+     "  res.sendFile(path.join(__dirname, 'docs', dept, file));", PATH),
+    ("숫자로 검사한 횟수 + 검사 안 한 호스트(명령) → 보고",
+     "const count = Number(req.query.count);\n  if (!Number.isInteger(count)) return res.sendStatus(400);\n"
+     "  exec(`ping -c ${req.query.count} ${req.query.host}`);\n  res.end();", CMD),
+    ("검사한 쪽이 비교만 된 변수 + 다른 필드 → 보고",
+     "const n = req.query.count;\n  if (n > 10) return res.sendStatus(400);\n"
+     "  exec('ping -c ' + n + ' ' + req.query.host);\n  res.end();", CMD),
+    ("앞머리는 검사 안 한 기준 주소, 뒤는 검사한 쪽 → 보고",
+     "if (!/^\\\\d+$/.test(req.query.page)) return res.sendStatus(400);\n"
+     "  axios.get(`${req.query.base}/list?page=${req.query.page}`).then((r) => res.json(r.data));", SSRF),
+    ("두 필드 모두 검사 → 침묵",
+     "if (!/^[a-z]+$/.test(req.params.dept) || !/^[\\\\w-]+\\\\.pdf$/.test(req.query.file)) return res.sendStatus(400);\n"
+     "  res.sendFile(path.join(__dirname, 'docs', req.params.dept, req.query.file));", None),
+    ("검사한 필드 + 상수 → 침묵",
+     "if (!/^[a-z]+$/.test(req.query.file)) return res.sendStatus(400);\n"
+     "  res.sendFile(path.join(__dirname, 'docs', 'fixed', req.query.file));", None),
+    ("검사한 변수에서 나온 값 + 같은 필드 원본 → 같은 묶음이라 침묵",
+     "const name = req.query.file;\n  const safe = name.trim();\n  if (!ALLOWED.has(safe)) return res.sendStatus(400);\n"
+     "  res.sendFile(path.join(__dirname, 'docs', safe, req.query.file));", None),
+    ("앞머리는 검사한 기준 주소, 뒤는 검사 안 한 쪽 → 앞머리 조건으로 침묵",
+     "if (!BASES.includes(req.query.base)) return res.sendStatus(400);\n"
+     "  axios.get(`${req.query.base}/list?page=${req.query.page}`).then((r) => res.json(r.data));", None),
+    ("다른 처리 함수에서 검사한 필드 둘 → 침묵",
+     "res.sendFile(path.join(__dirname, 'docs', req.query.a, req.query.b));", None),
+]
+
+
+@pytest.mark.parametrize("label,body,rule", MULTI_FIELD_CASES, ids=[c[0] for c in MULTI_FIELD_CASES])
+def test_each_value_group_is_judged_separately(label: str, body: str, rule: str | None) -> None:
+    other = "app.get('/check', (req, res) => res.json({ ok: isOk(req.query.a) && isOk(req.query.b) }));\n"
+    code = "const ALLOWED = new Set(['x']);\nconst BASES = ['https://a.example.com'];\n" + other \
+        + "app.get('/d/:dept', (req, res) => {\n  " + body + "\n});\n"
+    assert _flows(code) == ({rule} if rule else set()), label
+
+
+def test_evidence_names_the_unchecked_field() -> None:
+    hits = _hits("""
+        app.get('/d/:dept', (req, res) => {
+          if (!/^[a-z]+$/.test(req.params.dept)) return res.sendStatus(400);
+          res.sendFile(path.join(__dirname, 'docs', req.params.dept, req.query.file));
+        });
+    """)
+    note = hits[0][2].split(" — ", 1)[-1] if len(hits) == 1 else ""
+    assert note.startswith("검사 흔적이 없는 요청 값") and "query.file" in note and "params.dept" not in note
+
+
+@pytest.mark.parametrize("app_line", [
+    "const app = express().use(express.json());",
+    "const app = express().use(express.json()).use(require('cors')());",
+])
+def test_app_assigned_after_use_chain(app_line: str) -> None:
+    code = ("const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\n" + app_line + "\n"
+            "app.post('/s', (req, res) => { fs.writeFileSync(path.join(__dirname, 'x', req.body.name), 'a'); res.end(); });\n")
+    assert _flows(code, header="") == {PATH}
+
+
+def test_existence_check_cache_and_validator_shapes() -> None:
+    exists = """
+        app.get('/m', (req, res) => {
+          const p = path.join('/srv/minutes', req.query.name);
+          if (!fs.existsSync(p)) return res.status(404).json({ missing: req.query.name });
+          res.sendFile(p);
+        });
+    """
+    assert _flows(exists) == {PATH}
+    cache = """
+        const cache = new Map();
+        app.get('/c', async (req, res) => {
+          const url = req.query.url;
+          if (cache.has(url)) return res.json(cache.get(url));
+          const r = await axios.get(url);
+          cache.set(url, r.data);
+          res.json(r.data);
+        });
+    """
+    assert _flows(cache) == {SSRF}
+    allow = cache.replace("cache.set(url, r.data);", "").replace("const cache = new Map();", "const cache = new Set(['https://a.example.com']);")
+    assert _flows(allow) == set()                          # 사용자 값을 넣지 않는 컬렉션 — 허용 목록일 수 있다
+    validator = "const { query, validationResult } = require('express-validator');\n" + textwrap.dedent("""
+        app.get('/e', query('page').optional().isInt(), (req, res) => {
+          if (!validationResult(req).isEmpty()) return res.sendStatus(400);
+          res.download(path.join('/srv/exports', req.query.file));
+        });
+    """)
+    assert _flows(validator) == {PATH}
+    checked = validator.replace("query('page')", "query('file').matches(/^[\\w-]+\\.csv$/)")
+    assert _flows(checked) == set()                        # 같은 필드를 검사하는 체인 — 그 열쇠가 쓰였다
+
+
+def test_well_known_auth_middlewares_and_fastify_send_file() -> None:
+    jwt = "const { expressjwt } = require('express-jwt');\n" + textwrap.dedent("""
+        app.use(expressjwt({ secret: process.env.S, algorithms: ['HS256'] }));
+        app.get('/f', (req, res) => res.download(path.join('/srv/approval', req.query.file)));
+    """)
+    assert _flows(jwt) == {PATH}
+    bearer = HONO + "import { bearerAuth } from 'hono/bearer-auth';\nimport fs from 'fs';\n" + textwrap.dedent("""
+        app.use('/api/*', bearerAuth({ token: 'x' }));
+        app.get('/api/f', (c) => c.text(fs.readFileSync('/srv/' + c.req.query('file'), 'utf8')));
+    """)
+    assert _flows(bearer, header="", filename="a.ts") == {PATH}
+    fastify_static = """
+        fastify.get('/doc', async (request, reply) => reply.sendFile(request.query.name));
+    """
+    assert _flows(fastify_static, header=FASTIFY) == set()  # @fastify/static 의 root 안으로 묶인다
+
+
 def test_locally_declared_fetch_is_not_global_fetch() -> None:
     assert _flows("""
         function fetch(x) { return x; }
