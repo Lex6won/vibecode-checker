@@ -469,6 +469,17 @@ def test_existing_finding_on_the_same_line_is_kept() -> None:
     assert [(f.engine, f.decision.value) for f in found] == [("regex", "block")]
 
 
+def test_pattern_only_finding_on_the_same_line_gives_way_to_the_flow() -> None:
+    """차단으로 남지 않는 룰에서 같은 줄의 정규식 발견이 패턴 일치뿐이면 흐름을 본 발견(유력)이 남는다 — 결정은 같다."""
+    report = scan_code(FLASK + textwrap.dedent("""
+        @app.route("/go")
+        def go():
+            return redirect(request.args["next"])
+    """), filename="app.py")
+    found = [f for f in report.findings if f.rule_id == REDIRECT]
+    assert [(f.engine, f.confidence, f.decision.value) for f in found] == [("python-flow", "likely", "warn")]
+
+
 # ── 견고함 — 이 분석이 실패해도 같은 파일의 다른 분석은 살아야 한다 ──────────────────────────────
 
 def test_long_derivation_chain_does_not_break_other_findings() -> None:

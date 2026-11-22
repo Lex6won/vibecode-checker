@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from ..schema import Finding
 from .base import ScannerAdapter
+from ._ts_parse import load_languages, parse, text, unwrap, walk
 from .regex_scanner import InlineIgnores, build_finding, lookup_rule, redact_evidence
 
 ENGINE = "ts-structure"
@@ -26,26 +27,12 @@ _MAX_BYTES = 1_500_000
 
 
 def _load_languages() -> dict | None:
-    """tree-sitter 와 언어 팩을 가져온다. 하나라도 없으면 None(엔진 꺼짐)."""
-    try:
-        import tree_sitter_javascript as tsjs
-        import tree_sitter_typescript as tsts
-        from tree_sitter import Language, Parser
-    except Exception:  # noqa: BLE001 — 미설치·바이너리 불일치 모두 '없음'
-        return None
-    try:
-        return {
-            "Parser": Parser,
-            "js": Language(tsjs.language()),
-            "ts": Language(tsts.language_typescript()),
-            "tsx": Language(tsts.language_tsx()),
-        }
-    except Exception:  # noqa: BLE001
-        return None
+    """tree-sitter 와 언어 팩을 가져온다. 하나라도 없으면 None(엔진 꺼짐). 공용 모듈(_ts_parse)에 맡긴다."""
+    return load_languages()
 
 
 def _text(node, src: bytes) -> str:
-    return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
+    return text(node, src)
 
 
 def _folded_str(node, src: bytes) -> str | None:
@@ -76,12 +63,7 @@ def _folded_str(node, src: bytes) -> str | None:
     return None
 
 
-def _unwrap(node):
-    """TS 캐스트·괄호를 벗긴다 — `(eval as any)(x)` · `f!(x)`."""
-    while node is not None and node.type in ("parenthesized_expression", "as_expression", "non_null_expression",
-                                             "satisfies_expression", "type_assertion") and node.named_child_count >= 1:
-        node = node.named_children[-1] if node.type == "type_assertion" else node.named_children[0]
-    return node
+_unwrap = unwrap
 
 
 def _is_global_exec_lookup(node, src: bytes) -> bool:
@@ -102,21 +84,15 @@ def _is_global_exec_lookup(node, src: bytes) -> bool:
     return False
 
 
-def _walk(node):
-    stack = [node]
-    while stack:
-        n = stack.pop()
-        yield n
-        stack.extend(reversed(n.children))
+_walk = walk
 
 
 def analyze(code: str, *, filename: str, languages: dict) -> list[tuple[int, str, str]]:
     """(줄 번호, 근거, 확신도) 목록. 파서가 돌아가는 환경에서만 호출된다."""
-    src = code.encode("utf-8")
-    low = filename.lower()
-    lang = languages["tsx"] if low.endswith(".tsx") else languages["ts"] if low.endswith((".ts", ".mts", ".cts")) else languages["js"]
-    tree = languages["Parser"](lang).parse(src)
-    root = tree.root_node
+    parsed = parse(code, filename)          # 공용 파서 — 같은 내용이면 js-flow 가 이 결과를 다시 쓴다
+    if parsed is None:
+        return []
+    root, src = parsed
 
     # 1차: eval/Function 을 담은 이름
     aliases: set[str] = set()

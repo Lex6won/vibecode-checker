@@ -89,20 +89,20 @@ cases:
   - {id: L-T20, root: ts, file: T20_webhook_no_signature.ts, rule: GOV-WEBHOOK-SIGNATURE-001, min_confidence: pattern-only, kind: known_gap, note: "웹훅 서명 미검증"}
   # ---- 추적 깊이 대조
   - {id: L-H-js_cmd-1, root: hops, file: js_cmd__1inline.js, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-js_cmd-2, root: hops, file: js_cmd__2var.js, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-js_cmd-3, root: hops, file: js_cmd__3func.js, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_cmd-2, root: hops, file: js_cmd__2var.js, line: 9, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-js_cmd-3, root: hops, file: js_cmd__3func.js, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-js_path-1, root: hops, file: js_path__1inline.js, line: 8, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-js_path-2, root: hops, file: js_path__2var.js, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-js_path-3, root: hops, file: js_path__3func.js, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_path-2, root: hops, file: js_path__2var.js, line: 9, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-js_path-3, root: hops, file: js_path__3func.js, line: 8, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-js_redirect-1, root: hops, file: js_redirect__1inline.js, line: 8, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-js_redirect-2, root: hops, file: js_redirect__2var.js, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-js_redirect-3, root: hops, file: js_redirect__3func.js, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_redirect-2, root: hops, file: js_redirect__2var.js, line: 9, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-js_redirect-3, root: hops, file: js_redirect__3func.js, line: 8, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-js_sql-1, root: hops, file: js_sql__1inline.js, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "한 줄 직접"}
   - {id: L-H-js_sql-2, root: hops, file: js_sql__2var.js, line: 9, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "변수 경유"}
   - {id: L-H-js_sql-3, root: hops, file: js_sql__3func.js, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "함수 경유"}
   - {id: L-H-js_ssrf-1, root: hops, file: js_ssrf__1inline.js, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-js_ssrf-2, root: hops, file: js_ssrf__2var.js, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-js_ssrf-3, root: hops, file: js_ssrf__3func.js, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-js_ssrf-2, root: hops, file: js_ssrf__2var.js, line: 9, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-js_ssrf-3, root: hops, file: js_ssrf__3func.js, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-js_xss-1, root: hops, file: js_xss__1inline.js, line: 8, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "한 줄 직접"}
   - {id: L-H-js_xss-2, root: hops, file: js_xss__2var.js, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
   - {id: L-H-js_xss-3, root: hops, file: js_xss__3func.js, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
@@ -128,20 +128,20 @@ cases:
   - {id: L-H-py_ssti-2, root: hops, file: py_ssti__2var.py, line: 8, rule: KISA-PY-INPUT-04, min_confidence: likely, note: "변수 경유"}
   - {id: L-H-py_ssti-3, root: hops, file: py_ssti__3func.py, line: 6, rule: KISA-PY-INPUT-04, min_confidence: likely, note: "함수 경유"}
   - {id: L-H-ts_cmd-1, root: hops, file: ts_cmd__1inline.ts, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-ts_cmd-2, root: hops, file: ts_cmd__2var.ts, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-ts_cmd-3, root: hops, file: ts_cmd__3func.ts, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_cmd-2, root: hops, file: ts_cmd__2var.ts, line: 9, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-ts_cmd-3, root: hops, file: ts_cmd__3func.ts, line: 8, rule: KISA-JS-INPUT-05, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-ts_path-1, root: hops, file: ts_path__1inline.ts, line: 8, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-ts_path-2, root: hops, file: ts_path__2var.ts, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-ts_path-3, root: hops, file: ts_path__3func.ts, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_path-2, root: hops, file: ts_path__2var.ts, line: 9, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-ts_path-3, root: hops, file: ts_path__3func.ts, line: 8, rule: KISA-JS-INPUT-03, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-ts_redirect-1, root: hops, file: ts_redirect__1inline.ts, line: 8, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-ts_redirect-2, root: hops, file: ts_redirect__2var.ts, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-ts_redirect-3, root: hops, file: ts_redirect__3func.ts, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_redirect-2, root: hops, file: ts_redirect__2var.ts, line: 9, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-ts_redirect-3, root: hops, file: ts_redirect__3func.ts, line: 8, rule: KISA-JS-INPUT-07, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-ts_sql-1, root: hops, file: ts_sql__1inline.ts, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "한 줄 직접"}
   - {id: L-H-ts_sql-2, root: hops, file: ts_sql__2var.ts, line: 9, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "변수 경유"}
   - {id: L-H-ts_sql-3, root: hops, file: ts_sql__3func.ts, line: 8, rule: KISA-JS-INPUT-01, min_confidence: pattern-only, note: "함수 경유"}
   - {id: L-H-ts_ssrf-1, root: hops, file: ts_ssrf__1inline.ts, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, note: "한 줄 직접"}
-  - {id: L-H-ts_ssrf-2, root: hops, file: ts_ssrf__2var.ts, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
-  - {id: L-H-ts_ssrf-3, root: hops, file: ts_ssrf__3func.ts, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}
+  - {id: L-H-ts_ssrf-2, root: hops, file: ts_ssrf__2var.ts, line: 9, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, requires_engine: js-flow, note: "변수 경유"}
+  - {id: L-H-ts_ssrf-3, root: hops, file: ts_ssrf__3func.ts, line: 8, rule: KISA-JS-INPUT-12, min_confidence: pattern-only, requires_engine: js-flow, note: "함수 경유"}
   - {id: L-H-ts_xss-1, root: hops, file: ts_xss__1inline.ts, line: 8, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, note: "한 줄 직접"}
   - {id: L-H-ts_xss-2, root: hops, file: ts_xss__2var.ts, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "변수 경유"}
   - {id: L-H-ts_xss-3, root: hops, file: ts_xss__3func.ts, rule: KISA-JS-INPUT-13, min_confidence: pattern-only, kind: known_gap, note: "함수 경유"}

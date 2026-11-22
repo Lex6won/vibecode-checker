@@ -68,9 +68,11 @@ from .scanners.hidden_text import HiddenTextScanner  # noqa: E402 — 위 import
 from .scanners.agent_surface import AgentSurfaceScanner  # noqa: E402 — 39차: 실행 소스의 에이전트·공급망 행위
 
 from .scanners.ts_structure import TsStructureScanner  # noqa: E402 — 45차: 선택 설치 JS/TS 구조 해석(C 결정 B)
+from .scanners.js_flow_scanner import JsFlowScanner  # noqa: E402 — 선택 설치: JS/TS 요청 값 추적(검토 수준)
 
+# js-flow 는 ts-structure 뒤에 둔다 — 같은 내용이면 공용 파서의 직전 결과를 그대로 쓴다.
 _ADAPTERS = [RegexScanner(), PythonAstScanner(), JsTaintScanner(), SemgrepScanner(),
-             HiddenTextScanner(), AgentSurfaceScanner(), TsStructureScanner()]
+             HiddenTextScanner(), AgentSurfaceScanner(), TsStructureScanner(), JsFlowScanner()]
 
 # Engine precision ranking — higher number wins on collisions.
 _ENGINE_PRECISION = ENGINE_PRECISION   # 한 벌 — policy.py (예전엔 regex_scanner 와 semgrep 순서가 반대였다)
@@ -85,6 +87,12 @@ _ENGINE_UNAVAILABLE_REASON = {
     "ts-structure": (
         "JS/TS 구조 해석 엔진(tree-sitter)이 설치되지 않았습니다 — `pip install vibecode-checker[ts]` 로 선택 설치. "
         "없어도 regex·taint 검사는 그대로 수행됐고 판정 기준은 같습니다(글자를 쪼개 가린 eval 등 일부만 놓칠 수 있음)."
+    ),
+    # 선택 설치 엔진 — 발견이 전부 검토 수준이라 없어도 판정은 현행과 같다.
+    "js-flow": (
+        "JS/TS 요청 값 추적 엔진(tree-sitter)이 설치되지 않았습니다 — `pip install vibecode-checker[ts]` 로 선택 설치. "
+        "없어도 regex·taint 검사는 그대로 수행됐고 판정 기준은 같습니다(요청 값이 변수·함수를 거쳐 위험한 호출에 닿는 "
+        "검토 수준 발견만 빠집니다)."
     ),
 }
 
@@ -1008,6 +1016,26 @@ def _drop_regex_when_ast_owns(findings: list[Finding], ast_parsed: bool) -> list
     ]
 
 
+#: 변수·함수를 거친 흐름을 본 엔진 — 엔진 순위(ENGINE_PRECISION)에는 넣지 않는다(같은 줄 기존 발견의 근거·결정을
+#: 낮추지 않게). 다만 같은 줄의 기존 발견이 **패턴 일치뿐이고 끝내 차단으로 남지 않을 것**이면 흐름을 본 발견(유력)이 남는다.
+_FLOW_ENGINES = frozenset({"js-flow", "python-flow"})
+
+
+def _flow_supersedes(flow: Finding, other: Finding) -> bool:
+    """흐름 엔진의 발견이 같은 (룰, 파일, 줄)의 다른 발견을 대신해도 되는가.
+
+    대신하면 근거는 '패턴 일치'에서 '유력'으로 오르고, 결정은 그대로다 — 패턴 일치 차단은 근거 정책이 어차피 검토로 내린다.
+    기존 발견이 확인됨·유력이거나, 근거와 무관하게 차단으로 남는 룰(값 기반·구문 자체가 약점)이면 기존 발견이 남는다.
+    """
+    if flow.engine not in _FLOW_ENGINES or other.engine in _FLOW_ENGINES:
+        return False
+    if flow.confidence != "likely" or other.confidence != "pattern-only":
+        return False
+    stays_blocked = other.decision == Decision.block and (
+        other.category in _VALUE_BASED_CATEGORIES or other.rule_id in _CONSTRUCT_EVIDENCE_RULE_IDS)
+    return not stays_blocked
+
+
 def _dedupe(findings: list[Finding]) -> list[Finding]:
     """Keep the most precise engine's finding for each (rule_id, file, line)."""
     best: dict[tuple[str, str, int], Finding] = {}
@@ -1016,6 +1044,10 @@ def _dedupe(findings: list[Finding]) -> list[Finding]:
         prev = best.get(key)
         if prev is None:
             best[key] = f
+        elif _flow_supersedes(f, prev):
+            best[key] = f
+        elif _flow_supersedes(prev, f):
+            continue
         elif _ENGINE_PRECISION.get(f.engine, 0) > _ENGINE_PRECISION.get(prev.engine, 0):
             best[key] = f
     return list(best.values())

@@ -1,0 +1,2238 @@
+{
+ "about": "js-flow 6회차 독립 적대적 검증(2026-11-22) 사례 171건 — A 처음 보는 코드(안전 56·취약 49), B 겨냥(안전 31·취약 30), D 미끼 안전 5. 합성 코드이며 위생 규칙에 걸리는 호스트·지명은 합성 값으로 바꿨다.",
+ "cases": [
+  {
+   "id": "A001",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A001.js",
+   "sink_lines": [
+    14,
+    16
+   ],
+   "call_lines": [],
+   "why": "강의ID 정규식·화질 상수목록 검사 후 스트리밍",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst VIDEO_DIR = '/srv/edu/videos';\nconst QUALITIES = ['480p', '720p', '1080p'];\n\napp.get('/lectures/:lectureId/stream', (req, res) => {\n  const { lectureId } = req.params;\n  const quality = req.query.q || '720p';\n  if (!/^[A-Z]{2}\\d{4}$/.test(lectureId)) return res.status(400).end();\n  if (!QUALITIES.includes(quality)) return res.status(400).end();\n  const file = path.join(VIDEO_DIR, lectureId, `${quality}.mp4`);\n  const stat = fs.statSync(file);\n  res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': 'video/mp4' });\n  fs.createReadStream(file).pipe(res);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A002",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A002.js",
+   "sink_lines": [
+    13,
+    24,
+    27
+   ],
+   "call_lines": [],
+   "why": "course는 허용목록, file은 미검사 (Range 스트리밍)",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst VIDEO_DIR = '/srv/edu/vod';\n\napp.get('/vod/play', (req, res) => {\n  const course = req.query.course;\n  const file = req.query.file;\n  const range = req.headers.range;\n  if (!['safety', 'ethics', 'privacy'].includes(course)) return res.sendStatus(404);\n  const full = path.join(VIDEO_DIR, course, file);\n  const { size } = fs.statSync(full);\n  if (range) {\n    const [s, e] = range.replace(/bytes=/, '').split('-');\n    const start = parseInt(s, 10);\n    const end = e ? parseInt(e, 10) : size - 1;\n    res.writeHead(206, {\n      'Content-Range': `bytes ${start}-${end}/${size}`,\n      'Accept-Ranges': 'bytes',\n      'Content-Length': end - start + 1,\n      'Content-Type': 'video/mp4',\n    });\n    fs.createReadStream(full, { start, end }).pipe(res);\n  } else {\n    res.writeHead(200, { 'Content-Length': size, 'Content-Type': 'video/mp4' });\n    fs.createReadStream(full).pipe(res);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A003",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A003.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "카탈로그 Map 조회 결과(서버값)로 파일 경로 구성",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst DIR = '/srv/edu/videos';\nconst CATALOG = new Map([\n  ['intro-01', { file: 'intro/01.mp4', title: '신규자 교육 1강' }],\n  ['intro-02', { file: 'intro/02.mp4', title: '신규자 교육 2강' }],\n]);\n\napp.get('/catalog/:id/video', (req, res) => {\n  const entry = CATALOG.get(req.params.id);\n  if (!entry) return res.status(404).json({ error: 'not found' });\n  const stream = fs.createReadStream(path.join(DIR, entry.file));\n  stream.on('error', () => res.status(500).end());\n  res.type('video/mp4');\n  stream.pipe(res);\n});\n\nmodule.exports = app;\n"
+  },
+  {
+   "id": "A004",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A004.ts",
+   "sink_lines": [
+    19
+   ],
+   "call_lines": [],
+   "why": "Koa 라우터 params.name 미검사 스트림",
+   "code": "import Koa from 'koa';\nimport Router from '@koa/router';\nimport fs from 'fs';\nimport path from 'path';\n\nconst app = new Koa();\nconst router = new Router();\nconst MEDIA = '/data/training/media';\n\nrouter.get('/media/:category/:name', async (ctx) => {\n  const { category, name } = ctx.params;\n  if (!['video', 'audio'].includes(category)) {\n    ctx.status = 404;\n    return;\n  }\n  const target = path.join(MEDIA, category, name);\n  ctx.set('Cache-Control', 'private, max-age=600');\n  ctx.type = category === 'video' ? 'video/mp4' : 'audio/mpeg';\n  ctx.body = fs.createReadStream(target);\n});\n\napp.use(router.routes());\napp.listen(4000);\n"
+  },
+  {
+   "id": "A005",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A005.js",
+   "sink_lines": [
+    16,
+    19
+   ],
+   "call_lines": [],
+   "why": "resolve 후 루트 하위 포함 검사",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst VIDEO_DIR = path.resolve('/srv/edu/archive');\n\napp.get('/archive/file', (req, res) => {\n  const rel = req.query.path;\n  const userId = req.get('x-user-id');\n  if (!rel) return res.status(400).send('path required');\n  const target = path.resolve(VIDEO_DIR, rel);\n  if (!target.startsWith(VIDEO_DIR + path.sep)) {\n    console.warn('blocked traversal', userId, rel);\n    return res.status(403).end();\n  }\n  fs.stat(target, (err, st) => {\n    if (err || !st.isFile()) return res.status(404).end();\n    res.setHeader('Content-Length', st.size);\n    fs.createReadStream(target).pipe(res);\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A006",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A006.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "자막: vid는 숫자검사, lang 미검사",
+   "code": "const express = require('express');\nconst fs = require('fs/promises');\nconst path = require('path');\nconst app = express();\nconst SUB_DIR = '/srv/edu/subtitles';\n\napp.get('/videos/:vid/subtitle', async (req, res) => {\n  const { vid } = req.params;\n  const lang = req.query.lang || 'ko';\n  if (!/^\\d+$/.test(vid)) return res.status(400).end();\n  try {\n    const vtt = await fs.readFile(path.join(SUB_DIR, lang, `${vid}.vtt`), 'utf8');\n    res.type('text/vtt').send(vtt);\n  } catch (e) {\n    res.status(404).end();\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A007",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A007.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "res.sendFile root 옵션 사용",
+   "code": "const express = require('express');\nconst app = express();\nconst VIDEO_DIR = '/srv/edu/clips';\n\napp.get('/clips/:id', (req, res) => {\n  const id = req.params.id;\n  res.set('Accept-Ranges', 'bytes');\n  res.sendFile(`${id}.mp4`, { root: VIDEO_DIR, maxAge: '1h' }, (err) => {\n    if (err) res.status(err.status || 404).end();\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A008",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A008.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "res.sendFile 절대경로 path.join 미검사",
+   "code": "const express = require('express');\nconst path = require('path');\nconst app = express();\nconst VIDEO_DIR = '/srv/edu/clips';\n\napp.get('/clip', (req, res) => {\n  const f = req.query.f;\n  const t = req.query.t || 0;\n  console.log('clip request', f, t);\n  res.sendFile(path.join(VIDEO_DIR, f));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A009",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A009.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "출입기록: 날짜 정규식·청사 허용목록 후 download",
+   "code": "const express = require('express');\nconst path = require('path');\nconst app = express();\nconst LOG_DIR = '/var/gov/access-logs';\nconst BUILDINGS = new Set(['sejong', 'daejeon', 'busan']);\n\napp.get('/access-log/download', (req, res) => {\n  const { building, date } = req.query;\n  if (!BUILDINGS.has(building)) return res.status(400).json({ msg: '청사 코드 오류' });\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) return res.status(400).json({ msg: '날짜 형식 오류' });\n  const file = path.join(LOG_DIR, building, `${date}.csv`);\n  res.download(file, `출입기록_${building}_${date}.csv`);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A010",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A010.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "청사는 검사, file 이름 미검사 download",
+   "code": "const express = require('express');\nconst path = require('path');\nconst app = express();\nconst LOG_DIR = '/var/gov/access-logs';\nconst BUILDINGS = new Set(['sejong', 'daejeon', 'busan']);\n\napp.get('/access-log/:building/files', (req, res) => {\n  const building = req.params.building;\n  const file = req.query.file;\n  if (!BUILDINGS.has(building)) return res.sendStatus(404);\n  res.setHeader('X-Building', building);\n  res.download(path.join(LOG_DIR, building, file));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A011",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A011.js",
+   "sink_lines": [
+    14,
+    15
+   ],
+   "call_lines": [],
+   "why": "임시파일명은 randomUUID, 요청값은 DB 조회조건에만",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\nconst db = require('./db');\nconst app = express();\nconst TMP = '/tmp/exports';\n\napp.get('/access-log/export', async (req, res) => {\n  const { from, to, gate } = req.query;\n  const rows = await db.query('SELECT * FROM access WHERE ts BETWEEN $1 AND $2 AND gate = $3', [from, to, gate]);\n  const csv = ['시각,출입자,게이트', ...rows.map((r) => `${r.ts},${r.name},${r.gate}`)].join('\\n');\n  const out = path.join(TMP, `${crypto.randomUUID()}.csv`);\n  fs.writeFileSync(out, '﻿' + csv);\n  res.download(out, 'access.csv', () => fs.unlink(out, () => {}));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A012",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A012.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "내보내기 파일명 body.fileName 로깅만 하고 writeFile",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\napp.use(express.json());\nconst EXPORT_DIR = '/srv/exports';\n\napp.post('/access-log/save', (req, res) => {\n  const { fileName, rows } = req.body;\n  if (!Array.isArray(rows)) return res.status(400).end();\n  console.info('[export]', req.ip, fileName, rows.length);\n  const csv = rows.map((r) => [r.time, r.name, r.gate].join(',')).join('\\n');\n  fs.writeFile(path.join(EXPORT_DIR, fileName), csv, (err) => {\n    if (err) return res.status(500).end();\n    res.json({ ok: true });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A013",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A013.ts",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "Fastify month 정규식 검사 후 promises.readFile",
+   "code": "import Fastify from 'fastify';\nimport { promises as fsp } from 'fs';\nimport path from 'path';\n\nconst app = Fastify({ logger: true });\nconst DIR = '/var/gov/access-monthly';\n\napp.get('/access/monthly', async (request, reply) => {\n  const { month, format } = request.query as { month: string; format?: string };\n  if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(month)) {\n    return reply.code(400).send({ error: 'month' });\n  }\n  const buf = await fsp.readFile(path.join(DIR, `${month}.csv`));\n  reply.header('Content-Type', format === 'xls' ? 'application/vnd.ms-excel' : 'text/csv');\n  return buf;\n});\n\napp.listen({ port: 3000 });\n"
+  },
+  {
+   "id": "A014",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A014.js",
+   "sink_lines": [
+    17
+   ],
+   "call_lines": [],
+   "why": "Koa day 검사, gate 미검사",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst fs = require('fs');\nconst path = require('path');\nconst app = new Koa();\nconst router = new Router();\nconst BASE = '/var/gov/gates';\n\nrouter.get('/gate-log', async (ctx) => {\n  const gate = ctx.query.gate;\n  const day = ctx.query.day;\n  if (!/^\\d{8}$/.test(day)) {\n    ctx.throw(400, 'day');\n  }\n  const file = path.join(BASE, gate, `${day}.csv`);\n  ctx.attachment(`gate-${day}.csv`);\n  ctx.body = fs.readFileSync(file);\n});\n\napp.use(router.routes()).use(router.allowedMethods());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A015",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A015.js",
+   "sink_lines": [
+    16
+   ],
+   "call_lines": [],
+   "why": "같은 파일 헬퍼가 두 값 모두 검증(throw)",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst LOG_DIR = '/var/gov/access-logs';\n\nfunction resolveLogFile(building, date) {\n  if (!['sejong', 'daejeon'].includes(building)) throw Object.assign(new Error('building'), { status: 400 });\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) throw Object.assign(new Error('date'), { status: 400 });\n  return path.join(LOG_DIR, building, `${date}.csv`);\n}\n\napp.get('/access-log/view', (req, res, next) => {\n  try {\n    const file = resolveLogFile(req.query.building, req.query.date);\n    const text = fs.readFileSync(file, 'utf8');\n    res.type('text/csv').send(text);\n  } catch (e) {\n    next(e);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A016",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A016.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [
+    15
+   ],
+   "why": "헬퍼 buildPath, dir만 검사 name 미검사",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst BASE = '/var/gov/access-logs';\n\nfunction readLog(dir, name) {\n  return fs.readFileSync(path.join(BASE, dir, name), 'utf8');\n}\n\napp.get('/access-log/raw', (req, res) => {\n  const dir = req.query.dir;\n  const name = req.query.name;\n  if (!/^[a-z]+$/.test(dir)) return res.status(400).end();\n  const body = readLog(dir, name);\n  res.type('text/plain').send(body);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A017",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A017.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "와이파이 AP 허용 Set 음성 조기종료 + 날짜 정규식",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst WIFI_LOG = '/var/log/public-wifi';\nconst ACCESS_POINTS = new Set(['ap-lobby', 'ap-hall', 'ap-library']);\n\napp.get('/wifi/logs', (req, res) => {\n  const ap = req.query.ap;\n  const date = req.query.date;\n  if (!ACCESS_POINTS.has(ap)) return res.status(404).send('unknown ap');\n  if (!/^\\d{8}$/.test(date)) return res.status(400).send('date');\n  fs.readFile(path.join(WIFI_LOG, ap, `${date}.log`), 'utf8', (err, text) => {\n    if (err) return res.status(404).end();\n    res.json({ lines: text.split('\\n').slice(-500) });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A018",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A018.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "grep 명령: mac은 정규식, date 미검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\n\napp.get('/wifi/search', (req, res) => {\n  const mac = req.query.mac;\n  const date = req.query.date;\n  if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) return res.status(400).end();\n  exec(`grep -i ${mac} /var/log/public-wifi/${date}.log`, { timeout: 5000 }, (err, stdout) => {\n    if (err && err.code !== 1) return res.status(500).end();\n    res.json({ hits: stdout.split('\\n').filter(Boolean) });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A019",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A019.js",
+   "sink_lines": [],
+   "call_lines": [],
+   "why": "execFile 인자배열 (셸 없음), 값도 검사",
+   "code": "const express = require('express');\nconst { execFile } = require('child_process');\nconst path = require('path');\nconst app = express();\n\napp.get('/wifi/grep', (req, res) => {\n  const { mac, date } = req.query;\n  if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac)) return res.status(400).end();\n  if (!/^\\d{8}$/.test(date)) return res.status(400).end();\n  const file = path.join('/var/log/public-wifi', `${date}.log`);\n  execFile('grep', ['-i', '--', mac, file], (err, stdout) => {\n    res.json({ hits: (stdout || '').split('\\n').filter(Boolean) });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A020",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A020.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "site 값 로깅만 하고 readdir",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst LOG_ROOT = '/var/log/public-wifi/sites';\n\napp.get('/wifi/sites/files', (req, res) => {\n  const site = req.query.site;\n  const limit = Number(req.query.limit) || 50;\n  console.log(`[wifi] list files site=${site}`);\n  fs.readdir(path.join(LOG_ROOT, site), (err, names) => {\n    if (err) return res.status(404).end();\n    res.json(names.slice(0, limit));\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A021",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A021.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "zone을 Object.hasOwn 매핑표로만 디렉터리 결정",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst LOG_ROOT = '/var/log/public-wifi';\nconst ZONE_DIRS = { north: 'zone-n', south: 'zone-s', central: 'zone-c' };\n\napp.get('/wifi/zone/:zone/today', (req, res) => {\n  const zone = req.params.zone;\n  if (!Object.hasOwn(ZONE_DIRS, zone)) return res.status(404).end();\n  const dir = ZONE_DIRS[zone];\n  const text = fs.readFileSync(path.join(LOG_ROOT, dir, 'today.log'), 'utf8');\n  res.type('text/plain').send(text);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A022",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A022.ts",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "Hono c.req.query('ap') 미검사",
+   "code": "import { Hono } from 'hono';\nimport { readFile } from 'node:fs/promises';\nimport { join } from 'node:path';\n\nconst app = new Hono();\nconst DIR = '/var/log/public-wifi';\n\napp.get('/wifi/today', async (c) => {\n  const ap = c.req.query('ap');\n  const tail = Number(c.req.query('tail') ?? 100);\n  if (!ap) return c.text('ap required', 400);\n  const text = await readFile(join(DIR, ap, 'today.log'), 'utf8');\n  return c.json({ lines: text.split('\\n').slice(-tail) });\n});\n\nexport default app;\n"
+  },
+  {
+   "id": "A023",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A023.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "라우터, 결합 파일명: date 검사, ssid 미검사",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst router = express.Router();\nconst DIR = '/var/log/public-wifi/ssid';\n\nrouter.get('/export', (req, res) => {\n  const date = req.query.date;\n  if (!/^\\d{4}\\d{2}\\d{2}$/.test(date)) return res.status(400).end();\n  const name = `${req.query.ssid}_${date}.log`;\n  const data = fs.readFileSync(path.join(DIR, name));\n  res.attachment(name).send(data);\n});\n\napp.use('/wifi', router);\napp.listen(3000);\n"
+  },
+  {
+   "id": "A024",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A024.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "A023 + ssid 허용 Set 음성 조기종료",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst router = express.Router();\nconst DIR = '/var/log/public-wifi/ssid';\nconst SSIDS = new Set(['GOV-FREE', 'GOV-STAFF', 'GOV-GUEST']);\n\nrouter.get('/export', (req, res) => {\n  const { ssid, date } = req.query;\n  if (!SSIDS.has(ssid)) return res.status(400).end();\n  if (!/^\\d{8}$/.test(date)) return res.status(400).end();\n  const name = `${ssid}_${date}.log`;\n  const data = fs.readFileSync(path.join(DIR, name));\n  res.attachment(name).send(data);\n});\n\napp.use('/wifi', router);\napp.listen(3000);\n"
+  },
+  {
+   "id": "A025",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A025.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "상수 호스트 + 슬래시 뒤 경로만 요청값",
+   "code": "const express = require('express');\nconst app = express();\nconst API_BASE = 'https://apis.data.go.kr';\nconst KEY = process.env.DATA_GO_KR_KEY;\nconst cache = new Map();\n\napp.get('/openapi/weather', async (req, res) => {\n  const endpoint = req.query.endpoint;\n  const page = req.query.page || '1';\n  const key = `${endpoint}:${page}`;\n  if (cache.has(key)) return res.json(cache.get(key));\n  const r = await fetch(`${API_BASE}/1360000/${endpoint}?serviceKey=${KEY}&pageNo=${encodeURIComponent(page)}&dataType=JSON`);\n  const data = await r.json();\n  cache.set(key, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A026",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A026.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "캐시 조회만 있고 임의 URL 프록시",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\nconst cache = new Map();\n\napp.get('/proxy', async (req, res) => {\n  const target = req.query.url;\n  if (cache.has(target)) return res.json(cache.get(target));\n  try {\n    const r = await axios.get(target, { timeout: 3000 });\n    cache.set(target, r.data);\n    res.json(r.data);\n  } catch (e) {\n    res.status(502).json({ error: 'upstream' });\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A027",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A027.js",
+   "sink_lines": [
+    15
+   ],
+   "call_lines": [],
+   "why": "URL 파싱 후 hostname 허용 Set",
+   "code": "const express = require('express');\nconst app = express();\nconst ALLOWED_HOSTS = new Set(['apis.data.go.kr', 'openapi-seoul.example.go.kr']);\nconst cache = new Map();\n\napp.get('/proxy/open', async (req, res) => {\n  let u;\n  try {\n    u = new URL(req.query.url);\n  } catch {\n    return res.status(400).end();\n  }\n  if (u.protocol !== 'https:' || !ALLOWED_HOSTS.has(u.hostname)) return res.status(403).end();\n  if (cache.has(u.href)) return res.json(cache.get(u.href));\n  const r = await fetch(u);\n  const data = await r.json();\n  cache.set(u.href, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A028",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A028.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "nx/ny 숫자검사, base(호스트) 미검사",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/forecast', async (req, res) => {\n  const { base, nx, ny } = req.query;\n  if (!/^\\d{1,3}$/.test(nx) || !/^\\d{1,3}$/.test(ny)) return res.status(400).end();\n  const r = await fetch(`${base}/v1/forecast?nx=${nx}&ny=${ny}`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A029",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A029.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "제공자 Map에서 base 결정, 경로는 슬래시 뒤",
+   "code": "const express = require('express');\nconst app = express();\nconst PROVIDERS = new Map([\n  ['airkorea', 'https://apis.data.go.kr/B552584'],\n  ['kma', 'https://apihub-kma.example.go.kr/api'],\n]);\n\napp.get('/open/:provider', async (req, res) => {\n  const base = PROVIDERS.get(req.params.provider);\n  if (!base) return res.status(404).end();\n  const r = await fetch(`${base}/${req.query.path}?${new URLSearchParams(req.query.params || {})}`);\n  res.status(r.status).json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A030",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A030.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "Koa body.callbackUrl로 got.post",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst bodyParser = require('koa-bodyparser');\nconst got = require('got');\nconst app = new Koa();\nconst router = new Router();\nconst cache = new Map();\n\nrouter.post('/subscribe', async (ctx) => {\n  const { dataset, callbackUrl } = ctx.request.body;\n  if (!cache.has(dataset)) {\n    cache.set(dataset, { updated: Date.now() });\n  }\n  await got.post(callbackUrl, { json: { dataset, status: 'subscribed' } });\n  ctx.body = { ok: true };\n});\n\napp.use(bodyParser());\napp.use(router.routes());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A031",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A031.js",
+   "sink_lines": [
+    15
+   ],
+   "call_lines": [],
+   "why": "고정 URL, 요청값은 searchParams와 TTL에만",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst ENDPOINT = 'https://apis.data.go.kr/1613000/BusSttnInfo/getStationList';\n\napp.get('/bus/stations', async (req, res) => {\n  const { city, keyword } = req.query;\n  const ttl = Math.min(Number(req.query.ttl) || 60, 600) * 1000;\n  const url = new URL(ENDPOINT);\n  url.searchParams.set('cityCode', city);\n  url.searchParams.set('nodeNm', keyword);\n  const k = url.toString();\n  const hit = cache.get(k);\n  if (hit && hit.exp > Date.now()) return res.json(hit.data);\n  const r = await fetch(url);\n  const data = await r.json();\n  cache.set(k, { data, exp: Date.now() + ttl });\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A032",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A032.ts",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "Fastify x-upstream 헤더가 호스트",
+   "code": "import Fastify from 'fastify';\n\nconst app = Fastify();\nconst cache = new Map<string, unknown>();\n\napp.get('/mirror/:dataset', async (request, reply) => {\n  const { dataset } = request.params as { dataset: string };\n  const upstream = request.headers['x-upstream'] as string;\n  const key = `${upstream}/${dataset}`;\n  if (cache.has(key)) return cache.get(key);\n  const r = await fetch(`https://${upstream}/data/${dataset}.json`);\n  const json = await r.json();\n  cache.set(key, json);\n  return json;\n});\n\napp.listen({ port: 3000 });\n"
+  },
+  {
+   "id": "A033",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A033.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "장비 목록에서 id로 찾은 서버측 IP로 폴링",
+   "code": "const express = require('express');\nconst app = express();\nconst DEVICES = [\n  { id: 'pm-01', ip: '10.20.1.11', port: 8080 },\n  { id: 'pm-02', ip: '10.20.1.12', port: 8080 },\n  { id: 'co2-01', ip: '10.20.2.31', port: 9000 },\n];\n\napp.get('/sensors/:id/status', async (req, res) => {\n  const dev = DEVICES.find((d) => d.id === req.params.id);\n  if (!dev) return res.status(404).json({ error: '등록되지 않은 장비' });\n  const r = await fetch(`http://${dev.ip}:${dev.port}/status`, { signal: AbortSignal.timeout(2000) });\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A034",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A034.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "http.get 장비 ip 미검사",
+   "code": "const express = require('express');\nconst http = require('http');\nconst app = express();\n\napp.get('/sensor/probe', (req, res) => {\n  const ip = req.query.ip;\n  const port = Number(req.query.port) || 80;\n  http.get(`http://${ip}:${port}/sensor`, (r) => {\n    let body = '';\n    r.on('data', (c) => (body += c));\n    r.on('end', () => res.type('application/json').send(body));\n  }).on('error', () => res.status(504).end());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A035",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A035.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "net.isIPv4 + 센서망 대역 검사",
+   "code": "const express = require('express');\nconst net = require('net');\nconst app = express();\n\nfunction inSensorNet(ip) {\n  const [a, b] = ip.split('.').map(Number);\n  return a === 10 && b === 20;\n}\n\napp.get('/sensor/ping', async (req, res) => {\n  const { ip } = req.query;\n  if (!net.isIPv4(ip) || !inSensorNet(ip)) return res.status(400).json({ error: 'ip' });\n  const r = await fetch(`http://${ip}:8080/health`);\n  res.json({ ip, ok: r.ok });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A036",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A036.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "body.ips 배열 for-of 순회 폴링",
+   "code": "const express = require('express');\nconst app = express();\napp.use(express.json());\n\napp.post('/sensors/poll', async (req, res) => {\n  const results = [];\n  for (const ip of req.body.ips) {\n    try {\n      const r = await fetch(`http://${ip}/status`);\n      results.push({ ip, status: await r.json() });\n    } catch (e) {\n      results.push({ ip, error: e.message });\n    }\n  }\n  res.json(results);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A037",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A037.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "상수 장비 목록 순회, 요청값은 timeout만",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\nconst DEVICES = ['10.20.1.11', '10.20.1.12', '10.20.1.13'];\n\napp.get('/sensors/all', async (req, res) => {\n  const timeout = Math.min(parseInt(req.query.timeout, 10) || 1500, 5000);\n  const out = {};\n  for (const ip of DEVICES) {\n    try {\n      const r = await axios.get(`http://${ip}:8080/status`, { timeout });\n      out[ip] = r.data;\n    } catch {\n      out[ip] = null;\n    }\n  }\n  res.json(out);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A038",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A038.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [
+    13
+   ],
+   "why": "헬퍼 pollDevice(host, path), host 미검사",
+   "code": "const express = require('express');\nconst app = express();\napp.use(express.json());\n\nasync function pollDevice(host, path) {\n  const r = await fetch(`http://${host}${path}`, { method: 'GET' });\n  return r.json();\n}\n\napp.post('/devices/check', async (req, res) => {\n  const { host, deviceName } = req.body;\n  console.log('check device', deviceName);\n  const status = await pollDevice(host, '/health');\n  res.json({ deviceName, status });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A039",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A039.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "try/catch 안 axios, params.ip 미검사",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\n\napp.get('/env/:ip/readings', async (req, res) => {\n  try {\n    const r = await axios.get(`http://${req.params.ip}/api/env`, { timeout: 2000 });\n    res.json({ temp: r.data.temp, humidity: r.data.humidity });\n  } catch (err) {\n    console.error('sensor error', req.params.ip, err.message);\n    res.status(504).json({ error: 'timeout' });\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A040",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A040.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "등록 장비 IP Set 음성 조기종료",
+   "code": "const express = require('express');\nconst app = express();\nconst REGISTERED = new Set(['10.20.1.11', '10.20.1.12', '10.20.2.31']);\n\napp.get('/env/readings', async (req, res) => {\n  const ip = req.query.ip;\n  const metric = req.query.metric || 'all';\n  if (!REGISTERED.has(ip)) return res.status(403).json({ error: '미등록 장비' });\n  const r = await fetch(`http://${ip}:8080/metrics/${encodeURIComponent(metric)}`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A041",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A041.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "soffice: fmt 허용목록, file 미검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\napp.use(express.json());\nconst UPLOAD = '/srv/convert/in';\nconst OUT = '/srv/convert/out';\n\napp.post('/convert', (req, res) => {\n  const { file, fmt } = req.body;\n  if (!['pdf', 'docx', 'odt'].includes(fmt)) return res.status(400).json({ error: 'fmt' });\n  exec(`soffice --headless --convert-to ${fmt} --outdir ${OUT} ${UPLOAD}/${file}`, { timeout: 60000 }, (err) => {\n    if (err) return res.status(500).json({ error: 'convert failed' });\n    res.json({ ok: true });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A042",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A042.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "multer 생성 경로(req.file.path) + fmt 허용목록",
+   "code": "const express = require('express');\nconst multer = require('multer');\nconst { exec } = require('child_process');\nconst app = express();\nconst upload = multer({ dest: '/srv/convert/in' });\nconst FORMATS = new Set(['pdf', 'docx']);\n\napp.post('/convert/upload', upload.single('doc'), (req, res) => {\n  const fmt = req.body.fmt;\n  if (!FORMATS.has(fmt)) return res.status(400).end();\n  if (!req.file) return res.status(400).end();\n  exec(`soffice --headless --convert-to ${fmt} --outdir /srv/convert/out \"${req.file.path}\"`, (err) => {\n    if (err) return res.status(500).end();\n    res.json({ id: req.file.filename });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A043",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A043.js",
+   "sink_lines": [],
+   "call_lines": [],
+   "why": "execFile 인자배열 soffice",
+   "code": "const express = require('express');\nconst { execFile } = require('child_process');\nconst path = require('path');\nconst app = express();\n\napp.get('/convert/:docId', (req, res) => {\n  const { docId } = req.params;\n  const fmt = req.query.fmt || 'pdf';\n  if (!/^[a-f0-9]{24}$/.test(docId)) return res.status(400).end();\n  if (!['pdf', 'html'].includes(fmt)) return res.status(400).end();\n  const input = path.join('/srv/docs', `${docId}.docx`);\n  execFile('soffice', ['--headless', '--convert-to', fmt, '--outdir', '/srv/out', input], (err) => {\n    if (err) return res.status(500).end();\n    res.sendFile(`${docId}.${fmt}`, { root: '/srv/out' });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A044",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A044.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "spawn('sh',['-c',...]) doc 미검사",
+   "code": "const express = require('express');\nconst { spawn } = require('child_process');\nconst path = require('path');\nconst app = express();\n\napp.get('/convert/pdf', (req, res) => {\n  const docPath = path.join('/srv/docs', req.query.doc);\n  const child = spawn('sh', ['-c', `soffice --headless --convert-to pdf --outdir /srv/out ${docPath}`]);\n  child.on('close', (code) => {\n    if (code !== 0) return res.status(500).end();\n    res.json({ ok: true });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A045",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A045.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "spawn shell:true, outName 미검사",
+   "code": "const express = require('express');\nconst { spawn } = require('child_process');\nconst app = express();\napp.use(express.urlencoded({ extended: false }));\n\napp.post('/convert/batch', (req, res) => {\n  const { outName, profile } = req.body;\n  if (!/^(default|print)$/.test(profile)) return res.status(400).end();\n  const args = ['--headless', `-env:UserInstallation=file:///srv/profiles/${profile}`, '--convert-to', 'pdf', '--outdir', `/srv/out/${outName}`, '/srv/in/*.docx'];\n  const p = spawn('soffice', args, { shell: true });\n  p.on('exit', (code) => res.json({ code }));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A046",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A046.js",
+   "sink_lines": [],
+   "call_lines": [],
+   "why": "spawn 셸 없음, 인자배열",
+   "code": "const express = require('express');\nconst { spawn } = require('child_process');\nconst app = express();\napp.use(express.json());\n\napp.post('/convert/one', (req, res) => {\n  const { outName, src } = req.body;\n  const p = spawn('soffice', ['--headless', '--convert-to', 'pdf', '--outdir', '/srv/out', '--', `/srv/in/${src}`]);\n  p.on('exit', (code) => res.json({ code, outName }));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A047",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A047.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "Koa execSync body.format 검사, body.path 미검사",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst bodyParser = require('koa-bodyparser');\nconst { execSync } = require('child_process');\nconst app = new Koa();\nconst router = new Router();\n\nrouter.post('/libre/convert', (ctx) => {\n  const { format, path: docPath } = ctx.request.body;\n  if (!['pdf', 'txt'].includes(format)) ctx.throw(400);\n  execSync(`libreoffice --headless --convert-to ${format} ${docPath}`, { cwd: '/srv/libre' });\n  ctx.body = { ok: true };\n});\n\napp.use(bodyParser());\napp.use(router.routes());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A048",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A048.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "docId 정규식·fmt 허용목록 후 execSync",
+   "code": "const express = require('express');\nconst { execSync } = require('child_process');\nconst app = express();\n\napp.post('/convert/:docId/:fmt', (req, res) => {\n  const { docId, fmt } = req.params;\n  if (!/^[0-9a-f]{24}$/.test(docId)) return res.status(400).end();\n  if (!['pdf', 'odt', 'html'].includes(fmt)) return res.status(400).end();\n  execSync(`soffice --headless --convert-to ${fmt} --outdir /srv/out /srv/docs/${docId}.docx`, { timeout: 60000 });\n  res.json({ url: `/files/${docId}.${fmt}` });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A049",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A049.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "tar 백업: dept 허용목록, name 로깅만",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\napp.use(express.json());\nconst SRC = '/srv/share';\nconst BK = '/srv/backup';\nconst DEPTS = new Set(['general', 'finance', 'welfare']);\n\napp.post('/backup', (req, res) => {\n  const { dept, name } = req.body;\n  if (!DEPTS.has(dept)) return res.status(400).json({ error: 'dept' });\n  console.log(`[backup] ${dept} -> ${name}`);\n  exec(`tar -czf ${BK}/${name}.tar.gz -C ${SRC} ${dept}`, (err) => {\n    if (err) return res.status(500).end();\n    res.json({ file: `${name}.tar.gz` });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A050",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A050.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "파일명은 서버 날짜, dept 허용목록",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\nconst DEPTS = ['general', 'finance', 'welfare'];\n\napp.post('/backup/:dept', (req, res) => {\n  const dept = req.params.dept;\n  if (!DEPTS.includes(dept)) return res.status(404).end();\n  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');\n  exec(`tar -czf /srv/backup/${dept}-${stamp}.tar.gz -C /srv/share ${dept}`, (err) => {\n    res.json({ ok: !err, file: `${dept}-${stamp}.tar.gz` });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A051",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A051.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "zip: body.folders 배열 join 미검사",
+   "code": "const express = require('express');\nconst { execSync } = require('child_process');\nconst app = express();\napp.use(express.json());\n\napp.post('/backup/zip', (req, res) => {\n  const folders = req.body.folders;\n  if (!Array.isArray(folders) || folders.length === 0) return res.status(400).end();\n  const out = `/srv/backup/manual-${Date.now()}.zip`;\n  execSync('zip -r ' + out + ' ' + folders.join(' '), { cwd: '/srv/share' });\n  res.json({ out });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A052",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A052.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "folders.every 허용 Set 검사 후 zip",
+   "code": "const express = require('express');\nconst { execSync } = require('child_process');\nconst app = express();\napp.use(express.json());\nconst ALLOWED = new Set(['minutes', 'budget', 'contracts']);\n\napp.post('/backup/zip', (req, res) => {\n  const folders = req.body.folders;\n  if (!Array.isArray(folders) || !folders.every((f) => ALLOWED.has(f))) return res.status(400).end();\n  const out = `/srv/backup/manual-${Date.now()}.zip`;\n  execSync('zip -r ' + out + ' ' + folders.join(' '), { cwd: '/srv/share' });\n  res.json({ out });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A053",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A053.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [
+    15
+   ],
+   "why": "헬퍼 runBackup(label,target), label 미검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\napp.use(express.json());\n\nfunction runBackup(label, target) {\n  return new Promise((resolve, reject) => {\n    exec(`tar -czf /srv/backup/${label}.tgz /srv/share/${target}`, (err, out) => (err ? reject(err) : resolve(out)));\n  });\n}\n\napp.post('/backup/run', async (req, res) => {\n  const { label, target } = req.body;\n  if (!/^[a-z]{3,20}$/.test(target)) return res.status(400).end();\n  await runBackup(label, target);\n  res.json({ ok: true });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A054",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A054.js",
+   "sink_lines": [],
+   "call_lines": [],
+   "why": "execFile tar 인자배열",
+   "code": "const express = require('express');\nconst { execFile } = require('child_process');\nconst app = express();\n\napp.post('/backup/tar/:dept', (req, res) => {\n  const dept = req.params.dept;\n  if (!['general', 'finance'].includes(dept)) return res.status(404).end();\n  const out = `/srv/backup/${dept}-${Date.now()}.tgz`;\n  execFile('tar', ['-czf', out, '-C', '/srv/share', dept], (err) => res.json({ ok: !err, out }));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A055",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A055.ts",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "Fastify 복원 archive 미검사",
+   "code": "import Fastify from 'fastify';\nimport { exec } from 'child_process';\n\nconst app = Fastify();\nconst RESTORE = '/srv/restore';\n\napp.post('/backup/restore', async (request, reply) => {\n  const { archive, requestedBy } = request.body as { archive: string; requestedBy: string };\n  request.log.info({ requestedBy }, 'restore requested');\n  await new Promise<void>((resolve, reject) => {\n    exec(`tar -xzf ${archive} -C ${RESTORE}`, (err) => (err ? reject(err) : resolve()));\n  });\n  return reply.send({ ok: true });\n});\n\napp.listen({ port: 3000 });\n"
+  },
+  {
+   "id": "A056",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A056.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "archive 이름 고정 정규식 후 exec",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\napp.use(express.json());\n\napp.post('/backup/restore', (req, res) => {\n  const archive = req.body.archive;\n  if (typeof archive !== 'string' || !/^backup-\\d{8}\\.tar\\.gz$/.test(archive)) {\n    return res.status(400).json({ error: '백업 파일명 형식 오류' });\n  }\n  exec(`tar -xzf /srv/backup/${archive} -C /srv/restore`, (err) => {\n    res.json({ ok: !err });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A057",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A057.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "단축코드로 DB 조회한 저장 URL로 이동",
+   "code": "const express = require('express');\nconst db = require('./db');\nconst app = express();\n\napp.get('/s/:code', async (req, res) => {\n  const link = await db.links.findOne({ where: { code: req.params.code } });\n  if (!link) return res.status(404).send('만료되었거나 없는 링크입니다.');\n  await db.clicks.create({ code: link.code, ua: req.get('user-agent') });\n  res.redirect(302, link.target);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A058",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A058.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "to 파라미터 로깅만 하고 redirect",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/go', (req, res) => {\n  const to = req.query.to;\n  const src = req.query.src || 'direct';\n  console.log('click', src, to);\n  res.redirect(to);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A059",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A059.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "URL 파싱 후 origin 일치 검사",
+   "code": "const express = require('express');\nconst app = express();\nconst SITE_ORIGIN = 'https://files.example.go.kr';\n\napp.get('/download/go', (req, res) => {\n  const to = req.query.to;\n  let u;\n  try {\n    u = new URL(to, SITE_ORIGIN);\n  } catch {\n    return res.status(400).end();\n  }\n  if (u.origin !== SITE_ORIGIN) return res.status(400).send('외부 링크는 허용되지 않습니다.');\n  res.redirect(u.href);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A060",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A060.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "decodeURIComponent만 거친 params.encoded로 이동",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/l/:encoded', (req, res) => {\n  const dest = decodeURIComponent(req.params.encoded);\n  res.set('Cache-Control', 'no-store');\n  res.redirect(302, dest);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A061",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A061.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "Map 음성 조기종료 후 Map에 저장된 대상으로 이동",
+   "code": "const express = require('express');\nconst app = express();\nconst LINKS = new Map([\n  ['manual', 'https://files.example.go.kr/manual.pdf'],\n  ['form', 'https://files.example.go.kr/form.hwp'],\n]);\n\napp.get('/d/:code', (req, res) => {\n  const code = req.params.code;\n  if (!LINKS.has(code)) return res.status(404).end();\n  res.redirect(LINKS.get(code));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A062",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A062.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "Koa ctx.redirect(query.url || '/')",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst app = new Koa();\nconst router = new Router();\n\nrouter.get('/link/out', async (ctx) => {\n  const ref = ctx.query.ref;\n  ctx.set('X-Ref', String(ref || ''));\n  ctx.redirect(ctx.query.url || '/');\n});\n\napp.use(router.routes());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A063",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A063.ts",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "Hono c.redirect(query('dest'))",
+   "code": "import { Hono } from 'hono';\n\nconst app = new Hono();\n\napp.get('/short/out', (c) => {\n  const dest = c.req.query('dest');\n  if (!dest) return c.text('dest required', 400);\n  return c.redirect(dest);\n});\n\nexport default app;\n"
+  },
+  {
+   "id": "A064",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A064.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "상대경로 정규식(//금지) 실패 시 '/'로 재대입",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/after-download', (req, res) => {\n  let dest = req.query.dest || '/';\n  if (!/^\\/(?!\\/)[\\w\\/-]*$/.test(dest)) dest = '/';\n  res.redirect(dest);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A065",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A065.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "SSO 콜백: code·state는 처리, next 미검사",
+   "code": "const express = require('express');\nconst session = require('express-session');\nconst axios = require('axios');\nconst app = express();\napp.use(session({ secret: process.env.SESSION_SECRET, resave: false, saveUninitialized: false }));\n\napp.get('/sso/callback', async (req, res) => {\n  const { code, state } = req.query;\n  if (!state || state !== req.session.oauthState) return res.status(400).send('state mismatch');\n  const tok = await axios.post('https://sso.example.go.kr/oauth/token', { code, grant_type: 'authorization_code' });\n  req.session.user = tok.data.user;\n  res.redirect(req.query.next || '/');\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A066",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A066.js",
+   "sink_lines": [
+    17
+   ],
+   "call_lines": [],
+   "why": "isSafeNext 같은 파일 함수(오리진 검사) 삼항",
+   "code": "const express = require('express');\nconst app = express();\nconst ORIGIN = 'https://portal.example.go.kr';\n\nfunction isSafeNext(next) {\n  if (typeof next !== 'string') return false;\n  try {\n    return new URL(next, ORIGIN).origin === ORIGIN;\n  } catch {\n    return false;\n  }\n}\n\napp.get('/sso/done', (req, res) => {\n  const next = req.query.next;\n  const safeNext = isSafeNext(next) ? next : '/';\n  res.redirect(safeNext);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A067",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A067.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "쿠키 next 값으로 콜백 후 이동",
+   "code": "const express = require('express');\nconst cookieParser = require('cookie-parser');\nconst app = express();\napp.use(cookieParser());\n\napp.get('/sso/return', async (req, res) => {\n  const ticket = req.query.ticket;\n  if (!ticket) return res.status(400).end();\n  const next = req.cookies.sso_next || '/';\n  res.clearCookie('sso_next');\n  res.redirect(next);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A068",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A068.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "서버 세션 returnTo로 이동 (요청값 아님)",
+   "code": "const express = require('express');\nconst session = require('express-session');\nconst app = express();\napp.use(session({ secret: process.env.SESSION_SECRET, resave: false, saveUninitialized: false }));\n\napp.get('/sso/complete', (req, res) => {\n  const returnTo = req.session.returnTo || '/';\n  delete req.session.returnTo;\n  console.log('sso complete', req.query.sid);\n  res.redirect(returnTo);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A069",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A069.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "lang은 재대입 검증, next 미검사 결합",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/sso/landing', (req, res) => {\n  const next = req.query.next;\n  let lang = req.query.lang;\n  if (!['ko', 'en'].includes(lang)) lang = 'ko';\n  res.redirect(`${next}?lang=${lang}`);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A070",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A070.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [],
+   "why": "상수 '/portal' 접두 뒤에 요청값",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/sso/portal', (req, res) => {\n  const next = req.query.next || '';\n  res.redirect(`/portal${next.startsWith('/') ? '' : '/'}${next}`);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A071",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A071.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "Koa cookies.get('sso_next')로 이동",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst app = new Koa();\nconst router = new Router();\n\nrouter.get('/sso/cb', async (ctx) => {\n  const code = ctx.query.code;\n  if (!code) ctx.throw(400);\n  ctx.state.user = { code };\n  ctx.redirect(ctx.cookies.get('sso_next'));\n});\n\napp.use(router.routes());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A072",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A072.ts",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "next ?? Referer 둘 다 미검사",
+   "code": "import express, { Request, Response } from 'express';\n\nconst app = express();\n\napp.get('/sso/back', (req: Request, res: Response) => {\n  const back = (req.query.next as string) ?? req.get('referer') ?? '/';\n  res.redirect(back);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A073",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A073.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "convert: w/h 정수검사, file 미검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst path = require('path');\nconst app = express();\nconst UP = '/srv/attach';\nconst THUMB = '/srv/thumbs';\n\napp.get('/thumb', (req, res) => {\n  const w = parseInt(req.query.w, 10);\n  const h = parseInt(req.query.h, 10);\n  if (!Number.isInteger(w) || !Number.isInteger(h) || w > 1024 || h > 1024) return res.status(400).end();\n  const src = path.join(UP, req.query.file);\n  const dst = path.join(THUMB, `${Date.now()}.jpg`);\n  exec(`convert ${src} -resize ${w}x${h} ${dst}`, (err) => {\n    if (err) return res.status(500).end();\n    res.sendFile(dst);\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A074",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A074.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "file 정규식 + w/h 정수범위",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\n\napp.get('/thumb/:file', (req, res) => {\n  const file = req.params.file;\n  const w = Number(req.query.w);\n  const h = Number(req.query.h);\n  if (!/^[\\w-]+\\.(jpe?g|png|gif)$/i.test(file)) return res.status(400).end();\n  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 16 || h < 16 || w > 800 || h > 800) return res.status(400).end();\n  exec(`convert /srv/attach/${file} -thumbnail ${w}x${h} /srv/thumbs/${w}x${h}_${file}`, (err) => {\n    if (err) return res.status(500).end();\n    res.sendFile(`${w}x${h}_${file}`, { root: '/srv/thumbs' });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A075",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A075.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "src는 DB값, size 문자열 미검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst db = require('./db');\nconst app = express();\n\napp.get('/attachments/:id/preview', async (req, res) => {\n  const att = await db.attachments.findByPk(req.params.id);\n  if (!att) return res.status(404).end();\n  const size = req.query.size || '200x200';\n  exec(`convert ${att.storedPath}[0] -thumbnail ${size} /srv/thumbs/${att.id}.png`, (err) => {\n    if (err) return res.status(500).end();\n    res.sendFile(`${att.id}.png`, { root: '/srv/thumbs' });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A076",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A076.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "preset을 SIZES 매핑(hasOwn)으로 변환",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst db = require('./db');\nconst app = express();\nconst SIZES = { small: '120x120', medium: '320x320', large: '640x640' };\n\napp.get('/attachments/:id/thumb', async (req, res) => {\n  const preset = req.query.preset || 'small';\n  if (!Object.prototype.hasOwnProperty.call(SIZES, preset)) return res.status(400).end();\n  const att = await db.attachments.findByPk(req.params.id);\n  if (!att) return res.status(404).end();\n  exec(`convert ${att.storedPath}[0] -thumbnail ${SIZES[preset]} /srv/thumbs/${att.id}-${preset}.png`, (err) => {\n    res.status(err ? 500 : 200).json({ ok: !err });\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A077",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A077.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [
+    15
+   ],
+   "why": "헬퍼 makeThumb(input, geometry), geometry 미검사",
+   "code": "const express = require('express');\nconst { execSync } = require('child_process');\nconst app = express();\napp.use(express.json());\n\nfunction makeThumb(input, geometry) {\n  const out = input.replace(/\\.\\w+$/, '_t.png');\n  execSync(`convert ${input} -resize ${geometry} ${out}`);\n  return out;\n}\n\napp.post('/thumbs', (req, res) => {\n  const { file, geometry } = req.body;\n  if (!/^[a-z0-9_-]+\\.(png|jpg)$/.test(file)) return res.status(400).end();\n  const out = makeThumb(`/srv/attach/${file}`, geometry);\n  res.json({ out });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A078",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A078.js",
+   "sink_lines": [],
+   "call_lines": [],
+   "why": "spawn convert 인자배열(셸 없음)",
+   "code": "const express = require('express');\nconst { spawn } = require('child_process');\nconst app = express();\n\napp.get('/thumb/raw/:id', (req, res) => {\n  const { id } = req.params;\n  if (!/^\\d+$/.test(id)) return res.status(400).end();\n  const size = String(req.query.size || '200x200');\n  const p = spawn('convert', [`/srv/attach/${id}.jpg`, '-resize', size, 'png:-']);\n  res.type('png');\n  p.stdout.pipe(res);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A079",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A079.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "Koa id 정규식, fmt 미검사",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst { execSync } = require('child_process');\nconst app = new Koa();\nconst router = new Router();\n\nrouter.get('/img/:id/convert', (ctx) => {\n  const id = ctx.params.id;\n  const fmt = ctx.query.fmt;\n  if (!/^\\d{1,10}$/.test(id)) ctx.throw(400);\n  execSync(`convert /srv/img/${id}.png /srv/img/out/${id}.${fmt}`);\n  ctx.body = { url: `/img/out/${id}.${fmt}` };\n});\n\napp.use(router.routes());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A080",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A080.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "Koa id 정규식, fmt 허용목록",
+   "code": "const Koa = require('koa');\nconst Router = require('@koa/router');\nconst { execSync } = require('child_process');\nconst app = new Koa();\nconst router = new Router();\nconst FMTS = new Set(['webp', 'jpg', 'png']);\n\nrouter.get('/img/:id/convert', (ctx) => {\n  const id = ctx.params.id;\n  const fmt = ctx.query.fmt;\n  if (!/^\\d{1,10}$/.test(id)) ctx.throw(400);\n  if (!FMTS.has(fmt)) ctx.throw(400);\n  execSync(`convert /srv/img/${id}.png /srv/img/out/${id}.${fmt}`);\n  ctx.body = { url: `/img/out/${id}.${fmt}` };\n});\n\napp.use(router.routes());\napp.listen(3000);\n"
+  },
+  {
+   "id": "A081",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A081.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "공유폴더: dept 허용 + resolve 포함검사 후 readdir",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst SHARE_ROOT = '/srv/share';\nconst DEPTS = new Set(['general', 'finance', 'welfare']);\n\napp.get('/share/list', (req, res) => {\n  const { dept, sub } = req.query;\n  if (!DEPTS.has(dept)) return res.status(403).end();\n  const base = path.join(SHARE_ROOT, dept);\n  const target = path.resolve(base, sub || '.');\n  if (target !== base && !target.startsWith(base + path.sep)) return res.status(403).end();\n  const entries = fs.readdirSync(target, { withFileTypes: true });\n  res.json(entries.map((e) => ({ name: e.name, dir: e.isDirectory() })));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A082",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A082.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "dept 허용, sub 미검사 readdir",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst SHARE_ROOT = '/srv/share';\nconst DEPTS = new Set(['general', 'finance', 'welfare']);\n\napp.get('/share/browse', (req, res) => {\n  const dept = req.query.dept;\n  const sub = req.query.sub || '';\n  if (!DEPTS.has(dept)) return res.status(403).end();\n  fs.readdir(path.join(SHARE_ROOT, dept, sub), { withFileTypes: true }, (err, list) => {\n    if (err) return res.status(404).end();\n    res.json(list.map((e) => e.name));\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A083",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A083.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "와일드카드 params[0] + dept 모두 미검사 stat",
+   "code": "const express = require('express');\nconst fsp = require('fs/promises');\nconst path = require('path');\nconst app = express();\nconst SHARE_ROOT = '/srv/share';\n\napp.get('/share/:dept/info/*', async (req, res) => {\n  try {\n    const st = await fsp.stat(path.join(SHARE_ROOT, req.params.dept, req.params[0]));\n    res.json({ size: st.size, mtime: st.mtime, dir: st.isDirectory() });\n  } catch {\n    res.status(404).end();\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A084",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A084.js",
+   "sink_lines": [
+    18
+   ],
+   "call_lines": [],
+   "why": "dept는 인증 사용자 정보, sub는 포함검사",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst SHARE_ROOT = path.resolve('/srv/share');\n\nfunction requireUser(req, res, next) {\n  if (!req.user) return res.status(401).end();\n  next();\n}\n\napp.get('/share/my', requireUser, (req, res) => {\n  const base = path.join(SHARE_ROOT, req.user.dept);\n  const target = path.resolve(base, req.query.sub || '.');\n  if (path.relative(base, target).startsWith('..') || path.isAbsolute(path.relative(base, target))) {\n    return res.status(403).end();\n  }\n  res.json(fs.readdirSync(target));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A085",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A085.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "body.names 순회 stat, 미검사",
+   "code": "const express = require('express');\nconst fsp = require('fs/promises');\nconst path = require('path');\nconst app = express();\napp.use(express.json());\nconst SHARE_ROOT = '/srv/share/general';\n\napp.post('/share/stat-many', async (req, res) => {\n  const out = [];\n  for (const name of req.body.names) {\n    try {\n      const st = await fsp.stat(path.join(SHARE_ROOT, name));\n      out.push({ name, size: st.size });\n    } catch {\n      out.push({ name, missing: true });\n    }\n  }\n  res.json(out);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A086",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A086.js",
+   "sink_lines": [
+    12,
+    13
+   ],
+   "call_lines": [],
+   "why": "readdir 결과(서버값) 순회 stat, dept 허용",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst SHARE_ROOT = '/srv/share';\n\napp.get('/share/:dept/sizes', (req, res) => {\n  const dept = req.params.dept;\n  if (!['general', 'finance'].includes(dept)) return res.status(404).end();\n  const base = path.join(SHARE_ROOT, dept);\n  const sizes = {};\n  for (const name of fs.readdirSync(base)) {\n    sizes[name] = fs.statSync(path.join(base, name)).size;\n  }\n  res.json(sizes);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A087",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A087.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "dept 정규식, file 미검사 unlink",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst SHARE_ROOT = '/srv/share';\n\napp.delete('/share/:dept/files/:file', (req, res) => {\n  const { dept, file } = req.params;\n  if (!/^[a-z]{2,16}$/.test(dept)) return res.status(400).end();\n  try {\n    fs.unlinkSync(path.join(SHARE_ROOT, dept, file));\n    res.status(204).end();\n  } catch {\n    res.status(404).end();\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A088",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A088.ts",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "Hono folder 정규식 후 readdir",
+   "code": "import { Hono } from 'hono';\nimport { readdir } from 'node:fs/promises';\nimport { join } from 'node:path';\n\nconst app = new Hono();\nconst ROOT = '/srv/share/public';\n\napp.get('/share/folder', async (c) => {\n  const folder = c.req.query('folder') ?? '';\n  if (!/^[a-z0-9_-]{1,32}$/.test(folder)) return c.json({ error: 'folder' }, 400);\n  const names = await readdir(join(ROOT, folder));\n  return c.json(names);\n});\n\nexport default app;\n"
+  },
+  {
+   "id": "A089",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A089.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "exiftool params.name 미검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\nconst PHOTO_DIR = '/srv/photos';\n\napp.get('/photos/:name/exif', (req, res) => {\n  exec(`exiftool -json ${PHOTO_DIR}/${req.params.name}`, (err, stdout) => {\n    if (err) return res.status(404).end();\n    res.type('json').send(stdout);\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A090",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A090.js",
+   "sink_lines": [],
+   "call_lines": [],
+   "why": "name 정규식 + execFile",
+   "code": "const express = require('express');\nconst { execFile } = require('child_process');\nconst app = express();\n\napp.get('/photos/:name/meta', (req, res) => {\n  const name = req.params.name;\n  if (!/^[\\w-]+\\.(jpe?g|heic|png)$/i.test(name)) return res.status(400).end();\n  execFile('exiftool', ['-json', `/srv/photos/${name}`], (err, stdout) => {\n    if (err) return res.status(404).end();\n    res.type('json').send(stdout);\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A091",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A091.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "DB에서 찾은 storedName으로 exiftool, id 정수검사",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst db = require('./db');\nconst app = express();\n\napp.get('/photos/by-id/:id/exif', async (req, res) => {\n  const id = Number(req.params.id);\n  if (!Number.isInteger(id) || id <= 0) return res.status(400).end();\n  const photo = await db.photos.findByPk(id);\n  if (!photo) return res.status(404).end();\n  exec(`exiftool -json /srv/photos/${photo.storedName}`, (err, stdout) => {\n    res.type('json').send(err ? '[]' : stdout);\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A092",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A092.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "album 허용, file 미검사 readFileSync → exifr",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst exifr = require('exifr');\nconst app = express();\nconst PHOTO_DIR = '/srv/photos';\nconst ALBUMS = new Set(['events', 'facilities', 'press']);\n\napp.get('/exif', async (req, res) => {\n  const { album, file } = req.query;\n  if (!ALBUMS.has(album)) return res.status(404).end();\n  const buf = fs.readFileSync(path.join(PHOTO_DIR, album, file));\n  const tags = await exifr.parse(buf, { gps: true });\n  res.json(tags || {});\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A093",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A093.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "basename 비교로 디렉터리 성분 차단 + album 허용",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst exifr = require('exifr');\nconst app = express();\nconst PHOTO_DIR = '/srv/photos';\nconst ALBUMS = new Set(['events', 'facilities', 'press']);\n\napp.get('/exif/safe', async (req, res) => {\n  const { album, file } = req.query;\n  if (!ALBUMS.has(album)) return res.status(404).end();\n  if (typeof file !== 'string' || path.basename(file) !== file || file.startsWith('.')) return res.status(400).end();\n  const buf = fs.readFileSync(path.join(PHOTO_DIR, album, file));\n  res.json((await exifr.parse(buf)) || {});\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A094",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A094.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "exiftool -${tag}: tag 미검사, 파일은 DB",
+   "code": "const express = require('express');\nconst { execSync } = require('child_process');\nconst db = require('./db');\nconst app = express();\n\napp.get('/photos/:id/tag', async (req, res) => {\n  const photo = await db.photos.findByPk(req.params.id);\n  if (!photo) return res.status(404).end();\n  const tag = req.query.tag || 'DateTimeOriginal';\n  const out = execSync(`exiftool -s3 -${tag} /srv/photos/${photo.storedName}`).toString();\n  res.json({ tag, value: out.trim() });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A095",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A095.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "tag 상수배열 includes 음성 조기종료",
+   "code": "const express = require('express');\nconst { execSync } = require('child_process');\nconst db = require('./db');\nconst app = express();\nconst TAGS = ['DateTimeOriginal', 'Model', 'GPSLatitude', 'GPSLongitude'];\n\napp.get('/photos/:id/tag', async (req, res) => {\n  const tag = req.query.tag;\n  if (!TAGS.includes(tag)) return res.status(400).end();\n  const photo = await db.photos.findByPk(req.params.id);\n  if (!photo) return res.status(404).end();\n  const out = execSync(`exiftool -s3 -${tag} /srv/photos/${photo.storedName}`).toString();\n  res.json({ tag, value: out.trim() });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A096",
+   "part": "A",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A096.ts",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "Fastify params.file promises.readFile",
+   "code": "import Fastify from 'fastify';\nimport fs from 'fs';\nimport path from 'path';\n\nconst app = Fastify();\n\napp.get('/photos/raw/:file', async (request, reply) => {\n  const { file } = request.params as { file: string };\n  const data = await fs.promises.readFile(path.join('/srv/photos', file));\n  reply.type('image/jpeg');\n  return data;\n});\n\napp.listen({ port: 3000 });\n"
+  },
+  {
+   "id": "A097",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A097.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "express-validator matches + validationResult 후 download",
+   "code": "const express = require('express');\nconst path = require('path');\nconst { query, validationResult } = require('express-validator');\nconst app = express();\n\napp.get(\n  '/access-log/file',\n  query('file').matches(/^\\d{4}-\\d{2}-\\d{2}_[a-z]+\\.csv$/),\n  query('building').isIn(['sejong', 'daejeon']),\n  (req, res) => {\n    if (!validationResult(req).isEmpty()) return res.status(400).end();\n    res.download(path.join('/var/gov/access-logs', req.query.building, req.query.file));\n  }\n);\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A098",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A098.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "router.param('dept') 같은 파일 검증 후 readdir",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst router = express.Router();\nconst DEPTS = new Set(['general', 'finance', 'welfare']);\n\nrouter.param('dept', (req, res, next, dept) => {\n  if (!DEPTS.has(dept)) return res.status(404).end();\n  next();\n});\n\nrouter.get('/:dept/files', (req, res) => {\n  res.json(fs.readdirSync(path.join('/srv/share', req.params.dept)));\n});\n\napp.use('/share', router);\napp.listen(3000);\n"
+  },
+  {
+   "id": "A099",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A099.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "같은 파일 미들웨어 validateFile이 검사 후 next",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\nfunction validateFile(req, res, next) {\n  if (!/^[\\w-]+\\.log$/.test(req.query.file || '')) return res.status(400).end();\n  next();\n}\n\napp.get('/wifi/log', validateFile, (req, res) => {\n  const text = fs.readFileSync(path.join('/var/log/public-wifi', req.query.file), 'utf8');\n  res.type('text/plain').send(text);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A100",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "A100.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "region을 hasOwn 게이트웨이표로, metric은 경로",
+   "code": "const express = require('express');\nconst app = express();\nconst SENSOR_GATEWAYS = { seoul: 'http://10.30.0.10:8080', busan: 'http://10.31.0.10:8080' };\n\napp.get('/env/:region/:metric', async (req, res) => {\n  const { region, metric } = req.params;\n  if (!Object.hasOwn(SENSOR_GATEWAYS, region)) return res.status(404).end();\n  const gw = SENSOR_GATEWAYS[region];\n  const r = await fetch(`${gw}/api/${metric}/latest`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A101",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "A101.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "next 상대경로(//, /\\\\ 금지) 검사 후 이동",
+   "code": "const express = require('express');\nconst app = express();\n\napp.post('/login/sso-finish', express.urlencoded({ extended: false }), (req, res) => {\n  const next = req.body.next || '/';\n  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\\\')) {\n    return res.redirect('/');\n  }\n  res.redirect(next);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A102",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "A102.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "shell-quote quote()로 인자 이스케이프 후 zip",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst { quote } = require('shell-quote');\nconst app = express();\napp.use(express.json());\n\napp.post('/backup/folder', (req, res) => {\n  const folder = req.body.folder;\n  const cmd = `zip -r /srv/backup/out-${Date.now()}.zip ${quote([folder])}`;\n  exec(cmd, { cwd: '/srv/share' }, (err) => res.json({ ok: !err }));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A103",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A103.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "dayjs strict isValid로 month 검사",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst dayjs = require('dayjs');\nconst customParseFormat = require('dayjs/plugin/customParseFormat');\ndayjs.extend(customParseFormat);\nconst app = express();\n\napp.get('/access/monthly-csv', (req, res) => {\n  const month = req.query.month;\n  if (!dayjs(month, 'YYYY-MM', true).isValid()) return res.status(400).end();\n  res.type('text/csv').send(fs.readFileSync(path.join('/var/gov/access-monthly', `${month}.csv`)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A104",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A104.js",
+   "sink_lines": [
+    10,
+    15
+   ],
+   "call_lines": [],
+   "why": "Range 헤더는 start/end 숫자 옵션에만, id 정규식",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/stream/:id', (req, res) => {\n  const id = req.params.id;\n  if (!/^[a-z0-9]{8}$/.test(id)) return res.status(400).end();\n  const file = path.join('/srv/edu/videos', `${id}.mp4`);\n  const size = fs.statSync(file).size;\n  const m = /bytes=(\\d+)-(\\d*)/.exec(req.headers.range || '');\n  const start = m ? Number(m[1]) : 0;\n  const end = m && m[2] ? Number(m[2]) : size - 1;\n  res.writeHead(m ? 206 : 200, { 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Type': 'video/mp4' });\n  fs.createReadStream(file, { start, end }).pipe(res);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "A105",
+   "part": "A",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "A105.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "dayjs().format()으로 재구성한 날짜만 경로에",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst dayjs = require('dayjs');\nconst app = express();\n\napp.get('/wifi/daily', (req, res) => {\n  const d = dayjs(req.query.date);\n  if (!d.isValid()) return res.status(400).end();\n  const stamp = d.format('YYYYMMDD');\n  res.type('text/plain').send(fs.readFileSync(path.join('/var/log/public-wifi', `${stamp}.log`), 'utf8'));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B01",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B01.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "규칙 배열 루프 안에서 name 검사·return",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst RULES = [/^[\\w.-]+$/, /\\.(csv|xlsx)$/, /^(?!\\.)/];\n\napp.get('/reports/file', (req, res) => {\n  const name = req.query.name;\n  for (const rule of RULES) {\n    if (!rule.test(name)) return res.status(400).send('invalid');\n  }\n  res.send(fs.readFileSync(path.join('/srv/reports', name)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B02",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B02.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "두 필드를 배열로 루프 돌며 검사·return",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst SAFE = /^[a-z0-9_-]{1,40}$/;\n\napp.get('/share/read', (req, res) => {\n  const { dept, file } = req.query;\n  for (const part of [dept, file]) {\n    if (!SAFE.test(part)) return res.status(400).end();\n  }\n  res.type('text/plain').send(fs.readFileSync(path.join('/srv/share', dept, `${file}.txt`), 'utf8'));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B03",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B03.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "try 안에서 검사(throw) 후 같은 try에서 sink",
+   "code": "const express = require('express');\nconst fsp = require('fs/promises');\nconst path = require('path');\nconst app = express();\n\napp.get('/wifi/archive', async (req, res) => {\n  const name = req.query.name;\n  try {\n    if (!/^\\d{8}\\.log$/.test(name)) throw new Error('bad name');\n    const data = await fsp.readFile(path.join('/var/log/public-wifi/archive', name), 'utf8');\n    res.type('text/plain').send(data);\n  } catch (e) {\n    res.status(400).send(e.message);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B04",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B04.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "if 허용 { } else { return } 후 sink",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst DEPTS = new Set(['general', 'finance']);\n\napp.get('/share/:dept/index', (req, res) => {\n  const dept = req.params.dept;\n  if (DEPTS.has(dept)) {\n    console.log('index view', dept);\n  } else {\n    return res.status(403).end();\n  }\n  res.json(fs.readdirSync(path.join('/srv/share', dept)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B05",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B05.js",
+   "sink_lines": [
+    17
+   ],
+   "call_lines": [],
+   "why": "핸들러 안 중첩함수 assertName()을 sink 전에 호출",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/edu/handout', (req, res, next) => {\n  const name = req.query.name;\n  function assertName() {\n    if (!/^[\\w-]+\\.pdf$/.test(name)) {\n      const e = new Error('bad');\n      e.status = 400;\n      throw e;\n    }\n  }\n  try {\n    assertName();\n    res.type('pdf').send(fs.readFileSync(path.join('/srv/edu/handouts', name)));\n  } catch (e) {\n    next(e);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B06",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B06.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "[dept,file].some(실패) return",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst RE = /^[a-z0-9_-]+$/;\n\napp.get('/share/download', (req, res) => {\n  const { dept, file } = req.query;\n  if ([dept, file].some((v) => typeof v !== 'string' || !RE.test(v))) return res.status(400).end();\n  res.download(path.join('/srv/share', dept, `${file}.pdf`));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B07",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "B07.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "![fmt,name].every(통과) return 후 exec",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\napp.use(express.json());\nconst TOKEN = /^[a-z0-9_-]{1,32}$/;\n\napp.post('/convert/simple', (req, res) => {\n  const { fmt, name } = req.body;\n  if (![fmt, name].every((v) => TOKEN.test(v))) return res.status(400).end();\n  exec(`soffice --headless --convert-to ${fmt} /srv/in/${name}.docx --outdir /srv/out`, (err) => res.json({ ok: !err }));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B08",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B08.js",
+   "sink_lines": [
+    20
+   ],
+   "call_lines": [],
+   "why": "file = sanitize(file), sanitize는 검증·throw",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\nfunction sanitize(f) {\n  if (typeof f !== 'string' || !/^[\\w.-]+$/.test(f) || f.includes('..')) {\n    throw Object.assign(new Error('invalid file'), { status: 400 });\n  }\n  return f;\n}\n\napp.get('/exports/get', (req, res, next) => {\n  let file = req.query.file;\n  try {\n    file = sanitize(file);\n  } catch (e) {\n    return next(e);\n  }\n  res.download(path.join('/srv/exports', file));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B09",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "B09.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "next = safeNext(next), 허용 경로 아니면 '/'",
+   "code": "const express = require('express');\nconst app = express();\nconst ALLOWED_NEXT = new Set(['/', '/mypage', '/apply', '/notice']);\n\nfunction safeNext(n) {\n  return ALLOWED_NEXT.has(n) ? n : '/';\n}\n\napp.get('/sso/finish', (req, res) => {\n  let next = req.query.next;\n  next = safeNext(next);\n  res.redirect(next);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B10",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B10.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "if/else-if 체인 모두 return",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/access/day', (req, res) => {\n  const day = req.query.day;\n  if (!day) {\n    return res.status(400).send('day required');\n  } else if (!/^\\d{8}$/.test(day)) {\n    return res.status(400).send('day format');\n  }\n  res.type('text/csv').send(fs.readFileSync(path.join('/var/gov/access-daily', `${day}.csv`)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B11",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-05",
+   "file": "B11.js",
+   "sink_lines": [
+    17
+   ],
+   "call_lines": [],
+   "why": "switch default return + id 정규식",
+   "code": "const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\n\napp.post('/docs/:id/export', (req, res) => {\n  const fmt = req.query.fmt;\n  const id = req.params.id;\n  switch (fmt) {\n    case 'pdf':\n    case 'docx':\n    case 'odt':\n      break;\n    default:\n      return res.status(400).end();\n  }\n  if (!/^\\d+$/.test(id)) return res.status(400).end();\n  exec(`soffice --headless --convert-to ${fmt} /srv/docs/${id}.hwp --outdir /srv/out`, (err) => res.json({ ok: !err }));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B12",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B12.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "Joi schema.validate(req.query) 전체 검증 후 req.query.file",
+   "code": "const express = require('express');\nconst Joi = require('joi');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst schema = Joi.object({\n  file: Joi.string().pattern(/^[\\w-]+\\.csv$/).required(),\n  page: Joi.number().integer().min(1),\n});\n\napp.get('/access/csv', (req, res) => {\n  const { error } = schema.validate(req.query);\n  if (error) return res.status(400).json({ error: error.message });\n  res.type('text/csv').send(fs.readFileSync(path.join('/var/gov/access-logs', req.query.file)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B13",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B13.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "한 줄 || 가드에 둘 다 검사",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst DEPTS = new Set(['general', 'finance']);\n\napp.get('/share/open', (req, res) => {\n  const { dept, file } = req.query;\n  if (!dept || !file || !DEPTS.has(dept) || !/^[\\w-]+\\.(pdf|hwp)$/.test(file)) return res.status(400).end();\n  res.send(fs.readFileSync(path.join('/srv/share', dept, file)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B14",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B14.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "삼항으로 검증된 값/기본값만 safeFile에",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/edu/notice', (req, res) => {\n  const file = req.query.file;\n  const safeFile = /^[\\w-]+\\.html$/.test(file) ? file : 'index.html';\n  res.type('html').send(fs.readFileSync(path.join('/srv/edu/notice', safeFile), 'utf8'));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B15",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B15.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "body.files 순회, 정규식 실패 시 continue 후 unlink",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\napp.use(express.json());\n\napp.post('/thumbs/cleanup', (req, res) => {\n  let removed = 0;\n  for (const f of req.body.files || []) {\n    if (!/^\\d+_[\\w-]+\\.png$/.test(f)) continue;\n    try {\n      fs.unlinkSync(path.join('/srv/thumbs', f));\n      removed++;\n    } catch {}\n  }\n  res.json({ removed });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B16",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B16.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "검사 후 다른 필드 alt로 재대입",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/reports/view', (req, res) => {\n  let file = req.query.file;\n  if (!/^[\\w-]+\\.pdf$/.test(file)) return res.status(400).end();\n  if (req.query.alt) file = req.query.alt;\n  res.type('pdf').send(fs.readFileSync(path.join('/srv/reports', file)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B17",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B17.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "검사 실패 분기가 경고만 하고 종료하지 않음",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/wifi/view', (req, res) => {\n  const file = req.query.file;\n  if (!/^\\d{8}\\.log$/.test(file)) {\n    console.warn('unexpected wifi log name', file);\n    res.status(400);\n  }\n  res.send(fs.readFileSync(path.join('/var/log/public-wifi', file), 'utf8'));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B18",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B18.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "잘라낸 사본 display만 검사, 원본 original을 쓰기",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\napp.use(express.json());\n\napp.post('/share/upload-text', (req, res) => {\n  const original = req.body.filename;\n  const display = original.slice(0, 20);\n  if (!/^[\\w-]+$/.test(display)) return res.status(400).end();\n  fs.writeFileSync(path.join('/srv/share/inbox', original), req.body.content);\n  res.json({ saved: display });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B19",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B19.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "dir만 검사, 결합 rel에는 file도",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/share/cat', (req, res) => {\n  const dir = req.query.dir;\n  const file = req.query.file;\n  if (!/^[a-z]+$/.test(dir)) return res.status(400).end();\n  const rel = `${dir}/${file}`;\n  res.send(fs.readFileSync(path.join('/srv/share', rel), 'utf8'));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B20",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B20.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "host 허용 후 x-forwarded-host로 재대입",
+   "code": "const express = require('express');\nconst app = express();\nconst ALLOWED = new Set(['10.20.1.11', '10.20.1.12']);\n\napp.get('/sensor/status', async (req, res) => {\n  let host = req.query.host;\n  if (!ALLOWED.has(host)) return res.status(403).end();\n  host = req.headers['x-forwarded-host'] || host;\n  const r = await fetch(`http://${host}/status`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B21",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B21.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "루프 안 검사가 로그만, 종료 안 함",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/share/peek', (req, res) => {\n  const { dept, file } = req.query;\n  for (const v of [dept, file]) {\n    if (!/^[\\w-]+$/.test(v)) console.log('suspicious', v);\n  }\n  res.send(fs.readFileSync(path.join('/srv/share', dept, file), 'utf8'));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B22",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B22.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "검증 함수 정의만 하고 호출 안 함",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/edu/material', (req, res) => {\n  const name = req.query.name;\n  const isValid = () => /^[\\w-]+\\.pdf$/.test(name);\n  res.type('pdf').send(fs.readFileSync(path.join('/srv/edu/materials', name)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B23",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B23.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "try에서 throw, catch가 삼키고 진행",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/access/raw', (req, res) => {\n  const name = req.query.name;\n  try {\n    if (!/^\\d{8}\\.csv$/.test(name)) throw new Error('bad name');\n  } catch (e) {\n    console.warn(e.message);\n  }\n  res.send(fs.readFileSync(path.join('/var/gov/access-daily', name)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B24",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B24.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "![dept,file].some(통과) — 하나만 통과해도 진행",
+   "code": "const express = require('express');\nconst path = require('path');\nconst app = express();\nconst RE = /^[a-z0-9_-]+$/;\n\napp.get('/share/get', (req, res) => {\n  const { dept, file } = req.query;\n  if (![dept, file].some((v) => RE.test(v))) return res.status(400).end();\n  res.download(path.join('/srv/share', dept, file));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B25",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B25.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "file = sanitize(file), sanitize는 trim만",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\nfunction sanitize(s) {\n  return String(s).trim();\n}\n\napp.get('/exports/fetch', (req, res) => {\n  let file = req.query.file;\n  file = sanitize(file);\n  res.send(fs.readFileSync(path.join('/srv/exports', file)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B26",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B26.js",
+   "sink_lines": [
+    14
+   ],
+   "call_lines": [],
+   "why": "if 허용 {log} else {warn} — 둘 다 진행",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\nconst DEPTS = new Set(['general', 'finance']);\n\napp.get('/share/:dept/list', (req, res) => {\n  const dept = req.params.dept;\n  if (DEPTS.has(dept)) {\n    console.log('list', dept);\n  } else {\n    console.warn('unknown dept', dept);\n  }\n  res.json(fs.readdirSync(path.join('/srv/share', dept)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B27",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-03",
+   "file": "B27.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "mode==='strict'일 때만 검사(mode도 요청값)",
+   "code": "const express = require('express');\nconst fs = require('fs');\nconst path = require('path');\nconst app = express();\n\napp.get('/reports/open', (req, res) => {\n  const { file, mode } = req.query;\n  if (mode === 'strict' && !/^[\\w-]+\\.pdf$/.test(file)) return res.status(400).end();\n  res.type('pdf').send(fs.readFileSync(path.join('/srv/reports', file)));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B28",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B28.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "https://${CONST_HOST}/${a}/${b}",
+   "code": "const express = require('express');\nconst app = express();\nconst CONST_HOST = 'apis.data.go.kr';\n\napp.get('/open/:a/:b', async (req, res) => {\n  const { a, b } = req.params;\n  const r = await fetch(`https://${CONST_HOST}/${a}/${b}?serviceKey=${process.env.KEY}`);\n  res.status(r.status).json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B29",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B29.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "허용된 sub.example.com / 미검사 경로",
+   "code": "const express = require('express');\nconst app = express();\nconst SUBS = new Set(['seoul', 'busan', 'daegu']);\n\napp.get('/city/data', async (req, res) => {\n  const { sub, path: p } = req.query;\n  if (!SUBS.has(sub)) return res.status(400).end();\n  const r = await fetch(`https://${sub}.example.com/${p}`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B30",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B30.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "상수 API + '/' + resource (axios)",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\nconst API = 'https://api.odcloud.kr/api';\n\napp.get('/odcloud', async (req, res) => {\n  const r = await axios.get(API + '/' + req.query.resource, { params: { page: req.query.page, perPage: 100 } });\n  res.json(r.data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B31",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B31.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "new URL(`/v1/${p}`, BASE) — 상수 '/' 시작",
+   "code": "const express = require('express');\nconst app = express();\nconst BASE = 'https://cache-origin-internal.example.go.kr';\n\napp.get('/cache/v1', async (req, res) => {\n  const url = new URL(`/v1/${req.query.p}`, BASE);\n  const r = await fetch(url);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B32",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B32.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "ip는 등록 Set 검사, metric(경로) 미검사",
+   "code": "const express = require('express');\nconst app = express();\nconst REGISTERED = new Set(['10.20.1.11', '10.20.1.12']);\n\napp.get('/sensor/metric', async (req, res) => {\n  const { ip, metric } = req.query;\n  if (!REGISTERED.has(ip)) return res.status(403).end();\n  const r = await fetch(`http://${ip}:9000/${metric}`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B33",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B33.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "URL 객체 pathname에만 요청값 대입",
+   "code": "const express = require('express');\nconst app = express();\nconst BASE = 'https://sensors.example.go.kr';\n\napp.get('/sensors/:id', async (req, res) => {\n  const url = new URL(BASE);\n  url.pathname = `/sensors/${req.params.id}`;\n  const r = await fetch(url);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B34",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B34.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "searchParams.set만",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/search/places', async (req, res) => {\n  const url = new URL('https://dapi.kakao.com/v2/local/search/keyword.json');\n  url.searchParams.set('query', req.query.q);\n  url.searchParams.set('page', req.query.page || '1');\n  const r = await fetch(url, { headers: { Authorization: `KakaoAK ${process.env.KAKAO}` } });\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B35",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B35.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "`${BASE_URL}?${new URLSearchParams({...})}`",
+   "code": "const express = require('express');\nconst app = express();\nconst BASE_URL = 'https://apis.data.go.kr/B551011/KorService1/searchKeyword1';\n\napp.get('/tour/search', async (req, res) => {\n  const qs = new URLSearchParams({ keyword: req.query.q, pageNo: req.query.page || '1', MobileOS: 'ETC' });\n  const r = await fetch(`${BASE_URL}?${qs}`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B36",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B36.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [],
+   "why": "http.get 옵션객체 host 상수, path에만 요청값",
+   "code": "const express = require('express');\nconst http = require('http');\nconst app = express();\n\napp.get('/gw/:metric', (req, res) => {\n  http.get({ host: '10.30.0.10', port: 8080, path: `/api/${encodeURIComponent(req.params.metric)}` }, (r) => {\n    r.pipe(res);\n  });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B37",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B37.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "https://${a}${b}.example.com — b만 검사",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/tenant/ping', async (req, res) => {\n  const { a, b } = req.query;\n  if (!/^[a-z]{2,8}$/.test(b)) return res.status(400).end();\n  const r = await fetch(`https://${a}${b}.example.com/health`);\n  res.json({ ok: r.ok });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B38",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B38.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "https://${a}${b}.example.com — a만 검사",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/tenant/ping2', async (req, res) => {\n  const { a, b } = req.query;\n  if (!/^[a-z]{2,8}$/.test(a)) return res.status(400).end();\n  const r = await fetch(`https://${a}${b}.example.com/health`);\n  res.json({ ok: r.ok });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B39",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B39.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "`${proto}://${host}` proto만 검사",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\n\napp.get('/device/fetch', async (req, res) => {\n  const { proto, host } = req.query;\n  if (!['http', 'https'].includes(proto)) return res.status(400).end();\n  const r = await axios.get(`${proto}://${host}`);\n  res.send(r.data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B40",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B40.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "new URL(path, base) — path가 절대URL이면 base 무시",
+   "code": "const express = require('express');\nconst app = express();\nconst BASE = 'https://cache-origin-internal.example.go.kr';\n\napp.get('/cache/get', async (req, res) => {\n  const p = req.query.path;\n  const url = new URL(p, BASE);\n  const r = await fetch(url);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B41",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B41.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "port 정수검사, host 미검사",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/sensor/raw', async (req, res) => {\n  const host = req.query.host;\n  const port = Number(req.query.port);\n  if (!Number.isInteger(port) || port < 1 || port > 65535) return res.status(400).end();\n  const r = await fetch(`http://${host}:${port}/status`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B42",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B42.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [],
+   "why": "https://${tenant}/api — 헤더 tenant 미검사",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/tenant/config', async (req, res) => {\n  const tenant = req.get('x-tenant-host');\n  const r = await fetch(`https://${tenant}/api/config`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B43",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B43.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [],
+   "why": "axios({ baseURL: query.base })",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\n\napp.get('/upstream/health', async (req, res) => {\n  const r = await axios({ method: 'get', baseURL: req.query.base, url: '/health', timeout: 2000 });\n  res.json(r.data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B44",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B44.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "endpoint + '/v1/data'",
+   "code": "const express = require('express');\nconst app = express();\napp.use(express.json());\n\napp.post('/collect', async (req, res) => {\n  const { endpoint, token } = req.body;\n  const r = await fetch(req.body.endpoint + '/v1/data', { headers: { Authorization: `Bearer ${token}` } });\n  res.json({ endpoint, data: await r.json() });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B45",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B45.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "URL 객체 host 속성에 요청값 대입",
+   "code": "const express = require('express');\nconst app = express();\nconst BASE = 'https://sensors.example.go.kr/api/status';\n\napp.get('/sensors/remote', async (req, res) => {\n  const u = new URL(BASE);\n  u.host = req.query.host;\n  const r = await fetch(u);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B46",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "B46.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [],
+   "why": "redirect https://${tenant}.portal.example.go.kr — tenant 미검사",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/tenant/go', (req, res) => {\n  const tenant = req.query.tenant;\n  res.redirect(`https://${tenant}.portal.example.go.kr/home`);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B47",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-07",
+   "file": "B47.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [],
+   "why": "redirect https://portal.example.go.kr/${tenant}/home",
+   "code": "const express = require('express');\nconst app = express();\n\napp.get('/tenant/home', (req, res) => {\n  const tenant = req.query.tenant;\n  res.redirect(`https://portal.example.go.kr/${tenant}/home`);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B49",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B49.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "if(cache.has){return} else { if(!ALLOWED.has) return; fetch }",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst ALLOWED = new Set(['https://apis.data.go.kr/air/latest', 'https://apis.data.go.kr/weather/latest']);\n\napp.get('/cached', async (req, res) => {\n  const k = req.query.url;\n  if (cache.has(k)) {\n    return res.json(cache.get(k));\n  } else {\n    if (!ALLOWED.has(k)) return res.status(403).end();\n    const r = await fetch(k);\n    const data = await r.json();\n    cache.set(k, data);\n    res.json(data);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B50",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B50.js",
+   "sink_lines": [
+    11
+   ],
+   "call_lines": [],
+   "why": "const hit = cache.get; if(hit) return; 허용 Set 음성종료; fetch",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst ALLOWED_URLS = new Set(['https://apis.data.go.kr/a', 'https://apis.data.go.kr/b']);\n\napp.get('/cached2', async (req, res) => {\n  const url = req.query.url;\n  const hit = cache.get(url);\n  if (hit) return res.json(hit);\n  if (!ALLOWED_URLS.has(url)) return res.status(403).end();\n  const data = await (await fetch(url)).json();\n  cache.set(url, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B51",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B51.js",
+   "sink_lines": [
+    16
+   ],
+   "call_lines": [],
+   "why": "if(!cache.has){ hostname 허용 검사 return; fetch } 중첩",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst HOSTS = new Set(['apis.data.go.kr']);\n\napp.get('/cached3', async (req, res) => {\n  const k = req.query.url;\n  if (!cache.has(k)) {\n    let host;\n    try {\n      host = new URL(k).hostname;\n    } catch {\n      return res.status(400).end();\n    }\n    if (!HOSTS.has(host)) return res.status(403).end();\n    cache.set(k, await (await fetch(k)).json());\n  }\n  res.json(cache.get(k));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B52",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B52.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [
+    13
+   ],
+   "why": "중첩 삼항: cache ? get : (ALLOWED ? fetchJson : null)",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst ALLOWED = new Set(['https://apis.data.go.kr/x', 'https://apis.data.go.kr/y']);\n\nasync function fetchJson(u) {\n  const r = await fetch(u);\n  return r.json();\n}\n\napp.get('/cached4', async (req, res) => {\n  const k = req.query.url;\n  const data = cache.has(k) ? cache.get(k) : ALLOWED.has(k) ? await fetchJson(k) : null;\n  if (!data) return res.status(403).end();\n  cache.set(k, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B53",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B53.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "cache.get(k) ?? await fetch(상수 API/k)",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst API = 'https://apis.data.go.kr/openapi';\n\napp.get('/cached5/:k', async (req, res) => {\n  const k = req.params.k;\n  const data = cache.get(k) ?? (await (await fetch(`${API}/${k}`)).json());\n  cache.set(k, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B54",
+   "part": "B",
+   "kind": "safe",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B54.js",
+   "sink_lines": [
+    12
+   ],
+   "call_lines": [],
+   "why": "UPSTREAMS 음성 has 종료 후 get한 base로 fetch",
+   "code": "const express = require('express');\nconst app = express();\nconst UPSTREAMS = new Map([\n  ['air', 'https://apis.data.go.kr/B552584'],\n  ['bus', 'https://apis.data.go.kr/1613000'],\n]);\n\napp.get('/up/:name', async (req, res) => {\n  const name = req.params.name;\n  if (!UPSTREAMS.has(name)) return res.status(404).end();\n  const base = UPSTREAMS.get(name);\n  const r = await fetch(base + '/data');\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B55",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B55.js",
+   "sink_lines": [
+    10
+   ],
+   "call_lines": [],
+   "why": "if(cache.has){return} else { fetch(k) } — 캐시뿐",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\n\napp.get('/c/a', async (req, res) => {\n  const k = req.query.url;\n  if (cache.has(k)) {\n    return res.json(cache.get(k));\n  } else {\n    const r = await fetch(k);\n    const data = await r.json();\n    cache.set(k, data);\n    res.json(data);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B56",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B56.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "cache.get(k) ?? await fetch(k)",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\n\napp.get('/c/b', async (req, res) => {\n  const k = req.query.url;\n  const data = cache.get(k) ?? (await (await fetch(k)).text());\n  cache.set(k, data);\n  res.send(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B57",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B57.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "cache.has(u) ? cache.get(u) : await axios.get(u)",
+   "code": "const express = require('express');\nconst axios = require('axios');\nconst app = express();\nconst cache = new Map();\n\napp.get('/c/c', async (req, res) => {\n  const u = req.query.u;\n  const data = cache.has(u) ? cache.get(u) : (await axios.get(u)).data;\n  cache.set(u, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B58",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B58.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "if(!cache.has(k)){ fetch } — 음성 has지만 return 아님(미스 분기)",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\n\napp.get('/c/d', async (req, res) => {\n  const k = req.query.url;\n  if (!cache.has(k)) {\n    const r = await fetch(k);\n    cache.set(k, await r.json());\n  }\n  res.json(cache.get(k));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B59",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B59.js",
+   "sink_lines": [
+    6
+   ],
+   "call_lines": [
+    13
+   ],
+   "why": "if(!cache.has(k)) return res.json(await refresh(k)) — 음성 조기종료인데 그 안에서 fetch",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\n\nasync function refresh(k) {\n  const data = await (await fetch(k)).json();\n  cache.set(k, data);\n  return data;\n}\n\napp.get('/c/e', async (req, res) => {\n  const k = req.query.url;\n  if (!cache.has(k)) return res.json(await refresh(k));\n  res.json(cache.get(k));\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B60",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B60.js",
+   "sink_lines": [
+    13
+   ],
+   "call_lines": [],
+   "why": "else 분기 허용 검사가 다른 변수(provider)",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\nconst PROVIDERS = new Set(['kma', 'airkorea']);\n\napp.get('/c/f', async (req, res) => {\n  const { url, provider } = req.query;\n  const key = `${provider}:${url}`;\n  if (cache.has(key)) {\n    return res.json(cache.get(key));\n  } else {\n    if (!PROVIDERS.has(provider)) return res.status(400).end();\n    const r = await fetch(url);\n    const data = await r.json();\n    cache.set(key, data);\n    res.json(data);\n  }\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B61",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B61.js",
+   "sink_lines": [
+    9
+   ],
+   "call_lines": [],
+   "why": "if(cache.has(k) && !force) return; fetch(k)",
+   "code": "const express = require('express');\nconst app = express();\nconst cache = new Map();\n\napp.get('/c/g', async (req, res) => {\n  const k = req.query.url;\n  const force = req.query.force === '1';\n  if (cache.has(k) && !force) return res.json(cache.get(k));\n  const data = await (await fetch(k)).json();\n  cache.set(k, data);\n  res.json(data);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "B62",
+   "part": "B",
+   "kind": "vuln",
+   "rule": "KISA-JS-INPUT-12",
+   "file": "B62.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "차단목록(denylist) has return 후 fetch",
+   "code": "const express = require('express');\nconst app = express();\nconst BLOCKED = new Set(['169.254.169.254', 'localhost', '127.0.0.1']);\n\napp.get('/c/h', async (req, res) => {\n  const host = req.query.host;\n  if (BLOCKED.has(host)) return res.status(403).end();\n  const r = await fetch(`http://${host}/status`);\n  res.json(await r.json());\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "D1",
+   "part": "D",
+   "kind": "safe",
+   "rule": "-",
+   "file": "D1.js",
+   "sink_lines": [
+    6,
+    8,
+    9
+   ],
+   "call_lines": [],
+   "why": "RegExp.prototype.exec / db.exec에 요청값 (명령 실행 아님)",
+   "code": "const express = require('express');\nconst db = require('./sqlite');\nconst app = express();\n\napp.get('/stream/range', (req, res) => {\n  const m = /^bytes=(\\d+)-(\\d*)$/.exec(req.headers.range || '');\n  const pattern = new RegExp('^[a-z]+$');\n  const ok = pattern.exec(req.query.tag);\n  db.exec('VACUUM');\n  res.json({ start: m ? Number(m[1]) : 0, ok: !!ok });\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "D2",
+   "part": "D",
+   "kind": "safe",
+   "rule": "-",
+   "file": "D2.js",
+   "sink_lines": [
+    6,
+    11
+   ],
+   "call_lines": [],
+   "why": "브라우저 코드(서버 아님): location/URLSearchParams로 이동·fetch",
+   "code": "const params = new URLSearchParams(window.location.search);\nconst next = params.get('next');\nconst target = params.get('src');\n\nasync function load() {\n  const r = await fetch(target);\n  document.querySelector('#out').textContent = await r.text();\n}\n\ndocument.querySelector('#go').addEventListener('click', () => {\n  window.location.href = next;\n});\nload();\n"
+  },
+  {
+   "id": "D3",
+   "part": "D",
+   "kind": "safe",
+   "rule": "-",
+   "file": "D3.js",
+   "sink_lines": [
+    8
+   ],
+   "call_lines": [],
+   "why": "req는 CLI 스크립트의 고정 객체 (HTTP 요청 아님)",
+   "code": "const fs = require('fs');\nconst path = require('path');\n\nconst req = { query: { file: 'daily-report.csv' }, params: { dept: 'general' } };\n\nfunction main() {\n  const p = path.join('/srv/share', req.params.dept, req.query.file);\n  const text = fs.readFileSync(p, 'utf8');\n  console.log(text.split('\\n').length, 'lines');\n}\n\nmain();\n"
+  },
+  {
+   "id": "D4",
+   "part": "D",
+   "kind": "safe",
+   "rule": "-",
+   "file": "D4.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "이름만 fs인 S3 래퍼 모듈 (로컬 파일시스템 아님)",
+   "code": "const express = require('express');\nconst fs = require('./lib/s3-storage');\nconst app = express();\n\napp.get('/objects/get', async (req, res) => {\n  const key = req.query.key;\n  const body = await fs.readFile(`attachments/${key}`);\n  res.send(body);\n});\n\napp.listen(3000);\n"
+  },
+  {
+   "id": "D5",
+   "part": "D",
+   "kind": "safe",
+   "rule": "-",
+   "file": "D5.js",
+   "sink_lines": [
+    7
+   ],
+   "call_lines": [],
+   "why": "spawn('sh',['-c', 상수명령]) — 요청값은 env에만",
+   "code": "const express = require('express');\nconst { spawn } = require('child_process');\nconst app = express();\n\napp.post('/backup/nightly', (req, res) => {\n  const label = req.query.label || 'manual';\n  const p = spawn('sh', ['-c', 'tar -czf \"/srv/backup/$(date +%F).tgz\" /srv/share'], { env: { ...process.env, BACKUP_LABEL: label } });\n  p.on('exit', (code) => res.json({ code, label }));\n});\n\napp.listen(3000);\n"
+  }
+ ]
+}
