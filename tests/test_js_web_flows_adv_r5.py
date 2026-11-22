@@ -80,18 +80,18 @@ def test_round5_corpus_shape_and_lists() -> None:
 
 
 def test_safe_cases_of_all_rounds_stay_quiet() -> None:
-    """1~5회차 안전 사례 전부 — 보고는 합의된 KNOWN_REPORTS 뿐이어야 한다(처음 값별 판정은 판정 구조를 바꾼 수정이다)."""
+    """1~6회차 안전 사례 전부 — 보고는 합의된 KNOWN_REPORTS 뿐이어야 한다(처음 값별 판정은 판정 구조를 바꾼 수정이다)."""
     from gvskb.scanner import scan_code
 
     here = Path(__file__).parent / "corpus"
     reported = []
     total = 0
-    for n in range(1, 6):
+    for n in range(1, 7):
         for c in json.loads((here / f"js_flow_adv_r{n}.json").read_text(encoding="utf-8"))["cases"]:
             if c["kind"] != "safe":
                 continue
             total += 1
             if any(f.engine == "js-flow" for f in scan_code(c["code"], filename=c["file"]).findings):
                 reported.append(c["id"])
-    assert total == 398
+    assert total == 490
     assert reported == ["B-S-05"]                          # 3회차 권한 게이트 — 보고가 맞다고 합의
