@@ -876,6 +876,28 @@ def test_path_read_silences_only_path_parameters() -> None:
     assert _flows(by_param) == set()
 
 
+def test_raw_url_read_silences_path_parameters_too() -> None:
+    """URL 원문에는 경로도 들어 있다 — 원문으로 경로를 검사한 미들웨어는 경로 매개변수 흐름도 침묵시킨다."""
+    mw = ("app.use((req, res, next) => {\n  const p = new URL(req.originalUrl, 'http://x').pathname;\n"
+          "  if (p.includes('..')) return res.sendStatus(400);\n  next();\n});\n")
+    route = "app.get('/f/:name', (req, res) => {\n  res.send(fs.readFileSync('/srv/' + req.params.name));\n});\n"
+    assert _flows(mw + route) == set()
+    hono = HONO + "import fs from 'fs';\n"
+    hono_mw = "app.use('*', async (c, next) => {\n  if (new URL(c.req.url).pathname.includes('..')) return c.text('bad', 400);\n  await next();\n});\n"
+    hono_route = "app.get('/f/:name', (c) => c.text(fs.readFileSync('/srv/' + c.req.param('name'), 'utf8')));\n"
+    assert _flows(hono_mw + hono_route, header=hono, filename="a.ts") == set()
+
+
+def test_query_only_read_keeps_path_parameter_flows() -> None:
+    """쿼리 부분만 읽는 미들웨어(`ctx.querystring`)는 경로 매개변수 흐름을 침묵시키지 않는다."""
+    koa_fs = KOA + "const fs = require('fs');\n"
+    qs = "app.use(async (ctx, next) => {\n  if (!ok(ctx.querystring)) ctx.throw(400);\n  await next();\n});\n"
+    by_param = "router.get('/f/:name', async (ctx) => {\n  ctx.body = fs.readFileSync('/srv/' + ctx.params.name);\n});\n"
+    assert _flows(qs + by_param, header=koa_fs) == {PATH}
+    by_query = "router.get('/f', async (ctx) => {\n  ctx.body = fs.readFileSync('/srv/' + ctx.query.name);\n});\n"
+    assert _flows(qs + by_query, header=koa_fs) == set()
+
+
 def test_koa_raw_querystring_and_path_reads() -> None:
     koa_fs = KOA + "const fs = require('fs');\n"
     qs = "app.use(async (ctx, next) => {\n  if (!ok(new URLSearchParams(ctx.querystring).get('f'))) ctx.throw(400);\n  await next();\n});\n"

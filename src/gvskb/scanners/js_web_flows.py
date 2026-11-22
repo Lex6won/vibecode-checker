@@ -109,8 +109,12 @@ _FASTIFY_HOOK_KEYS = frozenset({"preHandler", "onRequest", "preValidation", "pre
 _URL_FIELDS = {
     "express": frozenset({"url", "originalUrl", "_parsedUrl"}),
     "fastify": frozenset({"url", "originalUrl"}),
-    "koa": frozenset({"url", "originalUrl", "querystring", "search", "href"}),
+    "koa": frozenset({"url", "originalUrl", "href"}),
 }
+#: 쿼리 부분만 읽는 필드 — 쿼리 전체(`REQ[query]`)만 쓰인 것으로 본다.
+_QUERY_ONLY_FIELDS = {"koa": frozenset({"querystring", "search"})}
+#: URL 원문의 쓰임 열쇠 — 쿼리(`REQ[query]`)와 경로 매개변수(`REQ[params]`)를 함께 감싼다(_ancestors).
+URL_KEY = f"{REQ}[url]"
 #: 경로를 읽는 필드 — 경로 매개변수 전체를 읽은 것으로 본다(쓰임 전용 열쇠 `REQ[params]`).
 _PATH_FIELDS = {
     "express": frozenset({"path"}),
@@ -204,11 +208,17 @@ def _args(call) -> list:
 
 
 def _ancestors(key: str) -> list[str]:
-    """열쇠를 감싸는 그릇들 — `REQ[query.url]` → [`REQ[query]`, `REQ`]."""
+    """열쇠를 감싸는 그릇들 — `REQ[query.url]` → [`REQ[query]`, `REQ`, `REQ[url]`].
+
+    쿼리와 경로 매개변수는 URL 원문(`REQ[url]`)에도 들어 있다 — 미들웨어가 `req.originalUrl` 을 읽었으면 둘 다 쓰인 것이다.
+    """
     if not key.startswith(REQ + "["):
         return []
     inner = key[len(REQ) + 1:-1].split(".")
-    return [f"{REQ}[{'.'.join(inner[:i])}]" for i in range(len(inner) - 1, 0, -1)] + [REQ]
+    out = [f"{REQ}[{'.'.join(inner[:i])}]" for i in range(len(inner) - 1, 0, -1)] + [REQ]
+    if inner[0] in ("query", "params"):
+        out.append(f"{REQ}[url]")
+    return out
 
 
 def _extend(key: str, path) -> str | None:
@@ -1145,7 +1155,7 @@ class _Context:
             if path[:1] == ["raw"]:
                 path, raw = path[1:], True
             if path[:1] == ["url"]:
-                return f"{REQ}[query]"
+                return URL_KEY
             if path[:1] == ["path"]:
                 return f"{REQ}[params]"
             return REQ if raw and path else None
@@ -1156,7 +1166,9 @@ class _Context:
         if not path:
             return REQ if raw else None
         if path[0] in _URL_FIELDS.get(kind, ()) or raw and path[0] in ("url", "originalUrl"):
-            return f"{REQ}[query]"
+            return URL_KEY                                 # URL 원문 — 경로와 쿼리가 다 들어 있다
+        if path[0] in _QUERY_ONLY_FIELDS.get(kind, ()):
+            return f"{REQ}[query]"                         # `ctx.querystring`·`ctx.search` — 쿼리 부분만
         if path[0] in _PATH_FIELDS.get(kind, ()):
             return f"{REQ}[params]"
         if path[0] == "rawBody":
